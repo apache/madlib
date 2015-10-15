@@ -23,45 +23,51 @@ class L2 {
 public:
     typedef Model model_type;
     typedef Hessian hessian_type;
+    
+    static double lambda;
+    static int n_tuples;
 
     static void gradient(
             const model_type                    &model,
-            const double                        &lambda,
             model_type                          &gradient);
 
     static void scaling(
+            const model_type                    &model,
             model_type                          &incrModel,
-            const double                        &lambda,
-            const int                           &n_tuples,
             const double                        &stepsize);
 
     static void hessian(
             const model_type                    &model,
-            const double                        &lambda,
             hessian_type                        &hessian);
 
     static double loss(
-            const model_type                    &model,
-            const double                        &lambda);
+            const model_type                    &model);
 };
+    
+template <class Model, class Hessian>
+double
+L2<Model, Hessian>::lambda = 0.;
+    
+template <class Model, class Hessian>
+int
+L2<Model, Hessian>::n_tuples = 1;
 
 template <class Model, class Hessian>
 void
 L2<Model, Hessian>::gradient(
         const model_type                    &model,
-        const double                        &lambda,
         model_type                          &gradient) {
-    gradient += 2 * lambda * model;
+    // 1/2 * lambda * || w ||^2
+    gradient += lambda * model;
 }
 
 template <class Model, class Hessian>
 void
 L2<Model, Hessian>::scaling(
+        const model_type                    &model,
         model_type                          &incrModel,
-        const double                        &lambda,
-        const int                           &n_tuples,
         const double                        &stepsize) {
-    double wscale = 1 - 2 * lambda / n_tuples * stepsize;
+    double wscale = 1 - lambda / n_tuples * stepsize;
     if (wscale > 0) { incrModel *= wscale; }
     else { incrModel.setZero(); }
 }
@@ -70,18 +76,17 @@ template <class Model, class Hessian>
 void
 L2<Model, Hessian>::hessian(
         const model_type                    &model,
-        const double                        &lambda,
         hessian_type                        &hessian) {
     int n = model.size();
-    hessian += 2 * lambda * hessian.Identity(n, n);
+    hessian += lambda * hessian.Identity(n, n);
 }
 
 template <class Model, class Hessian>
 double
 L2<Model, Hessian>::loss(
-        const model_type                    &model,
-        const double                        &lambda) {
-    return lambda * model.norm();
+        const model_type                    &model) {
+    // 1/2 * lambda * || w ||^2
+    return lambda * model.norm()*model.norm() / 2;
 }
 
 } // namespace convex

@@ -10,6 +10,13 @@ BEGIN
 END
 $$ LANGUAGE plpgsql;
 
+CREATE OR REPLACE FUNCTION __svr_target_cl_func(ind float8[])
+RETURNS float8 AS $$
+BEGIN
+    RETURN 1*ind[1] + 2*ind[2];
+END
+$$ LANGUAGE plpgsql;
+
 CREATE OR REPLACE FUNCTION __svm_random_ind(d INT)
 RETURNS float8[] AS $$
 DECLARE
@@ -48,8 +55,95 @@ BEGIN
 END
 $$ LANGUAGE plpgsql;
 
+CREATE OR REPLACE FUNCTION svr_generate_cls_data(
+    output_table text, num int, dim int)
+RETURNS VOID AS $$
+DECLARE
+    temp_table text;
+BEGIN
+    temp_table := 'madlib_temp_' || output_table;
+    EXECUTE '
+        CREATE TABLE ' || temp_table || ' AS
+            SELECT
+                subq.val AS id,
+                __svm_random_ind(' || dim || ') AS ind
+            FROM
+                (SELECT generate_series(1, ' || num || ') AS val) subq';
+    EXECUTE '
+        CREATE TABLE ' || output_table || ' AS
+            SELECT id, ind, __svr_target_cl_func(ind) AS label
+            FROM ' || temp_table;
+END
+$$ LANGUAGE plpgsql;
+
 SELECT svm_generate_cls_data('svm_train_data', 1000, 4);
 SELECT svm_generate_cls_data('svm_test_data', 1000, 4);
+SELECT svr_generate_cls_data('svr_train_data', 1000, 4);
+SELECT svr_generate_cls_data('svr_test_data', 1000, 4);
+
+-- check the default values
+DROP TABLE IF EXISTS svr_model, svr_model_summary;
+SELECT svm_regression(
+     'svr_train_data',
+     'svr_model',
+     'label',
+     'ind');
+\x on
+SELECT * FROM svr_model;
+SELECT * FROM svr_model_summary;
+\x off
+SELECT
+    assert(
+        norm1(coef) < 4,
+        'optimal coef should be close to [1, 2, 0, 0]!')
+FROM svr_model;
+
+-- check the use of l1 norm
+DROP TABLE IF EXISTS svr_model, svr_model_summary;
+SELECT svm_regression(
+     'svr_train_data',
+     'svr_model',
+     'label',
+     'ind',
+     NULL,
+     NULL,
+     NULL,
+     'init_stepsize=0.01, max_iter=50', 
+     'lambda=2, norm=l1',
+     0.01);
+DROP TABLE IF EXISTS svr_test_result; 
+SELECT svm_predict('svr_model', 'svr_train_data', 'id', 'svr_test_result');
+\x on
+SELECT * FROM svr_model;
+\x off
+SELECT 
+    assert(
+           avg(subq.err) < 0.1,
+           'prediction error is too large!')
+FROM 
+    (
+        SELECT 
+            train.id, 
+            abs(train.label - test.prediction) AS err
+        FROM svr_train_data AS train, svr_test_result AS test
+        WHERE train.id = test.id
+    ) AS subq;
+
+-- by default using epsilon == 0.1
+DROP TABLE IF EXISTS svr_model, svr_model_summary;
+SELECT svm_regression(
+     'svr_train_data',
+     'svr_model',
+     'label',
+     'ind', 
+     NULL, 
+     NULL, 
+     NULL, 
+     'init_stepsize=1, max_iter=10', 
+     'lambda=2');
+SELECT 
+    assert(epsilon > 0,'default epsilon is positive!') 
+FROM svr_model_summary;
 
 -- Example usage for LINEAR classification, replace the above by
 SELECT svm_classification(
@@ -118,7 +212,7 @@ SELECT svm_classification(
     'ind',
     NULL, -- kernel_func
     NULL, -- kernel_pararms
-    NULL, --grouping_col
+    NULL, -- grouping_col
     'init_stepsize=0.03, decay_factor=1, max_iter=5, tolerance=0',
     'lambda=0',
     true -- verbose

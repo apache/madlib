@@ -32,19 +32,46 @@ def _compute_svm(args):
                 """
                 {schema_madlib}.linear_svm_igd_step(
                     ({col_ind_var})::FLOAT8[],
-                    CASE WHEN ({col_dep_var}) IS NULL THEN NULL
-                        WHEN ({col_dep_var}) = {mapped_value_for_negative} THEN FALSE
-                        ELSE TRUE
-                    END,
+                    ({col_dep_var_trans})::FLOAT8,
                     {rel_state}.{col_grp_state},
                     {n_features}::INT4,
                     {stepsize}::FLOAT8,
                     {lambda}::FLOAT8,
                     {is_l2}::BOOLEAN,
-                    {col_n_tuples}
+                    {col_n_tuples},
+                    {epsilon}::FLOAT8
                     )
                 """)
-            it.kwargs['stepsize'] *= it.kwargs['decay_factor']
+            if kwargs['decay_factor'] > 0:
+                it.kwargs['stepsize'] = it.kwargs['stepsize'] * kwargs['decay_factor']
+            else:
+                it.kwargs['stepsize'] = init_stepsize / (it.iteration + 1)
+            if args['verbose']:
+                res = plpy.execute("""
+                    SELECT
+                        (result).loss                   AS loss,
+                        (result).norm_of_gradient       AS norm_of_gradient
+                    FROM (
+                        SELECT {schema_madlib}.internal_linear_svm_igd_result(
+                            _state) AS result
+                        FROM {rel_state}
+                        WHERE _iteration = {iteration}) subq
+                    """.format(iteration=it.iteration,
+                               schema_madlib=schema_madlib,
+                               rel_state=it.kwargs['rel_state']))
+
+                loss = res[0]['loss']
+                normg = res[0]['norm_of_gradient']
+                epsilon = it.kwargs['epsilon']
+                stepsize = it.kwargs['stepsize']
+                iteration = it.iteration
+                plpy.notice("DEBUG: \
+                            iter = {iteration:5d}, \
+                            loss = {loss:.5e}, \
+                            |gradient| = {normg:.5e}, \
+                            stepsize = {stepsize:.5e}, \
+                            epsilon = {epsilon:.2e}".format(**locals()))
+
             has_converged = it.test(
                     """
                     {iteration} >= {max_iter}
@@ -56,14 +83,12 @@ def _compute_svm(args):
 # ---------------------------------------------------
 
 
-# Function to run the SVM classification algorithm
-def svm_classification(schema_madlib, source_table, model_table,
-                       dependent_varname, independent_varname,
-                       kernel_func, kernel_params, grouping_col,
-                       optim_params, reg_params, verbose, **kwargs):
+def svm(schema_madlib, source_table, model_table,
+        dependent_varname, independent_varname, kernel_func,
+        kernel_params, grouping_col, optim_params, reg_params,
+        epsilon, is_svc, verbose, **kwargs):
     """
     Executes the linear support vector classification algorithm.
-
     """
     # verbosing
     verbosity_level = "info" if verbose else "error"
@@ -77,20 +102,44 @@ def svm_classification(schema_madlib, source_table, model_table,
                 "SVM error: invalid independent_varname ('" + str(independent_varname) +
                 "') for source_table (" + source_table + ")!")
 
-        # map dependent variables
-        dep_labels=plpy.execute("""
-                SELECT {dep} AS y
-                FROM {tbl}
-                WHERE ({dep}) IS NOT NULL
-                GROUP BY ({dep})
-                ORDER BY ({dep})
-            """.format(dep=dependent_varname, tbl=source_table))
-        _dep_var_mapping = ["'" + d['y'] + "'" if isinstance(d['y'], basestring)
-                            else str(d['y']) for d in dep_labels]
-        if len(_dep_var_mapping) != 2:
-            plpy.error("SVM error: Only binary classification is supported. "
-                       "Found more than two dependent variable values ({0})".
-                       format(str(_dep_var_mapping)))
+        # transform col_dep_var to binary (1`or -1) if classification
+        args = {'col_dep_var_trans': dependent_varname,
+                'mapping': 'NULL',
+                'method': 'SVR'}
+
+        if is_svc:
+            args['method'] = 'SVC'
+            # dependent variable mapping
+            dep_labels=plpy.execute("""
+                SELECT {dependent_varname} AS y
+                FROM {source_table}
+                WHERE ({dependent_varname}) IS NOT NULL
+                GROUP BY ({dependent_varname})
+                ORDER BY ({dependent_varname})""".format(**locals()))
+            dep_var_mapping = ["'" + d['y'] + "'" if isinstance(d['y'], basestring) else str(d['y']) for d in dep_labels]
+            if len(dep_var_mapping) != 2:
+                plpy.error("SVM error: Classification currently only supports binary output")
+
+            col_dep_var_trans = (
+                """
+                CASE WHEN ({col_dep_var}) IS NULL THEN NULL
+                    WHEN ({col_dep_var}) = {mapped_value_for_negative} THEN -1.0
+                    ELSE 1.0
+                END
+                """
+                .format(col_dep_var=dependent_varname,
+                        mapped_value_for_negative=dep_var_mapping[0])
+                )
+            args.update({
+                     'mapped_value_for_negative': dep_var_mapping[0],
+                     'col_dep_var_trans': col_dep_var_trans,
+                     'mapping': dep_var_mapping[0] + "," + dep_var_mapping[1]})
+        elif epsilon is None:
+            # TODO: choose a better default value for epsilon
+            epsilon = 0.1
+        elif epsilon < 0:
+            plpy.error("SVM error: epsilon cannot be less than 0!")
+
         dep_type = get_expr_type(dependent_varname, source_table)
         if '[]' in dep_type:
             plpy.error("SVM error: dependent_varname cannot be of array type!")
@@ -127,7 +176,7 @@ def svm_classification(schema_madlib, source_table, model_table,
                 'rel_source': source_table,
                 'col_ind_var': independent_varname,
                 'col_dep_var': dependent_varname,
-                'mapped_value_for_negative': _dep_var_mapping[0]
+                'mapped_value_for_negative': dep_var_mapping[0]
                 }
         args.update(locals())
         # variables defined above cannot be moved below this line
@@ -173,7 +222,7 @@ def svm_classification(schema_madlib, source_table, model_table,
         n_iters_run = _compute_svm(args)
 
         # organizing results
-        args['mapping'] = _dep_var_mapping[0] + "," + _dep_var_mapping[1]
+        args['mapping'] = dep_var_mapping[0] + "," + dep_var_mapping[1]
         groupby_str = "GROUP BY {grouping_col}, {col_grp_key}".format(**args) if grouping_col else ""
         using_str = "USING ({col_grp_key})".format(**args) if grouping_col else "ON TRUE"
         model_table_query = """
@@ -188,8 +237,9 @@ def svm_classification(schema_madlib, source_table, model_table,
                     n_tuples_including_nulls - (result).num_rows_processed
                                                     AS num_rows_skipped,
                     NULL                            AS __random_feature_data,
-                    ARRAY[{mapping}]::{dep_type}[]  AS _dep_var_mapping
-                FROM (
+                    ARRAY[{mapping}]::{dep_type}[]  AS dep_var_mapping
+                FROM
+                (
                     SELECT
                         {schema_madlib}.internal_linear_svm_igd_result(
                             {col_grp_state}
@@ -198,7 +248,8 @@ def svm_classification(schema_madlib, source_table, model_table,
                     FROM {rel_state}
                     WHERE {col_grp_iteration} = {n_iters_run}
                 ) rel_state_subq
-                JOIN (
+                JOIN
+                (
                     SELECT
                         {grouping_str1}
                         count(*) AS n_tuples_including_nulls,
@@ -230,17 +281,18 @@ def svm_classification(schema_madlib, source_table, model_table,
                     'linear'::text                      AS kernel_func,
                     NULL::text                          AS kernel_params,
                     '{grouping_text}'::text             AS grouping_col,
-                    'init_stepsize={init_stepsize}, ' ||
+                    'init_stepsize={init_stepsize}, '   ||
                         'decay_factor={decay_factor}, ' ||
-                        'max_iter={max_iter}, ' ||
+                        'max_iter={max_iter}, '         ||
                         'tolerance={tolerance}'::text   AS optim_params,
                     'lambda={lambda_str}, ' ||
-                        'norm={norm}, ' ||
+                        'norm={norm}, '     ||
                         'n_folds={n_folds}'::text       AS reg_params,
                     count(*)::integer                   AS num_all_groups,
                     0::integer                          AS num_failed_groups,
                     sum(num_rows_processed)::bigint     AS total_rows_processed,
-                    sum(num_rows_skipped)::bigint       AS total_rows_skipped
+                    sum(num_rows_skipped)::bigint       AS total_rows_skipped,
+                    '{epsilon}'::double precision       AS EPSILON
                 FROM {model_table};
                 """.format(grouping_text="NULL" if not grouping_col else grouping_col,
                            **args))
@@ -272,6 +324,7 @@ def svm_predict(schema_madlib, model_table, new_data_table, id_col_name,
         # read necessary info from summary
         summary = plpy.execute("""
                 SELECT
+                    method,
                     dependent_varname,
                     independent_varname,
                     kernel_func,
@@ -279,6 +332,7 @@ def svm_predict(schema_madlib, model_table, new_data_table, id_col_name,
                     grouping_col
                 FROM {summary_table}
                 """.format(**locals()))[0]
+        method = summary['method']
         dependent_varname = summary['dependent_varname']
         independent_varname = summary['independent_varname']
         kernel_func = summary['kernel_func']
@@ -298,16 +352,28 @@ def svm_predict(schema_madlib, model_table, new_data_table, id_col_name,
                 "SVM error: id_col_name ('" + id_col_name +
                 "') is invalid for new_data_table (" + new_data_table + ")!")
         output_tbl_valid(output_table, 'SVM')
+        if method == 'SVC':
+            pred_query = """
+                        CASE WHEN {schema_madlib}.array_dot(coef::double precision [], {independent_varname}::double precision []) >= 0
+                            THEN dep_var_mapping[2]
+                            ELSE dep_var_mapping[1]
+                        END
+                        """.format(schema_madlib=schema_madlib,
+                                   independent_varname=independent_varname)
+        elif method == 'SVR':
+            pred_query = """
+                        {schema_madlib}.array_dot(coef::double precision [], {independent_varname}::double precision [])
+                        """.format(schema_madlib=schema_madlib,
+                                   independent_varname=independent_varname)
+        else:
+            plpy.error("SVM error: method can only be SVC or SVR!")
 
         if grouping_col != "NULL":
             sql = """
             CREATE TABLE {output_table} AS
             SELECT
                 {id_col_name} AS id,
-                CASE WHEN {schema_madlib}.array_dot(coef, {independent_varname}) >= 0
-                    THEN _dep_var_mapping[2]
-                    ELSE _dep_var_mapping[1]
-                END AS prediction,
+                {pred_query} AS prediction,
                 {model_table}.{grouping_col} as grouping_col
             FROM {model_table}
             JOIN {new_data_table}
@@ -320,28 +386,28 @@ def svm_predict(schema_madlib, model_table, new_data_table, id_col_name,
             CREATE TABLE {output_table} AS
             SELECT
                 {id_col_name} AS id,
-                CASE WHEN {schema_madlib}.array_dot(coef, {independent_varname}) >= 0
-                    THEN _dep_var_mapping[2]
-                    ELSE _dep_var_mapping[1]
-                END AS prediction
+                {pred_query} as prediction
             FROM {model_table}, {new_data_table}
             WHERE not {schema_madlib}.array_contains_null({independent_varname})
             """.format(**locals())
-
         plpy.execute(sql)
 
 
 def _extract_optim_params(schema_madlib, optim_params, module='SVM'):
-    default_dict = dict(init_stepsize=0.01, decay_factor=0.9, max_iter=100, tolerance=1e-3)
-    optim_params_types = dict(init_stepsize=float, decay_factor=float, max_iter=int, tolerance=float)
+    # NOTICE: the type of values in default_dict should be consistent with
+    # the types specified in optim_params_types
+    default_dict = dict(init_stepsize=0.01, decay_factor=0.9,
+                        max_iter=100, tolerance=1e-3)
+    optim_params_types = dict(init_stepsize=float, decay_factor=float,
+                              max_iter=int, tolerance=float)
     optim_params_dict = extract_keyvalue_params(optim_params,
                                                 optim_params_types,
                                                 default_dict)
 
     if optim_params_dict['init_stepsize'] <= 0:
         plpy.error("{0} error: init_stepsize must be positive!".format(module))
-    if optim_params_dict['decay_factor'] <= 0 or optim_params_dict['decay_factor'] > 1:
-        plpy.error("{0} error: decay_factor must be in (0,1]!".format(module))
+    if optim_params_dict['decay_factor'] > 1:
+        plpy.error("{0} error: decay_factor must be <= 1!".format(module))
     if optim_params_dict['max_iter'] <= 0:
         plpy.error("{0} error: max_iter must be positive!".format(module))
     if optim_params_dict['tolerance'] < 0:
@@ -350,8 +416,8 @@ def _extract_optim_params(schema_madlib, optim_params, module='SVM'):
     return optim_params_dict
 
 
-def _extract_reg_params(schema_madlib, reg_params, module='SVM'):
-    default_dict = {'lambda': 0.01, 'norm': 'L2', 'n_folds': 0}
+def __extract_reg_params(schema_madlib, reg_params, module='SVM'):
+    default_dict = {'lambda': 1.0, 'norm': 'L2', 'n_folds': 0}
     reg_params_types_lambda_scalar = {'lambda': float, 'norm': str, 'n_folds': int}
     reg_params_types_lambda_list = {'lambda': list, 'norm': str, 'n_folds': int}
     try:
