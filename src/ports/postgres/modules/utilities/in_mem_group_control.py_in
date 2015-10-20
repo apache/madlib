@@ -109,6 +109,57 @@ class GroupIterationController:
         self.in_with = True
         return self
 
+    def info(self):
+        """ Logging intermediate state information """
+        if not self.kwargs['verbose']:
+            return
+        if self.is_state_type_bytea8:
+            unnest_str = "unnest($1) AS {col_grp_key}, unnest($2) AS {col_grp_state}".format(**self.kwargs)
+            grouped_state_type = "{schema_madlib}.bytea8[]".format(**self.kwargs)
+        else:
+            unnest_str = "grp_key AS {col_grp_key}, state AS {col_grp_state} FROM {schema_madlib}._gen_state($1, NULL, $2)".format(**self.kwargs)
+            grouped_state_type = "float8[]"
+
+        plan = plpy.prepare(
+            """
+            SELECT 
+                {col_grp_key}                   AS group,
+                (result).loss                   AS loss,
+                (result).norm_of_gradient       AS norm_of_gradient
+            FROM (
+                SELECT 
+                    {schema_madlib}.internal_linear_svm_igd_result({col_grp_state}) 
+                    AS result,
+                    {col_grp_key} 
+                FROM ( SELECT {unnest_str} ) AS _rel_state
+            ) subq
+            """.format(unnest_str=unnest_str,
+                       **self.kwargs),
+            ["text[]", grouped_state_type])
+
+        if self.is_state_type_bytea8:
+            res_tuples = plpy.execute(plan, [self.new_states.keys(),
+                                            self.new_states.values()])
+        else:
+            flatten_agg_states = [c for state in self.new_states.values() for c in state]
+            res_tuples = plpy.execute(plan, [self.new_states.keys(),
+                                            flatten_agg_states])
+        for t in res_tuples:
+            grp, loss, normg = t['group'], t['loss'], t['norm_of_gradient']
+            iteration = self.iteration
+            output_str = "DEBUG: \
+                    grp = {grp:10s}, \
+                    iter = {iteration:5d}, \
+                    loss = {loss:.5e}, \
+                    |gradient| = {normg:.5e}, \
+                    stepsize = {stepsize:.5e}" 
+            plpy.notice(output_str.format(
+                        grp=grp, iteration=iteration,
+                        loss=loss, normg=normg, 
+                        **self.kwargs))
+
+
+
     def final(self):
         """ Store the final converged state to a table for output """
         if self.is_state_type_bytea8:

@@ -42,36 +42,11 @@ def _compute_svm(args):
                     {epsilon}::FLOAT8
                     )
                 """)
-            if kwargs['decay_factor'] > 0:
-                it.kwargs['stepsize'] = it.kwargs['stepsize'] * kwargs['decay_factor']
+            it.info()
+            if it.kwargs['decay_factor'] > 0:
+                it.kwargs['stepsize'] = it.kwargs['stepsize'] * it.kwargs['decay_factor']
             else:
                 it.kwargs['stepsize'] = init_stepsize / (it.iteration + 1)
-            if args['verbose']:
-                res = plpy.execute("""
-                    SELECT
-                        (result).loss                   AS loss,
-                        (result).norm_of_gradient       AS norm_of_gradient
-                    FROM (
-                        SELECT {schema_madlib}.internal_linear_svm_igd_result(
-                            _state) AS result
-                        FROM {rel_state}
-                        WHERE _iteration = {iteration}) subq
-                    """.format(iteration=it.iteration,
-                               schema_madlib=schema_madlib,
-                               rel_state=it.kwargs['rel_state']))
-
-                loss = res[0]['loss']
-                normg = res[0]['norm_of_gradient']
-                epsilon = it.kwargs['epsilon']
-                stepsize = it.kwargs['stepsize']
-                iteration = it.iteration
-                plpy.notice("DEBUG: \
-                            iter = {iteration:5d}, \
-                            loss = {loss:.5e}, \
-                            |gradient| = {normg:.5e}, \
-                            stepsize = {stepsize:.5e}, \
-                            epsilon = {epsilon:.2e}".format(**locals()))
-
             has_converged = it.test(
                     """
                     {iteration} >= {max_iter}
@@ -166,7 +141,8 @@ def svm(schema_madlib, source_table, model_table,
         grouping_str1 = "" if not grouping_col else grouping_col + ","
         grouping_str2 = "1 = 1" if not grouping_col else grouping_col
 
-        args = {'rel_args': unique_string(),
+        args.update(
+                {'rel_args': unique_string(),
                 'rel_state': unique_string(),
                 'col_grp_iteration': unique_string(),
                 'col_grp_state': unique_string(),
@@ -175,9 +151,8 @@ def svm(schema_madlib, source_table, model_table,
                 'state_type': "double precision[]",
                 'rel_source': source_table,
                 'col_ind_var': independent_varname,
-                'col_dep_var': dependent_varname,
-                'mapped_value_for_negative': dep_var_mapping[0]
-                }
+                'col_dep_var': dependent_varname
+                })
         args.update(locals())
         # variables defined above cannot be moved below this line
         # -------------------------------------------------------
@@ -222,7 +197,6 @@ def svm(schema_madlib, source_table, model_table,
         n_iters_run = _compute_svm(args)
 
         # organizing results
-        args['mapping'] = dep_var_mapping[0] + "," + dep_var_mapping[1]
         groupby_str = "GROUP BY {grouping_col}, {col_grp_key}".format(**args) if grouping_col else ""
         using_str = "USING ({col_grp_key})".format(**args) if grouping_col else "ON TRUE"
         model_table_query = """
@@ -272,7 +246,7 @@ def svm(schema_madlib, source_table, model_table,
         plpy.execute("""
                 CREATE TABLE {summary_table} AS
                 SELECT
-                    'svm'::text                         AS method,
+                    '{method}'::text                    AS method,
                     '__MADLIB_VERSION__'::text          AS version_number,
                     '{source_table}'::text              AS source_table,
                     '{model_table}'::text               AS model_table,
@@ -397,7 +371,7 @@ def _extract_optim_params(schema_madlib, optim_params, module='SVM'):
     # NOTICE: the type of values in default_dict should be consistent with
     # the types specified in optim_params_types
     default_dict = dict(init_stepsize=0.01, decay_factor=0.9,
-                        max_iter=100, tolerance=1e-3)
+                        max_iter=100, tolerance=1e-10)
     optim_params_types = dict(init_stepsize=float, decay_factor=float,
                               max_iter=int, tolerance=float)
     optim_params_dict = extract_keyvalue_params(optim_params,
@@ -416,7 +390,7 @@ def _extract_optim_params(schema_madlib, optim_params, module='SVM'):
     return optim_params_dict
 
 
-def __extract_reg_params(schema_madlib, reg_params, module='SVM'):
+def _extract_reg_params(schema_madlib, reg_params, module='SVM'):
     default_dict = {'lambda': 1.0, 'norm': 'L2', 'n_folds': 0}
     reg_params_types_lambda_scalar = {'lambda': float, 'norm': str, 'n_folds': int}
     reg_params_types_lambda_list = {'lambda': list, 'norm': str, 'n_folds': int}
