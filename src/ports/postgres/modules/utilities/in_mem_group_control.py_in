@@ -9,6 +9,16 @@ from control import MinWarning
 from utilities import unique_string
 from collections import namedtuple
 
+def _flatten(l, no=False):
+    if no:
+        return l
+    if l is None or not l:
+        return []
+    if all(map(lambda x: x is None, l)):
+        return []
+    return [s for x in l for s in x]
+
+
 
 class GroupIterationController:
     """
@@ -64,16 +74,17 @@ class GroupIterationController:
 
 
     def _init_group_param(self):
-        _as_string = 'AS _grp'
         _grp_key = ("array_to_string(ARRAY[{grouping_str}], ',')"
                     .format(grouping_str=self.kwargs['grouping_str']))
-        _unnest_str = ("grp_key AS {col_grp_key},"
-                       "state AS {col_grp_state} " 
-                       "FROM {schema_madlib}._gen_state($1, NULL, $2)"
-                       "".format(**self.kwargs))
-        _n_tuples_unnest_str = ("unnest($3) AS {col_grp_key}, "
-                                "unnest($4) AS {col_n_tuples}"
-                                .format(**self.kwargs))
+        _select_rel_state = ("SELECT "
+                             "grp_key AS {col_grp_key},"
+                             "state AS {col_grp_state} " 
+                             "FROM {schema_madlib}._gen_state($1, NULL, $2)"
+                             .format(**self.kwargs))
+        _select_n_tuples = ("SELECT "
+                            "unnest($3) AS {col_grp_key}, "
+                            "unnest($4) AS {col_n_tuples}"
+                            .format(**self.kwargs))
         _using_str="ON TRUE"
         _grouped_state_type="float8[]"
         _groupby_str=""
@@ -82,21 +93,21 @@ class GroupIterationController:
                 **self.kwargs) 
             _using_str = "USING ({col_grp_key})".format(**self.kwargs) 
             _grp_key = self.kwargs['col_grp_key']
-            _as_string = ''
         if self.is_state_type_bytea8:
-            _unnest_str = "unnest($1) AS {col_grp_key}, unnest($2) AS {col_grp_state}".format(**self.kwargs)
+            _select_rel_state = ("SELECT "
+                                 "unnest($1) AS {col_grp_key}, "
+                                 "unnest($2) AS {col_grp_state}"
+                                 "".format(**self.kwargs))
             _grouped_state_type = "{schema_madlib}.bytea8[]".format(**self.kwargs)
         GroupParam = namedtuple('GroupParam', 
                                 'groupby_str, using_str,'
-                                'unnest_str,grouped_state_type,'
-                                'as_string, grp_key,'
-                                'n_tuples_unnest_str')
+                                'select_rel_state,grouped_state_type,'
+                                'grp_key, select_n_tuples')
         return GroupParam(groupby_str=_groupby_str, 
                           using_str=_using_str,
-                          unnest_str=_unnest_str,
-                          as_string=_as_string,
+                          select_rel_state=_select_rel_state,
                           grp_key=_grp_key,
-                          n_tuples_unnest_str=_n_tuples_unnest_str,
+                          select_n_tuples=_select_n_tuples,
                           grouped_state_type=_grouped_state_type)
 
 
@@ -145,11 +156,13 @@ class GroupIterationController:
 
             ############################
             # initialize states
-            ret_states = plpy.execute("SELECT * FROM " + self.kwargs['rel_state'])
+            rel_state_str = self.kwargs['rel_state']
+            col_grp_key = self.kwargs['col_grp_key']
+            col_n_tuples = self.kwargs['col_n_tuples']
+            ret_states = plpy.execute("SELECT * FROM " + rel_state_str)
             for state in ret_states:
-                self.new_states[state[self.kwargs['col_grp_key']]] = None
-                self.grp_to_n_tuples[state[self.kwargs['col_grp_key']]] = \
-                    long(state[self.kwargs['col_n_tuples']])
+                self.new_states[state[col_grp_key]] = None
+                self.grp_to_n_tuples[state[col_grp_key]] = long(state[col_n_tuples])
 
         self.in_with = True
         return self
@@ -158,13 +171,7 @@ class GroupIterationController:
         """ Logging intermediate state information """
         if not self.kwargs['verbose']:
             return
-        if self.is_state_type_bytea8:
-            unnest_str = "unnest($1) AS {col_grp_key}, unnest($2) AS {col_grp_state}".format(**self.kwargs)
-            grouped_state_type = "{schema_madlib}.bytea8[]".format(**self.kwargs)
-        else:
-            unnest_str = "grp_key AS {col_grp_key}, state AS {col_grp_state} FROM {schema_madlib}._gen_state($1, NULL, $2)".format(**self.kwargs)
-            grouped_state_type = "float8[]"
-
+        group_param = self.group_param
         plan = plpy.prepare(
             """
             SELECT 
@@ -176,11 +183,11 @@ class GroupIterationController:
                     {schema_madlib}.internal_linear_svm_igd_result({col_grp_state}) 
                     AS result,
                     {col_grp_key} 
-                FROM ( SELECT {unnest_str} ) AS _rel_state
+                FROM ( {select_rel_state} ) AS _rel_state
             ) subq
-            """.format(unnest_str=unnest_str,
+            """.format(select_rel_state=group_param.select_rel_state,
                        **self.kwargs),
-            ["text[]", grouped_state_type])
+            ["text[]", group_param.grouped_state_type])
 
         if self.is_state_type_bytea8:
             res_tuples = plpy.execute(plan, [self.new_states.keys(),
@@ -207,15 +214,7 @@ class GroupIterationController:
 
     def final(self):
         """ Store the final converged state to a table for output """
-        if self.is_state_type_bytea8:
-            unnest_str = "unnest($1) AS {col_grp_key}, unnest($2) AS {col_grp_state}".format(**self.kwargs)
-            grouped_state_type = "{0}.bytea8[]".format(self.kwargs['schema_madlib'])
-        else:
-            unnest_str = ("grp_key AS {col_grp_key}, state AS {col_grp_state} "
-                          "FROM {schema_madlib}._gen_state($1, NULL, $2)".
-                          format(**self.kwargs))
-            grouped_state_type = "float8[]"
-
+        group_param = self.group_param
         insert_sql = """
             INSERT INTO {rel_state}
             SELECT
@@ -228,21 +227,17 @@ class GroupIterationController:
                     SELECT {grouping_col}, {col_grp_key}
                     FROM {rel_state}
                 ) AS _src
-            JOIN (
-                    SELECT {unnest_str}
-                ) AS _rel_state
+            JOIN ( {select_rel_state} ) AS _rel_state
             USING ({col_grp_key})
-            JOIN (
-                    SELECT unnest($3) AS {col_grp_key},
-                           unnest($4) AS {col_n_tuples}
-                ) AS _rel_n_tuples
+            JOIN ( {select_n_tuples} ) AS _rel_n_tuples
             USING ({col_grp_key})
             """.format(
                 iteration=self.iteration,
-                unnest_str=unnest_str,
+                select_rel_state=group_param.select_rel_state,
+                select_n_tuples=group_param.select_n_tuples,
                 **self.kwargs)
         insert_plan = plpy.prepare(insert_sql,
-                                   ["text[]", grouped_state_type,
+                                   ["text[]", group_param.grouped_state_type,
                                     "text[]", "bigint[]"])
 
         if self.is_state_type_bytea8:
@@ -369,7 +364,7 @@ class GroupIterationController:
             """
             SELECT
                 {_grp_key} AS {col_grp_key},
-                {grouping_col} {as_string},
+                {grouping_col},
                 {iteration} AS {col_grp_iteration},
                 ({newState}) AS {col_grp_state}
             FROM (
@@ -378,14 +373,9 @@ class GroupIterationController:
                     array_to_string(ARRAY[{grouping_str}], ',') AS {col_grp_key}
                 FROM {rel_source}
             ) AS _src
-            JOIN (
-                SELECT {unnest_str}
-            ) AS {rel_state}
+            JOIN ( {select_rel_state} ) AS {rel_state}
             {using_str}
-            JOIN (
-                SELECT
-                    {n_tuples_unnest_str}
-            ) AS _rel_n_tuples
+            JOIN ( {select_n_tuples} ) AS _rel_n_tuples
             {using_str}
             {groupby_str}
             """.format(
@@ -393,10 +383,9 @@ class GroupIterationController:
                 iteration=self.iteration,
                 using_str=group_param.using_str,
                 groupby_str=group_param.groupby_str,
-                as_string=group_param.as_string,
                 _grp_key=group_param.grp_key,
-                unnest_str=group_param.unnest_str,
-                n_tuples_unnest_str=group_param.n_tuples_unnest_str,
+                select_rel_state=group_param.select_rel_state,
+                select_n_tuples=group_param.select_n_tuples,
                 **self.kwargs),
             ["text[]", group_param.grouped_state_type, "text[]", "integer[]"])
 
@@ -417,7 +406,6 @@ class GroupIterationController:
 
         # self.old_states = self.new_states
         self.old_states.update(self.new_states)
-        # self.new_states = {}
         col_grp_state = self.kwargs['col_grp_state']
         col_grp_key = self.kwargs['col_grp_key']
         for t in res_tuples:
