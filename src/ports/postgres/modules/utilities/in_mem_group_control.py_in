@@ -8,16 +8,147 @@ import plpy
 from control import MinWarning
 from utilities import unique_string
 from collections import namedtuple
+from collections import Iterable
 
-def _flatten(l, no=False):
-    if no:
-        return l
-    if l is None or not l:
-        return []
-    if all(map(lambda x: x is None, l)):
-        return []
-    return [s for x in l for s in x]
 
+class BaseState(object):
+    """@brief Abstraction for intermediate iteration state"""
+    def __init__(self, **kwargs):
+        self._state = {}
+        self._is_none = None
+        self._len = -1
+        self.initialize(**kwargs)
+
+    def __len__(self):
+        if self._len == -1:
+            self._len = len(self._state)
+        return self._len
+
+    def __del__(self):
+        del self._state
+        self._len = 0
+
+    def __getitem__(self, k):
+        return self._state[k]
+
+    def __setitem__(self, k, v):
+        self._state[k] = v
+
+    @property
+    def keys(self):
+        return self._state.keys()
+
+    @property
+    def values(self):
+        if self.is_none():
+            return []
+        return [s for x in self._state.values() for s in x]
+
+    def delete(self, keys_to_remove):
+        for k in keys_to_remove:
+            try:
+                del self._state[k]
+                self._len -= 1
+            except KeyError:
+                pass
+        self._is_none = None
+
+    def initialize(self, 
+                   col_grp_key='', 
+                   col_grp_state='', 
+                   ret_states=None, **kwargs):
+        self.update(col_grp_key, col_grp_state, ret_states)
+
+    def update(self, 
+               col_grp_key, 
+               col_grp_state, 
+               ret_states):
+        failed_grp_keys = []
+        if ret_states is None:
+            return failed_grp_keys
+        t0 = ret_states[0]
+        # no key column in table ret_states
+        if col_grp_key not in t0:
+            return failed_grp_keys
+        # initialize state to None
+        if col_grp_state == '':
+            self._is_none = True
+            for s in ret_states:
+                self._state[s[col_grp_key]] = None
+            return failed_grp_keys
+        for t in ret_states:
+            _grp_key, _grp_state = t[col_grp_key], t[col_grp_state]
+            if _grp_state is None: failed_grp_keys.append(_grp_key)
+            else: self._state[_grp_key] = _grp_state
+        # no need to update if all failed
+        if len(failed_grp_keys) < len(self):
+            self._is_none = False
+        return failed_grp_keys
+
+    # entries in self not in other are kept
+    def update_from_state(self, other, keys=None):
+        if not isinstance(other, BaseState):
+            return
+        if keys is None:
+            self._state.update(other._state)
+        else:
+            for k in keys:
+                self[k] = other[k]
+        # reset cache
+        self._len = -1
+        self._is_none = None  
+
+    def sync_from(self, other):
+        self._state = {}
+        self.update_from_state(other)
+        self._len = len(other)
+        self._is_none = other.is_none()
+
+    def is_none(self):
+        if self._is_none is None:
+            self._is_none = True
+            for k, v in self._state.iteritems():
+                if v is not None:
+                    self._is_none = False
+                    break
+        return self._is_none
+
+    def interpret(self, schema_madlib, state_type, keys=None):
+        if keys is None:
+            keys = self.keys
+        elif isinstance(keys, str) or not isinstance(keys, Iterable):
+            keys = [keys]
+        s = dict.fromkeys(keys)
+        plan = plpy.prepare(
+            """
+            SELECT 
+                (result).loss                   AS loss,
+                (result).norm_of_gradient       AS norm_of_gradient
+            FROM (
+                SELECT 
+                    {schema_madlib}.internal_linear_svm_igd_result($1) 
+                    AS result
+            ) subq
+            """.format(schema_madlib=schema_madlib), [state_type])
+        for k in keys:
+            s[k] = plpy.execute(plan, [self._state[k]])[0]
+        return s
+
+
+class Bytea8State(BaseState):
+    """@brief bytea8 type state"""
+    def __init__(self, **kwargs):
+        super(Bytea8State, self).__init__(**kwargs)
+
+    @property
+    def values(self):
+        return self._state.values()
+
+def state_factory(is_bytea8, **kwargs):
+    if is_bytea8:
+        return Bytea8State(**kwargs)
+    else:
+        return BaseState(**kwargs)
 
 
 class GroupIterationController:
@@ -56,9 +187,6 @@ class GroupIterationController:
                           else arg_dict["grouping_col"]),
             )
         self.grp_to_n_tuples = {}
-        self.new_states = {}
-        self.old_states = {}
-        self.finished_states = {}
         self.failed_grp_keys = []
 
         self.is_state_type_bytea8 = False
@@ -69,6 +197,10 @@ class GroupIterationController:
             self.is_state_type_bytea8 = False
         else:
             plpy.error("Internal error: unexpected state type!")
+
+        self.new_states = state_factory(self.is_state_type_bytea8)
+        self.old_states = state_factory(self.is_state_type_bytea8)
+        self.finished_states = state_factory(self.is_state_type_bytea8)
 
         self.group_param = self._init_group_param()
 
@@ -160,9 +292,11 @@ class GroupIterationController:
             col_grp_key = self.kwargs['col_grp_key']
             col_n_tuples = self.kwargs['col_n_tuples']
             ret_states = plpy.execute("SELECT * FROM " + rel_state_str)
-            for state in ret_states:
-                self.new_states[state[col_grp_key]] = None
-                self.grp_to_n_tuples[state[col_grp_key]] = long(state[col_n_tuples])
+            self.new_states.initialize(col_grp_key=col_grp_key,
+                                       col_grp_state='',
+                                       ret_states=ret_states)
+            for s in ret_states:
+                self.grp_to_n_tuples[s[col_grp_key]] = long(s[col_n_tuples])
 
         self.in_with = True
         return self
@@ -172,32 +306,11 @@ class GroupIterationController:
         if not self.kwargs['verbose']:
             return
         group_param = self.group_param
-        plan = plpy.prepare(
-            """
-            SELECT 
-                {col_grp_key}                   AS group,
-                (result).loss                   AS loss,
-                (result).norm_of_gradient       AS norm_of_gradient
-            FROM (
-                SELECT 
-                    {schema_madlib}.internal_linear_svm_igd_result({col_grp_state}) 
-                    AS result,
-                    {col_grp_key} 
-                FROM ( {select_rel_state} ) AS _rel_state
-            ) subq
-            """.format(select_rel_state=group_param.select_rel_state,
-                       **self.kwargs),
-            ["text[]", group_param.grouped_state_type])
-
-        if self.is_state_type_bytea8:
-            res_tuples = plpy.execute(plan, [self.new_states.keys(),
-                                            self.new_states.values()])
-        else:
-            flatten_agg_states = [c for state in self.new_states.values() for c in state]
-            res_tuples = plpy.execute(plan, [self.new_states.keys(),
-                                            flatten_agg_states])
-        for t in res_tuples:
-            grp, loss, normg = t['group'], t['loss'], t['norm_of_gradient']
+        schema_madlib = self.kwargs['schema_madlib']
+        res = self.new_states.interpret(schema_madlib,
+                                        group_param.grouped_state_type)
+        for grp, t in res.iteritems():
+            loss, normg = t['loss'], t['norm_of_gradient']
             iteration = self.iteration
             output_str = "DEBUG: \
                     grp = {grp:10s}, \
@@ -209,8 +322,6 @@ class GroupIterationController:
                         grp=grp, iteration=iteration,
                         loss=loss, normg=normg, 
                         **self.kwargs))
-
-
 
     def final(self):
         """ Store the final converged state to a table for output """
@@ -240,14 +351,8 @@ class GroupIterationController:
                                    ["text[]", group_param.grouped_state_type,
                                     "text[]", "bigint[]"])
 
-        if self.is_state_type_bytea8:
-            insert_values = self.finished_states.values()
-
-        else:
-            insert_values = [c for state in self.finished_states.values()
-                             for c in state]
-        plpy.execute(insert_plan, [self.finished_states.keys(),
-                                   insert_values,
+        plpy.execute(insert_plan, [self.finished_states.keys,
+                                   self.finished_states.values,
                                    self.grp_to_n_tuples.keys(),
                                    self.grp_to_n_tuples.values()])
         plpy.execute(insert_plan, [self.failed_grp_keys,
@@ -275,7 +380,7 @@ class GroupIterationController:
         @return True if \c expression in all non-failed groups is True,
                 otherwise False
         """
-        if not self.new_states:
+        if len(self.new_states) == 0:
             # self.new_states can become empty if the last of the groups failed
             # in the previous update
             return True
@@ -310,30 +415,17 @@ class GroupIterationController:
                        unnest_str_previous=unnest_str_previous, **self.kwargs),
             ["text[]", grouped_state_type] * 2)
 
-        if self.is_state_type_bytea8:
-            ret_tuples = plpy.execute(eval_plan,
-                                      [self.old_states.keys(),
-                                       self.old_states.values(),
-                                       self.new_states.keys(),
-                                       self.new_states.values()])
-        else:
-            if self.iteration == 1:
-                flatten_agg_states_old = []
-            else:
-                flatten_agg_states_old = [c for state in self.old_states.values() for c in state]
-            ret_tuples = plpy.execute(eval_plan,
-                                      [self.old_states.keys(),
-                                       flatten_agg_states_old,
-                                       self.new_states.keys(),
-                                       [c for state in self.new_states.values() for c in state]])
+        res = plpy.execute(eval_plan,
+                          [self.old_states.keys,
+                           self.old_states.values,
+                           self.new_states.keys,
+                           self.new_states.values])
 
-        self.old_states = {}
-        for t in ret_tuples:
-            if t['_expression']:
-                k = t[self.kwargs['col_grp_key']]
-                self.finished_states[k] = self.new_states[k]
-                del self.new_states[k]
-
+        col_grp_key = self.kwargs['col_grp_key']
+        if_finished = lambda t: t['_expression']
+        finished_keys = [t[col_grp_key] for t in filter(if_finished, res)]
+        self.finished_states.update_from_state(self.new_states, finished_keys)
+        self.new_states.delete(finished_keys)
         return len(self.new_states) == 0
 
     def update(self, newState, **updateKwargs):
@@ -389,26 +481,15 @@ class GroupIterationController:
                 **self.kwargs),
             ["text[]", group_param.grouped_state_type, "text[]", "integer[]"])
 
-        if self.is_state_type_bytea8:
-            res_tuples = plpy.execute(update_plan, [self.new_states.keys(),
-                                                    self.new_states.values(),
-                                                    self.grp_to_n_tuples.keys(),
-                                                    self.grp_to_n_tuples.values()])
-        else:
-            if self.iteration == 1:
-                flatten_agg_states = []
-            else:
-                flatten_agg_states = [c for state in self.new_states.values() for c in state]
-            res_tuples = plpy.execute(update_plan, [self.new_states.keys(),
-                                                    flatten_agg_states,
-                                                    self.grp_to_n_tuples.keys(),
-                                                    self.grp_to_n_tuples.values()])
+        res_tuples = plpy.execute(update_plan, [self.new_states.keys,
+                                                self.new_states.values,
+                                                self.grp_to_n_tuples.keys(),
+                                                self.grp_to_n_tuples.values()])
 
-        # self.old_states = self.new_states
-        self.old_states.update(self.new_states)
         col_grp_state = self.kwargs['col_grp_state']
         col_grp_key = self.kwargs['col_grp_key']
-        for t in res_tuples:
-            _grp_key, _grp_state = t[col_grp_key], t[col_grp_state]
-            if _grp_state is None: self.failed_grp_keys.append(_grp_key)
-            else: self.new_states[_grp_key] = _grp_state
+        self.old_states.sync_from(self.new_states)
+        self.failed_grp_keys.extend(self.new_states.update(
+                                    col_grp_key, 
+                                    col_grp_state, 
+                                    res_tuples))
