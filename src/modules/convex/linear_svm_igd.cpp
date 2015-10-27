@@ -149,9 +149,13 @@ linear_svm_igd_final::run(AnyType &args) {
     state.algo.loss += L1<GLMModel>::loss(state.task.model);
     L2<GLMModel>::gradient(state.task.model, state.algo.gradient);
     L1<GLMModel>::gradient(state.task.model, state.algo.gradient);
-    elog(NOTICE, "loss and |gradient|: %e, %e\n", (double) state.algo.loss, state.algo.gradient.norm());
+
     // finalizing
     LinearSVMIGDAlgorithm::final(state);
+    elog(NOTICE, "loss = %e, |gradient| = %e, |model| = %e\n",
+         (double) state.algo.loss,
+         state.algo.gradient.norm(),
+         state.task.model.norm());
 
     return state;
 }
