@@ -422,8 +422,8 @@ DROP TABLE IF EXISTS svm_test_predict CASCADE;
 SELECT svm_predict('svm_model_expression', 'svm_test_normalized', 'id', 'svm_test_predict');
 SELECT * FROM svm_test_predict;
 
-DROP TABLE IF EXISTS abalone_train_small;
-CREATE TABLE abalone_train_small (
+DROP TABLE IF EXISTS abalone_train_small_tmp;
+CREATE TABLE abalone_train_small_tmp (
     id SERIAL NOT NULL,
     sex TEXT,
     length DOUBLE PRECISION,
@@ -435,7 +435,7 @@ CREATE TABLE abalone_train_small (
     shell DOUBLE PRECISION,
     rings INTEGER);
 
-INSERT INTO abalone_train_small(id,sex,length,diameter,height,whole,shucked,viscera,shell,rings) VALUES
+INSERT INTO abalone_train_small_tmp(id,sex,length,diameter,height,whole,shucked,viscera,shell,rings) VALUES
 (1040,'F',0.66,0.475,0.18,1.3695,0.641,0.294,0.335,6),
 (3160,'F',0.34,0.255,0.085,0.204,0.097,0.021,0.05,6),
 (3984,'F',0.585,0.45,0.125,0.874,0.3545,0.2075,0.225,6),
@@ -536,30 +536,30 @@ INSERT INTO abalone_train_small(id,sex,length,diameter,height,whole,shucked,visc
 (831,'M',0.415,0.305,0.1,0.325,0.156,0.0505,0.091,6),
 (3359,'M',0.285,0.215,0.075,0.106,0.0415,0.023,0.035,5);
 
+DROP TABLE IF EXISTS abalone_train_small;
+CREATE TABLE abalone_train_small AS (
+    SELECT * FROM abalone_train_small_tmp
+    ORDER BY sex, id
+);
+
+DROP TABLE IF EXISTS abalone_train_small_tmp;
+SELECT * FROM abalone_train_small;
+
 DROP TABLE IF EXISTS abalone_train_f;
 CREATE TABLE abalone_train_f AS (
-    SELECT
-        *
-    FROM 
-        abalone_train_small
+    SELECT * FROM abalone_train_small
     WHERE sex = 'F'
 );
 
 DROP TABLE IF EXISTS abalone_train_i;
 CREATE TABLE abalone_train_i AS (
-    SELECT
-        *
-    FROM 
-        abalone_train_small
+    SELECT * FROM abalone_train_small
     WHERE sex = 'I'
 );
 
 DROP TABLE IF EXISTS abalone_train_m;
 CREATE TABLE abalone_train_m AS (
-    SELECT
-        *
-    FROM 
-        abalone_train_small
+    SELECT * FROM abalone_train_small
     WHERE sex = 'M'
 );
 
@@ -594,6 +594,8 @@ SELECT madlib.svm_regression(
         NULL,NULL,'sex', 
         'max_iter=50, init_stepsize=1, decay_factor=0.9, tolerance=1e-16, epsilon = 0.2', 
         false); 
+SELECT * FROM svr_mdl_i;
+
 DROP TABLE IF EXISTS svr_mdl_m, svr_mdl_m_summary; 
 SELECT madlib.svm_regression(
         'abalone_train_m',
@@ -603,6 +605,8 @@ SELECT madlib.svm_regression(
         NULL,NULL,'sex', 
         'max_iter=50, init_stepsize=1, decay_factor=0.9, tolerance=1e-16, epsilon = 0.05', 
         false); 
+SELECT * FROM svr_mdl_m;
+
 DROP TABLE IF EXISTS svr_mdl_f, svr_mdl_f_summary; 
 SELECT madlib.svm_regression(
         'abalone_train_f',
@@ -612,6 +616,7 @@ SELECT madlib.svm_regression(
         NULL,NULL,'sex', 
         'max_iter=50, init_stepsize=1, decay_factor=0.9, tolerance=1e-16, epsilon = 10', 
         false); 
+SELECT * FROM svr_mdl_f;
 
 -- solve it with grouping and table of epsilon as inputs
 
@@ -624,6 +629,7 @@ SELECT madlib.svm_regression(
         NULL,NULL,'sex', 
         'max_iter=50, init_stepsize=1, decay_factor=0.9, tolerance=1e-16, epsilon = 10, eps_table=abalone_eps', 
         false); 
+SELECT * FROM svr_mdl;
 
 -- verify that the results are the same 
 
@@ -653,20 +659,4 @@ FROM (
         abs(t1.norm_of_gradient - t2.norm_of_gradient) AS abs_err
     FROM svr_mdl_m AS t1 JOIN svr_mdl AS t2 USING (sex)
 ) AS q1;
-
-
-DROP TABLE IF EXISTS svr_mdl_i, svr_mdl_i_summary; 
-SELECT madlib.svm_regression(
-        'abalone_train_i',
-        'svr_mdl_i', 
-        'rings',
-        'ARRAY[1,diameter,shell,shucked,length]',
-        NULL,NULL,NULL, 
-        'max_iter=50, init_stepsize=1, decay_factor=0.9, tolerance=1e-16, epsilon = 0.2', 
-        false); 
-
-SELECT assert(
-    relative_error(t1.loss, t2.loss) < 1e-3,
-    'SVR with epsilon table input: Wrong results!')
-FROM svr_mdl_i AS t1, svr_mdl AS t2 where sex = 'I'
 
