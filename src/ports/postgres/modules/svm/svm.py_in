@@ -21,12 +21,6 @@ from utilities.validate_args import get_expr_type
 
 from validation.internal.cross_validation import CrossValidator
 
-from collections import namedtuple
-from functools import partial
-from operator import itemgetter
-from operator import attrgetter
-from itertools import product, repeat, imap
-
 
 def _compute_svm(args):
     """
@@ -139,12 +133,16 @@ def _verify_kernel(kernel_func):
 
 
 def _verify_params_dict(params_dict):
-    if hasattr(params_dict['lambda'], '__len__'):
-        plpy.error("SVM Error: lambda should not be a list "
-                   "after cross validation!")
-    if hasattr(params_dict['epsilon'], '__len__'):
-        plpy.error("SVM Error: epsilon should not be a list "
-                   "after cross validation!")
+    _assert(not hasattr(params_dict['lambda'], '__len__'),
+            "SVM Error: lambda should not be a list after cross validation!")
+    _assert(not hasattr(params_dict['epsilon'], '__len__'),
+            "SVM Error: epsilon should not be a list after cross validation!")
+    _assert(not hasattr(params_dict['init_stepsize'], '__len__'),
+            "SVM Error: init_stepsize should not be a list after cross validation!")
+    _assert(not hasattr(params_dict['decay_factor'], '__len__'),
+            "SVM Error: decay_factor should not be a list after cross validation!")
+    _assert(not hasattr(params_dict['max_iter'], '__len__'),
+            "SVM Error: max_iter should not be a list after cross validation!")
     return params_dict
 
 
@@ -272,7 +270,7 @@ def _cross_validate_svm(args):
     params_dict = args['params_dict']
 
     if params_dict['n_folds'] > 1 and args['grouping_col']:
-        plpy.error('SVM error: cross validation '
+        plpy.error('SVM Error: cross validation '
                    'with grouping is not supported!')
 
     # currently only support cross validation
@@ -348,6 +346,7 @@ def _svm_parsed_params(schema_madlib, source_table, model_table,
             'state_type': "double precision[]",
             'n_features': n_features,
             'verbose': verbose,
+            'is_svc': is_svc,
             'schema_madlib': schema_madlib,
             'grouping_str': grouping_str,
             'grouping_col': grouping_col,
@@ -364,7 +363,6 @@ def _svm_parsed_params(schema_madlib, source_table, model_table,
     # actual iterative algorithm computation
     n_iters_run = _compute_svm(args)
     _summary(n_iters_run, model_table, args)
->>>>>>> b105d1c... SVM: Add cross validation support and generic CrossValidator class
 
 
 def svm_predict(schema_madlib, model_table, new_data_table, id_col_name,
@@ -409,14 +407,14 @@ def svm_predict(schema_madlib, model_table, new_data_table, id_col_name,
 
         input_tbl_valid(new_data_table, 'SVM')
         _assert(is_var_valid(new_data_table, dependent_varname),
-                "SVM error: dependent_varname ('" + dependent_varname +
+                "SVM Error: dependent_varname ('" + dependent_varname +
                 "') is invalid for new_data_table (" + new_data_table + ")!")
         _assert(is_var_valid(new_data_table, independent_varname),
-                "SVM error: independent_varname ('" + independent_varname +
+                "SVM Error: independent_varname ('" + independent_varname +
                 "') is invalid for new_data_table (" + new_data_table + ")!")
-        _assert(id_col_name is not None, "SVM error: id_col_name is NULL!")
+        _assert(id_col_name is not None, "SVM Error: id_col_name is NULL!")
         _assert(is_var_valid(new_data_table, id_col_name),
-                "SVM error: id_col_name ('" + id_col_name +
+                "SVM Error: id_col_name ('" + id_col_name +
                 "') is invalid for new_data_table (" + new_data_table + ")!")
         output_tbl_valid(output_table, 'SVM')
         if method.upper() == 'SVC':
@@ -437,7 +435,7 @@ def svm_predict(schema_madlib, model_table, new_data_table, id_col_name,
                         """.format(schema_madlib=schema_madlib,
                                    independent_varname=independent_varname)
         else:
-            plpy.error("SVM error: Invalid 'method' value in summary table. "
+            plpy.error("SVM Error: Invalid 'method' value in summary table. "
                        "'method' can only be SVC or SVR!")
 
         if grouping_col != "NULL":
@@ -487,8 +485,9 @@ def _svc_or_svr(is_svc, source_table, dependent_varname):
 
         dep_var_mapping = ["'" + d['y'] + "'" if isinstance(d['y'], basestring) else str(d['y']) for d in dep_labels]
 
-        if len(dep_var_mapping) != 2:
-            plpy.error("SVM error: Classification currently only supports binary output")
+        _assert(len(dep_var_mapping) == 2,
+                "SVM Error: Classification currently "
+                "only supports binary output!")
 
         col_dep_var_trans = (
             """
@@ -516,30 +515,19 @@ def _process_epsilon(is_svc, args):
     grouping_str = args['grouping_str']
     col_grp_key = args['col_grp_key']
     rel_source = args['rel_source']
+    epsilon = args['epsilon']
     rel_epsilon = ''
-    select_epsilon = ''
+    select_epsilon = '{0}'.format(epsilon)
     as_rel_source = '_src'
 
-    epsilon = args['epsilon']
-    # c code does SVR when epsilon is non-zero
-    if is_svc:
-        epsilon = 0.0
-        select_epsilon = '{epsilon}'.format(epsilon=epsilon)
-    elif not grouping_col or not eps_table:
-        if eps_table:
-            plpy.warning('SVM warning: no grouping and '
-                         ' ignore the input epsilon table!')
-        # c code does SVC if epsilon is zero
-        if epsilon == 0: epsilon = 0.00001
-        select_epsilon = '{epsilon}'.format(epsilon=epsilon)
-    else:
-        # c code does SVC if epsilon is zero
-        if epsilon == 0: epsilon = 0.00001
+    if not is_svc and grouping_col and eps_table:
         rel_epsilon = unique_string(desp='rel_epsilon')
         input_tbl_valid(eps_table, 'SVM')
         _assert(is_var_valid(eps_table, grouping_col),
-                "SVM error: invalid column names ('" + str(grouping_col) +
-                "') for eps_table (" + eps_table + ")!")
+                "SVM Error: invalid column names ('{grouping_col}') "
+                "for eps_table ('{eps_table}')!"
+                .format(grouping_col=grouping_col,
+                        eps_table=eps_table))
         plpy.execute("""
             DROP TABLE IF EXISTS {rel_epsilon};
             CREATE TEMPORARY TABLE {rel_epsilon} AS (
@@ -623,40 +611,35 @@ def _extract_params(schema_madlib, params, module='SVM'):
                                           params_types,
                                           params_default)
     if params_vals['n_folds'] < 0:
-        plpy.error("{0} error: n_folds must be non-negative!".format(module))
+        plpy.error("{0} Error: n_folds must be non-negative!".format(module))
 
     # validate lambda
     params_vals['lambda'] = map(float, params_vals['lambda'])
-    if [lmd for lmd in params_vals['lambda'] if lmd < 0]:
-        plpy.error("{0} error: lambda must be "
-                   "non-negative!".format(module))
+    _assert(all(lmd >= 0 for lmd in params_vals['lambda']), 
+            "{0} Error: lambda must be non-negative!".format(module))
     # validate epsilon
     params_vals['epsilon'] = map(float, params_vals['epsilon'])
-    if [e for e in params_vals['epsilon'] if e < 0]:
-        plpy.error("{0} error: epsilon must be "
-                   "non-negative!".format(module))
+    _assert(all(e >= 0 for e in params_vals['epsilon']), 
+            "{0} Error: epsilon must be non-negative!".format(module))
     # validating cross validation is delegated to _cross_validate_svm()
     params_vals['init_stepsize'] = map(float, params_vals['init_stepsize'])
-    if [e for e in params_vals['init_stepsize'] if e < 0]:
-        plpy.error("{0} error: init_stepsize must be positive!".format(module))
-
+    _assert(all(e > 0 for e in params_vals['init_stepsize']),
+            "{0} Error: init_stepsize must be positive!".format(module))
     params_vals['max_iter'] = map(int, params_vals['max_iter'])
-    if [e for e in params_vals['max_iter'] if e < 0]:
-        plpy.error("{0} error: max_iter must be positive!".format(module))
-
+    _assert(all(e > 0 for e in params_vals['max_iter']), 
+            "{0} Error: max_iter must be positive!".format(module))
     params_vals['decay_factor'] = map(float, params_vals['decay_factor'])
-    if [e for e in params_vals['decay_factor'] if e > 1]:
-        plpy.error("{0} error: decay_factor must be <= 1!".format(module))
+    _assert(all(e <= 1 for e in params_vals['decay_factor']),
+            "{0} Error: decay_factor must be <= 1!".format(module))
 
     if params_vals['validation_result']:
         output_tbl_valid(params_vals['validation_result'], 'SVM')
 
     params_vals['norm'] = params_vals['norm'].lower()
-    if params_vals['norm'] != 'l1' and params_vals['norm'] != 'l2':
-        plpy.error("{0} error: norm must be either L1 or L2!".format(module))
-    if params_vals['tolerance'] < 0:
-        plpy.error("{0} error: tolerance must be non-negative!".format(module))
-
+    _assert(params_vals['norm'] == 'l1' or params_vals['norm'] == 'l2',
+            "{0} Error: norm must be either L1 or L2!".format(module))
+    _assert(params_vals['tolerance'] >= 0,
+            "{0} error: tolerance must be non-negative!".format(module))
 
     params_vals['is_l2'] = True if params_vals['norm'] == 'l2' else False
     return params_vals
