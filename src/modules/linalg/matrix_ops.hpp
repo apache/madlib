@@ -15,5 +15,7 @@ DECLARE_UDF(linalg, matrix_mem_sum_sfunc)
 
 DECLARE_UDF(linalg, rand_block)
 DECLARE_UDF(linalg, rand_vector)
+DECLARE_UDF(linalg, uniform_vector)
+DECLARE_UDF(linalg, normal_vector)
 DECLARE_SR_UDF(linalg, row_split)
 DECLARE_SR_UDF(linalg, unnest_block)

@@ -1,5 +1,4 @@
 /* ----------------------------------------------------------------------- *//**
- *
  * @file matrix_ops.cpp
  *
  * @date May 8, 2013
@@ -13,6 +12,11 @@
 #include <algorithm>
 #include <functional>
 #include <numeric>
+#include <boost/random/uniform_real.hpp>
+#include <boost/random/normal_distribution.hpp>
+#include <boost/random/variate_generator.hpp>
+#include <boost/generator_iterator.hpp>
+#include <boost/random/linear_congruential.hpp>
 #include "matrix_ops.hpp"
 
 namespace madlib {
@@ -25,7 +29,6 @@ using madlib::dbconnector::postgres::madlib_construct_md_array;
 
 // Use Eigen
 using namespace dbal::eigen_integration;
-
 
 typedef struct __type_info{
     Oid oid;
@@ -221,6 +224,52 @@ AnyType rand_vector::run(AnyType & args)
 
     for (int i = 0; i < dim; i++){
         *(r.ptr() + i) = (int)(drand48() * 1000);
+    }
+    return r;
+}
+
+AnyType normal_vector::run(AnyType & args)
+{
+    int dim = args[0].getAs<int>();
+    double mu = args[1].getAs<double>();
+    double sigma = args[2].getAs<double>();
+    int seed = args[3].getAs<int>();
+
+    if (dim < 1) {
+        throw std::invalid_argument("invalid argument - dim should be positive");
+    }
+    MutableArrayHandle<double> r =  madlib_construct_array(
+            NULL, dim, FLOAT8TI.oid, FLOAT8TI.len, FLOAT8TI.byval, FLOAT8TI.align);
+
+    boost::minstd_rand generator(seed);
+    boost::normal_distribution<> nd_dist(mu,sigma);
+    boost::variate_generator<boost::minstd_rand&, boost::normal_distribution<> > nd(generator, nd_dist);
+
+    for (int i = 0; i < dim; i++){
+        *(r.ptr() + i) = (double)nd();
+    }
+    return r;
+}
+
+AnyType uniform_vector::run(AnyType & args)
+{
+    int dim = args[0].getAs<int>();
+    double min_ = args[1].getAs<double>();
+    double max_ = args[2].getAs<double>();
+    int seed = args[3].getAs<int>();
+
+    if (dim < 1) {
+        throw std::invalid_argument("invalid argument - dim should be positive");
+    }
+    MutableArrayHandle<double> r =  madlib_construct_array(
+            NULL, dim, FLOAT8TI.oid, FLOAT8TI.len, FLOAT8TI.byval, FLOAT8TI.align);
+
+    boost::minstd_rand generator(seed);
+    boost::uniform_real<> uni_dist(min_,max_);
+    boost::variate_generator<boost::minstd_rand&, boost::uniform_real<> > uni(generator, uni_dist);
+
+    for (int i = 0; i < dim; i++){
+        *(r.ptr() + i) = (double)uni();
     }
     return r;
 }

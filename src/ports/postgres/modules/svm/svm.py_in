@@ -20,6 +20,8 @@ from utilities.validate_args import is_var_valid
 from utilities.validate_args import get_expr_type
 
 from validation.internal.cross_validation import CrossValidator
+from math import sqrt
+from math import pi
 
 
 def _compute_svm(args):
@@ -99,8 +101,8 @@ def _verify_grouping(schema_madlib, source_table, grouping_col):
         intersect = frozenset(
             _string_to_array(grouping_col)).intersection(
                 frozenset(
-                    ('coef', '__random_feature_data',
-                     '__random_feature_data', 'loss'
+                    ('coef', 'random_feature_data',
+                     'random_feature_data', 'loss'
                      'num_rows_processed', 'num_rows_skipped',
                      'norm_of_gradient', 'num_iterations')))
         _assert(len(intersect) == 0,
@@ -121,24 +123,6 @@ def _verify_grouping(schema_madlib, source_table, grouping_col):
     return grouping_str, grouping_col
 
 
-def _verify_kernel(kernel_func):
-    kernel_func = 'linear' if not kernel_func else kernel_func.lower()
-    # Add non-linear kernels below after implementing them.
-    supported_kernels = ['linear']
-    try:
-        # allow user to specify a prefix substring of
-        # supported kernel function names. This works because the supported
-        # kernel functions have unique prefixes.
-        kernel_func = next(x for x in supported_kernels
-                           if x.startswith(kernel_func))
-    except StopIteration:
-        # next() returns a StopIteration if no element found
-        plpy.error("SVM Error: Invalid kernel function: "
-                   "{0}. Supported kernel functions are ({1})"
-                   .format(kernel_func, ','.join(sorted(supported_kernels))))
-    return kernel_func
-
-
 def _verify_params_dict(params_dict):
     _assert(not hasattr(params_dict['lambda'], '__len__'),
             "SVM Error: lambda should not be a list after cross validation!")
@@ -155,11 +139,24 @@ def _verify_params_dict(params_dict):
     return params_dict
 
 
-def _build_output_tables(n_iters_run, model_table, args):
+def _build_output_tables(n_iters_run, model_table, args, transformer,**kwargs):
+    if transformer is None:
+        dependent_varname = args['col_dep_var']
+        independent_varname = args['col_ind_var']
+        source_table = args['rel_source']
+        transformer_str = "NULL"
+        kernel_func = "NULL"
+        kernel_params = "NULL"
+    else:
+        original_table = transformer.original_table
+        dependent_varname = original_table['dependent_varname']
+        independent_varname = original_table['independent_varname']
+        source_table = original_table['source_table']
+        transformer_str = transformer.saveAsText()
+        kernel_func = transformer.kernel_func
+        kernel_params = transformer.kernel_params
+
     grouping_col = args['grouping_col']
-    dependent_varname = args['col_dep_var']
-    independent_varname = args['col_ind_var']
-    source_table = args['rel_source']
     col_grp_key = args['col_grp_key']
     groupby_str, grouping_str1, using_str = "", "", "ON TRUE"
     if grouping_col:
@@ -180,7 +177,8 @@ def _build_output_tables(n_iters_run, model_table, args):
                 (result).num_rows_processed     AS num_rows_processed,
                 n_tuples_including_nulls - (result).num_rows_processed
                                                 AS num_rows_skipped,
-                NULL                            AS __random_feature_data,
+                '{transformer}'::text
+                                                AS random_feature_data,
                 ARRAY[{mapping}]::{dep_type}[]  AS dep_var_mapping
             FROM
             (
@@ -210,6 +208,7 @@ def _build_output_tables(n_iters_run, model_table, args):
                    using_str=using_str,
                    source_table=source_table,
                    model_table=model_table,
+                   transformer=transformer_str,
                    dep_type=dep_type, **args)
     plpy.execute(model_table_query)
 
@@ -225,8 +224,8 @@ def _build_output_tables(n_iters_run, model_table, args):
                 '{model_table}'::text               AS model_table,
                 '{dependent_varname}'::text         AS dependent_varname,
                 '{independent_varname}'::text       AS independent_varname,
-                'linear'::text                      AS kernel_func,
-                NULL::text                          AS kernel_params,
+                '{kernel_func}'::text               AS kernel_func,
+                '{kernel_params}'::text             AS kernel_params,
                 '{grouping_text}'::text             AS grouping_col,
                 'init_stepsize={init_stepsize}, '   ||
                     'decay_factor={decay_factor}, ' ||
@@ -246,6 +245,8 @@ def _build_output_tables(n_iters_run, model_table, args):
                        summary_table=summary_table,
                        source_table=source_table,
                        model_table=model_table,
+                       kernel_func=kernel_func,
+                       kernel_params=kernel_params,
                        dependent_varname=dependent_varname,
                        independent_varname=independent_varname,
                        **args))
@@ -265,8 +266,16 @@ def svm(schema_madlib, source_table, model_table,
                       model_table,
                       dependent_varname,
                       independent_varname)
+        grouping_str, grouping_col = _verify_grouping(schema_madlib,
+                              source_table, grouping_col)
+        kernel_func = _verify_kernel(kernel_func)
+        transformer = _random_feature_map(schema_madlib, source_table,
+                            dependent_varname, independent_varname,
+                            kernel_func, kernel_params, grouping_col)
+        params_dict = _extract_params(schema_madlib, params)
         args = locals()
-        args['params_dict'] = _extract_params(schema_madlib, params)
+        if transformer is not None:
+            args.update(transformer.transformed_table)
         _cross_validate_svm(args)
         _svm_parsed_params(**args)
 
@@ -316,27 +325,260 @@ def _cross_validate_svm(args):
 
     scorer = 'classification' if args['is_svc'] else 'regression'
     sub_args = {'params_dict': cv_params}
+    transformer = args.get('transformer', None)
+    # we want svm in cross validation to behave as if transformer is None
+    # if it is not, then svm_predict will transform the test data again,
+    # which will not be correct since test data in cross validation
+    # comes from training data which has already been transformed
+    args.update(dict(transformer=None))
     cv = CrossValidator(_svm_parsed_params, svm_predict, scorer, args)
     val_res = cv.validate(sub_args, params_dict['n_folds']).sorted()
     val_res.output_tbl(params_dict['validation_result'])
     params_dict.update(val_res.first('sub_args')['params_dict'])
+    args.update(dict(transformer=transformer))
 # ------------------------------------------------------------------------------
 
 
+class GaussianKernel(object):
+    """docstring for gaussianKernel"""
+    def __init__(self, gamma=1, n_components=100, random_state=1,
+                 random_weights=None, random_offset=None):
+        self.kernel_func = 'gaussian'
+        self.gamma = gamma
+        self.n_components = n_components
+        self.random_state = random_state
+        self.rd_weights = random_weights
+        self.rd_offset = random_offset
+        self.transformed_table = dict()
+        self.original_table = dict()
+        if self.rd_offset is not None:
+            self.n_components = num_features(self.rd_offset, 'val')
+
+    def saveAsText(self):
+        return ','.join([str(self.gamma), self.rd_weights, self.rd_offset])
+
+    @classmethod
+    def loadFromText(cls, text):
+        gamma, rd_weights, rd_offset = text.split(',')
+        return cls(gamma=float(gamma),
+                   random_weights=rd_weights,
+                   random_offset=rd_offset)
+
+    @property
+    def kernel_params(self):
+        return ('gamma={gamma}, n_components={n_components}'
+                .format(gamma=self.gamma,
+                        n_components=self.n_components))
+
+    def fit(self, schema_madlib, n_features, kernel_params=''):
+        params_default = {
+            'gamma': self.gamma,
+            'random_state': self.random_state,
+            'n_components': self.n_components}
+
+        params_types = {
+            'gamma': float,
+            'random_state': int,
+            'n_components': int}
+
+        params_vals = extract_keyvalue_params(kernel_params,
+                                   params_types, params_default)
+
+        self.gamma = params_vals['gamma']
+        self.n_components = params_vals['n_components']
+        self.random_state = params_vals['random_state']
+
+        self.rd_weights = unique_string(desp='random_weights')
+        self.rd_offset = unique_string(desp='random_offsets')
+
+        plpy.execute("""
+            drop table if exists {rd_weights};
+            select {schema_madlib}.matrix_random(
+                    'normal',{row_dim},{col_dim},
+                    'mu=0, sigma={sigma}, seed={random_state}',
+                    '{rd_weights}','row=id');
+        """.format(rd_weights=self.rd_weights,
+                   schema_madlib=schema_madlib,
+                   row_dim=n_features,
+                   col_dim=self.n_components,
+                   sigma=sqrt(2*self.gamma),
+                   random_state=self.random_state))
+
+        plpy.execute("""
+            drop table if exists {rd_offset};
+            select {schema_madlib}.matrix_random(
+                    'uniform',{row_dim},{col_dim},
+                    'min_a=0, max_b={max_b}, seed={random_state}',
+                    '{rd_offset}','row=id');
+        """.format(rd_offset=self.rd_offset,
+                   schema_madlib=schema_madlib,
+                   max_b=2*pi,
+                   row_dim=1,
+                   col_dim=self.n_components,
+                   random_state=self.random_state))
+
+    def clear_tables(self):
+        plpy.execute("drop table if exists {0};".format(self.rd_weights))
+        plpy.execute("drop table if exists {0};".format(self.rd_offset))
+
+    def transform(self, schema_madlib, source_table, independent_varname,
+                  dependent_varname=None, grouping_col=None, id_col=None,
+                  transformed_name='gaussian_transformed'):
+        if not self.rd_offset or not self.rd_weights:
+            return self
+
+        self.original_table = dict(source_table=source_table,
+                                   independent_varname=independent_varname,
+                                   dependent_varname=dependent_varname)
+
+        grouping_col = ("NULL::integer as grouping_col"
+                        if not grouping_col
+                        else "{0}").format(grouping_col)
+
+        dependent_varname = ("NULL::integer"
+                             if not dependent_varname
+                             else "{0}").format(dependent_varname)
+
+        id_col = ("NULL::integer as id_col"
+                  if not id_col
+                  else "{0}").format(id_col)
+
+        # copy data to the temporary table with id column
+        # id_col is different from index_col
+        # id_col is unique and, if any, is from the original table
+        # index_col is generated randomly
+        # needs to be sequential for madlib.matrix_mult to work
+        source_with_id = unique_string(desp='source_copied')
+        features_col = unique_string(desp='features_col')
+        target_col = unique_string(desp='target_col')
+        index_col = unique_string(desp='index_col')
+        run_sql = """
+            select setseed(0.5);
+            drop table if exists {source_with_id};
+            create temp table {source_with_id} as
+                select
+                    row_number() over (order by random()) as {index_col},
+                    {dependent_varname} as {target_col},
+                    {independent_varname} as {features_col},
+                    {id_col},
+                    {grouping_col}
+                from {source_table}
+        """.format(source_table=source_table,
+                   source_with_id=source_with_id,
+                   id_col=id_col,
+                   index_col=index_col,
+                   dependent_varname=dependent_varname,
+                   independent_varname=independent_varname,
+                   grouping_col=grouping_col,
+                   target_col=target_col, features_col=features_col)
+        plpy.execute(run_sql)
+        source_table = source_with_id
+        dependent_varname = target_col
+        independent_varname = features_col
+
+        temp_transformed = unique_string(desp='temp_transformed')
+        # X = X * weights
+        run_sql = """
+            drop table if exists {temp_transformed};
+            select {schema_madlib}.matrix_mult(
+                          '{source_table}',
+                          'row={index_col}, val={independent_varname}',
+                          '{rd_weights}',
+                          'row=id, val=val',
+                          '{temp_transformed}',
+                          'row={index_col}, val={independent_varname}');
+        """.format(temp_transformed=temp_transformed,
+                   schema_madlib=schema_madlib,
+                   source_table=source_table,
+                   rd_weights=self.rd_weights,
+                   index_col=index_col,
+                   independent_varname=independent_varname)
+        plpy.execute(run_sql)
+
+        transformed = unique_string(desp=transformed_name)
+
+        # X = a * cos (X + b)
+        multiplier = sqrt(2. / self.n_components)
+        run_sql = """
+            drop table if exists {transformed};
+            create temp table {transformed} as
+                select
+                    {index_col},
+                    {schema_madlib}.array_scalar_mult(
+                        {schema_madlib}.array_cos(
+                            q.{independent_varname}::float[])::float[],
+                        {multiplier}::float) as {independent_varname},
+                    {dependent_varname},
+                    {id_col},
+                    {grouping_col}
+                from (
+                    select
+                        x.{index_col},
+                        {schema_madlib}.array_add(
+                            x.{independent_varname}::float[],
+                            o.val::float[]) as {independent_varname}
+                    from {temp_transformed} as x cross join {rd_offset} as o
+                ) q join {source_table} s using ({index_col})
+        """.format(index_col=index_col,
+                   id_col=id_col,
+                   dependent_varname=dependent_varname,
+                   schema_madlib=schema_madlib,
+                   independent_varname=independent_varname,
+                   multiplier=multiplier,
+                   grouping_col=grouping_col,
+                   transformed=transformed,
+                   source_table=source_table,
+                   temp_transformed=temp_transformed,
+                   rd_offset=self.rd_offset)
+        plpy.execute(run_sql)
+        # clear table generated from matrix mult
+        plpy.execute("drop table {0};".format(temp_transformed))
+        self.transformed_table = dict(index_col=index_col,
+                                      source_table=transformed,
+                                      dependent_varname=dependent_varname,
+                                      independent_varname=independent_varname)
+        return self
+
+
+def _verify_kernel(kernel_func):
+    kernel_func = 'linear' if not kernel_func else kernel_func.lower()
+    # Add non-linear kernels below after implementing them.
+    supported_kernels = ['linear', 'gaussian']
+    try:
+        # allow user to specify a prefix substring of
+        # supported kernel function names. This works because the supported
+        # kernel functions have unique prefixes.
+        kernel_func = next(x for x in supported_kernels
+                           if x.startswith(kernel_func))
+    except StopIteration:
+        # next() returns a StopIteration if no element found
+        plpy.error("SVM Error: Invalid kernel function: "
+                   "{0}. Supported kernel functions are ({1})"
+                   .format(kernel_func, ','.join(sorted(supported_kernels))))
+    return kernel_func
+
+
+def _random_feature_map(schema_madlib, source_table, dependent_varname,
+                        independent_varname, kernel_func,
+                        kernel_params, grouping_col):
+    if kernel_func == 'linear':
+        return None
+    elif kernel_func == 'gaussian':
+        n_features = num_features(source_table, independent_varname)
+        transformer = GaussianKernel()
+        transformer.fit(schema_madlib, n_features, kernel_params)
+        return transformer.transform(schema_madlib, source_table,
+                    independent_varname, dependent_varname, grouping_col)
+
+
+
 def _svm_parsed_params(schema_madlib, source_table, model_table,
-                       dependent_varname, independent_varname, kernel_func,
-                       kernel_params, grouping_col, params_dict, is_svc,
+                       dependent_varname, independent_varname, transformer,
+                       grouping_str, grouping_col, params_dict, is_svc,
                        verbose, **kwargs):
     """
     Executes the linear support vector algorithm.
     """
-    grouping_str, grouping_col = _verify_grouping(schema_madlib,
-                                                  source_table,
-                                                  grouping_col)
-
-    kernel_func = _verify_kernel(kernel_func)
-
-    # arguments for iterating
     n_features = num_features(source_table, independent_varname)
 
     args = {
@@ -366,7 +608,8 @@ def _svm_parsed_params(schema_madlib, source_table, model_table,
                  .format(args['rel_args']))
     # actual iterative algorithm computation
     n_iters_run = _compute_svm(args)
-    _build_output_tables(n_iters_run, model_table, args)
+    _build_output_tables(n_iters_run, model_table,
+                         args, transformer, **kwargs)
 
 
 def svm_predict(schema_madlib, model_table, new_data_table, id_col_name,
@@ -411,6 +654,7 @@ def svm_predict(schema_madlib, model_table, new_data_table, id_col_name,
         kernel_func = summary['kernel_func']
         kernel_params = summary['kernel_params']
         grouping_col = summary['grouping_col']
+        grouping_col = None if grouping_col == 'NULL' else grouping_col
 
         input_tbl_valid(new_data_table, 'SVM')
         grouping_str, grouping_col = _verify_grouping(schema_madlib,
@@ -424,6 +668,22 @@ def svm_predict(schema_madlib, model_table, new_data_table, id_col_name,
                 "SVM Error: id_col_name ('" + id_col_name +
                 "') is invalid for new_data_table (" + new_data_table + ")!")
         output_tbl_valid(output_table, 'SVM')
+
+        if kernel_func == 'gaussian':
+            model = plpy.execute("""
+                        select random_feature_data from {0}
+                        """.format(model_table))[0]
+            transformer = GaussianKernel.loadFromText(
+                                model['random_feature_data'])
+            transformer.transform(schema_madlib, new_data_table,
+                                  independent_varname,
+                                  grouping_col=grouping_col,
+                                  id_col=id_col_name)
+            transformed_table = transformer.transformed_table
+            new_data_table = transformed_table['source_table']
+            independent_varname = transformed_table['independent_varname']
+            dependent_varname = transformed_table['dependent_varname']
+
         if method.upper() == 'SVC':
             pred_query = """
                         CASE WHEN {schema_madlib}.array_dot(
