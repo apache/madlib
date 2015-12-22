@@ -304,7 +304,24 @@ AnyType matrix_vec_mult_in_mem_1d::run(AnyType & args){
     return v;
 }
 
-AnyType rand_block::run(AnyType & args) {
+AnyType row_fold::run(AnyType & args){
+    MappedColumnVector vec = args[0].getAs<MappedColumnVector>();
+    MappedIntegerVector pat = args[1].getAs<MappedIntegerVector>();
+
+    if (vec.size() != pat.sum()) {
+        throw std::invalid_argument(
+            "dimensions mismatch: row_in.size() != pattern.sum()");
+    }
+
+    ColumnVector r(pat.size());
+    for (int i = 0, j = 0; i < pat.size(); j += pat[i++])
+        r[i] = vec.segment(j, pat[i]).prod();
+
+    return r;
+}
+
+AnyType rand_block::run(AnyType & args)
+{
     int row_dim = args[0].getAs<int>();
     int col_dim = args[1].getAs<int>();
     if (row_dim < 1 || col_dim < 1) {
