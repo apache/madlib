@@ -302,10 +302,6 @@ def elastic_net_train(schema_madlib, tbl_source, tbl_result, col_dep_var,
                    SELECT {schema_madlib}.elastic_net_train('gaussian');
                    for supported optimizers.
                    """.format(schema_madlib=schema_madlib))
-
-    #keep a seperate copy of source table
-    plpy.execute(""" DROP TABLE IF EXISTS eln_tmp""")
-    plpy.execute(""" CREATE TABLE eln_tmp AS SELECT * FROM {source}""".format(source=tbl_source))
     # handle all special cases of col_ind_var
     col_ind_var, outstr_array = analyze_input_str(schema_madlib, tbl_source,
                                                   col_ind_var, col_dep_var,
@@ -335,20 +331,12 @@ def elastic_net_train(schema_madlib, tbl_source, tbl_result, col_dep_var,
                 schema_madlib, tbl_source, col_ind_var, col_dep_var,
                 tbl_result, lambda_value, alpha, standardize,
                 optimizer_params, max_iter, tolerance, outstr_array, **kwargs)
-            #restore the original table
-            plpy.execute(""" DROP TABLE IF EXISTS {source} """.format(source=tbl_source))
-            plpy.execute(""" CREATE TABLE {source} AS SELECT * FROM eln_tmp""".format(source=tbl_source))
-            plpy.execute(""" DROP TABLE IF EXISTS eln_tmp """)
             return None
         if optimizer.lower() == "fista":
             __elastic_net_gaussian_fista_train(
                 schema_madlib, tbl_source, col_ind_var, col_dep_var,
                 tbl_result, lambda_value, alpha, standardize,
                 optimizer_params, max_iter, tolerance, outstr_array, **kwargs)
-            #restore the original table
-            plpy.execute(""" DROP TABLE IF EXISTS {source} """.format(source=tbl_source))
-            plpy.execute(""" CREATE TABLE {source} AS SELECT * FROM eln_tmp""".format(source=tbl_source))
-            plpy.execute(""" DROP TABLE IF EXISTS eln_tmp """)
             return None
         not_supported_opt = True
     elif regress_family.lower() in ("binomial", "logistic"):
@@ -358,10 +346,6 @@ def elastic_net_train(schema_madlib, tbl_source, tbl_result, col_dep_var,
                 schema_madlib, tbl_source, col_ind_var, col_dep_var,
                 tbl_result, lambda_value, alpha, standardize,
                 optimizer_params, max_iter, tolerance, outstr_array, **kwargs)
-            #restore the original table
-            plpy.execute(""" DROP TABLE IF EXISTS {source} """.format(source=tbl_source))
-            plpy.execute(""" CREATE TABLE {source} AS SELECT * FROM eln_tmp""".format(source=tbl_source))
-            plpy.execute(""" DROP TABLE IF EXISTS eln_tmp """)
             return None
 
         if optimizer.lower() == "fista":
@@ -370,19 +354,11 @@ def elastic_net_train(schema_madlib, tbl_source, tbl_result, col_dep_var,
                 schema_madlib, tbl_source, col_ind_var, col_dep_var,
                 tbl_result, lambda_value, alpha, standardize,
                 optimizer_params, max_iter, tolerance, outstr_array, **kwargs)
-            #restore the original table
-            plpy.execute(""" DROP TABLE IF EXISTS {source} """.format(source=tbl_source))
-            plpy.execute(""" CREATE TABLE {source} AS SELECT * FROM eln_tmp""".format(source=tbl_source))
-            plpy.execute(""" DROP TABLE IF EXISTS eln_tmp """)
             return None
         not_supported_opt = True
     else:
         not_supported_family = True
     if not_supported_family or not_supported_opt:
-        #restore the original table
-        plpy.execute(""" DROP TABLE IF EXISTS {source} """.format(source=tbl_source))
-        plpy.execute(""" CREATE TABLE {source} AS SELECT * FROM eln_tmp""".format(source=tbl_source))
-        plpy.execute(""" DROP TABLE IF EXISTS eln_tmp """)
         plpy.error("""
                Elastic Net error: Not a supported response family or supported optimizer of the given response family!
                Run:
@@ -449,16 +425,6 @@ def analyze_input_str(schema_madlib, tbl_source,
                            Elastic Net error: All columns to be included in the
                            independent variables should be of the numeric type.
                            """)
-            elif not all(i == included_col_types[0]
-                        for i in included_col_types):
-                ## cast every column to float if needed
-                for i in range(len(outstr_array)):
-
-                    if included_col_types[i] != "double precision" :
-                        plpy.execute(""" ALTER TABLE {table2a}
-                                        ALTER COLUMN {col2a} TYPE float8
-                                        """.format(table2a=tbl_source ,col2a=outstr_array[i]))
-
         col_ind_var_new = "ARRAY[" + ','.join(outstr_array) + "]"
         return (col_ind_var_new, outstr_array)
 
