@@ -12,7 +12,7 @@ from math import pi
 
 class GaussianKernelBase(object):
     """docstring for gaussianKernel"""
-    def __init__(self, gamma, n_components, random_state,
+    def __init__(self, schema_madlib, gamma, n_components, random_state,
                  random_weights, random_offset, id_col, val_col,
                  orig_data, **kwargs):
         self.kernel_func = 'gaussian'
@@ -33,6 +33,33 @@ class GaussianKernelBase(object):
         # store the original data table name if they are view
         # None if they are table
         self.orig_data = orig_data
+        self.schema_madlib = schema_madlib
+        if self.rd_offset is not None:
+            self.n_components = num_features(self.rd_offset, self.rd_val)
+
+    def _random_weights(self, row_dim, col_dim, rd_id, rd_val):
+        rd_weights = unique_string(desp='random_weights')
+        sigma = sqrt(2*self.gamma)
+        plpy.execute("""
+            drop table if exists {rd_weights};
+            select {self.schema_madlib}.matrix_random(
+                    'normal',{row_dim},{col_dim},
+                    'mu=0, sigma={sigma}, seed={self.random_state}',
+                    '{rd_weights}','row={rd_id}, val={rd_val}');
+        """.format(**locals()))
+        return rd_weights
+
+    def _random_offsets(self, row_dim, col_dim, rd_id, rd_val):
+        rd_offset = unique_string(desp='random_offsets')
+        max_b = 2*pi
+        plpy.execute("""
+            drop table if exists {rd_offset};
+            select {self.schema_madlib}.matrix_random(
+                    'uniform',{row_dim},{col_dim},
+                    'min_a=0, max_b={max_b}, seed={self.random_state}',
+                    '{rd_offset}','row={rd_id}, val={rd_val}');
+        """.format(**locals()))
+        return rd_offset
 
     def clear(self):
         data_type = 'view' if self.orig_data else 'table'
@@ -139,12 +166,8 @@ class GaussianKernel(GaussianKernelBase):
                  random_state=1, random_weights=None,
                  random_offset=None, id_col=None, val_col=None,
                  orig_data=None):
-        super(GaussianKernel, self).__init__(gamma, n_components, random_state,
-                                             random_weights, random_offset,
-                                             id_col, val_col, orig_data)
-        self.schema_madlib = schema_madlib
-        if self.rd_offset is not None:
-            self.n_components = num_features(self.rd_offset, self.rd_val)
+        params = locals(); params.pop('self')
+        super(GaussianKernel, self).__init__(**params)
 
     @property
     def kernel_params(self):
@@ -157,40 +180,12 @@ class GaussianKernel(GaussianKernelBase):
     def fit(self, n_features):
         self.clear()
         self.orig_data = None
-        self.rd_weights = unique_string(desp='random_weights')
-        self.rd_offset = unique_string(desp='random_offsets')
         self.rd_val = unique_string(desp='val')
         self.rd_id = unique_string(desp='id')
-
-        plpy.execute("""
-            drop table if exists {rd_weights};
-            select {schema_madlib}.matrix_random(
-                    'normal',{row_dim},{col_dim},
-                    'mu=0, sigma={sigma}, seed={random_state}',
-                    '{rd_weights}','row={rd_id}, val={rd_val}');
-        """.format(rd_weights=self.rd_weights,
-                   schema_madlib=self.schema_madlib,
-                   row_dim=n_features,
-                   col_dim=self.n_components,
-                   rd_id=self.rd_id,
-                   rd_val=self.rd_val,
-                   sigma=sqrt(2*self.gamma),
-                   random_state=self.random_state))
-
-        plpy.execute("""
-            drop table if exists {rd_offset};
-            select {schema_madlib}.matrix_random(
-                    'uniform',{row_dim},{col_dim},
-                    'min_a=0, max_b={max_b}, seed={random_state}',
-                    '{rd_offset}','row={rd_id}, val={rd_val}');
-        """.format(rd_offset=self.rd_offset,
-                   schema_madlib=self.schema_madlib,
-                   max_b=2*pi,
-                   row_dim=1,
-                   col_dim=self.n_components,
-                   rd_id=self.rd_id,
-                   rd_val=self.rd_val,
-                   random_state=self.random_state))
+        self.rd_weights = self._random_weights(n_features, self.n_components,
+                                               self.rd_id, self.rd_val)
+        self.rd_offset = self._random_offsets(1, self.n_components,
+                                              self.rd_id, self.rd_val)
         return self
 
     def transform(self, source_table, independent_varname,
@@ -205,19 +200,13 @@ class GaussianKernel(GaussianKernelBase):
 
         schema_madlib = self.schema_madlib
 
-        grouping_col = ("NULL::integer as {0}"
-                        .format(unique_string(desp='grouping_col'))
-                        if not grouping_col
-                        else "{0}".format(grouping_col))
+        _null_str = "NULL::integer"
+        _null_str_as = lambda s: _null_str + " as " + s if s else _null_str
+        _verify = lambda x, s: str(x) if x else _null_str_as(s)
 
-        dependent_varname = ("NULL::integer"
-                             if not dependent_varname
-                             else "{0}").format(dependent_varname)
-
-        id_col = ("NULL::integer as {0}"
-                  .format(unique_string(desp='id_col'))
-                  if not id_col
-                  else "{0}".format(id_col))
+        grouping_col = _verify(grouping_col, unique_string('grp_col'))
+        dependent_varname = _verify(dependent_varname, '')
+        id_col = _verify(id_col, unique_string('id_col'))
 
         # copy data to the temporary table with id column
         # id_col is different from index_col
@@ -239,14 +228,7 @@ class GaussianKernel(GaussianKernelBase):
                     {id_col},
                     {grouping_col}
                 from {source_table}
-        """.format(source_table=source_table,
-                   source_with_id=source_with_id,
-                   id_col=id_col,
-                   index_col=index_col,
-                   dependent_varname=dependent_varname,
-                   independent_varname=independent_varname,
-                   grouping_col=grouping_col,
-                   target_col=target_col, features_col=features_col)
+        """.format(**locals())
         plpy.execute(run_sql)
         source_table = source_with_id
         dependent_varname = target_col
@@ -259,21 +241,23 @@ class GaussianKernel(GaussianKernelBase):
             select {schema_madlib}.matrix_mult(
                           '{source_table}',
                           'row={index_col}, val={independent_varname}',
-                          '{rd_weights}',
-                          'row={rd_id}, val={rd_val}',
+                          '{self.rd_weights}',
+                          'row={self.rd_id}, val={self.rd_val}',
                           '{temp_transformed}',
                           'row={index_col}, val={independent_varname}');
-        """.format(temp_transformed=temp_transformed,
-                   schema_madlib=schema_madlib,
-                   source_table=source_table,
-                   rd_weights=self.rd_weights,
-                   rd_id=self.rd_id,
-                   rd_val=self.rd_val,
-                   index_col=index_col,
-                   independent_varname=independent_varname)
+        """.format(**locals())
         plpy.execute(run_sql)
 
         transformed = unique_string(desp=transformed_name)
+
+        # rd_offset is a vector of n_components elements
+        # which will fit in memory most of the time. Plus,
+        # putting rd_offset in memory makes broadcasting it to
+        # segments more efficiently
+        rd_offset_vals = plpy.execute("""
+                      select {rd_val} as val from {rd_offset}
+                      """.format(rd_val=self.rd_val,
+                                 rd_offset=self.rd_offset))[0]['val']
 
         # X = a * cos (X + b)
         multiplier = sqrt(2. / self.n_components)
@@ -294,22 +278,11 @@ class GaussianKernel(GaussianKernelBase):
                         x.{index_col},
                         {schema_madlib}.array_add(
                             x.{independent_varname}::float[],
-                            o.{val}::float[]) as {independent_varname}
-                    from {temp_transformed} as x cross join {rd_offset} as o
+                            $1) as {independent_varname}
+                    from {temp_transformed} as x
                 ) q join {source_table} s using ({index_col})
-        """.format(index_col=index_col,
-                   id_col=id_col,
-                   dependent_varname=dependent_varname,
-                   schema_madlib=schema_madlib,
-                   independent_varname=independent_varname,
-                   multiplier=multiplier,
-                   grouping_col=grouping_col,
-                   transformed=transformed,
-                   source_table=source_table,
-                   temp_transformed=temp_transformed,
-                   val=self.rd_val,
-                   rd_offset=self.rd_offset)
-        plpy.execute(run_sql)
+        """.format(**locals())
+        plpy.execute(plpy.prepare(run_sql, ['float[]']), [rd_offset_vals])
         # clear table generated from matrix mult
         plpy.execute("drop table {0};".format(temp_transformed))
         self.transformed_table = dict(index_col=index_col,
@@ -325,12 +298,8 @@ class GaussianKernelInMemory(GaussianKernelBase):
                  random_state=1, random_weights=None,
                  random_offset=None, id_col=None,
                  val_col=None, orig_data=None):
-        super(GaussianKernelInMemory, self).__init__(gamma, n_components,
-                    random_state, random_weights, random_offset,
-                    id_col, val_col, orig_data)
-        self.schema_madlib = schema_madlib
-        if self.rd_offset is not None:
-            self.n_components = num_features(self.rd_offset, self.rd_val)
+        params = locals(); params.pop('self')
+        super(GaussianKernelInMemory, self).__init__(**params)
 
     @property
     def kernel_params(self):
@@ -343,41 +312,12 @@ class GaussianKernelInMemory(GaussianKernelBase):
     def fit(self, n_features):
         self.clear()
         self.orig_data = None
-        self.rd_weights = unique_string(desp='random_weights')
-        self.rd_offset = unique_string(desp='random_offsets')
         self.rd_val = unique_string(desp='val')
         self.rd_id = unique_string(desp='id')
-
-        plpy.execute("""
-            drop table if exists {rd_weights};
-            select {schema_madlib}.matrix_random(
-                    'normal',{row_dim},{col_dim},
-                    'mu=0, sigma={sigma}, seed={random_state}',
-                    '{rd_weights}','row={rd_id}, val={rd_val}');
-        """.format(rd_weights=self.rd_weights,
-                   schema_madlib=self.schema_madlib,
-                   row_dim=1,
-                   col_dim=self.n_components*n_features,
-                   rd_id=self.rd_id,
-                   rd_val=self.rd_val,
-                   sigma=sqrt(2*self.gamma),
-                   random_state=self.random_state))
-
-        plpy.execute("""
-            drop table if exists {rd_offset};
-            select {schema_madlib}.matrix_random(
-                    'uniform',{row_dim},{col_dim},
-                    'min_a=0, max_b={max_b}, seed={random_state}',
-                    '{rd_offset}','row={rd_id}, val={rd_val}');
-        """.format(rd_offset=self.rd_offset,
-                   schema_madlib=self.schema_madlib,
-                   max_b=2*pi,
-                   row_dim=1,
-                   col_dim=self.n_components,
-                   rd_id=self.rd_id,
-                   rd_val=self.rd_val,
-                   random_state=self.random_state))
-
+        self.rd_weights = self._random_weights(1, n_features*self.n_components,
+                                               self.rd_id, self.rd_val)
+        self.rd_offset = self._random_offsets(1, self.n_components,
+                                              self.rd_id, self.rd_val)
         return self
 
     def transform(self, source_table, independent_varname,
@@ -392,25 +332,19 @@ class GaussianKernelInMemory(GaussianKernelBase):
 
         schema_madlib = self.schema_madlib
 
-        grouping_col = ("NULL::integer as {0}"
-                        .format(unique_string(desp='grouping_col'))
-                        if not grouping_col
-                        else "{0}".format(grouping_col))
+        _null_str = "NULL::integer"
+        _null_str_as = lambda s: _null_str + " as " + s if s else _null_str
+        _verify = lambda x, s: str(x) if x else _null_str_as(s)
 
-        dependent_varname = ("NULL::integer"
-                             if not dependent_varname
-                             else "{0}").format(dependent_varname)
-
-        id_col = ("NULL::integer as {0}"
-                  .format(unique_string(desp='id_col'))
-                  if not id_col
-                  else "{0}".format(id_col))
+        grouping_col = _verify(grouping_col, unique_string('grp_col'))
+        dependent_varname = _verify(dependent_varname, '')
+        id_col = _verify(id_col, unique_string('id_col'))
 
         features_col = unique_string(desp='features_col')
         target_col = unique_string(desp='target_col')
         transformed = unique_string(desp=transformed_name)
 
-        # X = a * cos (X*C + b)
+        # X <- a * cos (X*C + b)
         multiplier = sqrt(2. / self.n_components)
         run_sql = """
             drop table if exists {transformed};
@@ -419,11 +353,11 @@ class GaussianKernelInMemory(GaussianKernelBase):
                     {schema_madlib}.array_scalar_mult(
                         {schema_madlib}.array_cos(
                             {schema_madlib}.array_add(
-                                {schema_madlib}.__array_mdot(
+                                {schema_madlib}.__matrix_vec_mult_in_mem(
                                     q.{features_col}::float[],
-                                    rw.{val}::float[]
+                                    rw.{self.rd_val}::float[]
                                 )::float[],
-                                ro.{val}::float[]
+                                ro.{self.rd_val}::float[]
                             )::float[]
                         )::float[],
                         {multiplier}::float
@@ -438,21 +372,10 @@ class GaussianKernelInMemory(GaussianKernelBase):
                         {id_col},
                         {grouping_col}
                     from {source_table}
-                ) q cross join (select {val} from {rd_weights}) as rw
-                    cross join (select {val} from {rd_offset}) as ro
-        """.format(id_col=id_col,
-                   val=self.rd_val,
-                   dependent_varname=dependent_varname,
-                   schema_madlib=schema_madlib,
-                   independent_varname=independent_varname,
-                   features_col=features_col,
-                   target_col=target_col,
-                   multiplier=multiplier,
-                   grouping_col=grouping_col,
-                   transformed=transformed,
-                   source_table=source_table,
-                   rd_weights=self.rd_weights,
-                   rd_offset=self.rd_offset)
+                ) q
+                cross join (select {self.rd_val} from {self.rd_weights}) as rw
+                cross join (select {self.rd_val} from {self.rd_offset}) as ro
+        """.format(**locals())
         plpy.execute(run_sql)
         self.transformed_table = dict(source_table=transformed,
                                       dependent_varname=target_col,

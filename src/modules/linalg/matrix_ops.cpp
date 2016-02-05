@@ -274,6 +274,41 @@ AnyType uniform_vector::run(AnyType & args)
     return r;
 }
 
+AnyType matrix_vec_mult_in_mem_2d::run(AnyType & args){
+    MappedColumnVector vec = args[0].getAs<MappedColumnVector>();
+    MappedMatrix mat = args[1].getAs<MappedMatrix>();
+
+    // Note mat is constructed in the column-first order
+    // which means that mat is actually transposed
+    if(vec.size() != mat.cols()){
+        throw std::invalid_argument(
+            "dimensions mismatch: vec.size() != matrix.rows()");
+    };
+
+    // trans(vec) * trans(mat) = mat * vec
+    Matrix r = mat * vec;
+    ColumnVector v = r.col(0);
+    return v;
+}
+
+AnyType matrix_vec_mult_in_mem_1d::run(AnyType & args){
+    MappedColumnVector vec1 = args[0].getAs<MappedColumnVector>();
+    // matrix stored as a 1-d array
+    MappedColumnVector vec2 = args[1].getAs<MappedColumnVector>();
+
+    if(vec2.size() % vec1.size() != 0){
+        throw std::invalid_argument(
+            "dimensions mismatch: matrix.size() is not multiples of vec.size()");
+    };
+
+    MappedMatrix mat;
+    // the rebinding happens in column-major
+    mat.rebind(vec2.memoryHandle(), vec1.size(), vec2.size()/vec1.size());
+    Matrix r = trans(mat) * vec1;
+    ColumnVector v = r.col(0);
+    return v;
+}
+
 AnyType rand_block::run(AnyType & args)
 {
     int row_dim = args[0].getAs<int>();
