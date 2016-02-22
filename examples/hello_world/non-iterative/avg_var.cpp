@@ -39,7 +39,10 @@ class AvgVarTransitionState {
     template <class OtherHandle>
     friend class AvgVarTransitionState;
 
+<<<<<<< HEAD
     public:
+=======
+>>>>>>> 87fb0ce2f4c00a77f9d5632c2cecc774c3a2de3e
     AvgVarTransitionState(const AnyType &inArray)
         : mStorage(inArray.getAs<Handle>()) {
 
