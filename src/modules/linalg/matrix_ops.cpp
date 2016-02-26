@@ -14,6 +14,7 @@
 #include <numeric>
 #include <boost/random/uniform_real.hpp>
 #include <boost/random/normal_distribution.hpp>
+#include <boost/random/bernoulli_distribution.hpp>
 #include <boost/random/variate_generator.hpp>
 #include <boost/generator_iterator.hpp>
 #include <boost/random/linear_congruential.hpp>
@@ -249,6 +250,32 @@ AnyType normal_vector::run(AnyType & args)
     return r;
 }
 
+AnyType bernoulli_vector::run(AnyType & args)
+{
+    int dim = args[0].getAs<int>();
+    double pos_val = args[1].getAs<double>();
+    double neg_val = args[2].getAs<double>();
+    double p = args[3].getAs<double>();
+    int seed = args[4].getAs<int>();
+
+    if (dim < 1) {
+        throw std::invalid_argument("invalid argument - dim should be positive");
+    }
+    if (p > 1 || p < 0) {
+        throw std::invalid_argument("invalid argument - probability should be in [0,1]");
+    }
+
+    ColumnVector r(dim);
+    boost::minstd_rand generator(seed);
+    boost::bernoulli_distribution<> bn_dist(p);
+    boost::variate_generator<boost::minstd_rand&, boost::bernoulli_distribution<> > bn(generator, bn_dist);
+
+    for (int i = 0; i < dim; i++) {
+        r(i) = bn() ? pos_val : neg_val;
+    }
+    return r;
+}
+
 AnyType uniform_vector::run(AnyType & args)
 {
     int dim = args[0].getAs<int>();
@@ -304,7 +331,24 @@ AnyType matrix_vec_mult_in_mem_1d::run(AnyType & args){
     return v;
 }
 
-AnyType rand_block::run(AnyType & args) {
+AnyType row_fold::run(AnyType & args){
+    MappedColumnVector vec = args[0].getAs<MappedColumnVector>();
+    MappedIntegerVector pat = args[1].getAs<MappedIntegerVector>();
+
+    if (vec.size() != pat.sum()) {
+        throw std::invalid_argument(
+            "dimensions mismatch: row_in.size() != pattern.sum()");
+    }
+
+    ColumnVector r(pat.size());
+    for (int i = 0, j = 0; i < pat.size(); j += pat[i++])
+        r[i] = vec.segment(j, pat[i]).prod();
+
+    return r;
+}
+
+AnyType rand_block::run(AnyType & args)
+{
     int row_dim = args[0].getAs<int>();
     int col_dim = args[1].getAs<int>();
     if (row_dim < 1 || col_dim < 1) {

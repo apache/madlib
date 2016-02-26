@@ -3100,8 +3100,8 @@ def matrix_random(schema_madlib, distribution, row_dim, col_dim,
     out_args = parse_matrix_args(
         out_args, in_default_args={'row': 'row', 'col': 'col', 'val': 'val'})
 
+    supported_dist = ['uniform', 'normal', 'bernoulli']
     if distribution:
-        supported_dist = ['uniform', 'normal']
         try:
             distribution = next(x for x in supported_dist
                                 if x.startswith(distribution))
@@ -3113,39 +3113,49 @@ def matrix_random(schema_madlib, distribution, row_dim, col_dim,
     else:
         distribution = 'uniform'
 
-    in_args_default = {
-        'seed': randint(1, 1000),
-        'mu': 0,
-        'sigma': 1,
-        'min': 0,
-        'max': 1}
-
-    in_args_types = {
-        'seed': int,
-        'mu': float,
-        'sigma': float,
-        'min': float,
-        'max': float}
-
-    in_args_vals = extract_keyvalue_params(in_args, in_args_types, in_args_default)
-
+    in_args_default = {'seed': randint(0, 1000), 'table_type': ''}
+    in_args_types = {'seed': int, 'table_type': str}
     if distribution == 'normal':
+        in_args_default.update({'mu': 0, 'sigma': 1})
+        in_args_types.update({'mu': float, 'sigma': float})
+        in_args_vals = extract_keyvalue_params(in_args, in_args_types, in_args_default)
+
         random_row = ("""{schema_madlib}.__normal_vector(
                                {col_dim},
                                {in_args_vals[mu]},
                                {in_args_vals[sigma]},
                                {in_args_vals[seed]} + row)
                       """.format(**locals()))
-    else:
+    elif distribution == 'bernoulli':
+        in_args_default.update({'pos_val': 1., 'neg_val': 0., 'prob': 0.5})
+        in_args_types.update({'pos_val': float, 'neg_val': float, 'prob': float})
+        in_args_vals = extract_keyvalue_params(in_args, in_args_types, in_args_default)
+
+        random_row = ("""{schema_madlib}.__bernoulli_vector(
+                               {col_dim},
+                               {in_args_vals[pos_val]},
+                               {in_args_vals[neg_val]},
+                               {in_args_vals[prob]},
+                               {in_args_vals[seed]} + row)
+                      """.format(**locals()))
+    elif distribution == 'uniform':
+        in_args_default.update({'min': 0, 'max': 1})
+        in_args_types.update({'min': float, 'max': float})
+        in_args_vals = extract_keyvalue_params(in_args, in_args_types, in_args_default)
+
         random_row = ("""{schema_madlib}.__uniform_vector(
                                {col_dim},
                                {in_args_vals[min]},
                                {in_args_vals[max]},
                                {in_args_vals[seed]} + row)
                       """.format(**locals()))
+    else:
+        plpy.error("Matrix Error: Invalid distribution: "
+                   "{0}. Supported distributions: ({1})"
+                   .format(distribution, ', '.join(sorted(supported_dist))))
 
     plpy.execute("""
-        CREATE TABLE {matrix_out}
+        CREATE {in_args_vals[table_type]} TABLE {matrix_out}
         m4_ifdef(`__POSTGRESQL__', `',
            `WITH (APPENDONLY=TRUE,COMPRESSTYPE=QUICKLZ)') AS
             SELECT
