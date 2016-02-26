@@ -14,6 +14,7 @@
 #include <numeric>
 #include <boost/random/uniform_real.hpp>
 #include <boost/random/normal_distribution.hpp>
+#include <boost/random/bernoulli_distribution.hpp>
 #include <boost/random/variate_generator.hpp>
 #include <boost/generator_iterator.hpp>
 #include <boost/random/linear_congruential.hpp>
@@ -245,6 +246,32 @@ AnyType normal_vector::run(AnyType & args)
 
     for (int i = 0; i < dim; i++){
         r(i) = (double)nd();
+    }
+    return r;
+}
+
+AnyType bernoulli_vector::run(AnyType & args)
+{
+    int dim = args[0].getAs<int>();
+    double pos_val = args[1].getAs<double>();
+    double neg_val = args[2].getAs<double>();
+    double p = args[3].getAs<double>();
+    int seed = args[4].getAs<int>();
+
+    if (dim < 1) {
+        throw std::invalid_argument("invalid argument - dim should be positive");
+    }
+    if (p > 1 || p < 0) {
+        throw std::invalid_argument("invalid argument - probability should be in [0,1]");
+    }
+
+    ColumnVector r(dim);
+    boost::minstd_rand generator(seed);
+    boost::bernoulli_distribution<> bn_dist(p);
+    boost::variate_generator<boost::minstd_rand&, boost::bernoulli_distribution<> > bn(generator, bn_dist);
+
+    for (int i = 0; i < dim; i++) {
+        r(i) = bn() ? pos_val : neg_val;
     }
     return r;
 }

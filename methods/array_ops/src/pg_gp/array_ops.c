@@ -62,8 +62,6 @@ static inline Datum average_finalize(Datum elt,int size,Oid element_type);
 static inline Datum average_root_finalize(Datum elt,int size,Oid element_type);
 static inline Datum value_index_finalize(void *mid_result,int size,Oid element_type);
 
-static inline Datum element_thresholding(Datum element, Oid elt_type, Datum result,
-        Oid result_type, Datum opt_elt, Oid opt_type);
 static inline Datum element_cos(Datum element, Oid elt_type, Datum result,
         Oid result_type, Datum opt_elt, Oid opt_type);
 static inline Datum element_add(Datum element, Oid elt_type, Datum result,
@@ -114,7 +112,6 @@ static inline Datum element_op(Datum element, Oid elt_type, Datum result,
         Oid result_type, Datum opt_elt, Oid opt_type,
         float8 (*op)(float8, float8, float8));
 
-static inline float8 float8_thresholding(float8 op1, float8 op2, float8 opt_op);
 static inline float8 float8_cos(float8 op1, float8 op2, float8 opt_op);
 static inline float8 float8_add(float8 op1, float8 op2, float8 opt_op);
 static inline float8 float8_sub(float8 op1, float8 op2, float8 opt_op);
@@ -137,17 +134,6 @@ static inline float8 float8_sum_sqr(float8 op1, float8 op2, float8 opt_op);
 /*
  * Implementation of operations on float8 type
  */
-static
-inline
-float8
-float8_thresholding(float8 op1, float8 op2, float8 opt_op){
-    (void) op2;
-    if (op1 < opt_op)
-        return -1.0;
-    else
-        return 1.0;
-}
-
 static
 inline
 float8
@@ -875,25 +861,6 @@ array_cos(PG_FUNCTION_ARGS){
 }
 
 /*
- * This function apply thresholding to each element
- */
-PG_FUNCTION_INFO_V1(array_thresholding);
-Datum
-array_thresholding(PG_FUNCTION_ARGS){
-    if (PG_ARGISNULL(0)) { PG_RETURN_NULL(); }
-    if (PG_ARGISNULL(1)) { PG_RETURN_NULL(); }
-
-    ArrayType *v1 = PG_GETARG_ARRAYTYPE_P(0);
-    Datum v2 = PG_GETARG_DATUM(1);
-
-    ArrayType *res = General_Array_to_Array(v1, v2, element_thresholding);
-
-    PG_FREE_IF_COPY(v1, 0);
-
-    PG_RETURN_ARRAYTYPE_P(res);
-}
-
-/*
  * This function multiplies the specified value to each element.
  */
 PG_FUNCTION_INFO_V1(array_scalar_mult);
@@ -1406,17 +1373,6 @@ Datum
 element_set(Datum element, Oid elt_type, Datum result,
         Oid result_type, Datum opt_elt, Oid opt_type){
     return element_op(element, elt_type, result, result_type, opt_elt, opt_type, float8_set);
-}
-
-/*
- * Assign result to be -1 or 1.
- */
-static
-inline
-Datum
-element_thresholding(Datum element, Oid elt_type, Datum result,
-            Oid result_type, Datum opt_elt, Oid opt_type){
-    return element_op(element, elt_type, result, result_type, opt_elt, opt_type, float8_thresholding);
 }
 
 /*
