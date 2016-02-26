@@ -702,14 +702,8 @@ array_sub(PG_FUNCTION_ARGS){
 PG_FUNCTION_INFO_V1(array_mult);
 Datum
 array_mult(PG_FUNCTION_ARGS){
-    if (PG_ARGISNULL(0) && PG_ARGISNULL(1)) { PG_RETURN_NULL(); }
-    // if (PG_ARGISNULL(1)) { PG_RETURN_NULL(); }
-    if (PG_ARGISNULL(0)) {
-        PG_RETURN_ARRAYTYPE_P(PG_GETARG_ARRAYTYPE_P(1));
-    }
-    if (PG_ARGISNULL(1)) {
-        PG_RETURN_ARRAYTYPE_P(PG_GETARG_ARRAYTYPE_P(0));
-    }
+    if (PG_ARGISNULL(0)) { PG_RETURN_NULL(); }
+    if (PG_ARGISNULL(1)) { PG_RETURN_NULL(); }
 
     ArrayType *v1 = PG_GETARG_ARRAYTYPE_P(0);
     ArrayType *v2 = PG_GETARG_ARRAYTYPE_P(1);
