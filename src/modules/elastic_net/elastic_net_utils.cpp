@@ -15,13 +15,29 @@ using namespace madlib::dbal::eigen_integration;
  */
 AnyType __elastic_net_gaussian_predict::run (AnyType& args)
 {
+    // throws an exception if the coefficients contain NULL values
+    try {
+        args[0].getAs<MappedColumnVector>();
+    } catch(const ArrayWithNullException &e) {
+        throw std::runtime_error(
+            "Elastic Net error: the coefficients contain NULL values");
+    }
+    // returns NULL if the feature has NULL values
+    try {
+        args[2].getAs<MappedColumnVector>();
+    } catch(const ArrayWithNullException &e) {
+        return Null();
+    }
+
     MappedColumnVector coef = args[0].getAs<MappedColumnVector>();
-    double intercept = args[1].getAs<double>();
     MappedColumnVector x = args[2].getAs<MappedColumnVector>();
+    double intercept = args[1].getAs<double>();
 
     double predict = intercept + sparse_dot(coef, x);
     return predict;
 }
+
+
 
 // ------------------------------------------------------------------------
 
@@ -30,6 +46,20 @@ AnyType __elastic_net_gaussian_predict::run (AnyType& args)
 */
 AnyType __elastic_net_binomial_predict::run (AnyType& args)
 {
+    // throws an exception if the coefficients contain NULL values
+    try {
+        args[0].getAs<MappedColumnVector>();
+    } catch(const ArrayWithNullException &e) {
+        throw std::runtime_error(
+            "Elastic Net error: the coefficients contain NULL values");
+    }
+    // returns NULL if the feature has NULL values
+    try {
+        args[2].getAs<MappedColumnVector>();
+    } catch(const ArrayWithNullException &e) {
+        return Null();
+    }
+
     MappedColumnVector coef = args[0].getAs<MappedColumnVector>();
     double intercept = args[1].getAs<double>();
     MappedColumnVector x = args[2].getAs<MappedColumnVector>();
@@ -46,6 +76,20 @@ AnyType __elastic_net_binomial_predict::run (AnyType& args)
 */
 AnyType __elastic_net_binomial_prob::run (AnyType& args)
 {
+    // throws an exception if the coefficients contain NULL values
+    try {
+        args[0].getAs<MappedColumnVector>();
+    } catch(const ArrayWithNullException &e) {
+        throw std::runtime_error(
+            "Elastic Net error: the coefficients contain NULL values");
+    }
+    // returns NULL if the feature has NULL values
+    try {
+        args[2].getAs<MappedColumnVector>();
+    } catch(const ArrayWithNullException &e) {
+        return Null();
+    }
+
     MappedColumnVector coef = args[0].getAs<MappedColumnVector>();
     double intercept = args[1].getAs<double>();
     MappedColumnVector x = args[2].getAs<MappedColumnVector>();
@@ -61,6 +105,20 @@ AnyType __elastic_net_binomial_prob::run (AnyType& args)
 */
 AnyType __elastic_net_binomial_loglikelihood::run (AnyType& args)
 {
+    // throws an exception if the coefficients contain NULL values
+    try {
+        args[0].getAs<MappedColumnVector>();
+    } catch(const ArrayWithNullException &e) {
+        throw std::runtime_error(
+            "Elastic Net error: the coefficients contain NULL values");
+    }
+    // returns NULL if the feature has NULL values
+    try {
+        args[3].getAs<MappedColumnVector>();
+    } catch(const ArrayWithNullException &e) {
+        return Null();
+    }
+
     MappedColumnVector coef = args[0].getAs<MappedColumnVector>();
     double intercept = args[1].getAs<double>();
     MappedColumnVector x = args[3].getAs<MappedColumnVector>();
