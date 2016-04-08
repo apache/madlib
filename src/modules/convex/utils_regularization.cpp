@@ -79,13 +79,13 @@ class ScalesState
 AnyType utils_var_scales_transition::run (AnyType& args)
 {
     ScalesState<MutableArrayHandle<double> > state = args[0];
+    MappedColumnVector x(NULL);
     try {
-        args[1].getAs<MappedColumnVector>();
+        new (&x) MappedColumnVector(args[1].getAs<MappedColumnVector>());
     } catch(const ArrayWithNullException &e) {
       //  warning("Input array contains NULL values, skipping it for mean and std computations");
         return state;
     }
-    MappedColumnVector x = args[1].getAs<MappedColumnVector>();
     if (state.numRows == 0)
     {
         int dimension = args[2].getAs<int>();
@@ -157,13 +157,13 @@ AnyType __utils_var_scales_result::run (AnyType& args)
 
 AnyType utils_normalize_data::run (AnyType& args)
 {
+    MutableMappedColumnVector x(NULL);
     try {
-        args[0].getAs<MutableMappedColumnVector>();
+        new (&x) MutableMappedColumnVector(args[0].getAs<MutableMappedColumnVector>());
     } catch(const ArrayWithNullException &e) {
        // warning("Input array contains NULL values, skipping this array normalization");
         return Null();
     }
-    MutableMappedColumnVector x = args[0].getAs<MutableMappedColumnVector>();
     MappedColumnVector mean = args[1].getAs<MappedColumnVector>();
     MappedColumnVector std = args[2].getAs<MappedColumnVector>();
 
