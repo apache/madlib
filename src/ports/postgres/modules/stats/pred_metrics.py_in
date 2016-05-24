@@ -1,0 +1,251 @@
+# coding=utf-8
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Prediction Metrics
+# This module provides a set of prediction accuracy metrics. It is a support
+# module for several machine learning algorithms that require metrics to
+# validate their models. A typical function will take a set of "prediction" and
+# "observation" values to calculate the desired metric, unless noted otherwise.
+# Grouping is supported by all of these functions (except confusion matrix).
+
+# Please refer to the pred_metrics.sql_in file for the documentation
+
+import plpy
+
+
+def _create_output_table(table_in, table_out, agg_fun, agg_name, grp_cols=None):
+    """ Create an output table with optional groups
+
+    General template function that builds an output table with grouping while
+    applying an aggregate function.
+
+    Args:
+        @param agg_fun: str, SQL aggregate to be executed
+        @param grp_cols: str, Comma-separated list of column names
+    """
+    if not grp_cols:
+        grp_by_str = grp_out_str = ""
+    else:
+        grp_by_str = "GROUP BY " + grp_cols
+        grp_out_str = grp_cols + ", "
+    plpy.execute("""
+                 CREATE TABLE {table_out} AS
+                 SELECT
+                    {grp_out_str}
+                    {agg_fun} AS {agg_name}
+                 FROM {table_in}
+                 {grp_by_str}
+                 """.format(**locals()))
+
+
+# Mean Absolute Error.
+def mean_abs_error(table_in, table_out, pred_col, obs_col, grp_cols=None):
+    mean_abs_agg = "AVG(ABS({0} - {1}))".format(pred_col, obs_col)
+    _create_output_table(table_in, table_out, mean_abs_agg, "mean_abs_error", grp_cols)
+
+
+# Mean Absolute Percentage Error.
+def mean_abs_perc_error(table_in, table_out, pred_col, obs_col, grp_cols=None):
+    mean_abs_perc_agg = "AVG(ABS({0} - {1})/NULLIF({1}, 0))".format(pred_col, obs_col)
+    _create_output_table(table_in, table_out, mean_abs_perc_agg, "mean_abs_perc_error", grp_cols)
+
+
+# Mean Percentage Error.
+def mean_perc_error(table_in, table_out, pred_col, obs_col, grp_cols=None):
+    mean_perc_agg = "AVG(({0} - {1})/NULLIF({1}, 0))".format(pred_col, obs_col)
+    _create_output_table(table_in, table_out, mean_perc_agg, "mean_perc_error", grp_cols)
+
+
+# Mean Squared Error.
+def mean_squared_error(table_in, table_out, pred_col, obs_col, grp_cols=None):
+    mean_sq_agg = "AVG(({0} - {1})^2)".format(pred_col, obs_col)
+    _create_output_table(table_in, table_out, mean_sq_agg, "mean_squared_error", grp_cols)
+
+
+def _get_r2_score_sql(table_in, pred_col, obs_col, grp_cols=None):
+    if grp_cols:
+        grp_out_str = grp_cols + ","
+        grp_by_str = "GROUP BY " + grp_cols
+        partition_str = "PARTITION BY " + grp_cols
+    else:
+        grp_out_str = grp_by_str = partition_str = ""
+    return """
+            SELECT {grp_out_str}
+                1 - ssres/sstot AS r2_score
+            FROM (
+                SELECT {grp_out_str}
+                       sum(({obs_col} - mean)^2) as sstot,
+                       sum(({pred_col} - {obs_col})^2) AS ssres
+                FROM(
+                    SELECT {grp_out_str}
+                           {pred_col}, {obs_col},
+                           avg({obs_col}) OVER ({partition_str}) as mean
+                    FROM {table_in}
+                ) x GROUP BY {grp_cols}
+            ) y
+        """.format(**locals())
+
+
+def r2_score(table_in, table_out, pred_col, obs_col, grp_cols=None):
+    plpy.execute("""
+        CREATE TABLE {table_out} AS
+        {r2_score_sql}
+        """.format(table_out=table_out,
+                   r2_score_sql=_get_r2_score_sql(table_in, pred_col, obs_col,
+                                                  grp_cols)))
+
+
+def adjusted_r2_score(table_in, table_out, pred_col, obs_col,
+                      n_predictors, train_size, grp_cols):
+    plpy.execute("""
+        CREATE TABLE {table_out} AS
+        SELECT *,
+               1 - ( ((1- r2_score) * ({train_size} -1)) /
+                     ({train_size} - {n_predictors} - 1)
+                    ) AS adjusted_r2_score
+        FROM (
+            {r2_score_sql}
+          ) y
+        )z
+        """.format(r2_score_sql=_get_r2_score_sql(table_in, pred_col, obs_col, grp_cols),
+                   **locals()))
+
+
+def binary_classifier(table_in, table_out, pred_col, obs_col, grp_cols=None):
+    if grp_cols:
+        grp_str = grp_cols + ","
+        partition_str = "PARTITION BY " + grp_cols
+    else:
+        grp_str = partition_str = ""
+    sql_st = """
+        CREATE TABLE {table_out} AS
+        SELECT *,
+            tp::float8 / NULLIF(tp + fn, 0) AS tpr,
+            tn::float8 / NULLIF(fp + tn, 0) AS tnr,
+            tp::float8 / NULLIF(tp + fp, 0) AS ppv,
+            tn::float8 / NULLIF(tn + fn, 0) AS npv,
+            fp::float8 / NULLIF(fp + tn, 0) AS fpr,
+            fp::float8 / NULLIF(fp + tp, 0) AS fdr,
+            fn::float8 / NULLIF(fn + tp, 0) AS fnr,
+            (tp + tn)::float8 / NULLIF(tp + tn + fp + fn, 0) AS acc,
+            tp * 2.0 / NULLIF(2.0 * tp + fp + fn, 0) AS f1
+        FROM (
+            SELECT
+                {grp_str}
+                threshold,
+                sum(t) OVER ({partition_str} ORDER BY threshold DESC) AS tp,
+                sum(f) OVER ({partition_str} ORDER BY threshold DESC) AS fp,
+                sum(t) OVER ({partition_str}) -
+                    sum(t) OVER ({partition_str} ORDER BY threshold DESC) AS fn,
+                sum(f) OVER ({partition_str}) -
+                    sum(f) OVER ({partition_str} ORDER BY threshold DESC) AS tn
+            FROM (
+                SELECT {grp_str}
+                     {pred_col} AS threshold,
+                     sum({obs_col}) AS t,
+                     count(*) - sum({obs_col}) AS f
+                FROM {table_in}
+                GROUP BY {grp_str}
+                         threshold
+            ) x
+        ) y
+        """.format(**locals())
+    plpy.execute(sql_st)
+
+
+def area_under_roc(table_in, table_out, pred_col, obs_col, grp_cols=None):
+    if grp_cols:
+        grp_str = grp_cols + ","
+        grp_by_str = "GROUP BY " + grp_cols
+        partition_str = "PARTITION BY " + grp_cols
+    else:
+        grp_str = grp_by_str = partition_str = ""
+
+    sql_st = """
+    CREATE TABLE {table_out} AS
+    SELECT {grp_str}
+           sum((tpr + prev_tpr) * (fpr - prev_fpr) * 0.5) AS area_under_roc
+    FROM (
+      SELECT {grp_str}
+             tpr, fpr,
+             coalesce(lag(tpr) OVER ({partition_str} ORDER BY threshold DESC),
+                      0) AS prev_tpr,
+             coalesce(lag(fpr) OVER ({partition_str} ORDER BY threshold DESC),
+                      0) AS prev_fpr
+      FROM(
+        SELECT {grp_str}
+               threshold,
+               sum(t) OVER ({partition_str} ORDER BY threshold DESC) *
+                    1.0/ NULLIF(sum(t) OVER ({partition_str}), 0) AS tpr,
+               sum(f) OVER ({partition_str} ORDER BY threshold DESC) *
+                    1.0/NULLIF(sum(f) OVER ({partition_str}),0) AS fpr
+        FROM (
+          SELECT {grp_str}
+                 {pred_col} AS threshold,
+                 sum({obs_col}) AS t,
+                 count(*) - sum({obs_col}) AS f
+          FROM {table_in}
+          GROUP BY {grp_str}
+                   threshold
+        ) x
+      ) y
+    ) z
+    {grp_by_str}
+    """.format(**locals())
+    plpy.execute(sql_st)
+
+
+# Confusion Matrix for a multi-class classifier.
+def confusion_matrix(table_in, table_out, pred_col, obs_col):
+    sql_st = """
+    CREATE TABLE {table_out} AS
+        WITH all_classes AS (
+            SELECT {obs_col} AS a
+            FROM {table_in}
+            GROUP BY {obs_col}
+            UNION
+            SELECT {pred_col} as a
+            FROM {table_in}
+            GROUP BY {pred_col}
+        )
+        SELECT class,
+             array_agg(cnt ORDER BY pred) AS confusion_arr
+        FROM (
+            SELECT obs as class,
+                   pred,
+                   sum(cnt) AS cnt
+            FROM (
+                  SELECT {obs_col} AS obs,
+                         {pred_col} AS pred,
+                         count(*) AS cnt
+                  FROM {table_in}
+                  GROUP BY obs, pred
+
+                  UNION
+
+                  -- create 0 entries in matrix as defaults if all combinations
+                  -- are not available in the input.
+                  SELECT r.a, s.a, 0
+                  FROM all_classes r, all_classes s
+            ) y
+            GROUP BY class, pred
+        ) x
+        GROUP BY class
+    """.format(**locals())
+    plpy.execute(sql_st)
