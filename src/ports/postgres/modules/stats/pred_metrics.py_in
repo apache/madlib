@@ -27,9 +27,23 @@
 # Please refer to the pred_metrics.sql_in file for the documentation
 
 import plpy
+from utilities.validate_args import input_tbl_valid, output_tbl_valid, is_var_valid
+from utilities.utilities import split_quoted_delimited_str
 
 
-def _create_output_table(table_in, table_out, agg_fun, agg_name, grp_cols=None):
+def _validate_args(table_in, table_out, validate_cols):
+    input_tbl_valid(table_in, "Prediction Metrics")
+    output_tbl_valid(table_out, "Prediction Metrics")
+    is_var_valid(table_in, ', '.join(validate_cols))
+
+
+def _parse_grp_col_str(grp_col_str):
+    group_set = set(split_quoted_delimited_str(grp_col_str))
+    return list(group_set)
+# ----------------------------------------------------------------------
+
+
+def _create_output_table(table_in, table_out, agg_fun, agg_name, grp_col_str=None):
     """ Create an output table with optional groups
 
     General template function that builds an output table with grouping while
@@ -39,11 +53,13 @@ def _create_output_table(table_in, table_out, agg_fun, agg_name, grp_cols=None):
         @param agg_fun: str, SQL aggregate to be executed
         @param grp_cols: str, Comma-separated list of column names
     """
+    grp_cols = _parse_grp_col_str(grp_col_str)
+    _validate_args(table_in, table_out, grp_cols)
     if not grp_cols:
         grp_by_str = grp_out_str = ""
     else:
-        grp_by_str = "GROUP BY " + grp_cols
-        grp_out_str = grp_cols + ", "
+        grp_by_str = "GROUP BY " + grp_col_str
+        grp_out_str = grp_col_str + ", "
     plpy.execute("""
                  CREATE TABLE {table_out} AS
                  SELECT
@@ -78,11 +94,11 @@ def mean_squared_error(table_in, table_out, pred_col, obs_col, grp_cols=None):
     _create_output_table(table_in, table_out, mean_sq_agg, "mean_squared_error", grp_cols)
 
 
-def _get_r2_score_sql(table_in, pred_col, obs_col, grp_cols=None):
-    if grp_cols:
-        grp_out_str = grp_cols + ","
-        grp_by_str = "GROUP BY " + grp_cols
-        partition_str = "PARTITION BY " + grp_cols
+def _get_r2_score_sql(table_in, pred_col, obs_col, grp_col_str=None):
+    if grp_col_str:
+        grp_out_str = grp_col_str + ","
+        grp_by_str = "GROUP BY " + grp_col_str
+        partition_str = "PARTITION BY " + grp_col_str
     else:
         grp_out_str = grp_by_str = partition_str = ""
     return """
@@ -97,22 +113,26 @@ def _get_r2_score_sql(table_in, pred_col, obs_col, grp_cols=None):
                            {pred_col}, {obs_col},
                            avg({obs_col}) OVER ({partition_str}) as mean
                     FROM {table_in}
-                ) x GROUP BY {grp_cols}
+                ) x {grp_by_str}
             ) y
         """.format(**locals())
 
 
-def r2_score(table_in, table_out, pred_col, obs_col, grp_cols=None):
+def r2_score(table_in, table_out, pred_col, obs_col, grp_col_str=None):
+    grp_cols = _parse_grp_col_str(grp_col_str)
+    _validate_args(table_in, table_out, grp_cols + [pred_col, obs_col])
     plpy.execute("""
         CREATE TABLE {table_out} AS
         {r2_score_sql}
         """.format(table_out=table_out,
                    r2_score_sql=_get_r2_score_sql(table_in, pred_col, obs_col,
-                                                  grp_cols)))
+                                                  grp_col_str)))
 
 
 def adjusted_r2_score(table_in, table_out, pred_col, obs_col,
-                      n_predictors, train_size, grp_cols):
+                      n_predictors, train_size, grp_col_str):
+    grp_cols = _parse_grp_col_str(grp_col_str)
+    _validate_args(table_in, table_out, grp_cols + [pred_col, obs_col])
     plpy.execute("""
         CREATE TABLE {table_out} AS
         SELECT *,
@@ -121,16 +141,17 @@ def adjusted_r2_score(table_in, table_out, pred_col, obs_col,
                     ) AS adjusted_r2_score
         FROM (
             {r2_score_sql}
-          ) y
         )z
-        """.format(r2_score_sql=_get_r2_score_sql(table_in, pred_col, obs_col, grp_cols),
+        """.format(r2_score_sql=_get_r2_score_sql(table_in, pred_col, obs_col, grp_col_str),
                    **locals()))
 
 
-def binary_classifier(table_in, table_out, pred_col, obs_col, grp_cols=None):
-    if grp_cols:
-        grp_str = grp_cols + ","
-        partition_str = "PARTITION BY " + grp_cols
+def binary_classifier(table_in, table_out, pred_col, obs_col, grp_col_str=None):
+    grp_cols = _parse_grp_col_str(grp_col_str)
+    _validate_args(table_in, table_out, grp_cols + [pred_col, obs_col])
+    if grp_col_str:
+        grp_str = grp_col_str + ","
+        partition_str = "PARTITION BY " + grp_col_str
     else:
         grp_str = partition_str = ""
     sql_st = """
@@ -169,11 +190,13 @@ def binary_classifier(table_in, table_out, pred_col, obs_col, grp_cols=None):
     plpy.execute(sql_st)
 
 
-def area_under_roc(table_in, table_out, pred_col, obs_col, grp_cols=None):
-    if grp_cols:
-        grp_str = grp_cols + ","
-        grp_by_str = "GROUP BY " + grp_cols
-        partition_str = "PARTITION BY " + grp_cols
+def area_under_roc(table_in, table_out, pred_col, obs_col, grp_col_str=None):
+    grp_cols = _parse_grp_col_str(grp_col_str)
+    _validate_args(table_in, table_out, grp_cols + [pred_col, obs_col])
+    if grp_col_str:
+        grp_str = grp_col_str + ","
+        grp_by_str = "GROUP BY " + grp_col_str
+        partition_str = "PARTITION BY " + grp_col_str
     else:
         grp_str = grp_by_str = partition_str = ""
 
@@ -213,6 +236,7 @@ def area_under_roc(table_in, table_out, pred_col, obs_col, grp_cols=None):
 
 # Confusion Matrix for a multi-class classifier.
 def confusion_matrix(table_in, table_out, pred_col, obs_col):
+    _validate_args(table_in, table_out, [pred_col, obs_col])
     sql_st = """
     CREATE TABLE {table_out} AS
         WITH all_classes AS (
