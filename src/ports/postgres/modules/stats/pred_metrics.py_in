@@ -28,6 +28,7 @@
 
 import plpy
 from utilities.validate_args import input_tbl_valid, output_tbl_valid, is_var_valid
+from utilities.utilities import _assert
 from utilities.utilities import split_quoted_delimited_str
 
 
@@ -94,7 +95,56 @@ def mean_squared_error(table_in, table_out, pred_col, obs_col, grp_cols=None):
     _create_output_table(table_in, table_out, mean_sq_agg, "mean_squared_error", grp_cols)
 
 
+def metric_agg_help_msg(schema_madlib, message, agg_name, **kwargs):
+
+    if not message:
+        help_string = """
+------------------------------------------------------------
+                        SUMMARY
+------------------------------------------------------------
+Functionality: Evaluate prediction results using metric functions.
+
+This module provides a set of prediction accuracy metrics. It is a support
+module for several machine learning algorithms that require metrics to validate
+their models. The function will take "prediction" and "observation" values to
+calculate the desired metric. Grouping is supported by all of these functions.
+    """
+    elif message.lower().strip() in ['usage', 'help', '?']:
+        help_string = """
+------------------------------------------------------------
+                        USAGE
+------------------------------------------------------------
+SELECT {schema_madlib}.{agg_name}(
+    'table_in',     -- Name of the input table
+    'table_out',    -- Table name to store the metric results
+    'pred_col',     -- Column name containing prediction results
+    'obs_col',      -- Column name containing observed (actual) values
+    'grouping_cols' -- Comma-separated list of columns to use as group-by
+);
+    """
+    else:
+        help_string = "No such option. Use {schema_madlib}.{agg_name}('usage')"
+    return help_string.format(**locals())
+
+
 def _get_r2_score_sql(table_in, pred_col, obs_col, grp_col_str=None):
+    """ Generate the SQL query to compute r2 score.
+
+    This function abstracts the SQL to calculate r2 score from actually building
+    the output table. This allows reusing the query for adjusted r2 function.
+
+    Args:
+        @param table_in: str, Input table name containing the data
+        @param pred_col: str, Column name containing the predictions
+        @param obs_col: str, Column name containing the actual observed class
+        @param grp_col_str: str, Comma-separated list of columns to group by
+
+    Definition:
+        r2 = 1 - SS_res / SS_tot
+        where SS_res = sum (pred - obs)^2
+              SS_tot = sum (obs - mean)^2
+
+    """
     if grp_col_str:
         grp_out_str = grp_col_str + ","
         grp_by_str = "GROUP BY " + grp_col_str
@@ -129,8 +179,53 @@ def r2_score(table_in, table_out, pred_col, obs_col, grp_col_str=None):
                                                   grp_col_str)))
 
 
+def r2_score_help(schema_madlib, message, **kwargs):
+    if not message:
+        help_string = """
+------------------------------------------------------------
+                        SUMMARY
+------------------------------------------------------------
+Functionality: Compute coefficient of determination
+
+This function returns the coefficient of determination (R2) between the
+predicted and observed values. An R2 of 1 indicates that the regression line
+perfectly fits the data, while an R2 of 0 indicates that the line does not fit
+the data at all. Negative values of R2 may occur when fitting non-linear
+functions to data.
+    """
+    elif message.lower().strip() in ['usage', 'help', '?']:
+        help_string = """
+------------------------------------------------------------
+                        USAGE
+------------------------------------------------------------
+SELECT {schema_madlib}.r2_score(
+    'table_in',     -- Name of the input table
+    'table_out',    -- Table name to store the metric results
+    'pred_col',     -- Column name containing prediction results
+    'obs_col',      -- Column name containing observed (actual) values
+    'grouping_cols' -- Comma-separated list of columns to use as group-by
+);
+    """
+    else:
+        help_string = "No such option. Use {schema_madlib}.r2_score('usage')"
+    return help_string.format(**locals())
+
+
 def adjusted_r2_score(table_in, table_out, pred_col, obs_col,
                       n_predictors, train_size, grp_col_str):
+    """ Compute the adjusted r2 score
+
+    Args:
+        @param table_in: str, Input table name containing the data
+        @param pred_col: str, Column name containing the predictions
+        @param obs_col: str, Column name containing the actual observed class
+        @param grp_col_str: str, Comma-separated list of columns to group by
+
+    Definition:
+        adj_r2 = 1 - (1 - r2) * (n - 1) / (n - p)
+        where n = degrees of freedom
+              p = number of explanatory variables
+    """
     grp_cols = _parse_grp_col_str(grp_col_str)
     _validate_args(table_in, table_out, grp_cols + [pred_col, obs_col])
     plpy.execute("""
@@ -146,14 +241,65 @@ def adjusted_r2_score(table_in, table_out, pred_col, obs_col,
                    **locals()))
 
 
+def adjusted_r2_score_help(schema_madlib, message, **kwargs):
+    if not message:
+        help_string = """
+------------------------------------------------------------
+                        SUMMARY
+------------------------------------------------------------
+Functionality: Compute coefficient of determination (with adjustment for number of predictors)
+
+This function returns the adjusted R2 score. Adjusted R2 score is used to
+counter the problem of the R2 automatically increasing when extra explanatory
+variables are added to the model. It takes additional two integers describing
+the degrees of freedom of the model and the size of the training set over which
+it was developed, and returning the adjusted R-squared prediction accuracy
+metric.
+    """
+    elif message.lower().strip() in ['usage', 'help', '?']:
+        help_string = """
+------------------------------------------------------------
+                        USAGE
+------------------------------------------------------------
+SELECT {schema_madlib}.adjusted_r2_score(
+    'table_in',        -- Name of the input table
+    'table_out',       -- Table name to store the metric results
+    'pred_col',        -- Column name containing prediction results
+    'obs_col',         -- Column name containing observed (actual) values
+    'num_predictors',  -- Number of predictors (features) used in the model
+    'training_size',   -- Size of the training data
+    'grouping_cols'    -- Comma-separated list of columns to use as group-by
+);
+    """
+    else:
+        help_string = "No such option. Use {schema_madlib}.adjusted_r2_score('usage')"
+    return help_string.format(**locals())
+
+
 def binary_classifier(table_in, table_out, pred_col, obs_col, grp_col_str=None):
+    """ Get multiple metrics useful for evaluating binary classifiers.
+
+    The 'obs_col' column in 'table_in' is assumed to be a int/float column with
+    two level: 0 and 1, 1 is considered positive and 0 is negative.
+
+    The 'pred_col' is assumed to be a float column that gives the probability of
+    the prediction being positive.
+
+    """
     grp_cols = _parse_grp_col_str(grp_col_str)
     _validate_args(table_in, table_out, grp_cols + [pred_col, obs_col])
+    obs_levels = [i['c'] for i in
+                  plpy.execute("SELECT {0} as c FROM {1} GROUP BY {0} ORDER BY {0}".
+                               format(obs_col, table_in))
+                  ]
+    _assert(obs_levels == [0, 1], "Prediction metrics: Observed levels should be 0 and 1")
+
     if grp_col_str:
         grp_str = grp_col_str + ","
         partition_str = "PARTITION BY " + grp_col_str
     else:
         grp_str = partition_str = ""
+
     sql_st = """
         CREATE TABLE {table_out} AS
         SELECT *,
@@ -178,9 +324,9 @@ def binary_classifier(table_in, table_out, pred_col, obs_col, grp_col_str=None):
                     sum(f) OVER ({partition_str} ORDER BY threshold DESC) AS tn
             FROM (
                 SELECT {grp_str}
-                     {pred_col} AS threshold,
-                     sum({obs_col}) AS t,
-                     count(*) - sum({obs_col}) AS f
+                       {pred_col} AS threshold,
+                       sum({obs_col}) AS t,
+                       count(*) - sum({obs_col}) AS f
                 FROM {table_in}
                 GROUP BY {grp_str}
                          threshold
@@ -190,7 +336,61 @@ def binary_classifier(table_in, table_out, pred_col, obs_col, grp_col_str=None):
     plpy.execute(sql_st)
 
 
+def binary_classifier_help(schema_madlib, message, **kwargs):
+    if not message:
+        help_string = """
+------------------------------------------------------------
+                        SUMMARY
+------------------------------------------------------------
+Functionality: Metrics for binary classification
+
+This function returns an output table with a number of metrics commonly used to
+evaluated binary classification.
+
+List of the various metrics output by the function:
+
+- tp is the count of correctly-classified positives
+- tn is the count of correctly-classified negatives
+- fp is the count of misclassified negatives
+- fn is the count of misclassified positives
+- tpr = tp / (tp + fn)
+- tnr = tn / (fp + tn)
+- ppv = tp / (tp + fp)
+- npv = tn / (tn + fn)
+- fpr = fp / (fp + tn)
+- fdr = 1 - ppv
+- fnr = fn / (fn + tp).
+- acc = (tp + tn) / (tp + tn + fp + fn).
+- f1 = 2* tp / (2 * tp + fp + fn).
+    """
+    elif message.lower().strip() in ['usage', 'help', '?']:
+        help_string = """
+------------------------------------------------------------
+                        USAGE
+------------------------------------------------------------
+SELECT {schema_madlib}.binary_classifier(
+    'table_in',        -- Name of the input table
+    'table_out',       -- Table name to store the metric results
+    'pred_col',        -- Column name containing prediction results
+    'obs_col',         -- Column name containing observed (actual) values
+    'grouping_cols'    -- Comma-separated list of columns to use as group-by
+);
+    """
+    else:
+        help_string = "No such option. Use {schema_madlib}.binary_classifier('usage')"
+    return help_string.format(**locals())
+
+
 def area_under_roc(table_in, table_out, pred_col, obs_col, grp_col_str=None):
+    """ Get area under ROC curve for a binary classifier.
+
+    The 'obs_col' column in 'table_in' is assumed to be a int/float column with
+    two level: 0 and 1, 1 is considered positive and 0 is negative.
+
+    The 'pred_col' is assumed to be a float column that gives the probability of
+    the prediction being positive.
+
+    """
     grp_cols = _parse_grp_col_str(grp_col_str)
     _validate_args(table_in, table_out, grp_cols + [pred_col, obs_col])
     if grp_col_str:
@@ -234,12 +434,62 @@ def area_under_roc(table_in, table_out, pred_col, obs_col, grp_col_str=None):
     plpy.execute(sql_st)
 
 
-# Confusion Matrix for a multi-class classifier.
+def area_under_roc_help(schema_madlib, message, **kwargs):
+    if not message:
+        help_string = """
+------------------------------------------------------------
+                        SUMMARY
+------------------------------------------------------------
+Functionality: Area under the ROC curve for binary classification
+
+This function returns the area under the Receiver Operating Characteristic curve
+for binary classification (the AUC). The ROC curve is the curve relating the
+classifier's TPR and FPR metrics. Note that the binary classification
+function ({schema_madlib}.binary_classifier) can be used to obtain the data
+(tpr and fpr values) required for drawing the ROC curve.
+    """
+    elif message.lower().strip() in ['usage', 'help', '?']:
+        help_string = """
+------------------------------------------------------------
+                        USAGE
+------------------------------------------------------------
+SELECT {schema_madlib}.area_under_roc(
+    'table_in',        -- Name of the input table
+    'table_out',       -- Table name to store the metric results
+    'pred_col',        -- Column name containing prediction results
+    'obs_col',         -- Column name containing observed (actual) values
+    'grouping_cols'    -- Comma-separated list of columns to use as group-by
+);
+    """
+    else:
+        help_string = "No such option. Use {schema_madlib}.area_under_roc('usage')"
+    return help_string.format(**locals())
+
+
 def confusion_matrix(table_in, table_out, pred_col, obs_col):
+    """ Get the confusion matrix for a multi-class classifier
+
+    Args:
+        @param table_in: str, Input table name
+        @param table_out: str, Output table name
+        @param pred_col: str, Column name containing the predictions
+        @param obs_col: str, Column name containing the actually classes (observations)
+
+        'pred_col' and 'obs_col' columns can have any number of levels
+        (which could be different between the columns). The output confusion matrix
+        will be N x N, where N is the combined number of unique levels. For
+        level combinations that are not present in the input table, a 0 will be
+        output as the frequency count.
+
+        The output format is the matrix format as described in matrix_ops.sql_in.
+        The rows are indexed with column 'row_id' with each corresponding observed
+        class. The 'row_id' column gives the order of the observed classes.
+        The predicted classes are in an array in the same order as described by 'row_id'.
+    """
     _validate_args(table_in, table_out, [pred_col, obs_col])
     sql_st = """
     CREATE TABLE {table_out} AS
-        WITH all_classes AS (
+        WITH all_levels AS (
             SELECT {obs_col} AS a
             FROM {table_in}
             GROUP BY {obs_col}
@@ -248,28 +498,65 @@ def confusion_matrix(table_in, table_out, pred_col, obs_col):
             FROM {table_in}
             GROUP BY {pred_col}
         )
-        SELECT class,
-             array_agg(cnt ORDER BY pred) AS confusion_arr
+        SELECT
+            ROW_NUMBER() over (ORDER BY class) as row_id,
+            class,
+            confusion_arr
         FROM (
-            SELECT obs as class,
-                   pred,
-                   sum(cnt) AS cnt
+            SELECT
+                   class,
+                   array_agg(cnt ORDER BY pred) AS confusion_arr
             FROM (
-                  SELECT {obs_col} AS obs,
-                         {pred_col} AS pred,
-                         count(*) AS cnt
-                  FROM {table_in}
-                  GROUP BY obs, pred
+                SELECT obs as class,
+                       pred,
+                       sum(cnt) AS cnt
+                FROM (
+                      SELECT {obs_col} AS obs,
+                             {pred_col} AS pred,
+                             count(*) AS cnt
+                      FROM {table_in}
+                      GROUP BY obs, pred
 
-                  UNION
+                      UNION
 
-                  -- create 0 entries in matrix as defaults if all combinations
-                  -- are not available in the input.
-                  SELECT r.a, s.a, 0
-                  FROM all_classes r, all_classes s
+                      -- create 0 entries in matrix as defaults if all combinations
+                      -- are not available in the input.
+                      SELECT r.a, s.a, 0
+                      FROM all_levels r, all_levels s
+                ) x
+                GROUP BY class, pred
             ) y
-            GROUP BY class, pred
-        ) x
-        GROUP BY class
+            GROUP BY class
+        ) z
     """.format(**locals())
     plpy.execute(sql_st)
+
+
+def confusion_matrix_help(schema_madlib, message, **kwargs):
+    if not message:
+        help_string = """
+------------------------------------------------------------
+                        SUMMARY
+------------------------------------------------------------
+Functionality: Confusion matrix for multi-class classifier
+
+This function returns the confusion matrix of a multi-class classification. Each
+column of the matrix represents the instances in a predicted class while each
+row represents the instances in an actual class. This allows more detailed
+analysis than mere proportion of correct guesses (accuracy).
+    """
+    elif message.lower().strip() in ['usage', 'help', '?']:
+        help_string = """
+------------------------------------------------------------
+                        USAGE
+------------------------------------------------------------
+SELECT {schema_madlib}.area_under_roc(
+    'table_in',        -- Name of the input table
+    'table_out',       -- Table name to store the metric results
+    'pred_col',        -- Column name containing prediction results
+    'obs_col'          -- Column name containing observed (actual) values
+);
+    """
+    else:
+        help_string = "No such option. Use {schema_madlib}.confusion_matrix('usage')"
+    return help_string.format(**locals())
