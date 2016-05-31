@@ -1,0 +1,101 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+import plpy
+import string
+
+from control import MinWarning
+from utilities import unique_string, _assert
+from validate_args import get_cols
+from validate_args import input_tbl_valid, output_tbl_valid, is_var_valid
+
+m4_changequote(`<!', `!>')
+
+def sessionize(schema_madlib, source_table, output_table, partition_expr,
+				time_stamp, time_out, **kwargs):
+	"""
+		Perform sessionization over a sequence of rows.
+
+		Args:
+		@param schema_madlib: str, Name of the MADlib schema
+		@param source_table: str, Name of the input table/view
+		@param output_table: str, Name of the table to store result
+		@param partition_expr: str, Expression to partition (group) the input data
+		@param time_stamp: float, Column name with time used for sessionization calculation
+		@param time_out: float, Delta time between subsequent events to define a sessions
+		
+	"""
+	with MinWarning("error"):
+		_validate(source_table, output_table, partition_expr, time_stamp, time_out)
+
+		all_input_cols_str = ', '.join([i.strip() for i in get_cols(source_table, schema_madlib)])
+		session_id = 'session_id' if not is_var_valid(source_table, 'session_id') else unique_string('session_id')
+
+		plpy.execute("""
+				CREATE TABLE {output_table} AS
+					SELECT
+						{all_input_cols_str},
+						CASE WHEN {time_stamp} NOTNULL
+						THEN (SUM(new_event_boundary) OVER (PARTITION BY {partition_expr} ORDER BY {time_stamp})) END AS {session_id}
+					FROM (
+						SELECT *, 
+							CASE WHEN {time_stamp} NOTNULL and ({time_stamp}-LAG({time_stamp},1) OVER (w) > '{time_out}' OR ROW_NUMBER() OVER (w) = '1')
+							THEN 1 ELSE 0 END AS new_event_boundary
+						FROM {source_table} WINDOW w AS (PARTITION BY {partition_expr} ORDER BY {time_stamp})
+						) a
+			""".format(**locals()))
+
+
+def _validate(source_table, output_table, partition_expr, time_stamp, time_out):
+	input_tbl_valid(source_table, 'Sessionization')
+	output_tbl_valid(output_table, 'Sessionization')
+	# ensure the expressions are not None or empty strings
+	_assert(partition_expr, "Sessionization error: Invalid partition expression")
+	_assert(time_stamp, "Sessionization error: Invalid time stamp column")
+	_assert(time_out, "Sessionization error: Invalid time out value")
+	# ensure the partition/order expression can actually be used
+	_assert(is_var_valid(source_table, partition_expr, time_stamp),
+			"Sessionization error: invalid partition expression or time stamp column name")
+
+
+def sessionize_help_message(schema_madlib, message, **kwargs):
+	"""
+	Help message for sessionize function
+	"""
+	help_string = """
+------------------------------------------------------------
+						SUMMARY
+------------------------------------------------------------
+Functionality: Sessionize
+
+The goal of the MADlib sessionize function is to perform sessionization over
+a time-series based data. 
+
+------------------------------------------------------------
+						USAGE
+------------------------------------------------------------
+SELECT {schema_madlib}.sessionize(
+	'source_table',    -- Name of the table
+	'output_table',    -- Table name to store the Sessionization results
+	'partition_expr',  -- Partition expression to group the data table
+	'time_stamp'	-- Column name with time used for sessionization calculation
+	'time_out'	-- Delta time between subsequent events to define a sessions
+				-- User should make sure in same units the min_time parameter (e.g., min, sec, days)
+);
+"""
+
+	return help_string.format(schema_madlib=schema_madlib)
