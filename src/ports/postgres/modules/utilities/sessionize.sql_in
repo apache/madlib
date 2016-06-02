@@ -54,7 +54,7 @@ sessionize(
    output_table,
    partition_expr,
    time_stamp,
-   time_out
+   max_time
 )
 </pre>
 
@@ -82,8 +82,8 @@ sessionize(
     <dt>time_stamp</dt>
     <dd>VARCHAR. Column name with time used for sessionization calculation.</dd>
 
-    <dt>time_out</dt>
-    <dd>VARCHAR.  Delta time between subsequent events to define a sessions.
+    <dt>max_time</dt>
+    <dd>INTERVAL.  Delta time between subsequent events to define a sessions.
     User should make sure this is in the same unit as the time_stamp parameter 
     (e.g., 'hour:minute:seconds', when time_stamp is of type TIMESTAMP).</dd>
 </dl>
@@ -190,6 +190,57 @@ Result:
  2015-04-15 02:18:00 |  103711 | LANDING  |       0 |          1
  2015-04-15 02:19:00 |  103711 | WINE     |       0 |          1
 
+ -# Sessionize the table based on a partition expression:
+ <pre class="example">
+ SELECT madlib.sessionize(
+     'eventlog',                -- Name of input table
+     'sessionize_output',             -- Table name to store sessionized results
+     'user_id < 101500',              -- Partition input table by session
+     'event_timestamp ASC',     -- Order partitions in input table by time
+     '180'    -- Events within a window of this time unit (180 seconds) must be in the same session
+              -- Note that this is the same as '0:3:0'
+     );
+SELECT * FROM sessionize_output;
+</pre>
+Result:
+   event_timestamp   | user_id |   page   | revenue | session_id
+---------------------+---------+----------+---------+------------
+ 2015-04-15 01:05:00 |  102201 | LANDING  |       0 |          1
+ 2015-04-15 01:06:00 |  102201 | HELP     |       0 |          1
+ 2015-04-15 01:09:00 |  102201 | LANDING  |       0 |          1
+ 2015-04-15 02:15:00 |  102201 | WINE     |       0 |          2
+ 2015-04-15 02:16:00 |  102201 | BEER     |       0 |          2
+ 2015-04-15 02:17:00 |  103711 | BEER     |       0 |          2
+ 2015-04-15 02:17:00 |  102201 | WINE     |       0 |          2
+ 2015-04-15 02:18:00 |  103711 | LANDING  |       0 |          2
+ 2015-04-15 02:18:00 |  102871 | BEER     |       0 |          2
+ 2015-04-15 02:19:00 |  102871 | WINE     |       0 |          2
+ 2015-04-15 02:19:00 |  103711 | WINE     |       0 |          2
+ 2015-04-15 02:22:00 |  102871 | CHECKOUT |      21 |          2
+ 2015-04-15 02:25:00 |  102871 | LANDING  |       0 |          2
+ 2015-04-15 02:29:00 |  101881 | LANDING  |       0 |          3
+ 2015-04-15 02:30:00 |  101881 | BEER     |       0 |          3
+ 2015-04-15 01:03:00 |  100821 | LANDING  |       0 |          1
+ 2015-04-15 01:04:00 |  100821 | WINE     |       0 |          1
+ 2015-04-15 01:05:00 |  100821 | CHECKOUT |      39 |          1
+ 2015-04-15 01:15:00 |  101121 | LANDING  |       0 |          2
+ 2015-04-15 01:16:00 |  101121 | WINE     |       0 |          2
+ 2015-04-15 01:17:00 |  101121 | CHECKOUT |      15 |          2
+ 2015-04-15 01:18:00 |  101121 | LANDING  |       0 |          2
+ 2015-04-15 01:19:00 |  101121 | HELP     |       0 |          2
+ 2015-04-15 01:21:00 |  101121 | WINE     |       0 |          2
+ 2015-04-15 01:22:00 |  101121 | CHECKOUT |      23 |          2
+ 2015-04-15 02:06:00 |  100821 | WINE     |       0 |          3
+ 2015-04-15 02:09:00 |  100821 | WINE     |       0 |          3
+ 2015-04-15 02:15:00 |  101331 | LANDING  |       0 |          4
+ 2015-04-15 02:16:00 |  101331 | WINE     |       0 |          4
+ 2015-04-15 02:17:00 |  101331 | HELP     |       0 |          4
+ 2015-04-15 02:18:00 |  101331 | WINE     |       0 |          4
+ 2015-04-15 02:19:00 |  101331 | CHECKOUT |      16 |          4
+ 2015-04-15 02:22:00 |  101443 | BEER     |       0 |          4
+ 2015-04-15 02:25:00 |  101443 | CHECKOUT |      12 |          4
+
+
 @anchor literature
 @par Literature
 
@@ -204,7 +255,7 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.sessionize(
     output_table        VARCHAR,
     partition_expr      VARCHAR,
     time_stamp  VARCHAR,
-    time_out    VARCHAR
+    max_time    INTERVAL
 ) RETURNS TEXT AS $$
 PythonFunction(utilities, sessionize, sessionize)
 $$ LANGUAGE plpythonu

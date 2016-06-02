@@ -26,7 +26,7 @@ from validate_args import input_tbl_valid, output_tbl_valid, is_var_valid
 m4_changequote(`<!', `!>')
 
 def sessionize(schema_madlib, source_table, output_table, partition_expr,
-				time_stamp, time_out, **kwargs):
+				time_stamp, max_time, **kwargs):
 	"""
 		Perform sessionization over a sequence of rows.
 
@@ -35,42 +35,45 @@ def sessionize(schema_madlib, source_table, output_table, partition_expr,
 		@param source_table: str, Name of the input table/view
 		@param output_table: str, Name of the table to store result
 		@param partition_expr: str, Expression to partition (group) the input data
-		@param time_stamp: float, Column name with time used for sessionization calculation
-		@param time_out: float, Delta time between subsequent events to define a sessions
+		@param time_stamp: str, Column name with time used for sessionization calculation
+		@param max_time: interval, Delta time between subsequent events to define a session
 		
 	"""
 	with MinWarning("error"):
-		_validate(source_table, output_table, partition_expr, time_stamp, time_out)
+		_validate(source_table, output_table, partition_expr, time_stamp, max_time)
 
 		all_input_cols_str = ', '.join([i.strip() for i in get_cols(source_table, schema_madlib)])
 		session_id = 'session_id' if not is_var_valid(source_table, 'session_id') else unique_string('session_id')
+
+		# Create temp column names for intermediate columns.
+		new_partition = unique_string('new_partition')
+		new_session = unique_string('new_session')
 
 		plpy.execute("""
 				CREATE TABLE {output_table} AS
 					SELECT
 						{all_input_cols_str},
-						CASE WHEN {time_stamp} NOTNULL
-						THEN (SUM(new_event_boundary) OVER (PARTITION BY {partition_expr} ORDER BY {time_stamp})) END AS {session_id}
+						CASE WHEN {time_stamp} IS NOT NULL
+						THEN SUM(CASE WHEN {new_partition} OR {new_session} THEN 1 END) OVER (PARTITION BY {partition_expr} ORDER BY {time_stamp}) END AS {session_id}
 					FROM (
-						SELECT *, 
-							CASE WHEN {time_stamp} NOTNULL and ({time_stamp}-LAG({time_stamp},1) OVER (w) > '{time_out}' OR ROW_NUMBER() OVER (w) = '1')
-							THEN 1 ELSE 0 END AS new_event_boundary
+						SELECT *,
+							ROW_NUMBER() OVER (w) = 1 AND {time_stamp} IS NOT NULL AS {new_partition},
+							({time_stamp}-LAG({time_stamp}, 1) OVER (w)) > '{max_time}'::INTERVAL AS {new_session}
 						FROM {source_table} WINDOW w AS (PARTITION BY {partition_expr} ORDER BY {time_stamp})
 						) a
 			""".format(**locals()))
 
 
-def _validate(source_table, output_table, partition_expr, time_stamp, time_out):
+def _validate(source_table, output_table, partition_expr, time_stamp, max_time):
 	input_tbl_valid(source_table, 'Sessionization')
 	output_tbl_valid(output_table, 'Sessionization')
 	# ensure the expressions are not None or empty strings
 	_assert(partition_expr, "Sessionization error: Invalid partition expression")
 	_assert(time_stamp, "Sessionization error: Invalid time stamp column")
-	_assert(time_out, "Sessionization error: Invalid time out value")
+	_assert(max_time, "Sessionization error: Invalid max time value")
 	# ensure the partition/order expression can actually be used
 	_assert(is_var_valid(source_table, partition_expr, time_stamp),
 			"Sessionization error: invalid partition expression or time stamp column name")
-
 
 def sessionize_help_message(schema_madlib, message, **kwargs):
 	"""
@@ -89,12 +92,11 @@ a time-series based data.
 						USAGE
 ------------------------------------------------------------
 SELECT {schema_madlib}.sessionize(
-	'source_table',    -- Name of the table
-	'output_table',    -- Table name to store the Sessionization results
-	'partition_expr',  -- Partition expression to group the data table
-	'time_stamp'	-- Column name with time used for sessionization calculation
-	'time_out'	-- Delta time between subsequent events to define a sessions
-				-- User should make sure in same units the min_time parameter (e.g., min, sec, days)
+	'source_table',    -- str, Name of the table
+	'output_table',    -- str, Table name to store the Sessionization results
+	'partition_expr',  -- str, Partition expression to group the data table
+	'time_stamp'	-- str, Column name with time used for sessionization calculation
+	'max_time'	-- str, Delta time between subsequent events to define a session
 );
 """
 
