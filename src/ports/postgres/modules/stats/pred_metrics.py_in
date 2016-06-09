@@ -27,8 +27,8 @@
 # Please refer to the pred_metrics.sql_in file for the documentation
 
 import plpy
-from utilities.validate_args import input_tbl_valid, output_tbl_valid,
-    is_var_valid, cols_in_tbl_valid
+from utilities.validate_args import input_tbl_valid, output_tbl_valid
+from utilities.validate_args import is_var_valid, cols_in_tbl_valid
 from utilities.utilities import _assert
 from utilities.utilities import split_quoted_delimited_str
 
@@ -156,19 +156,10 @@ def _get_r2_score_sql(table_in, pred_col, obs_col, grp_col_str=None):
     else:
         grp_out_str = grp_by_str = partition_str = ""
     return """
-            SELECT {grp_out_str}
-                1 - ssres/sstot AS r2_score
-            FROM (
-                SELECT {grp_out_str}
-                       sum(({obs_col} - mean)^2) as sstot,
-                       sum(({pred_col} - {obs_col})^2) AS ssres
-                FROM(
-                    SELECT {grp_out_str}
-                           {pred_col}, {obs_col},
-                           avg({obs_col}) OVER ({partition_str}) as mean
-                    FROM {table_in}
-                ) x {grp_by_str}
-            ) y
+            SELECT
+                 {grp_out_str}
+                 1 - avg(({pred_col} - {obs_col})^2)/var_pop({obs_col}) AS r2_score
+            FROM {table_in} {grp_by_str}
         """.format(**locals())
 
 
@@ -320,12 +311,10 @@ def binary_classifier(table_in, table_out, pred_col, obs_col, grp_col_str=None):
             SELECT
                 {grp_str}
                 threshold,
-                sum(t) OVER ({partition_str} ORDER BY threshold DESC) AS tp,
-                sum(f) OVER ({partition_str} ORDER BY threshold DESC) AS fp,
-                sum(t) OVER ({partition_str}) -
-                    sum(t) OVER ({partition_str} ORDER BY threshold DESC) AS fn,
-                sum(f) OVER ({partition_str}) -
-                    sum(f) OVER ({partition_str} ORDER BY threshold DESC) AS tn
+                sum(t) OVER w AS tp,
+                sum(f) OVER w AS fp,
+                sum(t) OVER ({partition_str}) - sum(t) OVER w AS fn,
+                sum(f) OVER ({partition_str}) - sum(f) OVER w AS tn
             FROM (
                 SELECT {grp_str}
                        {pred_col} AS threshold,
@@ -335,6 +324,7 @@ def binary_classifier(table_in, table_out, pred_col, obs_col, grp_col_str=None):
                 GROUP BY {grp_str}
                          threshold
             ) x
+            WINDOW w AS ({partition_str} ORDER BY threshold DESC)
         ) y
         """.format(**locals())
     plpy.execute(sql_st)
