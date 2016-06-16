@@ -102,83 +102,35 @@ set(MAD_MODULE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/modules)
 
 # -- Third-party dependencies: Find or download Boost --------------------------
 
-set(Boost_USE_STATIC_LIBS  OFF)
-find_package(Boost 1.47 COMPONENTS regex)
+find_package(Boost 1.47)
 
+# We use BOOST_ASSERT_MSG, which only exists in Boost 1.47 and later.
+# Unfortunately, the FindBoost module seems to be broken with respect to version
+# checking, so we will set Boost_FOUND to FALSE if the version is too old.
 if(Boost_FOUND)
-    # We use BOOST_ASSERT_MSG, which only exists in Boost 1.47 and later.
-    # Unfortunately, the FindBoost module seems to be broken with respect to version
-    # checking, so we will set Boost_FOUND to FALSE if the version is too old.
     if(Boost_VERSION LESS 104600)
         set(Boost_FOUND FALSE)
     endif(Boost_VERSION LESS 104600 )
-
-    # set Boost_FOUND to FALSE if only static library is found
-    get_filename_component(_BOOST_LIB_EXT ${Boost_REGEX_LIBRARY} EXT)
-    if(_BOOST_LIB_EXT MATCHES ".a")
-        set(Boost_FOUND FALSE)
-    endif()
-endif()
-
-set(BOOST_INSTALL_DIR ${CMAKE_BINARY_DIR}/src/lib/boost)
-link_directories(${BOOST_INSTALL_DIR})
+endif(Boost_FOUND)
 
 if(Boost_FOUND)
     include_directories(${Boost_INCLUDE_DIRS})
-    message(STATUS "Copy Boost regex library: ${Boost_REGEX_LIBRARY} to ${BOOST_INSTALL_DIR}")
-    ExternalProject_Add(EP_boost
-        PREFIX ${MAD_THIRD_PARTY}
-        URL ${Boost_REGEX_LIBRARY}
-        DOWNLOAD_COMMAND ${CMAKE_COMMAND} -E copy ${Boost_REGEX_LIBRARY} ${BOOST_INSTALL_DIR}
-        DOWNLOAD_DIR ${BOOST_INSTALL_DIR}
-        CONFIGURE_COMMAND ""
-        CMAKE_COMMAND ""
-        BUILD_COMMAND ""
-        INSTALL_COMMAND ""
-    )
 else(Boost_FOUND)
     message(STATUS "No sufficiently recent version (>= 1.47) of Boost was found. Will download.")
-
-    if(CMAKE_COMPILER_IS_GNUCXX)
-        set(BOOST_CXXFLAGS "-fPIC")
-    elseif(CMAKE_C_COMPILER_ID MATCHES "Clang")
-        set(BOOST_CXXFLAGS "-stdlib=libstdc++")
-    endif(CMAKE_COMPILER_IS_GNUCXX)
 
     ExternalProject_Add(EP_boost
         PREFIX ${MAD_THIRD_PARTY}
         DOWNLOAD_DIR ${MAD_THIRD_PARTY}/downloads
         URL ${BOOST_TAR_SOURCE}
         URL_MD5 ${BOOST_TAR_MD5}
-        BUILD_IN_SOURCE 1
-        CONFIGURE_COMMAND ./bootstrap.sh
-            --with-libraries=regex
-            --includedir=${MAD_THIRD_PARTY}/src/EP_boost
-            --libdir=${BOOST_INSTALL_DIR}
-        BUILD_COMMAND  ./b2 install
-            cxxflags=${BOOST_CXXFLAGS}
-            linkflags="-stdlib=libstdc++"
-            link=shared
-            threading=single
-        INSTALL_COMMAND ""
+        CMAKE_COMMAND /usr/bin/env echo Ignored: cmake
+        BUILD_COMMAND /usr/bin/env echo Ignored: make
+        INSTALL_COMMAND /usr/bin/env echo Ignored: make
+        BINARY_DIR ${MAD_THIRD_PARTY}/src/EP_boost
     )
     include_directories(BEFORE SYSTEM ${MAD_THIRD_PARTY}/src/EP_boost)
 endif(Boost_FOUND)
 
-if(APPLE)
-    ExternalProject_Add_Step(EP_boost e1
-       COMMAND install_name_tool ${BOOST_INSTALL_DIR}/libboost_regex.dylib
-            -id @loader_path/../../../../lib/boost/libboost_regex.dylib
-       DEPENDEES build
-    )
-else()
-    SET(CMAKE_INSTALL_RPATH "$ORIGIN/../../../../lib/boost")
-endif()
-
-install(DIRECTORY ${BOOST_INSTALL_DIR}
-    DESTINATION lib
-    COMPONENT core
-)
 
 # -- Third-party dependencies: Download the C++ linear-algebra library Eigen ---
 ExternalProject_Add(EP_eigen
@@ -294,10 +246,6 @@ macro(add_madlib_connector_library IN_TARGET_NAME IN_LIB_DIR IN_LIB_LOADER)
         ${IN_LIBRARY_SOURCES}
     )
     add_dependencies(${IN_TARGET_NAME} EP_eigen)
-    add_dependencies(${IN_TARGET_NAME} EP_boost)
-
-    target_link_libraries(${IN_TARGET_NAME} boost_regex)
-
     set_target_properties(${IN_TARGET_NAME} PROPERTIES
         LIBRARY_OUTPUT_DIRECTORY "${IN_LIB_DIR}"
         OUTPUT_NAME "madlib"
@@ -315,7 +263,6 @@ macro(add_madlib_connector_library IN_TARGET_NAME IN_LIB_DIR IN_LIB_LOADER)
             LINK_FLAGS
             "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/../../../library.ver")
     endif((NOT APPLE))
-
 endmacro(add_madlib_connector_library)
 
 

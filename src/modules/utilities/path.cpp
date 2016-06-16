@@ -12,20 +12,15 @@
 #include <numeric>
 #include <vector>
 #include <string>
-#include <boost/generator_iterator.hpp>
-#include <boost/regex.hpp>
+#include <boost/xpressive/xpressive.hpp>
 #include "path.hpp"
 
 namespace madlib {
 namespace modules {
 namespace utilities {
 
-// using madlib::dbconnector::postgres::madlib_get_typlenbyvalalign;
-// using madlib::dbconnector::postgres::madlib_construct_array;
-// using madlib::dbconnector::postgres::madlib_construct_md_array;
-
-// Use Eigen
 using namespace dbal::eigen_integration;
+using namespace boost::xpressive;
 
 AnyType path_pattern_match::run(AnyType & args)
 {
@@ -41,34 +36,30 @@ AnyType path_pattern_match::run(AnyType & args)
         throw std::invalid_argument(errorMsg.str());
     }
 
-    boost::regex reg(reg_str);
-    boost::smatch matches;
-    std::string::const_iterator start0 = sym_str.begin(),
+    // store the returned results
+    std::vector<double> _match_id, _match_row_id;
+    // call factory method to create dynamic regex object from a string
+    sregex reg = sregex::compile(reg_str);
+    const double* row_start = row_id.memoryHandle().ptr();
+    std::string::const_iterator sym_start = sym_str.begin(),
                                 start = sym_str.begin(),
                                 end = sym_str.end();
-
-    int match_count = 0;
-    while (boost::regex_search(start, end, matches, reg)) {
-        match_count += matches[0].length();
+    // also the id for the current match
+    double match_count = 1.0;
+    // reuse the match_results<> object
+    smatch matches;
+    // prefer regex_search over sregex_iterator so that match_results<> object
+    // caches dynamically allocated memory across regex searches
+    while (regex_search(start, end, matches, reg)) {
+        size_t i0 = matches[0].first - sym_start;
+        size_t i1 = matches[0].second - sym_start;
+        _match_row_id.insert(_match_row_id.end(), row_start+i0, row_start+i1);
+        _match_id.insert(_match_id.end(), matches[0].length(), match_count++);
         start = matches[0].second;
     }
 
-    ColumnVector match_id(match_count);
-    ColumnVector match_row_id(match_count);
-    start = start0;
-    match_count = 1;
-    int idx = 0;
-    while (boost::regex_search(start, end, matches, reg)) {
-        // database represents array in [1, array_dim]
-        int i0 = matches[0].first - start0;
-        int i1 = i0 + matches[0].length();
-        for (int i = i0; i < i1; i++, idx++) {
-            match_row_id[idx] = row_id[i];
-            match_id[idx] = match_count;
-        }
-        match_count++;
-        start = matches[0].second;
-    }
+    MappedColumnVector match_id(_match_id.data(), _match_id.size());
+    MappedColumnVector match_row_id(_match_row_id.data(), _match_row_id.size());
 
     AnyType tuple;
     tuple << match_id << match_row_id;
