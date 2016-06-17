@@ -60,39 +60,39 @@ def pivot(schema_madlib, source_table, out_table,
 
     """
     indices = split_quoted_delimited_str(index)
-    cols = split_quoted_delimited_str(pivot_cols)
-    vals = split_quoted_delimited_str(pivot_values)
+    pcols = split_quoted_delimited_str(pivot_cols)
+    pvals = split_quoted_delimited_str(pivot_values)
     # aggregate_func = "sum"
-    validate_pivot_coding(source_table, out_table, indices, cols, vals)
+    validate_pivot_coding(source_table, out_table, indices, pcols, pvals)
     new_col_names =[]
     sql_list = ["CREATE TABLE " + out_table + " AS (SELECT " + index]
     # Preperation for multiple index, pivot, etc.
-    for col in cols:
-        for val in vals:
-            col_no_quotes = strip_end_quotes(col.strip())
-            val_no_quotes = strip_end_quotes(val.strip())
+    for pcol in pcols:
+        for pval in pvals:
+            pcol_no_quotes = strip_end_quotes(pcol.strip())
+            pval_no_quotes = strip_end_quotes(pval.strip())
             distinct_values = plpy.execute(
-                "SELECT {col} AS value FROM {source_table} "
-                "GROUP BY {col} ORDER BY {col}".
-                format(col=col, source_table=source_table))
+                "SELECT {pcol} AS value FROM {source_table} "
+                "GROUP BY {pcol} ORDER BY {pcol}".
+                format(pcol=pcol, source_table=source_table))
             distinct_values = [strip_end_quotes(item['value']) for item in distinct_values]
             null_wrap_case_str = ""
             null_wrap_end_str = ""
             if None in distinct_values:
-                null_wrap_case_str = "CASE WHEN \"{col}\" is NULL THEN NULL ELSE "
+                null_wrap_case_str = "CASE WHEN \"{pcol}\" is NULL THEN NULL ELSE "
                 null_wrap_end_str = "END"
             case_str = ("{agg}({wrap_case} "
-                        "CASE WHEN \"{{col}}\" = '{{value}}' THEN {val} ELSE 0 END "
+                        "CASE WHEN \"{{pcol}}\" = '{{value}}' THEN {pval} ELSE NULL END "
                         "{wrap_end})".
                         format(wrap_case=null_wrap_case_str,
                                wrap_end=null_wrap_end_str,
                                agg=aggregate_func,
-                               val=val_no_quotes))
+                               pval=pval_no_quotes))
             sql_list.append(
                 ", " +
-                ', '.join("{case_str} as \"{{col}}_{{value}}\"".
+                ', '.join("{case_str} as \"{{pcol}}_{{value}}\"".
                           format(case_str=case_str).
-                          format(col=col_no_quotes, value=str(value))
+                          format(pcol=pcol_no_quotes, value=str(value))
                           for value in distinct_values if value is not None))
 
     sql_list.append(" FROM " + source_table +
@@ -129,9 +129,9 @@ def validate_pivot_coding(source_table, out_table, indices, pivs, vals):
     _assert(vals and vals not in ('null', ''),
             "Invalid value column!")
 
-    _assert(len(indices) is 1, "Multiple index columns not supported!")
-    _assert(len(pivs) is 1, "Multiple pivot columns not supported!")
-    _assert(len(vals) is 1, "Multiple value columns not supported!")
+    _assert(len(indices) is 1, "Multiple index columns are not supported!")
+    _assert(len(pivs) is 1, "Multiple pivot columns are not supported!")
+    _assert(len(vals) is 1, "Multiple value columns are not supported!")
 
     _assert(columns_exist_in_table(source_table, indices),
             "Not all columns from {0} present in source table ({1})"
