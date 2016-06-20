@@ -17,16 +17,17 @@
 
 import plpy
 import string
+import re
 
 from control import MinWarning
-from utilities import unique_string, _assert
+from utilities import unique_string, _assert, split_quoted_delimited_str
 from validate_args import get_cols
 from validate_args import input_tbl_valid, output_tbl_valid, is_var_valid
 
 m4_changequote(`<!', `!>')
 
 def sessionize(schema_madlib, source_table, output_table, partition_expr,
-                time_stamp, max_time, **kwargs):
+                time_stamp, max_time, output_cols=None, create_view=None, **kwargs):
     """
         Perform sessionization over a sequence of rows.
 
@@ -35,14 +36,21 @@ def sessionize(schema_madlib, source_table, output_table, partition_expr,
         @param source_table: str, Name of the input table/view
         @param output_table: str, Name of the table to store result
         @param partition_expr: str, Expression to partition (group) the input data
-        @param time_stamp: str, Column name with time used for sessionization calculation
+        @param time_stamp: str, The time stamp column name that is used for sessionization calculation
         @param max_time: interval, Delta time between subsequent events to define a session
-
+        @param output_cols: str, list of columns the output table/view must contain (default '*'):
+                        * - all columns in the input table, and a new session ID column
+                        'a,b,c,...' -  a comma separated list of column names/expressions to be projected, along with a new session ID column
+        @param create_view: boolean, indicates if the output is a view or a table with name specified by output_table (default TRUE)
+                        TRUE - create view
+                        FALSE - materialize results into a table
     """
     with MinWarning("error"):
         _validate(source_table, output_table, partition_expr, time_stamp, max_time)
+        table_or_view = 'VIEW' if create_view or create_view is None else 'TABLE'
+        output_cols_to_project = '*' if output_cols is None else output_cols
 
-        all_input_cols_str = ', '.join([i.strip() for i in get_cols(source_table, schema_madlib)])
+        cols_to_project = get_column_names(schema_madlib, source_table, output_cols_to_project)
         session_id = 'session_id' if not is_var_valid(source_table, 'session_id') else unique_string('session_id')
 
         # Create temp column names for intermediate columns.
@@ -50,26 +58,61 @@ def sessionize(schema_madlib, source_table, output_table, partition_expr,
         new_session = unique_string('new_session')
 
         plpy.execute("""
-                CREATE TABLE {output_table} AS
+                CREATE {table_or_view} {output_table} AS
                     SELECT
-                        {all_input_cols_str},
+                        {cols_to_project},
                         CASE WHEN {time_stamp} IS NOT NULL
-                             THEN SUM(CASE WHEN {new_partition} OR {new_session} THEN 1 END)
-                                  OVER (PARTITION BY {partition_expr}
-                                  ORDER BY {time_stamp})
-                        END AS {session_id}
+                        THEN SUM(CASE WHEN {new_partition} OR {new_session} THEN 1 END) OVER (PARTITION BY {partition_expr} ORDER BY {time_stamp}) END AS {session_id}
                     FROM (
                         SELECT *,
-                            ROW_NUMBER() OVER (w) = 1
-                                AND {time_stamp} IS NOT NULL AS {new_partition},
-                            ({time_stamp} - LAG({time_stamp}, 1)
-                                OVER (w)) > '{max_time}'::INTERVAL AS {new_session}
-                        FROM {source_table}
-                        WINDOW w AS (PARTITION BY {partition_expr}
-                                     ORDER BY {time_stamp})
+                            ROW_NUMBER() OVER (w) = 1 AND {time_stamp} IS NOT NULL AS {new_partition},
+                            ({time_stamp}-LAG({time_stamp}, 1) OVER (w)) > '{max_time}'::INTERVAL AS {new_session}
+                        FROM {source_table} WINDOW w AS (PARTITION BY {partition_expr} ORDER BY {time_stamp})
                         ) a
             """.format(**locals()))
 
+def get_column_names(schema_madlib, source_table, output_cols):
+    """
+        This method creates a string that can be used in the SQL statement to project the columns specified in the output_cols parameter.
+
+        Return:
+        a string to be used in the SQL statement
+    """
+    table_columns_list = get_cols(source_table, schema_madlib)
+    if output_cols.strip() == '*':
+        output_cols_str = get_cols_str(table_columns_list)
+    else:
+        output_cols_list, output_cols_names = get_columns_from_expression(output_cols, table_columns_list)
+        _validate_output_cols(source_table, output_cols_list)
+        output_cols_str = ', '.join([output_cols_names[i] if output_cols_list[i] == '*' else output_cols_list[i] + ' AS ' + output_cols_names[i] 
+            for i in range(len(output_cols_list))])
+    return output_cols_str
+
+def create_column_name_from_expression(col_name, table_columns_list):
+    if col_name == '*':
+        return get_cols_str(table_columns_list)
+    else:
+        # Column name cannot have more than one pair of quotes in it. Removing any existing quotes, and then quoting the new string obtained.
+        col_name = col_name.replace('"','')
+        col_name = '"'+col_name + '"'
+        if col_name in table_columns_list:
+            return unique_string(col_name)
+        else:
+            return col_name
+
+def get_cols_str(table_columns_list):
+    return ', '.join([i for i in table_columns_list])
+
+def get_columns_from_expression(output_cols, table_columns_list):
+    cols_list = split_quoted_delimited_str(output_cols)
+    cols_names = [i if i in table_columns_list else create_column_name_from_expression(i, table_columns_list) for i in cols_list]
+    return cols_list, cols_names
+
+def _validate_output_cols(source_table, output_cols_list):
+    null_regex = re.compile('^null$', re.IGNORECASE)
+    for col in output_cols_list:
+        _assert(is_var_valid(source_table, col), "Sessionization error: Invalid output column name: " + col)
+        _assert(True if null_regex.search(col) is None else False, "Sessionization error: Output column name cannot be " + col)
 
 def _validate(source_table, output_table, partition_expr, time_stamp, max_time):
     input_tbl_valid(source_table, 'Sessionization')
@@ -80,8 +123,7 @@ def _validate(source_table, output_table, partition_expr, time_stamp, max_time):
     _assert(max_time, "Sessionization error: Invalid max time value")
     # ensure the partition/order expression can actually be used
     _assert(is_var_valid(source_table, partition_expr, time_stamp),
-            "Sessionization error: invalid partition expression or time stamp column name")
-
+            "Sessionization error: Invalid partition expression or time stamp column name")
 
 def sessionize_help_message(schema_madlib, message, **kwargs):
     """
@@ -94,17 +136,19 @@ def sessionize_help_message(schema_madlib, message, **kwargs):
         Functionality: Sessionize
 
         The goal of the MADlib sessionize function is to perform sessionization over
-        a time-series based data.
+        a time-series based data. 
 
         ------------------------------------------------------------
                                 USAGE
         ------------------------------------------------------------
         SELECT {schema_madlib}.sessionize(
-            'source_table',    -- str, Name of the table
-            'output_table',    -- str, Table name to store the Sessionization results
-            'partition_expr',  -- str, Partition expression to group the data table
-            'time_stamp'    -- str, Column name with time used for sessionization calculation
-            'max_time'  -- str, Delta time between subsequent events to define a session
+            'source_table',     -- str, Name of the table
+            'output_table',     -- str, Table name to store the Sessionization results
+            'partition_expr',   -- str, Partition expression to group the data table
+            'time_stamp'        -- str, The time stamp column name that is used for sessionization calculation
+            'max_time'          -- str, Delta time between subsequent events to define a session
+            'output_cols'       -- str, an optional comma separated list of columns to be projected in the output table/view (default *)
+            'create_view'       -- boolean, optional parameter to specify if output is a view or materilized to a table (default True)
         );
 
         ------------------------------------------------------------
@@ -171,19 +215,40 @@ def sessionize_help_message(schema_madlib, message, **kwargs):
         '04/15/2016 02:19:00'|103711|109|'WINE'|0|1
         \.
 
-        - Sessionize the table for each user_id:
+        - Sessionize the table for each user_id, and obtain only the user_id, with partition expression, 
+        event_timestamp and session_id:
 
         SELECT {schema_madlib}.sessionize(
-         'eventlog',                -- Name of input table
-         'sessionize_output',             -- Table name to store sessionized results
-         'user_id',              -- Partition input table by session
+         'eventlog',            -- Name of input table
+         'sessionize_output',   -- Table name to store sessionized results
+         'user_id',             -- Partition input table by session
          'event_timestamp',     -- Order partitions in input table by time
-         '0:3:0'    -- Events within a window of this time unit (180 seconds) must be in the same session
+         '0:3:0'                -- Events within a window of this time unit (180 seconds) must be in the same session
          );
 
         - View the output table containing the session IDs:
 
         SELECT * FROM sessionize_output;
+
+        DROP VIEW sessionize_output;
+
+        - Sessionize the table for each user_id, and materialize all columns from source table into an output table:
+        SELECT {schema_madlib}.sessionize(
+         'eventlog',                -- Name of input table
+         'sessionize_output',       -- Table name to store sessionized results
+         'user_id',                 -- Partition input table by session
+         'event_timestamp',         -- Order partitions in input table by time
+         '180'                      -- Events within a window of this time unit (180 seconds) must be in the same session
+         'user_id, event_timestamp' -- Preseve only user_id and event_timestamp columns, along with the session id column
+         'false'                    -- Materialize results into a table, and not a view
+         );
+        
+        - View the output table containing the session IDs:
+
+        SELECT eventlog.*, sessionize_output.session_id FROM eventlog INNER JOIN sessionize_output ON 
+        (eventlog.user_id=sessionize_output.user_id AND eventlog.event_timestamp=sessionize_output.event_timestamp);
+        
+        DROP TABLE sessionize_output;
     """
 
     return help_string.format(schema_madlib=schema_madlib)
