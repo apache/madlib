@@ -58,47 +58,67 @@ def pivot(schema_madlib, source_table, out_table,
         @param aggregate_func   The aggregate function to be applied to the
                                 values
 
+    Assume we have the following table
+        pivset( id INTEGER, piv FLOAT8, val FLOAT8 )
+    where the piv column has 3 distinct values (10.0, 20.0 and 30.0).
+    If the pivot function call is :
+        SELECT madlib.pivot('pivset', 'pivout', 'id', 'piv', 'val');
+    We want to construct the following sql code to pivot the table.
+        CREATE TABLE pivout AS (SELECT id,
+        sum(CASE WHEN "piv" = '10.0' THEN val ELSE NULL END ) as "piv_10.0",
+        sum(CASE WHEN "piv" = '20.0' THEN val ELSE NULL END ) as "piv_20.0",
+        sum(CASE WHEN "piv" = '30.0' THEN val ELSE NULL END ) as "piv_30.0"
+        FROM pivset GROUP BY id ORDER BY id)
+
     """
     indices = split_quoted_delimited_str(index)
-    pcols = split_quoted_delimited_str(pivot_cols)
-    pvals = split_quoted_delimited_str(pivot_values)
-    # aggregate_func = "sum"
-    validate_pivot_coding(source_table, out_table, indices, pcols, pvals)
+    pcol = split_quoted_delimited_str(pivot_cols)
+    pval = split_quoted_delimited_str(pivot_values)
+    validate_pivot_coding(source_table, out_table, indices, pcol, pval)
     new_col_names =[]
     sql_list = ["CREATE TABLE " + out_table + " AS (SELECT " + index]
-    # Preperation for multiple index, pivot, etc.
-    for pcol in pcols:
-        for pval in pvals:
-            pcol_no_quotes = strip_end_quotes(pcol.strip())
-            pval_no_quotes = strip_end_quotes(pval.strip())
-            distinct_values = plpy.execute(
-                "SELECT {pcol} AS value FROM {source_table} "
-                "GROUP BY {pcol} ORDER BY {pcol}".
-                format(pcol=pcol, source_table=source_table))
-            distinct_values = [strip_end_quotes(item['value']) for item in distinct_values]
-            _assert(len(distinct_values) + len(indices) < 250, "Too many distinct values for pivoting!")
-            null_wrap_case_str = ""
-            null_wrap_end_str = ""
-            if None in distinct_values:
-                null_wrap_case_str = "CASE WHEN \"{pcol}\" is NULL THEN NULL ELSE "
-                null_wrap_end_str = "END"
-            case_str = ("{agg}({wrap_case} "
-                        "CASE WHEN \"{{pcol}}\" = '{{value}}' THEN {pval} ELSE NULL END "
-                        "{wrap_end})".
-                        format(wrap_case=null_wrap_case_str,
-                               wrap_end=null_wrap_end_str,
-                               agg=aggregate_func,
-                               pval=pval_no_quotes))
-            sql_list.append(
-                ", " +
-                ', '.join("{case_str} as \"{{pcol}}_{{value}}\"".
-                          format(case_str=case_str).
-                          format(pcol=pcol_no_quotes, value=str(value))
-                          for value in distinct_values if value is not None))
 
+    pcol_no_quotes = strip_end_quotes(pcol[0].strip())
+    pval_no_quotes = strip_end_quotes(pval[0].strip())
+
+    # Find the distinct values of pivot_cols
+    distinct_values = plpy.execute(
+        "SELECT array_agg(DISTINCT {pcol} ORDER BY {pcol}) AS value "
+        "FROM {source_table}".
+        format(pcol=pcol[0], source_table=source_table))
+
+    distinct_values = [strip_end_quotes(item) for item in distinct_values[0]['value']]
+
+    # Warn the user if the number of columns is over 1000 for the output table
+    old_msg_level = plpy.execute("""
+                                  SELECT setting
+                                  FROM pg_settings
+                                  WHERE name='client_min_messages'
+                                  """)[0]['setting']
+    plpy.execute("SET client_min_messages TO WARNING")
+    if (len(distinct_values) + len(indices)) > 1000:
+        plpy.warning(
+            """
+            Too many distinct values for pivoting!
+            The execution may fail due to too many columns in the output table
+            """)
+    plpy.execute("SET client_min_messages TO {0}".format(old_msg_level))
+
+    # The aggregate that collects the pivot_values values for a given pivot_cols value
+    case_str = ("{agg}("
+                "CASE WHEN \"{{pcol}}\" = '{{value}}' THEN {pval} ELSE NULL END "
+                ")".
+                format(agg=aggregate_func,
+                       pval=pval_no_quotes))
+    sql_list.append(
+        ", " +
+        # Assign the name of the new column
+        ', '.join("{case_str} as \"{{pcol}}_{{value}}\"".
+                  format(case_str=case_str).
+                  format(pcol=pcol_no_quotes, value=str(value))
+                  for value in distinct_values if value is not None))
     sql_list.append(" FROM " + source_table +
                     " GROUP BY " + index + " ORDER BY " + index + ") ")
-
     plpy.execute(''.join(sql_list))
     return None
 #------------------------------------------------------------------------------
