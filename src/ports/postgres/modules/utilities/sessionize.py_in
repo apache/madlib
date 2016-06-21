@@ -50,7 +50,7 @@ def sessionize(schema_madlib, source_table, output_table, partition_expr,
         table_or_view = 'VIEW' if create_view or create_view is None else 'TABLE'
         output_cols_to_project = '*' if output_cols is None else output_cols
 
-        cols_to_project = get_column_names(schema_madlib, source_table, output_cols_to_project)
+        cols_to_project = get_columns_to_project_str(schema_madlib, source_table, output_cols_to_project)
         session_id = 'session_id' if not is_var_valid(source_table, 'session_id') else unique_string('session_id')
 
         # Create temp column names for intermediate columns.
@@ -71,9 +71,22 @@ def sessionize(schema_madlib, source_table, output_table, partition_expr,
                         ) a
             """.format(**locals()))
 
-def get_column_names(schema_madlib, source_table, output_cols):
+def get_columns_to_project_str(schema_madlib, source_table, output_cols):
     """
-        This method creates a string that can be used in the SQL statement to project the columns specified in the output_cols parameter.
+        This method creates a string that can be used in the SQL statement to project the columns 
+        specified in the output_cols parameter.
+        Args:
+        @param schema_madlib: str, Name of the MADlib schema
+        @param source_table: str, Name of the input table/view
+        @param output_cols: str, comma separated string specifying coulumns/expressions to project
+
+        If an element in output_cols is a column name from the input table, it is maintained as is.
+        But, if it is an expression, the expression is renamed using a quoted string.
+
+        Example:
+        output_cols = 'user_name, "user id"<100", revenue>20'
+        Return value:
+        'user_name, "user id"<100 AS "user id<100", revenue>20 AS "revenue>20"'
 
         Return:
         a string to be used in the SQL statement
@@ -89,12 +102,36 @@ def get_column_names(schema_madlib, source_table, output_cols):
     return output_cols_str
 
 def create_column_name_from_expression(col_name, table_columns_list):
+    """
+    This method creates a new name for an expression, which is used as the column name for that expression
+    when materialized into the result table/view.
+
+    Args:
+    @param: col_name: str, the expression.
+    @param: table_columns_list: list, contains all the existing columns names of the input table
+
+    All existing quotes in col_name, if any, are removed. The string thus obtained is then quoted. If this quoted
+    string is already an element in table_columns_list, then a unique string is created as the column name corresopnding
+    to col_name.
+
+    Example:
+    1) col_name= "user id"<100
+    Return value: "user id<100"
+    2) col_name = revenue>20
+    Return value: "revenue>20"
+
+    Return:
+    A string which represents the column name corresponding to the expression specified in col_name
+    """
     if col_name == '*':
         return get_cols_str(table_columns_list)
     else:
-        # Column name cannot have more than one pair of quotes in it. Removing any existing quotes, and then quoting the new string obtained.
+        # Column name cannot have more than one pair of quotes in it. Removing any existing quotes,
+        # and then quoting the new string obtained.
         col_name = col_name.replace('"','')
         col_name = '"'+col_name + '"'
+        # If the col_name thus obtained is the same as an existing column name in the input table,
+        # return a unique string, else return col_name
         if col_name in table_columns_list:
             return unique_string(col_name)
         else:
@@ -104,7 +141,13 @@ def get_cols_str(table_columns_list):
     return ', '.join([i for i in table_columns_list])
 
 def get_columns_from_expression(output_cols, table_columns_list):
+    """
+    output_cols is a comma separated string of expressions. This function creates a list consisting of the elements (expressions)
+    in output_cols, and another list containing the corresponding name for each element (expression).
+    """
     cols_list = split_quoted_delimited_str(output_cols)
+    # If an entry in cols_list is an existing column name in the input table, keep the name as is. If NOT,
+    # create a new name for the entry (expression).
     cols_names = [i if i in table_columns_list else create_column_name_from_expression(i, table_columns_list) for i in cols_list]
     return cols_list, cols_names
 
