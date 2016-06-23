@@ -57,7 +57,9 @@ def pivot(schema_madlib, source_table, out_table,
                                 pivoted table
         @param aggregate_func   The aggregate function to be applied to the
                                 values
+    """
 
+    """
     Assume we have the following table
         pivset( id INTEGER, piv FLOAT8, val FLOAT8 )
     where the piv column has 3 distinct values (10.0, 20.0 and 30.0).
@@ -88,22 +90,6 @@ def pivot(schema_madlib, source_table, out_table,
         format(pcol=pcol[0], source_table=source_table))
 
     distinct_values = [strip_end_quotes(item) for item in distinct_values[0]['value']]
-
-    # Warn the user if the number of columns is over 1000 for the output table
-    old_msg_level = plpy.execute("""
-                                  SELECT setting
-                                  FROM pg_settings
-                                  WHERE name='client_min_messages'
-                                  """)[0]['setting']
-    plpy.execute("SET client_min_messages TO WARNING")
-    if (len(distinct_values) + len(indices)) > 1000:
-        plpy.warning(
-            """
-            Too many distinct values for pivoting!
-            The execution may fail due to too many columns in the output table
-            """)
-    plpy.execute("SET client_min_messages TO {0}".format(old_msg_level))
-
     # The aggregate that collects the pivot_values values for a given pivot_cols value
     case_str = ("{agg}("
                 "CASE WHEN \"{{pcol}}\" = '{{value}}' THEN {pval} ELSE NULL END "
@@ -119,7 +105,21 @@ def pivot(schema_madlib, source_table, out_table,
                   for value in distinct_values if value is not None))
     sql_list.append(" FROM " + source_table +
                     " GROUP BY " + index + " ORDER BY " + index + ") ")
-    plpy.execute(''.join(sql_list))
+    try:
+        plpy.execute(''.join(sql_list))
+    except:
+        # Warn the user if the number of columns is over 1000 for the output table
+        old_msg_level = plpy.execute("""
+                                      SELECT setting
+                                      FROM pg_settings
+                                      WHERE name='client_min_messages'
+                                      """)[0]['setting']
+        plpy.execute("SET client_min_messages TO WARNING")
+        if (len(distinct_values) + len(indices)) > 1000:
+            plpy.warning("Too many distinct values for pivoting! The execution "
+                "may fail due to too many columns in the output table.")
+        plpy.execute("SET client_min_messages TO {0}".format(old_msg_level))
+        raise
     return None
 #------------------------------------------------------------------------------
 
