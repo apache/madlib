@@ -31,6 +31,7 @@
 
 """
 import plpy
+from control import MinWarning
 from utilities import _assert
 from utilities import split_quoted_delimited_str
 from utilities import strip_end_quotes
@@ -89,10 +90,11 @@ def pivot(schema_madlib, source_table, out_table,
         "FROM {source_table}".
         format(pcol=pcol[0], source_table=source_table))
 
-    distinct_values = [strip_end_quotes(item) for item in distinct_values[0]['value']]
-    # The aggregate that collects the pivot_values values for a given pivot_cols value
+    distinct_values = [strip_end_quotes(item)
+                        for item in distinct_values[0]['value']]
+    # The aggregate collects pivot_values values for a given pivot_cols value
     case_str = ("{agg}("
-                "CASE WHEN \"{{pcol}}\" = '{{value}}' THEN {pval} ELSE NULL END "
+                "CASE WHEN \"{{pcol}}\" = '{{value}}' THEN {pval} ELSE NULL END"
                 ")".
                 format(agg=aggregate_func,
                        pval=pval_no_quotes))
@@ -107,18 +109,14 @@ def pivot(schema_madlib, source_table, out_table,
                     " GROUP BY " + index + " ORDER BY " + index + ") ")
     try:
         plpy.execute(''.join(sql_list))
-    except:
-        # Warn the user if the number of columns is over 1000 for the output table
-        old_msg_level = plpy.execute("""
-                                      SELECT setting
-                                      FROM pg_settings
-                                      WHERE name='client_min_messages'
-                                      """)[0]['setting']
-        plpy.execute("SET client_min_messages TO WARNING")
-        if (len(distinct_values) + len(indices)) > 1000:
-            plpy.warning("Too many distinct values for pivoting! The execution "
-                "may fail due to too many columns in the output table.")
-        plpy.execute("SET client_min_messages TO {0}".format(old_msg_level))
+    except plpy.SPIError:
+        # Warn user if the number of columns is over 1000 for the output table
+        with MinWarning("warning"):
+            if (len(distinct_values) + len(indices)) > 1000:
+                plpy.warning("Too many distinct values for pivoting! The "
+                    "execution may fail due to too many columns in the output "
+                    "table.")
+
         raise
     return None
 #------------------------------------------------------------------------------
