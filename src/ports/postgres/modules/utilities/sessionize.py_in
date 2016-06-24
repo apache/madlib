@@ -38,9 +38,7 @@ def sessionize(schema_madlib, source_table, output_table, partition_expr,
         @param partition_expr: str, Expression to partition (group) the input data
         @param time_stamp: str, The time stamp column name that is used for sessionization calculation
         @param max_time: interval, Delta time between subsequent events to define a session
-        @param output_cols: str, list of columns the output table/view must contain (default '*'):
-                        * - all columns in the input table, and a new session ID column
-                        'a,b,c,...' -  a comma separated list of column names/expressions to be projected, along with a new session ID column
+        @param output_cols: str, a valid postgres SELECT expression
         @param create_view: boolean, indicates if the output is a view or a table with name specified by output_table (default TRUE)
                         TRUE - create view
                         FALSE - materialize results into a table
@@ -48,108 +46,47 @@ def sessionize(schema_madlib, source_table, output_table, partition_expr,
     with MinWarning("error"):
         _validate(source_table, output_table, partition_expr, time_stamp, max_time)
         table_or_view = 'VIEW' if create_view or create_view is None else 'TABLE'
-        output_cols_to_project = '*' if output_cols is None else output_cols
 
-        cols_to_project = get_columns_to_project_str(schema_madlib, source_table, output_cols_to_project)
+        output_cols = '*' if output_cols is None else output_cols
+        # If the output_cols has '*' as one of the elements, expand it to include all columns in the source table. The following list
+        # comprehension is only to handle the case where '*' is included in output_cols. Using '*' as is, without expanding it to specific
+        # column names leads to some temporary intermediate columns (new_partition and new_session defined below) occurring in the output.
+        cols_to_project_list = [', '.join(get_cols(source_table, schema_madlib)) if i=='*' else i for i in split_quoted_delimited_str(output_cols)]
+        # Examples of Invalid SELECT expression in output_cols:
+        # 1) If output_cols contains '*' along with an existing column name in the source table, postgres will throw an error and fail
+        # for specifying duplicate column names in the output table/view.
+        # 2) If output_cols contains more than 1 expressions which are not renamed using ' AS ', postgres will fail since it will
+        # try to rename all such new columns as '?column?'. This is considered an invalid SELECT expression.
+        cols_to_project = ', '.join(cols_to_project_list)
+
         session_id = 'session_id' if not is_var_valid(source_table, 'session_id') else unique_string('session_id')
 
         # Create temp column names for intermediate columns.
         new_partition = unique_string('new_partition')
         new_session = unique_string('new_session')
 
-        plpy.execute("""
-                CREATE {table_or_view} {output_table} AS
-                    SELECT
-                        {cols_to_project},
-                        CASE WHEN {time_stamp} IS NOT NULL
-                        THEN SUM(CASE WHEN {new_partition} OR {new_session} THEN 1 END) OVER (PARTITION BY {partition_expr} ORDER BY {time_stamp}) END AS {session_id}
-                    FROM (
-                        SELECT *,
-                            ROW_NUMBER() OVER (w) = 1 AND {time_stamp} IS NOT NULL AS {new_partition},
-                            ({time_stamp}-LAG({time_stamp}, 1) OVER (w)) > '{max_time}'::INTERVAL AS {new_session}
-                        FROM {source_table} WINDOW w AS (PARTITION BY {partition_expr} ORDER BY {time_stamp})
-                        ) a
-            """.format(**locals()))
-
-def get_columns_to_project_str(schema_madlib, source_table, output_cols):
-    """
-        This method creates a string that can be used in the SQL statement to project the columns 
-        specified in the output_cols parameter.
-        Args:
-        @param schema_madlib: str, Name of the MADlib schema
-        @param source_table: str, Name of the input table/view
-        @param output_cols: str, comma separated string specifying coulumns/expressions to project
-
-        If an element in output_cols is a column name from the input table, it is maintained as is.
-        But, if it is an expression, the expression is renamed using a quoted string.
-
-        Example:
-        output_cols = 'user_name, "user id"<100", revenue>20'
-        Return value:
-        'user_name, "user id"<100 AS "user id<100", revenue>20 AS "revenue>20"'
-
-        Return:
-        a string to be used in the SQL statement
-    """
-    table_columns_list = get_cols(source_table, schema_madlib)
-    if output_cols.strip() == '*':
-        output_cols_str = get_cols_str(table_columns_list)
-    else:
-        output_cols_list, output_cols_names = get_columns_from_expression(output_cols, table_columns_list)
-        _validate_output_cols(source_table, output_cols_list)
-        output_cols_str = ', '.join([output_cols_names[i] if output_cols_list[i] == '*' else output_cols_list[i] + ' AS ' + output_cols_names[i] 
-            for i in range(len(output_cols_list))])
-    return output_cols_str
-
-def create_column_name_from_expression(col_name, table_columns_list):
-    """
-    This method creates a new name for an expression, which is used as the column name for that expression
-    when materialized into the result table/view.
-
-    Args:
-    @param: col_name: str, the expression.
-    @param: table_columns_list: list, contains all the existing columns names of the input table
-
-    All existing quotes in col_name, if any, are removed. The string thus obtained is then quoted. If this quoted
-    string is already an element in table_columns_list, then a unique string is created as the column name corresopnding
-    to col_name.
-
-    Example:
-    1) col_name= "user id"<100
-    Return value: "user id<100"
-    2) col_name = revenue>20
-    Return value: "revenue>20"
-
-    Return:
-    A string which represents the column name corresponding to the expression specified in col_name
-    """
-    if col_name == '*':
-        return get_cols_str(table_columns_list)
-    else:
-        # Column name cannot have more than one pair of quotes in it. Removing any existing quotes,
-        # and then quoting the new string obtained.
-        col_name = col_name.replace('"','')
-        col_name = '"'+col_name + '"'
-        # If the col_name thus obtained is the same as an existing column name in the input table,
-        # return a unique string, else return col_name
-        if col_name in table_columns_list:
-            return unique_string(col_name)
-        else:
-            return col_name
-
-def get_cols_str(table_columns_list):
-    return ', '.join([i for i in table_columns_list])
-
-def get_columns_from_expression(output_cols, table_columns_list):
-    """
-    output_cols is a comma separated string of expressions. This function creates a list consisting of the elements (expressions)
-    in output_cols, and another list containing the corresponding name for each element (expression).
-    """
-    cols_list = split_quoted_delimited_str(output_cols)
-    # If an entry in cols_list is an existing column name in the input table, keep the name as is. If NOT,
-    # create a new name for the entry (expression).
-    cols_names = [i if i in table_columns_list else create_column_name_from_expression(i, table_columns_list) for i in cols_list]
-    return cols_list, cols_names
+        try:
+            plpy.execute("""
+                    CREATE {table_or_view} {output_table} AS
+                        SELECT
+                            {cols_to_project},
+                            CASE WHEN {time_stamp} IS NOT NULL
+                            THEN SUM(CASE WHEN {new_partition} OR {new_session} THEN 1 END) OVER (PARTITION BY {partition_expr} ORDER BY {time_stamp}) END AS {session_id}
+                        FROM (
+                            SELECT *,
+                                ROW_NUMBER() OVER (w) = 1 AND {time_stamp} IS NOT NULL AS {new_partition},
+                                ({time_stamp}-LAG({time_stamp}, 1) OVER (w)) > '{max_time}'::INTERVAL AS {new_session}
+                            FROM {source_table} WINDOW w AS (PARTITION BY {partition_expr} ORDER BY {time_stamp})
+                            ) a
+                """.format(**locals()))
+        except plpy.SPIError as e:
+            # The specific exception we want to catch here is "spiexceptions.DuplicateColumn". But the current version of gpdb
+            # does not seem to have implemented it. So catching a more generic exception and displaying this warning message.
+            # The reason for doing this is that the default error message shown by postgres when we have more
+            # than one expressions in output_cols that do not use ' AS ' to rename them is not user-friendly.
+            with MinWarning("warning"):
+                plpy.warning("A plausible error condition: the output_cols parameter might be an invalid SELECT expression, resulting in duplicate column names.")
+                raise
 
 def _validate_output_cols(source_table, output_cols_list):
     null_regex = re.compile('^null$', re.IGNORECASE)
@@ -190,7 +127,7 @@ def sessionize_help_message(schema_madlib, message, **kwargs):
             'partition_expr',   -- str, Partition expression to group the data table
             'time_stamp'        -- str, The time stamp column name that is used for sessionization calculation
             'max_time'          -- str, Delta time between subsequent events to define a session
-            'output_cols'       -- str, an optional comma separated list of columns to be projected in the output table/view (default *)
+            'output_cols'       -- str, an optional valid postgres SELECT expression for the output table/view (default *)
             'create_view'       -- boolean, optional parameter to specify if output is a view or materilized to a table (default True)
         );
 
