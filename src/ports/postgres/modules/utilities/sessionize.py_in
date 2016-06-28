@@ -46,20 +46,29 @@ def sessionize(schema_madlib, source_table, output_table, partition_expr,
     with MinWarning("error"):
         _validate(source_table, output_table, partition_expr, time_stamp, max_time)
         table_or_view = 'VIEW' if create_view or create_view is None else 'TABLE'
-
         output_cols = '*' if output_cols is None else output_cols
-        # If the output_cols has '*' as one of the elements, expand it to include all columns in the source table. The following list
-        # comprehension is only to handle the case where '*' is included in output_cols. Using '*' as is, without expanding it to specific
-        # column names leads to some temporary intermediate columns (new_partition and new_session defined below) occurring in the output.
-        cols_to_project_list = [', '.join(get_cols(source_table, schema_madlib)) if i=='*' else i for i in split_quoted_delimited_str(output_cols)]
-        # Examples of Invalid SELECT expression in output_cols:
-        # 1) If output_cols contains '*' along with an existing column name in the source table, postgres will throw an error and fail
-        # for specifying duplicate column names in the output table/view.
-        # 2) If output_cols contains more than 1 expressions which are not renamed using ' AS ', postgres will fail since it will
-        # try to rename all such new columns as '?column?'. This is considered an invalid SELECT expression.
-        cols_to_project = ', '.join(cols_to_project_list)
 
-        session_id = 'session_id' if not is_var_valid(source_table, 'session_id') else unique_string('session_id')
+        # If the output_cols has '*' as one of the elements, expand it to
+        # include all columns in the source table. The following list
+        # comprehension is only to handle the case where '*' is included
+        # in output_cols. Using '*' as is, without expanding it to specific
+        # column names leads to some temporary intermediate columns 
+        # (new_partition and new_session defined below) occurring in the output.
+        cols_to_project_list = [', '.join(get_cols(source_table, schema_madlib)) if i=='*' else i 
+            for i in split_quoted_delimited_str(output_cols)]
+        
+        # Examples of Invalid SELECT expression in output_cols:
+        # 1) If output_cols contains '*' along with an existing column name
+        # in the source table, postgres will throw an error and fail
+        # for specifying duplicate column names in the output table/view.
+        # 2) If output_cols contains more than 1 expressions which are not
+        # renamed using ' AS ', postgres will fail since it will try to 
+        # rename all such new columns as '?column?'. This is considered an
+        # invalid SELECT expression.
+        cols_to_project = ', '.join(cols_to_project_list)
+        
+        session_id = 'session_id' if not is_var_valid(source_table, 'session_id')\
+            else unique_string('session_id')
 
         # Create temp column names for intermediate columns.
         new_partition = unique_string('new_partition')
@@ -80,12 +89,17 @@ def sessionize(schema_madlib, source_table, output_table, partition_expr,
                             ) a
                 """.format(**locals()))
         except plpy.SPIError as e:
-            # The specific exception we want to catch here is "spiexceptions.DuplicateColumn". But the current version of gpdb
-            # does not seem to have implemented it. So catching a more generic exception and displaying this warning message.
-            # The reason for doing this is that the default error message shown by postgres when we have more
-            # than one expressions in output_cols that do not use ' AS ' to rename them is not user-friendly.
+            # The specific exception we want to catch here is 
+            # "spiexceptions.DuplicateColumn". But the current version of gpdb
+            # does not seem to have implemented it. So catching a more generic
+            # exception and displaying this warning message. The reason for
+            # doing this is that the default error message shown by postgres
+            # when we have more than one expressions in output_cols that do 
+            # not use ' AS ' to rename them is not user-friendly.
             with MinWarning("warning"):
-                plpy.warning("A plausible error condition: the output_cols parameter might be an invalid SELECT expression, resulting in duplicate column names.")
+                plpy.warning("A plausible error condition: the output_cols\
+                    parameter might be an invalid SELECT expression, resulting\
+                    in duplicate column names.")
                 raise
 
 def _validate(source_table, output_table, partition_expr, time_stamp, max_time):
