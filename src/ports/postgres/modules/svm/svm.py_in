@@ -69,7 +69,7 @@ def _compute_svm(args):
                 """)
         it.final()
     return iterationCtrl.iteration
-# ---------------------------------------------------
+# ------------------------------------------------------------------------------
 
 
 def _verify_table(source_table, model_table, dependent_varname,
@@ -96,6 +96,7 @@ def _verify_table(source_table, model_table, dependent_varname,
     output_tbl_valid(model_table, 'SVM')
     summary_table = add_postfix(model_table, "_summary")
     output_tbl_valid(summary_table, 'SVM')
+# ------------------------------------------------------------------------------
 
 
 def _get_grouping_col_str(schema_madlib, source_table, grouping_col):
@@ -126,6 +127,7 @@ def _get_grouping_col_str(schema_madlib, source_table, grouping_col):
         grouping_col = None
 
     return grouping_str, grouping_col
+# ------------------------------------------------------------------------------
 
 
 def _verify_get_params_dict(params_dict):
@@ -142,31 +144,39 @@ def _verify_get_params_dict(params_dict):
     _assert(not hasattr(params_dict['max_iter'], '__len__'),
             "SVM Error: max_iter should not be a list after cross validation!")
     return params_dict
+# ------------------------------------------------------------------------------
 
 
-def _build_output_tables(n_iters_run, model_table, args, transformer, **kwargs):
-    # transformer should always be a valid object
-    original_table = transformer.original_table
-    if not original_table:
-        dependent_varname = args['col_dep_var']
-        independent_varname = args['col_ind_var']
-        source_table = args['rel_source']
-        kernel_func = "linear"
-        kernel_params = "NULL"
-    else:
-        independent_varname = original_table['independent_varname']
-        if original_table['dependent_varname']:
-            # an exception added for the svm_one_class case where the
-            # dependent_varname is artificially injected into the transformed table
-            dependent_varname = original_table['dependent_varname']
-            source_table = original_table['source_table']
+def _build_output_tables(n_iters_run, args, **kwargs):
+
+    transformer = args['transformer']
+    use_transformer_for_output = args['use_transformer_for_output']
+    if use_transformer_for_output:
+        # transformer should always be a valid object created using the transform function.
+        ot = transformer.original_table
+        independent_varname = ot['independent_varname']
+        dependent_varname = ot['dependent_varname']
+        source_table = ot['source_table']
+        if not dependent_varname:
+            # an exception added for the svm_one_class where dependent_varname
+            # is artificially injected into the transformed table and does not
+            # exist in the original table. Hence we use transformed table
+            # to get the expression type
+            tt = transformer.transformed_table
+            dep_type = get_expr_type(tt['dependent_varname'], tt['source_table'])
         else:
-            dependent_varname = transformer.transformed_table['dependent_varname']
-            source_table = transformer.transformed_table['source_table']
-        random_table = add_postfix(model_table, "_random")
-        transformer.save_as(random_table)
-        kernel_func = transformer.kernel_func
-        kernel_params = transformer.kernel_params
+            dep_type = get_expr_type(dependent_varname, source_table)
+    else:
+        source_table = args['source_table']
+        independent_varname = args['independent_varname']
+        dependent_varname = args['dependent_varname']
+        dep_type = get_expr_type(dependent_varname, source_table)
+
+    model_table = args['model_table']
+    random_table = add_postfix(model_table, "_random")
+    transformer.save_as(random_table)
+    kernel_func = transformer.kernel_func
+    kernel_params = transformer.kernel_params
 
     grouping_col = args['grouping_col']
     col_grp_key = args['col_grp_key']
@@ -177,7 +187,7 @@ def _build_output_tables(n_iters_run, model_table, args, transformer, **kwargs):
     else:
         groupby_str, grouping_str1, using_str = "", "", "ON TRUE"
     # organizing results
-    dep_type = get_expr_type(dependent_varname, source_table)
+    args.update(locals())
     model_table_query = """
         CREATE TABLE {model_table} AS
             SELECT
@@ -212,13 +222,7 @@ def _build_output_tables(n_iters_run, model_table, args, transformer, **kwargs):
                 {groupby_str}
             ) n_tuples_including_nulls_subq
             {using_str}
-        """.format(n_iters_run=n_iters_run,
-                   groupby_str=groupby_str,
-                   grouping_str1=grouping_str1,
-                   using_str=using_str,
-                   source_table=source_table,
-                   model_table=model_table,
-                   dep_type=dep_type, **args)
+        """.format(**args)
     plpy.execute(model_table_query)
 
     # summary table
@@ -227,10 +231,8 @@ def _build_output_tables(n_iters_run, model_table, args, transformer, **kwargs):
         FROM {0}
         WHERE coef IS NULL
         """.format(model_table))[0]['num_failed_groups']
-
     summary_table = add_postfix(model_table, "_summary")
     grouping_text = "NULL" if not grouping_col else grouping_col
-    args.update(locals())
     plpy.execute("""
             CREATE TABLE {summary_table} AS
             SELECT
@@ -258,7 +260,11 @@ def _build_output_tables(n_iters_run, model_table, args, transformer, **kwargs):
                 sum(num_rows_processed)::bigint     AS total_rows_processed,
                 sum(num_rows_skipped)::bigint       AS total_rows_skipped
             FROM {model_table};
-            """.format(**args))
+            """.format(summary_table=summary_table,
+                       grouping_text=grouping_text,
+                       n_failed_groups=n_failed_groups,
+                       **args))
+# ------------------------------------------------------------------------------
 
 
 def svm_predict_help(schema_madlib, message, **kwargs):
@@ -387,6 +393,7 @@ def svm_predict_help(schema_madlib, message, **kwargs):
         return """
             No such option. Use "SELECT {schema_madlib}.svm_predict()" for help.
         """.format(**args)
+# ------------------------------------------------------------------------------
 
 
 def svm_one_class(schema_madlib, source_table, model_table, independent_varname,
@@ -413,56 +420,26 @@ def svm_one_class(schema_madlib, source_table, model_table, independent_varname,
         else:
             kernel_func = _get_kernel_name(kernel_func)
         # _transform_w_kernel should always return a transformer. Since
-        # add_intercept=True, it should always create a transformed_table
+        # override_fit_intercept=True, it should always create a transformed_table
         # containing a intercept along with any kernel transformation in the
         # independent variable array
         transformer = _transform_w_kernel(schema_madlib, source_table,
                                           dependent_varname, independent_varname,
                                           kernel_func, kernel_params,
-                                          grouping_col, add_intercept=True)
+                                          grouping_col, override_fit_intercept=True)
         params_dict = _extract_params(schema_madlib, params)
         if not params_dict['class_weight']:
             params_dict['class_weight'] = 'balanced'
-        args = dict(**locals())
 
-        # Create a temporary relation to create a dependent variable and insert
-        # the origin into kernel space
         source_table = transformer.transformed_table['source_table']
         independent_varname = transformer.transformed_table['independent_varname']
-        dependent_varname = unique_string(desp='dep_var')
-        source_w_origin = unique_string(desp='src_tbl')
-
-        # Kernel adds an intercept (add_intercept=True) at the end of the
-        # independent_varname. Here an origin is added to the source table, with
-        # the final entry set to 1.
-        n_target_features = num_features(source_table, independent_varname) - 1
-        plpy.execute("""
-            CREATE TEMP VIEW {source_w_origin} AS
-            SELECT {independent_varname},
-                   1.0 AS {dependent_varname}
-            FROM {source_table}
-            UNION
-            SELECT
-                array_append(
-                    {schema_madlib}.array_fill(
-                        {schema_madlib}.array_of_float({n_target_features}),
-                        0::float)::float[],
-                    1::float
-                ) as {independent_varname},
-                -1::float as {dependent_varname}
-        """.format(**locals()))
-
-        updates = dict(source_table=source_w_origin,
-                       dependent_varname=dependent_varname)
-        if transformer.transformed_table:
-            transformer.transformed_table.update(updates)
-            args.update(transformer.transformed_table)
-        else:
-            args.update(updates)
+        dependent_varname = transformer.transformed_table['dependent_varname']
+        update_source_for_one_class = True
+        args = locals()
         _cross_validate_svm(args)
-        _svm_parsed_params(**args)
-        if transformer:
-            transformer.clear()
+        _svm_parsed_params(use_transformer_for_output=True, **args)
+        transformer.clear()
+# ------------------------------------------------------------------------------
 
 
 def get_svc_params_usage_string():
@@ -502,6 +479,7 @@ def get_svc_params_usage_string():
       n_folds             -- Default: 0. Number of folds.
                              Must be at least 2 to activate cross validation.
     """
+# ------------------------------------------------------------------------------
 
 
 def get_svc_gaussian_usage_string():
@@ -518,6 +496,7 @@ def get_svc_gaussian_usage_string():
                              The dimensionality of the transformed feature space.
       random_state        -- Default: 1. Seed used by the random number generator.
       """
+# ------------------------------------------------------------------------------
 
 
 def get_svc_poly_usage_string():
@@ -764,6 +743,7 @@ def svm_one_class_help(schema_madlib, message, is_svc, **kwargs):
         return """
             No such option. Use "SELECT {schema_madlib}.{method}()" for help.
         """.format(**args)
+# ------------------------------------------------------------------------------
 
 
 def svm_help(schema_madlib, message, is_svc, **kwargs):
@@ -980,12 +960,13 @@ def svm_help(schema_madlib, message, is_svc, **kwargs):
         return """
             No such option. Use "SELECT {schema_madlib}.{method}()" for help.
         """.format(**args)
+# ------------------------------------------------------------------------------
 
 
 def svm(schema_madlib, source_table, model_table,
         dependent_varname, independent_varname, kernel_func,
         kernel_params, grouping_col, params, is_svc,
-        verbose, add_intercept=False, **kwargs):
+        verbose, **kwargs):
     """
     Executes the linear support vector classification algorithm.
     """
@@ -1000,17 +981,16 @@ def svm(schema_madlib, source_table, model_table,
         transformer = _transform_w_kernel(schema_madlib, source_table,
                                           dependent_varname, independent_varname,
                                           kernel_func, kernel_params,
-                                          grouping_col, add_intercept
-                                          )
+                                          grouping_col)
         params_dict = _extract_params(schema_madlib, params)
         args = locals()
-        if transformer and transformer.transformed_table:
+        if transformer.transformed_table:
             args.update(transformer.transformed_table)
 
         _cross_validate_svm(args)
-        _svm_parsed_params(**args)
-        if transformer:
-            transformer.clear()
+        _svm_parsed_params(use_transformer_for_output=True, **args)
+        transformer.clear()
+# ------------------------------------------------------------------------------
 
 
 def _cross_validate_svm(args):
@@ -1061,8 +1041,11 @@ def _cross_validate_svm(args):
     # we want svm in cross validation to not transform the data again,
     # since test data in cross validation comes from the transformed source table.
     # A linear transformer without adding intercept is a no-op transformer.
-    no_op_transformer = create_kernel(args['schema_madlib'], 0,
-                                      'linear', {'fit_intercept': False})
+    no_op_kernel = create_kernel(args['schema_madlib'], 0,
+                                 'linear', {'fit_intercept': False})
+    no_op_transformer = no_op_kernel.transform(args['source_table'],
+                                               args['independent_varname'],
+                                               args['dependent_varname'])
     transformer = args.get('transformer', no_op_transformer)
     args.update(dict(transformer=no_op_transformer))
     cv = CrossValidator(_svm_parsed_params, svm_predict, scorer, args)
@@ -1096,10 +1079,25 @@ def _get_kernel_name(kernel_func):
 
 def _transform_w_kernel(schema_madlib, source_table, dependent_varname,
                         independent_varname, kernel_func,
-                        kernel_params, grouping_col, add_intercept=False):
+                        kernel_params, grouping_col, override_fit_intercept=False):
+    """ Transform source table with a kernel function and return the transfomer.
+
+    Args:
+        @param schema_madlib: str, Name of the MADlib schema
+        @param source_table: str, Name of the table with input data
+        @param dependent_varname: str, Name of the column containing response variable
+        @param independent_varname: str, Name of the column containing feature variables
+        @param kernel_func: str, Name of the kernel to apply
+        @param kernel_params: str, Key-value set of parameters for the kernel class
+        @param grouping_col: str, Comma-separated list of grouping column names
+        @param override_fit_intercept: bool, If True, the fit_intercept parameter
+                                        in kernel_params is always set to True
+                                        independent of user input. No-op if
+                                        this is False.
+    """
     n_features = num_features(source_table, independent_varname)
     kernel_params_dict = _extract_kernel_params(kernel_params, n_features)
-    if add_intercept:
+    if override_fit_intercept:
         kernel_params_dict['fit_intercept'] = True
     transformer = create_kernel(schema_madlib, n_features,
                                 kernel_func, kernel_params_dict)
@@ -1146,22 +1144,71 @@ def _compute_class_weight_sql(source_table, dependent_varname,
                              format(dep=dependent_varname, k=k, v=v))
     class_weight_sql += "ELSE 1.0 END"
     return class_weight_sql
+# -------------------------------------------------------------------------
 
 
 def _svm_parsed_params(schema_madlib, source_table, model_table,
                        dependent_varname, independent_varname, transformer,
                        grouping_str, grouping_col, params_dict, is_svc,
-                       verbose, **kwargs):
+                       use_transformer_for_output=False,
+                       update_source_for_one_class=False,
+                       verbose=False, **kwargs):
     """
     Executes the linear support vector algorithm.
+
+    Args:
+        @param use_transformer_for_output: bool,
+            This variable decides if the output tables are created using either
+            the 'args' supplied in this function or the 'original_table'
+            structure in the transformer. This is necessary to allow creating
+            temporary output tables from cross validation which are different
+            from the 'original_table' used in the transformer.
+        @param update_source_for_one_class: bool,
+            This is a special indicator added here for svm_one_class. This has
+            to be placed here instead of the svm_one_class function so that
+            cross validation undergoes the same transformation for its split
+            datasets.
+
     """
     n_features = num_features(source_table, independent_varname)
+    if update_source_for_one_class:
+        # This block is run only when the caller is svm_one_class
+
+        # Create a temporary relation with a dependent variable and insert
+        # the origin into kernel space. Kernel adds an intercept at the end of the
+        # independent_varname. Here an origin is added to the source table, with
+        # the final value set to 1.
+        dependent_varname = unique_string(desp='dep_var')
+        source_w_origin = unique_string(desp='src_tbl')
+        plpy.execute("""
+            CREATE TEMP VIEW {source_w_origin} AS
+            SELECT {independent_varname},
+                   1.0 AS {dependent_varname}
+            FROM {source_table}
+            UNION
+            SELECT
+                array_append(
+                    {schema_madlib}.array_fill(
+                        {schema_madlib}.array_of_float({n_features} - 1),
+                        0::float)::float[],
+                    1::float
+                ) as {independent_varname},
+                -1::float as {dependent_varname}
+        """.format(**locals()))
+        source_table = source_w_origin
+        if transformer.transformed_table:
+            transformer.transformed_table.update(
+                dict(source_table=source_w_origin,
+                     dependent_varname=dependent_varname))
+        # args.update(transformer.transformed_table)
 
     class_weight_sql = _compute_class_weight_sql(source_table,
                                                  dependent_varname,
                                                  is_svc,
                                                  params_dict['class_weight'])
-    args = {
+
+    args = locals()
+    args.update({
         'rel_args': unique_string(desp='rel_args'),
         'rel_state': unique_string(desp='rel_state'),
         'col_grp_iteration': unique_string(desp='col_grp_iteration'),
@@ -1169,17 +1216,10 @@ def _svm_parsed_params(schema_madlib, source_table, model_table,
         'col_grp_key': unique_string(desp='col_grp_key'),
         'col_n_tuples': unique_string(desp='col_n_tuples'),
         'state_type': "double precision[]",
-        'n_features': n_features,
-        'verbose': verbose,
-        'is_svc': is_svc,
-        'schema_madlib': schema_madlib,
-        'grouping_str': grouping_str,
-        'grouping_col': grouping_col,
-        'rel_source': source_table,
-        'col_ind_var': independent_varname,
-        'col_dep_var': dependent_varname,
-        'class_weight_sql': class_weight_sql
-    }
+        'rel_source': args['source_table'],
+        'col_ind_var': args['independent_varname'],
+        'col_dep_var': args['dependent_varname'],
+    })
 
     args.update(_verify_get_params_dict(params_dict))
     args.update(_process_epsilon(is_svc, args))
@@ -1189,22 +1229,21 @@ def _svm_parsed_params(schema_madlib, source_table, model_table,
     plpy.execute("CREATE TABLE pg_temp.{0} AS SELECT 1".format(args['rel_args']))
     # actual iterative algorithm computation
     n_iters_run = _compute_svm(args)
-    _build_output_tables(n_iters_run, model_table, args, transformer, **kwargs)
+    _build_output_tables(n_iters_run, args, **kwargs)
+# -----------------------------------------------------------------------------
 
 
 def svm_predict(schema_madlib, model_table, new_data_table, id_col_name,
                 output_table, **kwargs):
-    """ Scores the data points stored in a table using a
-        learned support vector model.
+    """ Score data points stored in a table using a learned support vector model.
 
     @param model_table Name of learned model
     @param new_data_table Name of table/view containing the data
-        points to be scored
+                          points to be scored
     @param id_col_name Name of column in source_table containing
-        (integer) identifier for data point
+                       (integer) identifier for data point
     @param output_table Name of table to store the results
     """
-    # suppress warnings
     with MinWarning("warning"):
         # model table
         input_tbl_valid(model_table, 'SVM')
@@ -1249,7 +1288,7 @@ def svm_predict(schema_madlib, model_table, new_data_table, id_col_name,
         random_table = add_postfix(model_table, '_random')
         if kernel_func.lower() != 'linear':
             # random table is not created with the linear kernel and ignored
-            # in the load_kernel call, we disable the check for that table
+            # in the load_kernel call, hence we disable the check for 'linear'
             input_tbl_valid(random_table, 'SVM')
         transformer = load_kernel(schema_madlib, random_table,
                                   kernel_func, kernel_params_dict)
@@ -1312,6 +1351,7 @@ def svm_predict(schema_madlib, model_table, new_data_table, id_col_name,
                 not {schema_madlib}.array_contains_null({independent_varname})
             """.format(**locals())
         plpy.execute(sql)
+# -----------------------------------------------------------------------------
 
 
 def _svc_or_svr(is_svc, source_table, dependent_varname):
@@ -1335,7 +1375,7 @@ def _svc_or_svr(is_svc, source_table, dependent_varname):
                            if isinstance(d['y'], basestring)
                            else str(d['y']) for d in dep_labels]
 
-        _assert(len(dep_var_mapping) == 2,
+        _assert(1 <= len(dep_var_mapping) <= 2,
                 "SVM Error: Classification currently "
                 "only supports unary or binary output!. Found values {0}".
                 format(dep_var_mapping))
@@ -1353,6 +1393,7 @@ def _svc_or_svr(is_svc, source_table, dependent_varname):
             'mapping': dep_var_mapping[0] + "," + dep_var_mapping[1],
             'method': 'SVC'})
     return _args
+# -----------------------------------------------------------------------------
 
 
 def _process_epsilon(is_svc, args):
@@ -1416,6 +1457,7 @@ def _process_epsilon(is_svc, args):
             'epsilon': epsilon,
             'rel_epsilon': rel_epsilon,
             'as_rel_source': as_rel_source}
+# -----------------------------------------------------------------------------
 
 
 def _extract_kernel_params(kernel_params='', n_features=10):
@@ -1443,6 +1485,7 @@ def _extract_kernel_params(kernel_params='', n_features=10):
         'gamma': float,
     }
     return extract_keyvalue_params(kernel_params, params_types, params_default)
+# -----------------------------------------------------------------------------
 
 
 def _extract_params(schema_madlib, params, module='SVM'):
@@ -1538,7 +1581,6 @@ class SVMTestCase(unittest.TestCase):
                          ['max_iter=10', 'lambda={1,2,3,4}'])
         self.assertEqual(preprocess_keyvalue_params(self.optimizer_params4),
                          ['max_iter=10', 'optimizer="irls"', 'precision=0.02', 'lambda={1,2,3,4}'])
-
 
 
 if __name__ == '__main__':
