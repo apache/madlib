@@ -602,11 +602,22 @@ m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
  *        in later GPDB and Postgres versions.
  */
 DROP AGGREGATE IF EXISTS MADLIB_SCHEMA.array_agg(anyelement) CASCADE;
-CREATE AGGREGATE MADLIB_SCHEMA.array_agg( anyelement) (
-   SFUNC     = array_append,
-   STYPE     = anyarray
-   m4_ifdef( `__POSTGRESQL__', `', `, PREFUNC   = array_cat')
-);
+DO $$
+BEGIN
+  --
+  -- array_agg() compatibility function is only needed PostgreSQL 9.4 or earlier
+  -- because 9.5 or later has pg_catalog.array_agg(anyarray).
+  --
+  IF current_setting('server_version_num')::int < 90500 THEN
+    CREATE AGGREGATE MADLIB_SCHEMA.array_agg( anyelement) (
+       SFUNC     = array_append,
+       STYPE     = anyarray
+       m4_ifdef( `__POSTGRESQL__', `', `, PREFUNC   = array_cat')
+    );
+  END IF;
+END
+$$
+LANGUAGE 'plpgsql';
 
 /**
  * @brief Function to check if array contains NULL.
