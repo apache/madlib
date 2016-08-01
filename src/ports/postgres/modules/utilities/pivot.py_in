@@ -30,7 +30,6 @@
 @file pivot.py_in
 
 """
-
 import plpy
 import itertools
 from control import MinWarning
@@ -98,36 +97,19 @@ def pivot(schema_madlib, source_table, out_table, index, pivot_cols,
     pcols = [strip_end_quotes(pcol.strip()) for pcol in pcols]
     pvals = [strip_end_quotes(pval.strip()) for pval in pvals]
 
-    # Parse the aggregate_func as a dictionary
-    try:
-        param_types = dict.fromkeys(pvals, list)
-        agg_dict = extract_keyvalue_params(aggregate_func,param_types)
-    except KeyError, e:
-        with MinWarning("warning"):
-            plpy.warning("Pivot: Not all columns from '{aggregate_func}'"
-            " present in '{pivot_values}'".format(**locals()))
-            raise
-
-    # If the dictionary is empty, parse it as a list
-    agg_set = split_quoted_delimited_str(aggregate_func) if not agg_dict else []
-
-    # __madlib_pivot_def_agg__ denotes the aggregate function(s) if the user
-    # does not specify a value: aggregate dictionary
-    # If no aggregates are given, set average as default
-    agg_dict['__madlib_pivot_def_agg__'] = ['avg'] if not agg_set else agg_set
+    # Create a dictionary that assigns one or more aggregate functions for every
+    # value column.
+    agg_dict = parse_aggregates(pvals, aggregate_func)
 
     # Find the distinct values of pivot_cols
-    # Note that the distinct values are appended in order of users list
-    # This ordering is important when we access pivot_comb entries
     array_agg_str = ', '.join("array_agg(DISTINCT {pcol}) AS {pcol}_values".
         format(pcol=pcol) for pcol in pcols)
-
     null_str = ""
     if keep_null:
         # Create an additional column for every pivot column
         # If there is a null value, this column will get True
         null_str = ","+', '.join(
-            "bool_or(CASE WHEN {pcol} IS NULL THEN True END)"
+            "bool_or(CASE WHEN {pcol} IS NULL THEN True ELSE False END)"
             "AS {pcol}_isnull".format(pcol=pcol) for pcol in pcols)
 
     distinct_values = plpy.execute("SELECT {0} {1} FROM {2}".
@@ -166,63 +148,52 @@ def pivot(schema_madlib, source_table, out_table, index, pivot_cols,
     # If it is over 63 (psql upper limit) create table lookup
     for pval in pvals:
 
-        col_name_len = pcol_max_length+len(pval)+1
-        try:
-            # If user specifies a list of aggregates for a value column
-            # Every value column has to have an entry
-            agg_func = agg_dict[pval] if len(agg_dict) > 1 else \
-                       agg_dict['__madlib_pivot_def_agg__']
-        except KeyError, e:
-            with MinWarning("warning"):
-                plpy.warning("Pivot: Pivot column '{pval}' does not have an "
-                "assigned aggregate function in '{aggregate_func}'".
-                    format(**locals()))
-                raise
+        agg_func = agg_dict[pval]
 
-        col_name_len += max([len(item) for item in agg_func])+1
+        # Length calculation: value column length + aggregate length +
+        # 2 underscores + pivots and their values (already calculated)
+        # Example: val _ sum _ piv1_10_piv2_100
+        col_name_len = 2 + len(pval) + pcol_max_length + \
+            max([len(item) for item in agg_func])
         if col_name_len > MAX_COLUMN_LENGTH:
             with MinWarning("warning"):
                 plpy.warning("Pivot: Output columns are renamed to keep them "
                     "under 63 characters. Please refer to "
-                    "{source_table}_dictionary for the original names.")
+                    "{source_table}_dictionary for the original names.".
+                    format(**locals()))
             output_col_dictionary = True
 
     # Create the output dictionary if needed
     if output_col_dictionary:
         out_dict = out_table+"_dictionary"
         _assert(not table_exists(out_dict),
-                "Pivot: Output dictionary table already exists!")
+            "Pivot: Output dictionary table already exists!")
+
         # Collect the types for pivot columns
-        types_str = ["SELECT "]
-        types_str.append(','.join("pg_typeof(\"{pcol}\") as {pcol}_type".
-            format(pcol=pcol) for pcol in pcols))
-        types_str.append(" FROM {source_table} LIMIT 1".format(**locals()))
-        pcol_types = plpy.execute(''.join(types_str))
+        types_str = ','.join("pg_typeof(\"{pcol}\") as {pcol}_type".
+            format(pcol=pcol) for pcol in pcols)
+        pcol_types = plpy.execute("SELECT {0} FROM {1} LIMIT 1".
+            format(types_str, source_table))
 
         # Create the empty dictionary table
-        dict_str = ["CREATE TABLE "+out_dict+" ( "
-            " __pivot_cid__ VARCHAR, pval VARCHAR, agg VARCHAR "]
-        for pcol in pcols:
-            dict_str.append(", {pcol} {pcol_type} ".
-                format(pcol=pcol, pcol_type=pcol_types[0][pcol+"_type"]))
-        dict_str.append(", col_name VARCHAR)")
+        dict_str = ', '.join(" {pcol} {pcol_type} ".
+            format(pcol=pcol, pcol_type=pcol_types[0][pcol+"_type"])
+            for pcol in pcols)
+        plpy.execute("CREATE TABLE {out_dict} ( __pivot_cid__ VARCHAR, "
+            "pval VARCHAR, agg VARCHAR, {dict_str}, col_name VARCHAR)".
+            format(**locals()))
 
-        plpy.execute(''.join(dict_str))
-        insert_str_begin = "INSERT INTO "+out_dict +" VALUES "
+        # The holder for rows to insert into output dictionary
         insert_str = []
-        insert_str_mid = []
         # Counter for the new output column names
-        dict_counter = -1
+        dict_counter = 0
 
-    sql_list = ["CREATE TABLE " + out_table + " AS (SELECT " + index]
+    sql_list = []
 
-    # For every value column pval
     for pval in pvals:
 
-        # If this pval has an entry in the dictionary use the assigned
-        # aggregate function, otherwise use the default
-        agg_func = agg_dict[pval] if len(agg_dict) > 1 else \
-            agg_dict['__madlib_pivot_def_agg__']
+        # Read the aggregate function(s) assigned for this value column
+        agg_func = agg_dict[pval]
 
         for agg in agg_func:
 
@@ -233,12 +204,11 @@ def pivot(schema_madlib, source_table, out_table, index, pivot_cols,
                 pivot_str_end=["\"{pval}_{agg}".format(pval=pval,agg=agg)]
 
                 if output_col_dictionary:
-                    dict_counter += 1
                     # Prepare the entry for the dictionary
-                    insert_str=["(\'__p_{dict_counter}__\', \'{pval}\', "
+                    insert_str.append("(\'__p_{dict_counter}__\', \'{pval}\', "
                         "\'{agg}\' ".format(
                             dict_counter=dict_counter,
-                            pval=pval, agg=agg)]
+                            pval=pval, agg=agg))
 
                 # For every pivot column in a given combination
                 for counter, pcol in enumerate(pcols):
@@ -266,12 +236,9 @@ def pivot(schema_madlib, source_table, out_table, index, pivot_cols,
                     # Store the whole string in case some user wants it
                     insert_str.append("\'{column_name}\')".
                         format(column_name=''.join(pivot_str_end)))
-
-                    insert_str_mid.append( ', '.join(insert_str) )
                     # Replace the column name
                     pivot_str_end = ["__p_"+str(dict_counter)+"__"]
-
-                    insert_sql = insert_str_begin + ', '.join(insert_str_mid)
+                    dict_counter += 1
                 # Collecting the whole sql query
                 # Please refer to the earlier comment for a sample output
                 pivot_str=("{fill_str_begin} {agg}(CASE WHEN {pivot_begin}"
@@ -283,35 +250,61 @@ def pivot(schema_madlib, source_table, out_table, index, pivot_cols,
                        pivot_end=''.join(pivot_str_end)))
                 sql_list.append(","+pivot_str)
 
-
-
-    sql_list.append(" FROM " + source_table +
-                    " GROUP BY " + index + ") ")
-    if output_col_dictionary:
-        plpy.execute(''.join(insert_sql))
     try:
-        plpy.execute(''.join(sql_list))
+        plpy.execute("CREATE TABLE {out_table} AS (SELECT {index} {sql_list} "
+            "FROM {source_table} GROUP BY {index} )".
+            format(out_table=out_table, index=index, source_table=source_table,
+                sql_list=''.join(sql_list)))
+        if output_col_dictionary:
+            plpy.execute("INSERT INTO {out_dict} VALUES {insert_sql}".
+                format(out_dict=out_dict, insert_sql=', '.join(insert_str)))
     except plpy.SPIError:
-        # Warn user if the number of columns is over 1000 for the output table
+
+        # Warn user if the number of columns is over the limit
         with MinWarning("warning"):
-
             # The column options from value columns and aggregates
-            # If there is a dict. of aggregates count them
-            if len(agg_dict) > 1:
-                col_va_coef=sum([len(item) for item in agg_dict.values()]) - 1
-            # If there is a list of aggregates
-            # multiply the number of aggregates with the number of value columns
-            else:
-                col_va_coef=len(agg_dict['__madlib_pivot_def_agg__'])*len(pvals)
-
-            # Multiply the va coef. with the number of pivot combinations
-            if (col_va_coef*len(pivot_comb)) > MAX_OUTPUT_COLUMN_COUNT:
+            # times the number of pivot combinations
+            if ((sum([len(item) for item in agg_dict.values()])*len(pivot_comb))
+                > MAX_OUTPUT_COLUMN_COUNT):
                 plpy.warning("Pivot: Too many distinct values for pivoting! "
                     "The execution may fail due to too many columns in the "
                     "output table.")
         raise
 
     return None
+#------------------------------------------------------------------------------
+
+def parse_aggregates(pvals, aggregate_func):
+    """
+    Helper function that parses the aggregate function parameter
+    Args:
+        @param pvals            The value columns to be summarized in the
+                                pivoted table
+        @param aggregate_func   The aggregate function to be applied to the
+                                values
+    """
+    """
+    The aggregate_func can get one of the following forms
+    1) NULL: Use the default aggregate ('avg')
+    2) A single aggregate (eg. 'sum')
+    3) A list of aggregates (eg. 'sum,avg')
+    4) A complete mapping (eg. 'val=sum, val2=[avg,sum]')
+    5) A partial mapping (eg. 'val2=sum'): Use the default ('avg') for the
+       missing value colums
+    """
+    param_types = dict.fromkeys(pvals, list)
+    agg_dict = extract_keyvalue_params(aggregate_func,param_types)
+
+    if not agg_dict:
+        agg_set = split_quoted_delimited_str(aggregate_func)
+        agg_dict = dict.fromkeys(pvals, (agg_set if agg_set else ['avg']) )
+    else:
+        for pval in pvals:
+            if not pval in agg_dict:
+                agg_dict[pval] = ['avg']
+
+    return agg_dict
+
 #------------------------------------------------------------------------------
 
 def validate_pivot_coding(source_table, out_table, indices, pivs, vals):
