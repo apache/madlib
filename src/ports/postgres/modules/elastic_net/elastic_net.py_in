@@ -9,11 +9,15 @@ from utilities.validate_args import table_exists
 from utilities.validate_args import table_is_empty
 from utilities.validate_args import columns_exist_in_table
 from utilities.validate_args import get_cols_and_types
+from utilities.validate_args import cols_in_tbl_valid
+from utilities.validate_args import explicit_bool_to_text
 
+from utilities.utilities import _string_to_array_with_quotes
 from utilities.utilities import _string_to_array
 from utilities.utilities import set_client_min_messages
 from utilities.utilities import __mad_version
 from utilities.utilities import is_psql_numeric_type
+from utilities.utilities import _assert
 import re
 
 version_wrapper = __mad_version()
@@ -80,6 +84,7 @@ def elastic_net_help(schema_madlib, family_or_optimizer=None, **kwargs):
                                 OUTPUT
         ----------------------------------------------------------------
         The output table ('tbl_result' above) has the following columns:
+        grouping_col      TEXT,       -- 'Distinct values of grouping_col'
         family            TEXT,       -- 'gaussian' or 'binomial'
         features          TEXT[],     -- All feature column names
         features_selected TEXT[],     -- Features with non-zero coefficients
@@ -306,6 +311,9 @@ def elastic_net_train(schema_madlib, tbl_source, tbl_result, col_dep_var,
     col_ind_var, outstr_array = analyze_input_str(schema_madlib, tbl_source,
                                                   col_ind_var, col_dep_var,
                                                   excluded)
+    # get the grouping info
+    grouping_str, grouping_col = _get_grouping_col_str(schema_madlib,
+                                                           tbl_source, grouping_col)
 
     # # Special case for ridge linear regression
     # if ((regress_family.lower() == "gaussian" or regress_family.lower() == "linear") and
@@ -330,13 +338,15 @@ def elastic_net_train(schema_madlib, tbl_source, tbl_result, col_dep_var,
             __elastic_net_gaussian_igd_train(
                 schema_madlib, tbl_source, col_ind_var, col_dep_var,
                 tbl_result, lambda_value, alpha, standardize,
-                optimizer_params, max_iter, tolerance, outstr_array, **kwargs)
+                optimizer_params, max_iter, tolerance, outstr_array, 
+                grouping_str, grouping_col, **kwargs)
             return None
         if optimizer.lower() == "fista":
             __elastic_net_gaussian_fista_train(
-                schema_madlib, tbl_source, col_ind_var, col_dep_var,
+            	schema_madlib, tbl_source, col_ind_var, col_dep_var,
                 tbl_result, lambda_value, alpha, standardize,
-                optimizer_params, max_iter, tolerance, outstr_array, **kwargs)
+                optimizer_params, max_iter, tolerance, outstr_array, 
+                grouping_str, grouping_col, **kwargs)
             return None
         not_supported_opt = True
     elif regress_family.lower() in ("binomial", "logistic"):
@@ -345,7 +355,8 @@ def elastic_net_train(schema_madlib, tbl_source, tbl_result, col_dep_var,
             __elastic_net_binomial_igd_train(
                 schema_madlib, tbl_source, col_ind_var, col_dep_var,
                 tbl_result, lambda_value, alpha, standardize,
-                optimizer_params, max_iter, tolerance, outstr_array, **kwargs)
+                optimizer_params, max_iter, tolerance, outstr_array, 
+                grouping_str, grouping_col, **kwargs)
             return None
 
         if optimizer.lower() == "fista":
@@ -353,7 +364,8 @@ def elastic_net_train(schema_madlib, tbl_source, tbl_result, col_dep_var,
             __elastic_net_binomial_fista_train(
                 schema_madlib, tbl_source, col_ind_var, col_dep_var,
                 tbl_result, lambda_value, alpha, standardize,
-                optimizer_params, max_iter, tolerance, outstr_array, **kwargs)
+                optimizer_params, max_iter, tolerance, outstr_array,
+                grouping_str, grouping_col, **kwargs)
             return None
         not_supported_opt = True
     else:
@@ -367,6 +379,38 @@ def elastic_net_train(schema_madlib, tbl_source, tbl_result, col_dep_var,
                """.format(schema_madlib=schema_madlib))
     return None
 # ========================================================================
+
+
+def _get_grouping_col_str(schema_madlib, source_table, grouping_col):
+    if grouping_col and grouping_col.lower() != 'null':
+        cols_in_tbl_valid(source_table,
+                          _string_to_array_with_quotes(grouping_col),
+                          'elastic_net')
+        intersect = frozenset(
+            _string_to_array(grouping_col)).intersection(
+                frozenset(
+                    ('regress_family', 'coef_all', 
+                     'features_selected',
+                     'coef_nonzero', 'intercept',
+                     'log_likelihood', 'standardize',
+                     'iteration_run')))
+        _assert(len(intersect) == 0,
+                "Elastic Net error: Conflicting grouping column name.\n"
+                "Some predefined keyword(s) ({0}) are not allowed "
+                "for grouping column names!".format(', '.join(intersect)))
+
+        grouping_list = [i + "::text"
+                         for i in explicit_bool_to_text(
+                             source_table,
+                             _string_to_array_with_quotes(grouping_col),
+                             schema_madlib)]
+        grouping_str = ','.join(grouping_list)
+    else:
+        grouping_str = "Null"
+        grouping_col = None
+
+    return grouping_str, grouping_col
+# ------------------------------------------------------------------------------
 
 
 def __check_args(tbl_source, col_ind_var, col_dep_var):
