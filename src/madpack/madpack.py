@@ -291,8 +291,8 @@ def _get_madlib_dbrev(schema):
     """
     try:
         row = _internal_run_query("SELECT count(*) AS cnt FROM pg_tables " +
-                             "WHERE schemaname='" + schema + "' AND " +
-                             "tablename='migrationhistory'", True)
+                                  "WHERE schemaname='" + schema + "' AND " +
+                                  "tablename='migrationhistory'", True)
         if int(row[0]['cnt']) > 0:
             row = _internal_run_query("""SELECT version FROM %s.migrationhistory
                 ORDER BY applied DESC LIMIT 1""" % schema, True)
@@ -308,8 +308,7 @@ def _get_madlib_dbrev(schema):
 def _get_dbver():
     """ Read version number from database (of form X.Y) """
     try:
-        versionStr = _internal_run_query("""SELECT pg_catalog.version()""",
-                                    True)[0]['version']
+        versionStr = _internal_run_query("SELECT pg_catalog.version()", True)[0]['version']
         if portid == 'postgres':
             match = re.search("PostgreSQL[a-zA-Z\s]*(\d+\.\d+)", versionStr)
         elif portid == 'greenplum':
@@ -355,14 +354,24 @@ def _get_rev_num(rev):
     """
     Convert version string into number for comparison
         @param rev version text
+                It is expected to follow Semantic Versioning (semver.org)
+                Valid inputs:
+                    1.9.0, 1.10.0, 2.5.0
+                    1.0.0-alpha, 1.0.0-alpha.1, 1.0.0-0.3.7, 1.0.0-x.7.z.92
+
     """
     try:
-        num = re.findall('[0-9]', rev)
+        rev_parts = rev.split('-')  # text to the right of - is treated as str
+        numeric_rev = rev_parts[0]
+        num = tuple(int(i) for i in numeric_rev.split('.'))
+        if len(rev_parts) > 1:
+            num = num + tuple(str(rev_parts[1]))
         if num:
             return num
         else:
             return ['0']
     except:
+        # invalid revision
         return ['0']
 # ------------------------------------------------------------------------------
 
@@ -397,7 +406,7 @@ def _plpy_check(py_min_ver):
 
     # Check PL/Python existence
     rv = _internal_run_query("SELECT count(*) AS CNT FROM pg_language "
-                        "WHERE lanname = 'plpythonu'", True)
+                             "WHERE lanname = 'plpythonu'", True)
     if int(rv[0]['cnt']) > 0:
         _info("> PL/Python already installed", verbose)
     else:
@@ -736,7 +745,7 @@ def _db_create_objects(schema, old_schema, upgrade=False, sc=None, testcase="",
     try:
         _info("> Writing version info in MigrationHistory table", True)
         _internal_run_query("INSERT INTO %s.migrationhistory(version) "
-                       "VALUES('%s')" % (schema, rev), True)
+                            "VALUES('%s')" % (schema, rev), True)
     except:
         _error("Cannot insert data into %s.migrationhistory table" % schema, False)
         raise Exception
@@ -1234,7 +1243,9 @@ def main(argv):
             return
 
         # Create install-check user
-        test_user = 'madlib_' + rev.replace('.', '') + '_installcheck'
+        test_user = ('madlib_' +
+                     rev.replace('.', '').replace('-', '_') +
+                     '_installcheck')
         try:
             _internal_run_query("DROP USER IF EXISTS %s;" % (test_user), False)
         except:
@@ -1242,8 +1253,7 @@ def main(argv):
             _internal_run_query("DROP USER IF EXISTS %s;" % (test_user), True)
         _internal_run_query("CREATE USER %s;" % (test_user), True)
 
-        _internal_run_query("GRANT USAGE ON SCHEMA %s TO %s;"
-                       % (schema, test_user), True)
+        _internal_run_query("GRANT USAGE ON SCHEMA %s TO %s;" % (schema, test_user), True)
 
         # 2) Run test SQLs
         _info("> Running test scripts for:", verbose)
@@ -1291,10 +1301,10 @@ def main(argv):
 
             # Prepare test schema
             test_schema = "madlib_installcheck_%s" % (module)
-            _internal_run_query("DROP SCHEMA IF EXISTS %s CASCADE; CREATE SCHEMA %s;"
-                           % (test_schema, test_schema), True)
-            _internal_run_query("GRANT ALL ON SCHEMA %s TO %s;"
-                           % (test_schema, test_user), True)
+            _internal_run_query("DROP SCHEMA IF EXISTS %s CASCADE; CREATE SCHEMA %s;" %
+                                (test_schema, test_schema), True)
+            _internal_run_query("GRANT ALL ON SCHEMA %s TO %s;" %
+                                (test_schema, test_user), True)
 
             # Switch to test user and prepare the search_path
             pre_sql = '-- Switch to test user:\n' \
