@@ -362,11 +362,9 @@ def _get_rev_num(rev):
     """
     try:
         rev_parts = rev.split('-')  # text to the right of - is treated as single str
-
         # get numeric part of the version string
-        num = list(rev_parts[0].split('.'))
-        num += ['0'] * (3 - len(num))  # normalize num to be of length 3
-
+        num = [int(i) for i in rev_parts[0].split('.')]
+        num += [0] * (3 - len(num))  # normalize num to be of length 3
         # get identifier part of the version string
         if len(rev_parts) > 1:
             num.append(str(rev_parts[1]))
@@ -374,10 +372,10 @@ def _get_rev_num(rev):
         if num:
             return num
         else:
-            return ['0']
+            return [0]
     except:
         # invalid revision
-        return ['0']
+        return [0]
 # ------------------------------------------------------------------------------
 
 
@@ -389,7 +387,7 @@ def _print_revs(rev, dbrev, con_args, schema):
         @param con_args database connection arguments
         @param schema MADlib schema name
     """
-    _info("MADlib tools version    = %s (%s)" % (rev, sys.argv[0]), True)
+    _info("MADlib tools version    = %s (%s)" % (str(rev), sys.argv[0]), True)
     if con_args:
         try:
             _info("MADlib database version = %s (host=%s, db=%s, schema=%s)"
@@ -458,7 +456,7 @@ def _db_install(schema, dbrev, testcase):
     """
     _info("Installing MADlib into %s schema..." % schema.upper(), True)
 
-    temp_schema = schema + '_v' + ''.join(_get_rev_num(dbrev))
+    temp_schema = schema + '_v' + ''.join(str(_get_rev_num(dbrev)))
     # Check the status of MADlib objects in database
     madlib_exists = False if dbrev is None else True
 
@@ -551,7 +549,7 @@ def _db_install(schema, dbrev, testcase):
         except:
             _db_rollback(schema, None)
 
-    _info("MADlib %s installed successfully in %s schema." % (rev, schema.upper()), True)
+    _info("MADlib %s installed successfully in %s schema." % (str(rev), schema.upper()), True)
 # ------------------------------------------------------------------------------
 
 
@@ -674,7 +672,7 @@ def _db_upgrade(schema, dbrev):
     ch.drop_traininginfo_4dt()  # used types: oid, text, integer, float
     _db_create_objects(schema, None, True, sc)
 
-    _info("MADlib %s upgraded successfully in %s schema." % (rev, schema.upper()), True)
+    _info("MADlib %s upgraded successfully in %s schema." % (str(rev), schema.upper()), True)
 # ------------------------------------------------------------------------------
 
 
@@ -749,7 +747,7 @@ def _db_create_objects(schema, old_schema, upgrade=False, sc=None, testcase="",
     try:
         _info("> Writing version info in MigrationHistory table", True)
         _internal_run_query("INSERT INTO %s.migrationhistory(version) "
-                            "VALUES('%s')" % (schema, rev), True)
+                            "VALUES('%s')" % (schema, str(rev)), True)
     except:
         _error("Cannot insert data into %s.migrationhistory table" % schema, False)
         raise Exception
@@ -906,7 +904,7 @@ def main(argv):
 
     parser = argparse.ArgumentParser(
         prog="madpack",
-        description='MADlib package manager (' + rev + ')',
+        description='MADlib package manager (' + str(rev) + ')',
         argument_default=False,
         formatter_class=argparse.RawTextHelpFormatter,
         epilog="""Example:
@@ -1111,7 +1109,7 @@ def main(argv):
         _error("madpack uninstall is currently not available for HAWQ", True)
 
     if args.command[0] in ('uninstall', 'reinstall') and (portid != 'hawq' or is_hawq2):
-        if _get_rev_num(dbrev) == ['0']:
+        if _get_rev_num(dbrev) == [0]:
             _info("Nothing to uninstall. No version found in schema %s." % schema.upper(), True)
             return
 
