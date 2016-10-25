@@ -362,10 +362,16 @@ def _get_rev_num(rev):
     """
     try:
         rev_parts = rev.split('-')  # text to the right of - is treated as str
+
+        # get numeric part of the version string
         numeric_rev = rev_parts[0]
-        num = tuple(int(i) for i in numeric_rev.split('.'))
+        num = list(int(i) for i in numeric_rev.split('.'))
+        num += [0] * (3 - len(num))  # normalize num to be of length 3
+
+        # get identifier part of the version string
         if len(rev_parts) > 1:
-            num = num + tuple(str(rev_parts[1]))
+            num.append(str(rev_parts[1]))
+
         if num:
             return num
         else:
