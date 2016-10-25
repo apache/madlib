@@ -361,12 +361,11 @@ def _get_rev_num(rev):
 
     """
     try:
-        rev_parts = rev.split('-')  # text to the right of - is treated as str
+        rev_parts = rev.split('-')  # text to the right of - is treated as single str
 
         # get numeric part of the version string
-        numeric_rev = rev_parts[0]
-        num = list(int(i) for i in numeric_rev.split('.'))
-        num += [0] * (3 - len(num))  # normalize num to be of length 3
+        num = list(rev_parts[0].split('.'))
+        num += ['0'] * (3 - len(num))  # normalize num to be of length 3
 
         # get identifier part of the version string
         if len(rev_parts) > 1:
@@ -460,7 +459,6 @@ def _db_install(schema, dbrev, testcase):
     _info("Installing MADlib into %s schema..." % schema.upper(), True)
 
     temp_schema = schema + '_v' + ''.join(_get_rev_num(dbrev))
-
     # Check the status of MADlib objects in database
     madlib_exists = False if dbrev is None else True
 
