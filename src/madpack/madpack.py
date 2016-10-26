@@ -12,11 +12,14 @@ import subprocess
 import datetime
 import tempfile
 import shutil
+import unittest
 
 from upgrade_util import ChangeHandler
 from upgrade_util import ViewDependency
 from upgrade_util import TableDependency
 from upgrade_util import ScriptCleaner
+
+from itertools import izip_longest
 
 # Required Python version
 py_min_ver = [2, 6]
@@ -348,6 +351,56 @@ def _check_db_port(portid):
             return True
     return False
 # ------------------------------------------------------------------------------
+
+
+def _is_rev_lt(left, right):
+    """ Return if left < right
+
+    Args:
+        @param left: list. Revision numbers in a list form (as returned by
+                           _get_rev_num).
+        @param right: list. Revision numbers in a list form (as returned by
+                           _get_rev_num).
+
+    Returns:
+        Boolean
+
+    If left and right are all numeric then regular list comparison occurs.
+    If either one contains a string, then comparison occurs till both have int.
+        First list to have a string is considered smaller
+        (including if the other does not have an element in corresponding index)
+
+    Examples:
+        [1, 9, 0] < [1, 9, 1]
+        [1, 9] < [1, 9, 1]
+        [1, 9, 1] < [1, 10]
+        [1, 9, 0, 'dev'] < [1, 9, 0]
+        [1, 9, 0, 'dev'] < [1, 9, 1]
+        [1, 9, 'dev'] < [1, 9, 0]
+        [1, 9, 'dev'] not < [1, 9, 'rc']
+        [1, 9, 'dev', 1] not < [1, 9, 'rc', 0]
+    """
+    def all_numeric(l):
+        return not l or all(isinstance(i, int) for i in l)
+
+    if all_numeric(left) and all_numeric(right):
+        return left < right
+    else:
+        for l, r in izip_longest(left, right):
+            if isinstance(l, int) and isinstance(r, int):
+                if l == r:
+                    continue
+                else:
+                    return l < r
+
+            # if both are not int then we stop and return
+            # if l is None then it's smaller than right only if r is an int
+            # else they're either equal or l is greater (i.e. l is int)
+            if l is None:
+                return isinstance(r, int)
+            else:
+                return False
+# ----------------------------------------------------------------------
 
 
 def _get_rev_num(rev):
@@ -1372,13 +1425,45 @@ def main(argv):
 # Start Here
 # ------------------------------------------------------------------------------
 if __name__ == "__main__":
+    RUN_TESTS = False
 
-    # Run main
-    main(sys.argv[1:])
-
-    # Optional log files cleanup
-    # keeplogs and tmpdir are global variables
-    if not keeplogs:
-        shutil.rmtree(tmpdir)
+    if RUN_TESTS:
+        unittest.main()
     else:
-        print "INFO: Log files saved in " + tmpdir
+        # Run main
+        main(sys.argv[1:])
+
+        # Optional log files cleanup
+        # keeplogs and tmpdir are global variables
+        if not keeplogs:
+            shutil.rmtree(tmpdir)
+        else:
+            print "INFO: Log files saved in " + tmpdir
+
+
+# -----------------------------------------------------------------------
+# Unit tests
+# -----------------------------------------------------------------------
+class RevTest(unittest.TestCase):
+
+    def setUp(self):
+        pass
+
+    def tearDown(self):
+        pass
+
+    def test_get_rev_num(self):
+        self.assertTrue(_get_rev_num('4.3.10') >= _get_rev_num('4.3.5'))
+        self.assertTrue(_get_rev_num('1.9.10-dev') >= _get_rev_num('1.9.9'))
+
+    def test_is_rev_lt(self):
+        self.assertTrue(_is_rev_lt(_get_rev_num('4.3.5'), _get_rev_num('4.3.10')))
+        self.assertTrue(_is_rev_lt(_get_rev_num('1.9.0'), _get_rev_num('1.9.1')))
+        self.assertTrue(_is_rev_lt(_get_rev_num('1.9'), _get_rev_num('1.9.1')))
+        self.assertTrue(_is_rev_lt(_get_rev_num('1.9.1'), _get_rev_num('1.10')))
+        self.assertTrue(_is_rev_lt(_get_rev_num('1.9.0-dev'), _get_rev_num('1.9.0')))
+        self.assertTrue(_is_rev_lt(_get_rev_num('1.9.0-dev'), _get_rev_num('1.9.1')))
+        self.assertFalse(_is_rev_lt(_get_rev_num('1.9.0-dev'), _get_rev_num('1.9.0-dev')))
+        self.assertFalse(_is_rev_lt([1, 9, 'dev', 1], [1, 9, 'rc', 0]))
+        self.assertFalse(_is_rev_lt([], []))
+        self.assertFalse(_is_rev_lt([1, 9], [1, None]))
