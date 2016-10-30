@@ -380,6 +380,7 @@ def _is_rev_gte(left, right):
         [1, 9, 0] >= [1, 9, 'dev']
         [1, 9, 'rc'] >= [1, 9, 'dev']
         [1, 9, 'rc', 0] >= [1, 9, 'dev', 1]
+        [1, 9, 'rc', '1'] >= [1, 9, 'rc', '1']
     """
     def all_numeric(l):
         return not l or all(isinstance(i, int) for i in l)
@@ -387,23 +388,23 @@ def _is_rev_gte(left, right):
     if all_numeric(left) and all_numeric(right):
         return left >= right
     else:
-        for l_e, r_e in izip_longest(left, right):
+        for i, (l_e, r_e) in enumerate(izip_longest(left, right)):
             if isinstance(l_e, int) and isinstance(r_e, int):
                 if l_e == r_e:
                     continue
                 else:
                     return l_e > r_e
-
-            # if either is not int then we return immediately
-            if r_e is None:
-                # if r_e is None then l_e > r_e if l_e is int
+            elif isinstance(l_e, int) or isinstance(r_e, int):
+                #  [1, 9, 0] > [1, 9, 'dev']
+                #  [1, 9, 0] > [1, 9]
                 return isinstance(l_e, int)
-            elif l_e is None:
-                # if l_e is None then l_e > r_e if r_e is not int
-                return not isinstance(r_e, int)
             else:
-                # they're both not int, hence equal
-                return True
+                # both are not int
+                if r_e is None:
+                    # [1, 9, 'dev'] < [1, 9]
+                    return False
+                else:
+                    return l_e is None or left[i:] >= right[i:]
         return True
 # ----------------------------------------------------------------------
 
@@ -1445,6 +1446,12 @@ class RevTest(unittest.TestCase):
         self.assertEqual(_get_rev_num('1.9.10'), _get_rev_num('1.9.10'))
 
     def test_is_rev_gte(self):
+        # 1.0.0-alpha < 1.0.0-alpha.1 < 1.0.0-alpha.beta <
+        #       1.0.0-beta < 1.0.0-beta.2 < 1.0.0-beta.11 < 1.0.0-rc.1 < 1.0.0
+        self.assertTrue(_is_rev_gte([], []))
+        self.assertTrue(_is_rev_gte([1, 9], [1, None]))
+        self.assertFalse(_is_rev_gte([1, None], [1, 9]))
+
         self.assertTrue(_is_rev_gte(_get_rev_num('4.3.10'), _get_rev_num('4.3.5')))
         self.assertTrue(_is_rev_gte(_get_rev_num('1.9.0'), _get_rev_num('1.9.0')))
         self.assertTrue(_is_rev_gte(_get_rev_num('1.9.1'), _get_rev_num('1.9.0')))
@@ -1452,11 +1459,15 @@ class RevTest(unittest.TestCase):
         self.assertTrue(_is_rev_gte(_get_rev_num('1.9.0'), _get_rev_num('1.9.0-dev')))
         self.assertTrue(_is_rev_gte(_get_rev_num('1.9.1'), _get_rev_num('1.9.0-dev')))
         self.assertTrue(_is_rev_gte(_get_rev_num('1.9.0-dev'), _get_rev_num('1.9.0-dev')))
-        self.assertTrue(_is_rev_gte([1, 9, 'dev', 1], [1, 9, 'rc', 0]))
-        self.assertTrue(_is_rev_gte([], []))
-        self.assertTrue(_is_rev_gte([1, 9], [1, None]))
-        self.assertFalse(_is_rev_gte([1, None], [1, 9]))
+        self.assertTrue(_is_rev_gte([1, 9, 'rc', 1], [1, 9, 'dev', 0]))
+
         self.assertFalse(_is_rev_gte(_get_rev_num('1.9.1'), _get_rev_num('1.10')))
+        self.assertFalse(_is_rev_gte([1, 9, 'dev', 1], [1, 9, 'rc', 0]))
+        self.assertFalse(_is_rev_gte([1, 9, 'alpha'], [1, 9, 'alpha', 0]))
+        self.assertFalse(_is_rev_gte([1, 9, 'alpha', 1], [1, 9, 'alpha', 'beta']))
+        self.assertFalse(_is_rev_gte([1, 9, 'beta', 2], [1, 9, 'beta', 4]))
+        self.assertFalse(_is_rev_gte([1, 9, 'beta', '1'], [1, 9, 'rc', '0']))
+        self.assertFalse(_is_rev_gte([1, 9, 'rc', 1], [1, 9, 0]))
 
 
 # ------------------------------------------------------------------------------
