@@ -353,8 +353,8 @@ def _check_db_port(portid):
 # ------------------------------------------------------------------------------
 
 
-def _is_rev_lt(left, right):
-    """ Return if left < right
+def _is_rev_gte(left, right):
+    """ Return if left >= right
 
     Args:
         @param left: list. Revision numbers in a list form (as returned by
@@ -371,35 +371,40 @@ def _is_rev_lt(left, right):
         (including if the other does not have an element in corresponding index)
 
     Examples:
-        [1, 9, 0] < [1, 9, 1]
-        [1, 9] < [1, 9, 1]
-        [1, 9, 1] < [1, 10]
-        [1, 9, 0, 'dev'] < [1, 9, 0]
-        [1, 9, 0, 'dev'] < [1, 9, 1]
-        [1, 9, 'dev'] < [1, 9, 0]
-        [1, 9, 'dev'] not < [1, 9, 'rc']
-        [1, 9, 'dev', 1] not < [1, 9, 'rc', 0]
+        [1, 9, 0] >= [1, 9, 0]
+        [1, 9, 1] >= [1, 9, 0]
+        [1, 9, 1] >= [1, 9]
+        [1, 10] >= [1, 9, 1]
+        [1, 9, 0] >= [1, 9, 0, 'dev']
+        [1, 9, 1] >= [1, 9, 0, 'dev']
+        [1, 9, 0] >= [1, 9, 'dev']
+        [1, 9, 'rc'] >= [1, 9, 'dev']
+        [1, 9, 'rc', 0] >= [1, 9, 'dev', 1]
     """
     def all_numeric(l):
         return not l or all(isinstance(i, int) for i in l)
 
     if all_numeric(left) and all_numeric(right):
-        return left < right
+        return left >= right
     else:
-        for l, r in izip_longest(left, right):
-            if isinstance(l, int) and isinstance(r, int):
-                if l == r:
+        for l_e, r_e in izip_longest(left, right):
+            if isinstance(l_e, int) and isinstance(r_e, int):
+                if l_e == r_e:
                     continue
                 else:
-                    return l < r
+                    return l_e > r_e
 
-            # if both are not int then we stop and return
-            # if l is None then it's smaller than right only if r is an int
-            # else they're either equal or l is greater (i.e. l is int)
-            if l is None:
-                return isinstance(r, int)
+            # if either is not int then we return immediately
+            if r_e is None:
+                # if r_e is None then l_e > r_e if l_e is int
+                return isinstance(l_e, int)
+            elif l_e is None:
+                # if l_e is None then l_e > r_e if r_e is not int
+                return not isinstance(r_e, int)
             else:
-                return False
+                # they're both not int, hence equal
+                return True
+        return True
 # ----------------------------------------------------------------------
 
 
@@ -612,7 +617,7 @@ def _db_upgrade(schema, dbrev):
         @param schema MADlib schema name
         @param dbrev DB-level MADlib version
     """
-    if _get_rev_num(dbrev) >= _get_rev_num(rev):
+    if _is_rev_gte(_get_rev_num(dbrev), _get_rev_num(rev)):
         _info("Current MADlib version already up to date.", True)
         return
 
@@ -1091,7 +1096,7 @@ def main(argv):
         # Get DB version
         dbver = _get_dbver()
         portdir = os.path.join(maddir, "ports", portid)
-        if portid == "hawq" and _get_rev_num(dbver) >= _get_rev_num('2.0'):
+        if portid == "hawq" and _is_rev_gte(_get_rev_num(dbver), _get_rev_num('2.0')):
             is_hawq2 = True
         else:
             is_hawq2 = False
@@ -1233,7 +1238,7 @@ def main(argv):
         # 1) Compare OS and DB versions.
         # noop if OS <= DB.
         _print_revs(rev, dbrev, con_args, schema)
-        if _get_rev_num(dbrev) >= _get_rev_num(rev):
+        if _is_rev_gte(_get_rev_num(dbrev), _get_rev_num(rev)):
             _info("Current MADlib version already up to date.", True)
             return
         # proceed to create objects if nothing installed in DB or for HAWQ < 2.0
@@ -1268,7 +1273,7 @@ def main(argv):
 
         # 2) Compare OS and DB versions. Continue if OS > DB.
         _print_revs(rev, dbrev, con_args, schema)
-        if _get_rev_num(dbrev) >= _get_rev_num(rev):
+        if _is_rev_gte(_get_rev_num(dbrev), _get_rev_num(rev)):
             _info("Current MADlib version is already up-to-date.", True)
             return
 
@@ -1421,11 +1426,44 @@ def main(argv):
         _internal_run_query("DROP USER %s;" % (test_user), True)
 
 
+# -----------------------------------------------------------------------
+# Unit tests
+# -----------------------------------------------------------------------
+class RevTest(unittest.TestCase):
+
+    def setUp(self):
+        pass
+
+    def tearDown(self):
+        pass
+
+    def test_get_rev_num(self):
+        # not using assertGreaterEqual to keep Python 2.6 compatibility
+        self.assertTrue(_get_rev_num('4.3.10') >= _get_rev_num('4.3.5'))
+        self.assertTrue(_get_rev_num('1.9.10-dev') >= _get_rev_num('1.9.9'))
+        self.assertNotEqual(_get_rev_num('1.9.10-dev'), _get_rev_num('1.9.10'))
+        self.assertEqual(_get_rev_num('1.9.10'), _get_rev_num('1.9.10'))
+
+    def test_is_rev_gte(self):
+        self.assertTrue(_is_rev_gte(_get_rev_num('4.3.10'), _get_rev_num('4.3.5')))
+        self.assertTrue(_is_rev_gte(_get_rev_num('1.9.0'), _get_rev_num('1.9.0')))
+        self.assertTrue(_is_rev_gte(_get_rev_num('1.9.1'), _get_rev_num('1.9.0')))
+        self.assertTrue(_is_rev_gte(_get_rev_num('1.9.1'), _get_rev_num('1.9')))
+        self.assertTrue(_is_rev_gte(_get_rev_num('1.9.0'), _get_rev_num('1.9.0-dev')))
+        self.assertTrue(_is_rev_gte(_get_rev_num('1.9.1'), _get_rev_num('1.9.0-dev')))
+        self.assertTrue(_is_rev_gte(_get_rev_num('1.9.0-dev'), _get_rev_num('1.9.0-dev')))
+        self.assertTrue(_is_rev_gte([1, 9, 'dev', 1], [1, 9, 'rc', 0]))
+        self.assertTrue(_is_rev_gte([], []))
+        self.assertTrue(_is_rev_gte([1, 9], [1, None]))
+        self.assertFalse(_is_rev_gte([1, None], [1, 9]))
+        self.assertFalse(_is_rev_gte(_get_rev_num('1.9.1'), _get_rev_num('1.10')))
+
+
 # ------------------------------------------------------------------------------
 # Start Here
 # ------------------------------------------------------------------------------
 if __name__ == "__main__":
-    RUN_TESTS = False
+    RUN_TESTS = True
 
     if RUN_TESTS:
         unittest.main()
@@ -1439,31 +1477,3 @@ if __name__ == "__main__":
             shutil.rmtree(tmpdir)
         else:
             print "INFO: Log files saved in " + tmpdir
-
-
-# -----------------------------------------------------------------------
-# Unit tests
-# -----------------------------------------------------------------------
-class RevTest(unittest.TestCase):
-
-    def setUp(self):
-        pass
-
-    def tearDown(self):
-        pass
-
-    def test_get_rev_num(self):
-        self.assertTrue(_get_rev_num('4.3.10') >= _get_rev_num('4.3.5'))
-        self.assertTrue(_get_rev_num('1.9.10-dev') >= _get_rev_num('1.9.9'))
-
-    def test_is_rev_lt(self):
-        self.assertTrue(_is_rev_lt(_get_rev_num('4.3.5'), _get_rev_num('4.3.10')))
-        self.assertTrue(_is_rev_lt(_get_rev_num('1.9.0'), _get_rev_num('1.9.1')))
-        self.assertTrue(_is_rev_lt(_get_rev_num('1.9'), _get_rev_num('1.9.1')))
-        self.assertTrue(_is_rev_lt(_get_rev_num('1.9.1'), _get_rev_num('1.10')))
-        self.assertTrue(_is_rev_lt(_get_rev_num('1.9.0-dev'), _get_rev_num('1.9.0')))
-        self.assertTrue(_is_rev_lt(_get_rev_num('1.9.0-dev'), _get_rev_num('1.9.1')))
-        self.assertFalse(_is_rev_lt(_get_rev_num('1.9.0-dev'), _get_rev_num('1.9.0-dev')))
-        self.assertFalse(_is_rev_lt([1, 9, 'dev', 1], [1, 9, 'rc', 0]))
-        self.assertFalse(_is_rev_lt([], []))
-        self.assertFalse(_is_rev_lt([1, 9], [1, None]))
