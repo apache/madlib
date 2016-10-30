@@ -1465,9 +1465,12 @@ class RevTest(unittest.TestCase):
         self.assertFalse(_is_rev_gte([1, 9, 'dev', 1], [1, 9, 'rc', 0]))
         self.assertFalse(_is_rev_gte([1, 9, 'alpha'], [1, 9, 'alpha', 0]))
         self.assertFalse(_is_rev_gte([1, 9, 'alpha', 1], [1, 9, 'alpha', 'beta']))
+        self.assertFalse(_is_rev_gte([1, 9, 'alpha.1'], [1, 9, 'alpha.beta']))
         self.assertFalse(_is_rev_gte([1, 9, 'beta', 2], [1, 9, 'beta', 4]))
         self.assertFalse(_is_rev_gte([1, 9, 'beta', '1'], [1, 9, 'rc', '0']))
         self.assertFalse(_is_rev_gte([1, 9, 'rc', 1], [1, 9, 0]))
+        self.assertFalse(_is_rev_gte([1, 9, '0.2'], [1, 9, '0.3']))
+        self.assertFalse(_is_rev_gte([1, 9, 'build2'], [1, 9, 'build3']))
 
 
 # ------------------------------------------------------------------------------
