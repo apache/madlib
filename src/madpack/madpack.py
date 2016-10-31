@@ -320,7 +320,7 @@ def _get_dbver():
             # MADlib treat 4.3.5+ as DB version 4.3V2 that is different from 4.3
             if match and match.group(1) == '4.3':
                 match_details = re.search("Greenplum[a-zA-Z\s]*(\d+\.\d+.\d+)", versionStr)
-                if _get_rev_num(match_details.group(1)) >= _get_rev_num('4.3.5'):
+                if _is_rev_gte(_get_rev_num(match_details.group(1)), _get_rev_num('4.3.5')):
                     return '4.3ORCA'
         elif portid == 'hawq':
             match = re.search("HAWQ[a-zA-Z\s]*(\d+\.\d+)", versionStr)
@@ -515,7 +515,7 @@ def _db_install(schema, dbrev, testcase):
     """
     _info("Installing MADlib into %s schema..." % schema.upper(), True)
 
-    temp_schema = schema + '_v' + ''.join(str(_get_rev_num(dbrev)))
+    temp_schema = schema + '_v' + ''.join(map(str, _get_rev_num(dbrev)))
     # Check the status of MADlib objects in database
     madlib_exists = False if dbrev is None else True
 
