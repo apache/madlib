@@ -397,21 +397,21 @@ COPY houses FROM STDIN WITH DELIMITER '|';
 </pre>
 -# Train the model.
 <pre class="example">
-DROP TABLE IF EXISTS houses_en;
-SELECT madlib.elastic_net_train( 'houses',
-                                 'houses_en',
-                                 'price',
-                                 'array[tax, bath, size]',
-                                 'gaussian',
-                                 0.5,
-                                 0.1,
-                                 TRUE,
-                                 NULL,
-                                 'fista',
-                                 '',
-                                 NULL,
-                                 10000,
-                                 1e-6
+DROP TABLE IF EXISTS houses_en, houses_en_summary;
+SELECT madlib.elastic_net_train( 'houses',                  -- source table
+                                 'houses_en',               -- result table
+                                 'price',                   -- dependent variable
+                                 'array[tax, bath, size]',  -- independent variable
+                                 'gaussian',                -- regression family
+                                 0.5,                       -- alpha value
+                                 0.1,                       -- lambda value
+                                 TRUE,                      -- standardize
+                                 NULL,                      -- grouping column(s)
+                                 'fista',                   -- optimizer
+                                 '',                        -- optimizer parameters
+                                 NULL,                      -- excluded columns
+                                 10000,                     -- maximum iterations
+                                 1e-6                       -- tolerance value
                                );
 </pre>
 -# View the resulting model.
@@ -422,16 +422,16 @@ SELECT * FROM houses_en;
 </pre>
 Result:
 <pre class="result">
--[ RECORD 1 ]-----+--------------------------------------------
+-[ RECORD 1 ]-----+------------------------------------------
 family            | gaussian
 features          | {tax,bath,size}
 features_selected | {tax,bath,size}
-coef_nonzero      | {27.6945611671,11509.0099734,49.0945557639}
-coef_all          | {27.6945611671,11509.0099734,49.0945557639}
-intercept         | -11145.5061503
-log_likelihood    | -490118975.406
+coef_nonzero      | {23.135343831,10109.6114845,54.474895868}
+coef_all          | {23.135343831,10109.6114845,54.474895868}
+intercept         | -6678.51198347
+log_likelihood    | -513465278.444
 standardize       | t
-iteration_run     | 322
+iteration_run     | 552
 </pre>
 -# Use the prediction function to evaluate residuals.
 <pre class="example">
@@ -449,11 +449,84 @@ FROM (
 ORDER BY id;
 </pre>
 
+<h4>Additional Example (with grouping)</h4>
+-# Reuse the <a href="#examples">houses</a> table above and train the model by grouping the data on grp_by_col.
+<pre class="example">
+DROP TABLE IF EXISTS houses_en1, houses_en1_summary;
+SELECT madlib.elastic_net_train( 'houses',
+                                 'houses_en1',
+                                 'price',
+                                 'array[tax, bath, size]',
+                                 'gaussian',
+                                 1,
+                                 30000,
+                                 TRUE,
+                                 'grp_by_col',
+                                 'fista',
+                                 '',
+                                 NULL,
+                                 10000,
+                                 1e-6
+                               );
+</pre>
+-# View the resulting model and see a separate model for each group.
+<pre class="example">
+-- Turn on expanded display to make it easier to read results.
+\\x on
+SELECT * FROM houses_en2;
+</pre>
+Result:
+<pre class="result">
+-[ RECORD 1 ]-----+----------------
+grp_by_col        | 1
+family            | gaussian
+features          | {tax,bath,size}
+features_selected | {}
+coef_nonzero      | {}
+coef_all          | {0,0,0}
+intercept         | 129877.777778
+log_likelihood    | -1876006273.59
+standardize       | t
+iteration_run     | 15
+-[ RECORD 2 ]-----+----------------
+grp_by_col        | 2
+family            | gaussian
+features          | {tax,bath,size}
+features_selected | {}
+coef_nonzero      | {}
+coef_all          | {0,0,0}
+intercept         | 129877.777778
+log_likelihood    | -1892844531.19
+standardize       | t
+iteration_run     | 15
+</pre>
+-# Use the prediction function to evaluate residuals.
+<pre class="example">
+\\x off
+SELECT madlib.elastic_net_predict(
+                'houses_en1',             -- model table
+                'houses',                 -- new source data table
+                'id',                     -- unique ID associated with each row
+                'houses_en1_prediction'   -- table to store prediction result
+              );
+</pre>
+-# View the results:
+<pre class="example">
+-- Turn on expanded display to make it easier to read results.
+\\x on
+SELECT  houses.id, 
+        houses.price, 
+        houses_en1_prediction.prediction, 
+        houses.price - houses_en1_prediction.prediction AS residual 
+FROM houses_en1_prediction, houses 
+WHERE houses.id=houses_en1_prediction.id;
+</pre>
+
 @anchor additional_example
-<h4>Additional Example (when coef_nonzero is different from coef_all)</h4>
+<h4>Another Example (when coef_nonzero is different from coef_all)</h4>
 -# Reuse the <a href="#examples">houses</a> table above and train the model with alpha=1 (L-1) and a large lambda (30000).
 <pre class="example">
-DROP TABLE IF EXISTS houses_en2;
+DROP TABLE IF EXISTS houses_en2, houses_en2_summary;
 SELECT madlib.elastic_net_train( 'houses',
                                  'houses_en2',
                                  'price',
@@ -478,15 +551,16 @@ SELECT * FROM houses_en2;
 </pre>
 Result:
 <pre class="result">
--[ RECORD 1 ]-----+--------------------------------------------
+-[ RECORD 1 ]-----+--------------------------------
+family            | gaussian
 features          | {tax,bath,size}
 features_selected | {tax,size}
-coef_nonzero      | {13.3261747481,22.7347986045}
-coef_all          | {13.3261747481,0,22.7347986045}
-intercept         | 68877.5045405
-log_likelihood    | -1694746275.43
+coef_nonzero      | {7.28858411842,28.9715787517}
+coef_all          | {7.28858411842,0,28.9715787517}
+intercept         | 75136.8563044
+log_likelihood    | -1633894320.85
 standardize       | t
-iteration_run     | 115
+iteration_run     | 151
 </pre>
 -# We can still use the prediction function with coef_all to evaluate residuals.
 <pre class="example">
@@ -522,22 +596,34 @@ The two queries are expected to give same residuals:
 <pre class="result">
  id | price  |     predict      |     residual
 ----+--------+------------------+-------------------
-  1 |  50000 |  94245.742567344 |  -44245.742567344
-  3 |  22500 |  93242.914556232 |  -70742.914556232
-  5 | 133000 | 120570.253114742 |   12429.746885258
-  7 | 260000 | 154482.653115284 |  105517.346884716
-  9 | 160000 | 127499.863983754 |   32500.136016246
- 11 |  87000 | 114415.797184981 |  -27415.797184981
- 13 | 140000 |  150201.89180353 |   -10201.89180353
- 15 |  65000 |  110504.97610329 |   -45504.97610329
-  2 |  85000 |  114926.05405835 |   -29926.05405835
-  4 |  90000 | 110026.514757197 |  -20026.514757197
-  6 |  90500 | 105510.375306125 |  -15010.375306125
-  8 | 142500 | 104539.017736473 |   37960.982263527
- 10 | 240000 | 181347.915720063 |   58652.084279937
- 12 | 118600 | 118884.405888047 | -284.405888046997
- 14 | 148000 | 131701.624106042 |   16298.375893958
-(15 rows)
+  1 |  50000 | 101745.236573077 | -51745.2365730768
+  2 |  85000 | 123639.795668638 |  -38639.795668638
+  3 |  22500 |  105992.50146357 | -83492.5014635704
+  4 |  90000 | 119140.976864635 | -29140.9768646354
+  5 | 133000 | 128215.155468264 |  4784.84453173559
+  6 |  90500 | 108733.139440661 |  -18233.139440661
+  7 | 260000 | 157181.468735913 |  102818.531264087
+  8 | 142500 | 113989.840644415 |  28510.1593555854
+  9 | 160000 | 132005.219209843 |  27994.7807901572
+ 10 | 240000 | 182789.550577429 |  57210.4494225714
+ 11 |  87000 | 117076.632055228 | -30076.6320552282
+ 12 | 118600 | 123158.836015865 | -4558.83601586541
+ 13 | 140000 | 148721.445674494 | -8721.44567449403
+ 14 | 148000 | 135130.172494664 |  12869.8275053356
+ 15 |  65000 | 121883.225171338 |  -56883.225171338
+ 16 |  90000 | 118412.118452793 | -28412.1184527934
+ 17 | 133000 | 127486.297056422 |  5513.70294357761
+ 18 |  90500 | 107275.422616977 |  -16775.422616977
+ 19 | 260000 | 156452.610324071 |  103547.389675929
+ 20 | 142500 | 114718.699056257 |  27781.3009437434
+ 21 | 160000 | 132515.420098132 |  27484.5799018678
+ 22 | 240000 | 182206.463847955 |   57793.536152045
+ 23 |  87000 | 116639.317008123 |  -29639.317008123
+ 24 | 118600 | 122940.178492313 |  -4340.1784923128
+ 25 | 140000 | 149450.304086336 | -9450.30408633599
+ 26 | 148000 | 136587.889318348 |  11412.1106816516
+ 27 |  65000 |  122612.08358318 |   -57612.08358318
+(27 rows)
 </pre>
 
 @anchor notes

@@ -250,57 +250,58 @@ class GroupIterationController:
 
     def __enter__(self):
         verbosity_level = "info" if self.verbose else "error"
-        ############################
-        # create state table
-        # currently assuming that groups is passed as a valid array
-        group_col = ("NULL::integer as {col_grp_null}" if self.is_group_null
-                     else "{grouping_col}").format(**self.kwargs)
-        groupby_str = ("{col_grp_null}" if self.is_group_null
-                       else "{grouping_col}").format(**self.kwargs)
-        plpy.execute("""
-            DROP TABLE IF EXISTS {rel_state};
-            CREATE TEMPORARY TABLE {rel_state} AS (
-                SELECT
-                    array_to_string(ARRAY[{grouping_str}], ',') AS {col_grp_key},
-                    0::integer                                  AS {col_grp_iteration},
-                    NULL::{state_type}                          AS {col_grp_state},
-                    count(*)                                    AS {col_n_tuples},
-                    {group_col}
-                FROM {rel_source}
-                WHERE ({col_dep_var}) IS NOT NULL
-                  AND NOT {schema_madlib}.array_contains_null({col_ind_var})
-                GROUP BY {groupby_str}
-            );
-            """.format(group_col=group_col,
-                       groupby_str=groupby_str,
-                       **self.kwargs))
+        with MinWarning(verbosity_level):
+            ############################
+            # create state table
+            # currently assuming that groups is passed as a valid array
+            group_col = ("NULL::integer as {col_grp_null}" if self.is_group_null
+                         else "{grouping_col}").format(**self.kwargs)
+            groupby_str = ("{col_grp_null}" if self.is_group_null
+                           else "{grouping_col}").format(**self.kwargs)
+            plpy.execute("""
+                DROP TABLE IF EXISTS {rel_state};
+                CREATE TEMPORARY TABLE {rel_state} AS (
+                    SELECT
+                        array_to_string(ARRAY[{grouping_str}], ',') AS {col_grp_key},
+                        0::integer                                  AS {col_grp_iteration},
+                        NULL::{state_type}                          AS {col_grp_state},
+                        count(*)                                    AS {col_n_tuples},
+                        {group_col}
+                    FROM {rel_source}
+                    WHERE ({col_dep_var}) IS NOT NULL
+                      AND NOT {schema_madlib}.array_contains_null({col_ind_var})
+                    GROUP BY {groupby_str}
+                );
+                """.format(group_col=group_col,
+                           groupby_str=groupby_str,
+                           **self.kwargs))
 
-        ############################
-        # checking null in group values
-        # We cannot allow NULL due to array_to_string cannot handle it well.
-        if not self.is_group_null:
-            null_test = (" OR ".join([g.strip() + " is NULL" for g in
-                         self.kwargs['grouping_col'].split(",")]))
-            null_count = plpy.execute("""
-                SELECT count(*) FROM {rel_state} WHERE {null_test}
-                """.format(null_test=null_test,
-                           rel_state=self.kwargs['rel_state']))[0]['count']
-            if null_count != 0:
-                plpy.error("Grouping error: at least one of the grouping "
-                           "columns contains NULL values! Please filter "
-                           "out those NULL values.")
+            ############################
+            # checking null in group values
+            # We cannot allow NULL due to array_to_string cannot handle it well.
+            if not self.is_group_null:
+                null_test = (" OR ".join([g.strip() + " is NULL" for g in
+                             self.kwargs['grouping_col'].split(",")]))
+                null_count = plpy.execute("""
+                    SELECT count(*) FROM {rel_state} WHERE {null_test}
+                    """.format(null_test=null_test,
+                               rel_state=self.kwargs['rel_state']))[0]['count']
+                if null_count != 0:
+                    plpy.error("Grouping error: at least one of the grouping "
+                               "columns contains NULL values! Please filter "
+                               "out those NULL values.")
 
-        ############################
-        # initialize states
-        rel_state_str = self.kwargs['rel_state']
-        col_grp_key = self.kwargs['col_grp_key']
-        col_n_tuples = self.kwargs['col_n_tuples']
-        ret_states = plpy.execute("SELECT * FROM " + rel_state_str)
-        self.new_states.initialize(col_grp_key=col_grp_key,
-                                   col_grp_state='',
-                                   ret_states=ret_states)
-        for s in ret_states:
-            self.grp_to_n_tuples[s[col_grp_key]] = long(s[col_n_tuples])
+            ############################
+            # initialize states
+            rel_state_str = self.kwargs['rel_state']
+            col_grp_key = self.kwargs['col_grp_key']
+            col_n_tuples = self.kwargs['col_n_tuples']
+            ret_states = plpy.execute("SELECT * FROM " + rel_state_str)
+            self.new_states.initialize(col_grp_key=col_grp_key,
+                                       col_grp_state='',
+                                       ret_states=ret_states)
+            for s in ret_states:
+                self.grp_to_n_tuples[s[col_grp_key]] = long(s[col_n_tuples])
 
         self.in_with = True
         return self

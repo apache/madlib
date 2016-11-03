@@ -6,6 +6,7 @@ from utilities.utilities import __mad_version
 from utilities.utilities import _array_to_string
 from utilities.utilities import __mad_version
 from utilities.control import MinWarning
+from utilities.validate_args import get_cols_and_types
 
 version_wrapper = __mad_version()
 mad_vec = version_wrapper.select_vecfunc()
@@ -37,8 +38,9 @@ def __elastic_net_generate_result (optimizer, iteration_run, **args):
     if grouping_column:
         groupby_str = "GROUP BY {grouping_col}, {col_grp_key}".format(
             grouping_col=grouping_column, col_grp_key=col_grp_key)
+        cols_types = dict(get_cols_and_types(args["tbl_source"]))
         grouping_str1 = grouping_column + ","
-        select_grouping_info = ','.join([grp_col.strip()+"\t text" 
+        select_grouping_info = ','.join([grp_col.strip()+"\t" + cols_types[grp_col.strip()]
             for grp_col in grouping_column.split(',')]) + ","
         using_str = "USING ({col_grp_key})".format(col_grp_key=col_grp_key)
     else:
@@ -100,6 +102,20 @@ def __elastic_net_generate_result (optimizer, iteration_run, **args):
     else:
         build_output_table(plpy.execute(out_table_qstr)[0], grouping_column,
             grouping_str1, standardize_flag, iteration_run, **args)
+
+    ## Create summary table, listing the grouping columns used.
+    summary_table = args["tbl_summary"]
+    grouping_text = "NULL" if not grouping_column else grouping_column
+    plpy.execute("""
+        DROP TABLE IF EXISTS {summary_table};
+        CREATE TABLE {summary_table} (
+            grouping_col    text
+        )
+        """.format(summary_table=summary_table))
+    plpy.execute("""
+            INSERT INTO {summary_table} VALUES
+            ('{grouping_text}')
+        """.format(summary_table=summary_table, grouping_text=grouping_text))
     return None
 
 
