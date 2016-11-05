@@ -354,7 +354,7 @@ def __elastic_net_fista_train_compute(schema_madlib, func_step_aggregate,
         'col_grp_state': unique_string(desp='col_grp_state'),
         'col_grp_key': unique_string(desp='col_grp_key'),
         'col_n_tuples': unique_string(desp='col_n_tuples'),
-        'lambda_count': 0,
+        'lambda_count': 1,
         'is_active': 0,
         'state_type': "double precision[]",
         'rel_source': tbl_used,
@@ -377,7 +377,7 @@ def __elastic_net_fista_train_compute(schema_madlib, func_step_aggregate,
         tolerance,
         start_iter=0,
         lambda_name=args["warmup_lambdas"],
-        warmup_lambda_value = args.get('warmup_lambdas')[args["lambda_count"]],
+        warmup_lambda_value = args.get('warmup_lambdas')[args["lambda_count"]-1],
         activeset_tolerance=args["activeset_tolerance"],
         warmup_tolerance=args["warmup_tolerance"],
         max_iter=args["max_iter"],
@@ -435,12 +435,13 @@ def __compute_fista(schema_madlib, func_step_aggregate, func_state_diff,
         if k not in args:
             args.update({k: v})
     iterationCtrl = GroupIterationController(args)
-    
     with iterationCtrl as it:
         it.iteration = start_iter
         while True:
             # manually add the intercept term
-            it.kwargs["warmup_lambda_value"] = args.get('lambda_name')[it.kwargs["lambda_count"]]
+            if (it.kwargs["lambda_count"] > len(args.get('lambda_name'))):
+                break
+            it.kwargs["warmup_lambda_value"] = args.get('lambda_name')[it.kwargs["lambda_count"]-1]
             it.update("""
                   {schema_madlib}.{func_step_aggregate}(
                       ({col_ind_var})::double precision[],
@@ -465,7 +466,7 @@ def __compute_fista(schema_madlib, func_step_aggregate, func_state_diff,
                 it.kwargs["use_tolerance"] = args["tolerance"]
 
             if it.kwargs["use_active_set"] == 1:
-                is_backtracking = it.get_last_state_value_for_elasticnet()
+                is_backtracking = it.get_last_state_value()
                 if it.test(
                     """
                     {iteration} >= {max_iter}
@@ -477,8 +478,6 @@ def __compute_fista(schema_madlib, func_step_aggregate, func_state_diff,
                         if it.kwargs["is_active"] == 0:
                             if (it.kwargs["lambda_count"] < it.kwargs["warm_no"]):
                                 it.kwargs["lambda_count"] += 1
-                                if (len(args.get('lambda_name')) >= it.kwargs["lambda_count"]):
-                                    break
                             else:
                                 break
                         else:
@@ -490,19 +489,16 @@ def __compute_fista(schema_madlib, func_step_aggregate, func_state_diff,
                     if is_backtracking == 0 and it.kwargs["is_active"] == 0:
                         it.kwargs["is_active"] = 1
             else:
-              if it.test("""
-                  {iteration} >= {max_iter} or
-                  {schema_madlib}.{func_state_diff}(
-                      _state_previous, _state_current) < {tolerance}
-                  """):
-                  if (it.iteration < it.kwargs["max_iter"] and
-                      it.kwargs["lambda_count"] < it.kwargs["warm_no"]):
-                      it.kwargs["lambda_count"] += 1
-                      if (len(args.get('lambda_name')) >= it.kwargs["lambda_count"]):
-                          break
-                  else:
-                      break
-
+                if it.test("""
+                    {iteration} >= {max_iter} or
+                    {schema_madlib}.{func_state_diff}(
+                        _state_previous, _state_current) < {tolerance}
+                    """):
+                    if (it.iteration < it.kwargs["max_iter"] and
+                        it.kwargs["lambda_count"] < it.kwargs["warm_no"]):
+                        it.kwargs["lambda_count"] += 1
+                    else:
+                        break
         it.final()
         if it.kwargs["lambda_count"] < it.kwargs["warm_no"]:
             plpy.error("""

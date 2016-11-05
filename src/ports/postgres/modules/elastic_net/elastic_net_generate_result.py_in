@@ -32,10 +32,10 @@ def __elastic_net_generate_result (optimizer, iteration_run, **args):
     tbl_state = "{rel_state}".format(rel_state=args["rel_state"])
 
     grouping_column = args['grouping_col']
-    col_grp_key = args['col_grp_key']
-    grouping_str = args['grouping_str']
-    groupby_str, grouping_str1, using_str = "", "", "ON TRUE"
+    grouping_str1 = ""
     if grouping_column:
+        col_grp_key = args['col_grp_key']
+        grouping_str = args['grouping_str']
         groupby_str = "GROUP BY {grouping_col}, {col_grp_key}".format(
             grouping_col=grouping_column, col_grp_key=col_grp_key)
         cols_types = dict(get_cols_and_types(args["tbl_source"]))
@@ -43,26 +43,7 @@ def __elastic_net_generate_result (optimizer, iteration_run, **args):
         select_grouping_info = ','.join([grp_col.strip()+"\t" + cols_types[grp_col.strip()]
             for grp_col in grouping_column.split(',')]) + ","
         using_str = "USING ({col_grp_key})".format(col_grp_key=col_grp_key)
-    else:
-        select_grouping_info = ""
-
-    ## Create the output table
-    plpy.execute("""
-             drop table if exists {tbl_result};
-             create table {tbl_result} (
-                 {select_grouping_info}
-                 family            text,
-                 features          text[],
-                 features_selected text[],
-                 coef_nonzero      double precision[],
-                 coef_all          double precision[],
-                 intercept         double precision,
-                 log_likelihood    double precision,
-                 standardize       boolean,
-                 iteration_run     integer)
-             """.format(select_grouping_info=select_grouping_info, **args))
-
-    out_table_qstr = """
+        out_table_qstr = """
         SELECT
             {grouping_str1}
             (result).coefficients AS coef,
@@ -73,7 +54,7 @@ def __elastic_net_generate_result (optimizer, iteration_run, **args):
             FROM {tbl_state}
             WHERE {col_grp_iteration} = {iteration_run}
         ) t
-        join
+        JOIN
         (
             SELECT
                 {grouping_str1}
@@ -94,14 +75,43 @@ def __elastic_net_generate_result (optimizer, iteration_run, **args):
             col_grp_key=col_grp_key,
             source_table=source_table,
             schema_madlib = args["schema_madlib"])
-    if grouping_column:
-        result = plpy.execute(out_table_qstr)
-        for res in result:
-            build_output_table(res, grouping_column, grouping_str1,
-                standardize_flag, iteration_run, **args)
     else:
-        build_output_table(plpy.execute(out_table_qstr)[0], grouping_column,
-            grouping_str1, standardize_flag, iteration_run, **args)
+        ## Its a much simpler query when there is no grouping.
+        select_grouping_info = ""
+        out_table_qstr = """
+            SELECT
+                (result).coefficients AS coef,
+                (result).intercept AS intercept
+            FROM (
+                SELECT {schema_madlib}.{result_func} AS result
+                FROM {tbl_state}
+                WHERE {col_grp_iteration} = {iteration_run}
+            ) t
+        """.format(result_func = result_func, tbl_state = tbl_state,
+            col_grp_iteration = args["col_grp_iteration"],
+            iteration_run = iteration_run,
+            schema_madlib = args["schema_madlib"])
+
+    ## Create the output table
+    plpy.execute("""
+             DROP TABLE IF EXISTS {tbl_result};
+             CREATE TABLE {tbl_result} (
+                 {select_grouping_info}
+                 family            text,
+                 features          text[],
+                 features_selected text[],
+                 coef_nonzero      double precision[],
+                 coef_all          double precision[],
+                 intercept         double precision,
+                 log_likelihood    double precision,
+                 standardize       boolean,
+                 iteration_run     integer)
+             """.format(select_grouping_info=select_grouping_info, **args))
+
+    result = plpy.execute(out_table_qstr)
+    for res in result:
+        build_output_table(res, grouping_column, grouping_str1,
+            standardize_flag, iteration_run, **args)
 
     ## Create summary table, listing the grouping columns used.
     summary_table = args["tbl_summary"]
@@ -148,7 +158,7 @@ def build_output_table(res, grouping_column, grouping_str1,
     else:
         grouping_info = ""
     fquery = """
-        insert into {tbl_result} values
+        INSERT INTO {tbl_result} VALUES
             ({grouping_info} '{family}', '{features}'::text[], '{features_selected}'::text[],
             '{dense_coef}'::double precision[], '{sparse_coef}'::double precision[],
             {intercept}, {log_likelihood}, {standardize_flag}, {iteration})
