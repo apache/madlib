@@ -5,6 +5,7 @@
 """
 
 import plpy
+import math
 from control import MinWarning
 from utilities import unique_string
 from collections import namedtuple
@@ -54,19 +55,47 @@ class BaseState(object):
                    ret_states=None, **kwargs):
         self.update(col_grp_key, col_grp_state, ret_states)
 
-    def get_last_state_value(self):
-        ## This function returns a 0 or 1, after looking at the last
+    def isclose_to_zero(self, a, b=0.0, rel_tol=1e-09, abs_tol=0.0):
+        '''
+        A variation of of Python 3.5 math.isclose()
+        https://hg.python.org/cpython/file/tip/Modules/mathmodule.c#l1993
+        '''
+        # sanity check on the inputs
+        if rel_tol < 0 or abs_tol < 0:
+            raise ValueError("tolerances must be non-negative")
+
+        # short circuit exact equality -- needed to catch two infinities of
+        # the same sign. And perhaps speeds things up a bit sometimes.
+        if a == b:
+            return True
+
+        # This catches the case of two infinities of opposite sign, or
+        # one infinity and one finite number. Two infinities of opposite
+        # sign would otherwise have an infinite relative tolerance.
+        # Two infinities of the same sign are caught by the equality check
+        # above.
+        if math.isinf(a) or math.isinf(b):
+            return False
+
+        # now do the regular computation
+        # this is essentially the "weak" test from the Boost library
+        diff = math.fabs(b - a)
+        result = (((diff <= math.fabs(rel_tol * b)) or
+                   (diff <= math.fabs(rel_tol * a))) or
+                  (diff <= abs_tol))
+        return result
+
+    def are_last_state_value_zero(self):
+        ## This function returns a boolean value, after inspecting the last
         ## element of the state array for each group.
-        ## This returns a 0, only if the last element of the state array
-        ## of every group is 0. If the value is non-zero even for a single
-        ## group, it returns a 1.
-        if any([value[-1] for value in self._state.itervalues()]):
-            return 1
-        return 0
+        ## This returns True, only if the last element of the state array
+        ## of every group is (almost equal to) 0. If the value is non-zero
+        ## even for a single group, it returns False.
+        return all([self.isclose_to_zero(val[-1]) for val in self._state.itervalues()])
 
     def update(self, col_grp_key, col_grp_state, ret_states):
         failed_grp_keys = []
-        if ret_states is None or len(ret_states) == 0:
+        if not ret_states:
             return failed_grp_keys
         t0 = ret_states[0]
         # no key column in table ret_states
@@ -304,8 +333,8 @@ class GroupIterationController:
         self.in_with = True
         return self
 
-    def get_last_state_value(self):
-        return self.new_states.get_last_state_value()
+    def are_last_state_value_zero(self):
+        return self.new_states.are_last_state_value_zero()
     
     def info(self):
         """ Logging intermediate state information """
