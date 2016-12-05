@@ -1,0 +1,345 @@
+# coding=utf-8
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Single Source Shortest Path
+
+# Please refer to the sssp.sql_in file for the documentation
+
+"""
+@file sssp.py_in
+
+@namespace graph
+"""
+
+import plpy
+from utilities.control import MinWarning
+from utilities.utilities import _assert
+from utilities.utilities import extract_keyvalue_params
+from utilities.utilities import unique_string
+from utilities.validate_args import get_cols
+from utilities.validate_args import unquote_ident
+from utilities.validate_args import table_exists
+from utilities.validate_args import columns_exist_in_table
+from utilities.validate_args import table_is_empty
+
+m4_changequote(`<!', `!>')
+
+def graph_sssp(schema_madlib, vertex_table, vertex_id, edge_table,
+		edge_args, source_vertex, out_table, **kwargs):
+	"""
+    Single source shortest path function for graphs
+    Args:
+        @param vertex_table     Name of the table that contains the vertex data.
+        @param vertex_id        Name of the column containing the vertex ids.
+        @param edge_table       Name of the table that contains the edge data.
+        @param edge_args        A comma-delimited string containing multiple
+        						named arguments of the form "name=value".
+        @param source_vertex    The source vertex id for the algorithm to start.
+        @param out_table   	    Name of the table to store the result of SSSP.
+    """
+
+	with MinWarning("warning"):
+
+		INT_MAX = 2147483647
+
+		message = unique_string(desp='message')
+		toupdate = unique_string(desp='toupdate')
+
+		params_types = {'src': str, 'dest': str, 'weight': str}
+		default_args = {'src': 'src', 'dest': 'dest', 'weight': 'weight'}
+		edge_params = extract_keyvalue_params(edge_args,
+                                            params_types,
+                                            default_args)
+		if vertex_id is None:
+			vertex_id = "id"
+
+		src = edge_params["src"]
+		dest = edge_params["dest"]
+		weight = edge_params["weight"]
+
+		distribution = m4_ifdef(<!__POSTGRESQL__!>, <!''!>,
+			<!"DISTRIBUTED BY ({0})".format(vertex_id)!>)
+		local_distribution = m4_ifdef(<!__POSTGRESQL__!>, <!''!>,
+			<!"DISTRIBUTED BY (id)"!>)
+
+		validate_graph_coding(vertex_table, vertex_id, edge_table,
+			edge_params, source_vertex, out_table)
+
+		plpy.execute(" DROP TABLE IF EXISTS {0},{1}".format(message,toupdate))
+
+		plpy.execute(
+			""" CREATE TABLE {out_table} AS
+				SELECT {vertex_id}::INT AS {vertex_id},
+					CAST({INT_MAX} AS INT) AS {weight},
+					CAST({INT_MAX} AS INT) AS parent
+				FROM {vertex_table} {distribution} """.format(**locals()))
+
+		plpy.execute(
+			""" CREATE TEMP TABLE {message}(
+				id INT, val INT, parent INT)
+				{local_distribution} """.format(**locals()))
+		plpy.execute(
+			""" CREATE TEMP TABLE {toupdate}(
+				id INT, val INT, parent INT)
+				{local_distribution} """.format(**locals()))
+		temp_table = unique_string(desp='temp')
+		sql = m4_ifdef(<!__HAWQ__!>,
+			""" CREATE TABLE {temp_table} (
+					{vertex_id} INT, {weight} INT, parent INT) {distribution};
+			""",  <!''!>)
+		plpy.execute(sql.format(**locals()))
+
+		plpy.execute(
+			""" INSERT INTO {message} VALUES({source_vertex},0,{source_vertex})
+			""".format(**locals()))
+
+		v_cnt = plpy.execute("SELECT count(*) FROM {vertex_table}".
+			format(**locals()))
+		for i in range(0,v_cnt[0]['count']):
+
+			plpy.execute("TRUNCATE TABLE {0}".format(toupdate))
+			plpy.execute(
+				""" INSERT INTO {toupdate}
+					SELECT DISTINCT ON (message.id) message.id AS id,
+						message.val AS val,
+						message.parent AS parent
+					FROM {message} AS message, {out_table} AS out_table
+					WHERE message.id = out_table.{vertex_id}
+						AND message.val<out_table.{weight}
+				""".format(**locals()))
+
+			if table_is_empty(toupdate):
+				break
+			sql = m4_ifdef(<!__HAWQ__!>,
+				<!"""
+				TRUNCATE TABLE {temp_table};
+				INSERT INTO {temp_table}
+					SELECT *
+					FROM {out_table}
+					WHERE {out_table}.{vertex_id} NOT IN (
+						SELECT {toupdate}.id FROM {toupdate})
+					UNION
+					SELECT * FROM {toupdate};
+				DROP TABLE {out_table};
+				ALTER TABLE {temp_table} RENAME TO {out_table};
+				CREATE TABLE {temp_table} (
+					{vertex_id} INT, {weight} INT, parent INT) {distribution};
+				"""!>,
+				<!"""
+				UPDATE {out_table} SET
+				{weight}=toupdate.val,
+				parent=toupdate.parent
+				FROM
+				{toupdate} AS toupdate
+				WHERE
+				{out_table}.{vertex_id}=toupdate.id
+				"""!>)
+			plpy.execute(sql.format(**locals()))
+			plpy.execute("TRUNCATE TABLE {0}".format(message))
+			plpy.execute(
+				""" INSERT INTO {message}
+					SELECT edge_table.{dest} AS id, x.val AS val,
+						toupdate.id AS parent
+					FROM {toupdate} AS toupdate, {edge_table} AS edge_table, (
+						SELECT edge_table.{dest} AS id,
+							min(toupdate.val + edge_table.{weight}) AS val
+						FROM {toupdate} AS toupdate,
+							{edge_table} AS edge_table
+						WHERE edge_table.{src}=toupdate.id
+						GROUP BY edge_table.{dest}) x
+					WHERE edge_table.{src} = toupdate.id
+						AND edge_table.{dest} = x.id
+						AND toupdate.val + edge_table.{weight} = x.val
+						""".format(**locals()))
+
+		ncycle = plpy.execute(
+			""" SELECT out_table1.{vertex_id} AS v1,
+					out_table2.{vertex_id} AS v2
+				FROM {out_table} AS out_table1 , {out_table} AS out_table2,
+					{edge_table} AS edge_table
+				WHERE out_table1.{vertex_id} = edge_table.{src} AND
+					out_table2.{vertex_id} = edge_table.{dest} AND
+					out_table1.{weight} + edge_table.{weight} <
+					out_table2.{weight}
+				LIMIT 1
+			""".format(**locals()))
+		if ncycle:
+			plpy.error("Graph SSSP: Detected a negative cycle in the graph.")
+
+		sql = m4_ifdef(<!__HAWQ__!>,
+			""" DROP TABLE {temp_table} """,  <!''!>)
+		plpy.execute(sql.format(**locals()))
+
+	return None
+
+def graph_sssp_get_path(schema_madlib, sssp_table, dest_vertex, **kwargs):
+	"""
+	Helper function that can be used to get the shortest path for a vertex
+    Args:
+    	@param source_table	Name of the table that contains the SSSP output.
+        @param out_table	The vertex that will be the destination of the
+            				desired path.
+	"""
+	validate_get_path(sssp_table, dest_vertex)
+	cur = dest_vertex
+	cols = get_cols(sssp_table)
+	id = cols[0]
+	ret = [dest_vertex]
+	sql = "SELECT parent FROM {sssp_table} WHERE {id} = {cur} LIMIT 1"
+	parent = plpy.execute(sql.format(**locals()))
+	if parent is None:
+		plpy.error(
+			"Graph SSSP: Vertex {0} is not present in the sssp table {1}".
+			format(dest_vertex,sssp_table))
+
+	while 1:
+		parent = parent[0]['parent']
+		if parent == cur:
+			ret.reverse()
+			return ret
+		else:
+			ret.append(parent)
+			cur = parent
+
+		parent = plpy.execute(sql.format(**locals()))
+
+	return None
+
+def validate_graph_coding(vertex_table, vertex_id, edge_table, edge_params,
+	source_vertex, out_table, **kwargs):
+
+	_assert(out_table and out_table.strip().lower() not in ('null', ''),
+		"Graph SSSP: Invalid output table name!")
+	_assert(not table_exists(out_table),
+		"Graph SSSP: Output table already exists!")
+
+	_assert(vertex_table and vertex_table.strip().lower() not in ('null', ''),
+		"Graph SSSP: Invalid vertex table name!")
+	_assert(table_exists(vertex_table),
+		"Graph SSSP: Vertex table ({0}) is missing!".format(vertex_table))
+	_assert(not table_is_empty(vertex_table),
+		"Graph SSSP: Vertex table ({0}) is empty!".format(vertex_table))
+
+	_assert(edge_table and edge_table.strip().lower() not in ('null', ''),
+		"Graph SSSP: Invalid vertex table name!")
+	_assert(table_exists(edge_table),
+		"Graph SSSP: Edge table ({0}) is missing!".format(edge_table))
+	_assert(not table_is_empty(edge_table),
+		"Graph SSSP: Edge table ({0}) is empty!".format(edge_table))
+
+	existing_cols = set(unquote_ident(i) for i in get_cols(vertex_table))
+	_assert(vertex_id in existing_cols, """Graph SSSP: The {vertex_id}
+		column is not present in vertex table ({vertex_table})
+		""".format(**locals()))
+	_assert(columns_exist_in_table(edge_table, edge_params.values()),
+		"Graph SSSP: Not all columns from {0} present in edge table ({1})".
+		format(edge_params.values(), edge_table))
+
+	return None
+
+def validate_get_path(sssp_table, dest_vertex, **kwargs):
+
+	_assert(sssp_table and sssp_table.strip().lower() not in ('null', ''),
+		"Graph SSSP: Invalid SSSP table name!")
+	_assert(table_exists(sssp_table),
+		"Graph SSSP: SSSP table ({0}) is missing!".format(sssp_table))
+	_assert(not table_is_empty(sssp_table),
+		"Graph SSSP: SSSP table ({0}) is empty!".format(sssp_table))
+
+
+def graph_sssp_help(schema_madlib, message, **kwargs):
+    """
+    Help function for graph_sssp and graph_sssp_get_path
+
+    Args:
+        @param schema_madlib
+        @param message: string, Help message string
+        @param kwargs
+
+    Returns:
+        String. Help/usage information
+    """
+    if not message:
+        help_string = """
+-----------------------------------------------------------------------
+                            SUMMARY
+-----------------------------------------------------------------------
+
+Given a graph and a source vertex, single source shortest path (SSSP)
+algorithm finds a path for every vertex such that the the sum of the
+weights of its constituent edges is minimized.
+
+For more details on function usage:
+    SELECT {schema_madlib}.graph_sssp('usage')
+            """
+    elif message in ['usage', 'help', '?']:
+        help_string = """
+----------------------------------------------------------------------------
+                            USAGE
+----------------------------------------------------------------------------
+ SELECT {schema_madlib}.graph_sssp(
+    vertex_table  TEXT, -- Name of the table that contains the vertex data.
+    vertex_id     TEXT, -- Name of the column containing the vertex ids.
+    edge_table    TEXT, -- Name of the table that contains the edge data.
+    edge_args     TEXT, -- A comma-delimited string containing multiple
+    			-- named arguments of the form "name=value".
+    source_vertex INT,  -- The source vertex id for the algorithm to start.
+    out_table     TEXT  -- Name of the table to store the result of SSSP.
+);
+
+The following parameters are supported for edge table arguments ('edge_args'
+	above):
+
+src (default = 'src')		: Name of the column containing the source
+				vertex ids in the edge table.
+dest (default = 'dest')		: Name of the column containing the destination
+				vertex ids in the edge table.
+weight (default = 'weight')	: Name of the column containing the weight of
+				edges in the edge table.
+
+To retrieve the path for a specific vertex:
+
+ SELECT {schema_madlib}.graph_sssp_get_path(
+    sssp_table	TEXT, -- Name of the table that contains the SSSP output.
+    dest_vertex	INT   -- The vertex that will be the destination of the
+    		  -- desired path.
+);
+
+----------------------------------------------------------------------------
+                            OUTPUT
+----------------------------------------------------------------------------
+The output table ('out_table' above) will contain a row for every vertex from
+vertex_table and have the following columns:
+
+vertex_id 	: The id for the destination. Will use the input parameter
+		(vertex_id) for column naming.
+weight 		: The total weight of the shortest path from the source vertex
+		to this particular vertex. Will use the input parameter (weight)
+		for column naming.
+parent 		: The parent of this vertex in the shortest path from source.
+		Will use "parent" for column naming.
+
+The graph_sssp_get_path function will return an INT array that contains the
+shortest path from the initial source vertex to the desired destination vertex.
+"""
+    else:
+        help_string = "No such option. Use {schema_madlib}.graph_sssp()"
+
+    return help_string.format(schema_madlib=schema_madlib)
+# ---------------------------------------------------------------------
