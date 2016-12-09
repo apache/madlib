@@ -4,7 +4,7 @@ function(define_postgresql_features IN_VERSION OUT_FEATURES)
     if(NOT ${IN_VERSION} VERSION_LESS "9.0")
         list(APPEND ${OUT_FEATURES} __HAS_ORDERED_AGGREGATES__)
     endif()
-    
+
     # Pass values to caller
     set(${OUT_FEATURES} "${${OUT_FEATURES}}" PARENT_SCOPE)
 endfunction(define_postgresql_features)
@@ -76,6 +76,10 @@ function(determine_target_versions OUT_VERSIONS)
             else()
                 set(VERSION "${${PORT_UC}_VERSION_MAJOR}.${${PORT_UC}_VERSION_MINOR}")
             endif()
+            if(${PORT_UC} STREQUAL "HAWQ" AND
+                    ${${PORT_UC}_VERSION_MAJOR} EQUAL 2)
+                set(VERSION "2.0")
+            endif()
             list(FIND SUPPORTED_VERSIONS "${VERSION}" _POS)
             if(_POS EQUAL -1)
                 string(REPLACE ";" ", " _SUPPORTED_VERSIONS_STR "${SUPPORTED_VERSIONS}")
@@ -96,7 +100,7 @@ function(determine_target_versions OUT_VERSIONS)
             endif(_POS EQUAL -1)
         endif(${PORT_UC}_FOUND)
     endif(NOT DEFINED ${OUT_VERSIONS})
-    
+
     # Pass values to caller
     set(${OUT_VERSIONS} "${${OUT_VERSIONS}}" PARENT_SCOPE)
     # ${PORT_UC}_${_VERSION_UNDERSCORE}_PG_CONFIG might have been set earlier!
