@@ -110,8 +110,8 @@ def graph_sssp(schema_madlib, vertex_table, vertex_id, edge_table,
 			""".format(**locals()))
 
 		v_cnt = plpy.execute("SELECT count(*) FROM {vertex_table}".
-			format(**locals()))
-		for i in range(0,v_cnt[0]['count']):
+			format(**locals()))[0]['count']
+		for i in range(0,v_cnt+1):
 
 			plpy.execute("TRUNCATE TABLE {0}".format(toupdate))
 			plpy.execute(
@@ -168,18 +168,7 @@ def graph_sssp(schema_madlib, vertex_table, vertex_id, edge_table,
 						AND toupdate.val + edge_table.{weight} = x.val
 						""".format(**locals()))
 
-		ncycle = plpy.execute(
-			""" SELECT out_table1.{vertex_id} AS v1,
-					out_table2.{vertex_id} AS v2
-				FROM {out_table} AS out_table1 , {out_table} AS out_table2,
-					{edge_table} AS edge_table
-				WHERE out_table1.{vertex_id} = edge_table.{src} AND
-					out_table2.{vertex_id} = edge_table.{dest} AND
-					out_table1.{weight} + edge_table.{weight} <
-					out_table2.{weight}
-				LIMIT 1
-			""".format(**locals()))
-		if ncycle:
+		if i == v_cnt:
 			plpy.error("Graph SSSP: Detected a negative cycle in the graph.")
 
 		sql = m4_ifdef(<!__HAWQ__!>,
@@ -203,7 +192,8 @@ def graph_sssp_get_path(schema_madlib, sssp_table, dest_vertex, **kwargs):
 	ret = [dest_vertex]
 	sql = "SELECT parent FROM {sssp_table} WHERE {id} = {cur} LIMIT 1"
 	parent = plpy.execute(sql.format(**locals()))
-	if parent is None:
+
+	if parent.nrows() == 0:
 		plpy.error(
 			"Graph SSSP: Vertex {0} is not present in the sssp table {1}".
 			format(dest_vertex,sssp_table))
@@ -237,7 +227,7 @@ def validate_graph_coding(vertex_table, vertex_id, edge_table, edge_params,
 		"Graph SSSP: Vertex table ({0}) is empty!".format(vertex_table))
 
 	_assert(edge_table and edge_table.strip().lower() not in ('null', ''),
-		"Graph SSSP: Invalid vertex table name!")
+		"Graph SSSP: Invalid edge table name!")
 	_assert(table_exists(edge_table),
 		"Graph SSSP: Edge table ({0}) is missing!".format(edge_table))
 	_assert(not table_is_empty(edge_table),
@@ -250,6 +240,17 @@ def validate_graph_coding(vertex_table, vertex_id, edge_table, edge_params,
 	_assert(columns_exist_in_table(edge_table, edge_params.values()),
 		"Graph SSSP: Not all columns from {0} present in edge table ({1})".
 		format(edge_params.values(), edge_table))
+
+	_assert(isinstance(source_vertex,int), """Graph SSSP: Source vertex
+		{source_vertex} has to be an integer """.format(**locals()))
+	src_exists = plpy.execute("""
+		SELECT * FROM {vertex_table} WHERE {vertex_id}={source_vertex}
+		""".format(**locals()))
+
+	if src_exists.nrows() == 0:
+		plpy.error(
+			"""Graph SSSP: Source vertex {source_vertex} is not present in the
+				vertex table {vertex_table}""".format(**locals()))
 
 	return None
 
