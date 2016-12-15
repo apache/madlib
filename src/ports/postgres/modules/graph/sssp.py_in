@@ -43,7 +43,8 @@ m4_changequote(`<!', `!>')
 def graph_sssp(schema_madlib, vertex_table, vertex_id, edge_table,
 		edge_args, source_vertex, out_table, **kwargs):
 	"""
-    Single source shortest path function for graphs
+    Single source shortest path function for graphs using the Bellman-Ford
+    algorhtm [1].
     Args:
         @param vertex_table     Name of the table that contains the vertex data.
         @param vertex_id        Name of the column containing the vertex ids.
@@ -52,14 +53,19 @@ def graph_sssp(schema_madlib, vertex_table, vertex_id, edge_table,
         						named arguments of the form "name=value".
         @param source_vertex    The source vertex id for the algorithm to start.
         @param out_table   	    Name of the table to store the result of SSSP.
+
+    [1] https://en.wikipedia.org/wiki/Bellman-Ford_algorithm
     """
 
 	with MinWarning("warning"):
 
 		INT_MAX = 2147483647
+		EPSILON = 1.0E-06
 
 		message = unique_string(desp='message')
-		toupdate = unique_string(desp='toupdate')
+
+		oldupdate = unique_string(desp='oldupdate')
+		newupdate = unique_string(desp='newupdate')
 
 		params_types = {'src': str, 'dest': str, 'weight': str}
 		default_args = {'src': 'src', 'dest': 'dest', 'weight': 'weight'}
@@ -81,51 +87,50 @@ def graph_sssp(schema_madlib, vertex_table, vertex_id, edge_table,
 		validate_graph_coding(vertex_table, vertex_id, edge_table,
 			edge_params, source_vertex, out_table)
 
-		plpy.execute(" DROP TABLE IF EXISTS {0},{1}".format(message,toupdate))
+		plpy.execute(" DROP TABLE IF EXISTS {0},{1},{2}".format(
+			message,oldupdate,newupdate))
 
 		plpy.execute(
 			""" CREATE TABLE {out_table} AS
 				SELECT {vertex_id}::INT AS {vertex_id},
-					CAST({INT_MAX} AS INT) AS {weight},
+					CAST('Infinity' AS DOUBLE PRECISION) AS {weight},
 					CAST({INT_MAX} AS INT) AS parent
 				FROM {vertex_table} {distribution} """.format(**locals()))
-
 		plpy.execute(
-			""" CREATE TEMP TABLE {message}(
-				id INT, val INT, parent INT)
-				{local_distribution} """.format(**locals()))
+			""" CREATE TEMP TABLE {oldupdate}(
+				id INT, val DOUBLE PRECISION, parent INT)
+				{local_distribution}
+				""".format(**locals()))
 		plpy.execute(
-			""" CREATE TEMP TABLE {toupdate}(
-				id INT, val INT, parent INT)
-				{local_distribution} """.format(**locals()))
+			""" CREATE TEMP TABLE {newupdate}(
+				id INT, val DOUBLE PRECISION, parent INT)
+				{local_distribution}
+				""".format(**locals()))
 		temp_table = unique_string(desp='temp')
 		sql = m4_ifdef(<!__HAWQ__!>,
 			""" CREATE TABLE {temp_table} (
-					{vertex_id} INT, {weight} INT, parent INT) {distribution};
+					{vertex_id} INT, {weight} DOUBLE PRECISION, parent INT)
+					{distribution};
 			""",  <!''!>)
 		plpy.execute(sql.format(**locals()))
 
+		sql_index = m4_ifdef(<!__POSTGRESQL__!>,
+			<!""" CREATE INDEX ON {out_table} ({vertex_id});
+				CREATE INDEX ON {oldupdate} (id);
+				CREATE INDEX ON {newupdate} (id);
+			""".format(**locals())!>,
+			<!''!>)
+		plpy.execute(sql_index)
+
 		plpy.execute(
-			""" INSERT INTO {message} VALUES({source_vertex},0,{source_vertex})
+			""" INSERT INTO {oldupdate}
+				VALUES({source_vertex},0,{source_vertex})
 			""".format(**locals()))
 
 		v_cnt = plpy.execute("SELECT count(*) FROM {vertex_table}".
 			format(**locals()))[0]['count']
 		for i in range(0,v_cnt+1):
 
-			plpy.execute("TRUNCATE TABLE {0}".format(toupdate))
-			plpy.execute(
-				""" INSERT INTO {toupdate}
-					SELECT DISTINCT ON (message.id) message.id AS id,
-						message.val AS val,
-						message.parent AS parent
-					FROM {message} AS message, {out_table} AS out_table
-					WHERE message.id = out_table.{vertex_id}
-						AND message.val<out_table.{weight}
-				""".format(**locals()))
-
-			if table_is_empty(toupdate):
-				break
 			sql = m4_ifdef(<!__HAWQ__!>,
 				<!"""
 				TRUNCATE TABLE {temp_table};
@@ -133,9 +138,9 @@ def graph_sssp(schema_madlib, vertex_table, vertex_id, edge_table,
 					SELECT *
 					FROM {out_table}
 					WHERE {out_table}.{vertex_id} NOT IN (
-						SELECT {toupdate}.id FROM {toupdate})
+						SELECT {oldupdate}.id FROM {oldupdate})
 					UNION
-					SELECT * FROM {toupdate};
+					SELECT * FROM {oldupdate};
 				DROP TABLE {out_table};
 				ALTER TABLE {temp_table} RENAME TO {out_table};
 				CREATE TABLE {temp_table} (
@@ -143,33 +148,49 @@ def graph_sssp(schema_madlib, vertex_table, vertex_id, edge_table,
 				"""!>,
 				<!"""
 				UPDATE {out_table} SET
-				{weight}=toupdate.val,
-				parent=toupdate.parent
+				{weight}=oldupdate.val,
+				parent=oldupdate.parent
 				FROM
-				{toupdate} AS toupdate
+				{oldupdate} AS oldupdate
 				WHERE
-				{out_table}.{vertex_id}=toupdate.id
+				{out_table}.{vertex_id}=oldupdate.id
 				"""!>)
 			plpy.execute(sql.format(**locals()))
-			plpy.execute("TRUNCATE TABLE {0}".format(message))
-			plpy.execute(
-				""" INSERT INTO {message}
-					SELECT edge_table.{dest} AS id, x.val AS val,
-						toupdate.id AS parent
-					FROM {toupdate} AS toupdate, {edge_table} AS edge_table, (
-						SELECT edge_table.{dest} AS id,
-							min(toupdate.val + edge_table.{weight}) AS val
-						FROM {toupdate} AS toupdate,
+
+			plpy.execute("TRUNCATE TABLE {0}".format(newupdate))
+			sql = ("""
+				INSERT INTO {newupdate}
+				SELECT DISTINCT ON (message.id) message.id AS id,
+					message.val AS val,
+					message.parent AS parent
+				FROM  {out_table} AS out_table,
+					(SELECT edge_table.{dest} AS id, x.val AS val,
+						oldupdate.id AS parent
+					FROM {oldupdate} AS oldupdate, {edge_table} AS edge_table,
+						(SELECT edge_table.{dest} AS id,
+							min(oldupdate.val + edge_table.{weight}) AS val
+						FROM {oldupdate} AS oldupdate,
 							{edge_table} AS edge_table
-						WHERE edge_table.{src}=toupdate.id
+						WHERE edge_table.{src}=oldupdate.id
 						GROUP BY edge_table.{dest}) x
-					WHERE edge_table.{src} = toupdate.id
+					WHERE edge_table.{src} = oldupdate.id
 						AND edge_table.{dest} = x.id
-						AND toupdate.val + edge_table.{weight} = x.val
-						""".format(**locals()))
+						AND ABS(oldupdate.val + edge_table.{weight} - x.val) <
+							{EPSILON}
+					) AS message
+				WHERE message.id = out_table.{vertex_id}
+					AND message.val<out_table.{weight}
+					""".format(**locals()))
+
+			ret = plpy.execute(sql)
+			if ret.nrows() == 0:
+				break
+			tmp = oldupdate
+			oldupdate = newupdate
+			newupdate = tmp
 
 		if i == v_cnt:
-			plpy.error("Graph SSSP: Detected a negative cycle in the graph.")
+			plpy.warning("Graph SSSP: Detected a negative cycle in the graph.")
 
 		sql = m4_ifdef(<!__HAWQ__!>,
 			""" DROP TABLE {temp_table} """,  <!''!>)
@@ -190,7 +211,12 @@ def graph_sssp_get_path(schema_madlib, sssp_table, dest_vertex, **kwargs):
 	cols = get_cols(sssp_table)
 	id = cols[0]
 	ret = [dest_vertex]
-	sql = "SELECT parent FROM {sssp_table} WHERE {id} = {cur} LIMIT 1"
+	plan_name = unique_string(desp='plan')
+
+	plpy.execute(""" PREPARE {plan_name} (int) AS
+		SELECT parent FROM {sssp_table} WHERE {id} = $1 LIMIT 1
+		""".format(**locals()))
+	sql = "EXECUTE {plan_name} ({cur})"
 	parent = plpy.execute(sql.format(**locals()))
 
 	if parent.nrows() == 0:
@@ -206,7 +232,6 @@ def graph_sssp_get_path(schema_madlib, sssp_table, dest_vertex, **kwargs):
 		else:
 			ret.append(parent)
 			cur = parent
-
 		parent = plpy.execute(sql.format(**locals()))
 
 	return None
