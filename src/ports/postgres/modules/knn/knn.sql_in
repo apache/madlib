@@ -27,6 +27,34 @@ $$ LANGUAGE plpythonu
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `READS SQL DATA', `');
 
 
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.knn(
+    arg1 VARCHAR
+) RETURNS VOID AS $$
+BEGIN
+    IF arg1 = 'help' THEN
+	RAISE NOTICE 'You need to enter following arguments in order:
+	Argument 1: Training data table having training features as vector column and labels
+	Argument 2: Name of column having feature vectors in training data table
+	Argument 3: Name of column having actual label/vlaue for corresponding feature vector in training data table
+	Argument 4: Test data table having features as vector column. Id of features is mandatory
+	Argument 5: Name of column having feature vectors in test data table
+	Argument 6: Name of column having feature vector Ids in test data table
+	Argument 7: Name of output table
+	Argument 8: c for classification task, r for regression task
+	Argument 9: value of k. Default will go as 1';
+    END IF;
+END;
+$$ LANGUAGE plpgsql VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `READS SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.knn(
+) RETURNS VOID AS $$
+BEGIN    
+    EXECUTE $sql$ select * from MADLIB_SCHEMA.knn('help') $sql$;
+END;
+$$ LANGUAGE plpgsql VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `READS SQL DATA', `');
+
 
 CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.knn(
     point_source VARCHAR,
@@ -35,6 +63,7 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.knn(
     test_source VARCHAR,
     test_column_name VARCHAR,
     id_column_name VARCHAR,
+    output_table VARCHAR,
     operation VARCHAR,
     k INTEGER
 ) RETURNS VARCHAR AS $$
@@ -65,18 +94,13 @@ BEGIN
         RAISE EXCEPTION 'KNN error: put r for regression OR c for classification.';
     END IF;
     PERFORM MADLIB_SCHEMA.create_schema_pg_temp();
-    EXECUTE
-        $sql$
-    	DROP TABLE IF EXISTS pg_temp.knn_label;
-    	CREATE TABLE pg_temp.knn_label(pid integer, predlabel float);
-	$sql$;
     
-    --FOR r IN EXECUTE format('SELECT * FROM %I', test_source)
+    EXECUTE format('DROP TABLE IF EXISTS %I',output_table);
+    EXECUTE format('CREATE TABLE %I(%I integer, %I DOUBLE PRECISION[], predlabel float)',output_table,id_column_name,test_column_name);
+	
+    
     FOR r IN EXECUTE format('SELECT %I,%I FROM %I', id_column_name, test_column_name, test_source)
     LOOP
-        
-	--RAISE NOTICE 'Original: %',r.pid;
-	--RAISE NOTICE 'Original: %',r.p;
 	cur_pid := r.id;
 	vector := r.vector;
 	EXECUTE
@@ -89,7 +113,6 @@ BEGIN
 	EXECUTE
         $sql$
 	DROP TABLE IF EXISTS pg_temp.knn_interm;
-        --CREATE TABLE pg_temp.knn_interm(dist DOUBLE PRECISION, lable integer );
 	CREATE TABLE pg_temp.knn_interm AS
 	
         SELECT madlib.squared_dist_norm2($sql$ || point_column_name || $sql$, vec) as dist, $sql$ || label_column_name || $sql$ FROM $sql$ || textin(regclassout(point_source)) || $sql$, knn_vector order by dist limit $sql$ || k;
@@ -104,23 +127,39 @@ BEGIN
         SELECT avg( $sql$ || label_column_name || $sql$ ) FROM  pg_temp.knn_interm $sql$
         INTO l;
         END IF;
-	EXECUTE 'INSERT INTO pg_temp.knn_label values($1,$2)'
-	USING cur_pid, l;
+	EXECUTE format('INSERT INTO %I values($1,$2,$3)',output_table) USING cur_pid, vector, l;
     END LOOP;
-    
-    EXECUTE
-        $sql$
-	DROP TABLE IF EXISTS public.knn_final;
-        CREATE TABLE public.knn_final AS
-        SELECT e.$sql$ || id_column_name || $sql$, e.$sql$ || test_column_name || $sql$, p.predlabel FROM $sql$ || textin(regclassout(class_test_source)) || $sql$ e, pg_temp.knn_label p where e.$sql$ || id_column_name || $sql$ = p.pid;$sql$;
 
    EXECUTE 'SET client_min_messages TO ' || oldClientMinMessages;
    IF (operation = 'c') THEN
-   	returnstring := 'The classification results have been written to knn_final table';
+   	returnstring := 'The classification results have been written to table';
    ELSE
-        returnstring := 'The regression results have been written to knn_final table';
+        returnstring := 'The regression results have been written to table';
    END IF;
+   DROP TABLE knn_interm;
+   DROP TABLE knn_vector;
    RETURN returnstring;
 END;
 $$ LANGUAGE plpgsql VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.knn(
+    point_source VARCHAR,
+    point_column_name VARCHAR,
+    label_column_name VARCHAR,
+    test_source VARCHAR,
+    test_column_name VARCHAR,
+    id_column_name VARCHAR,
+    output_table VARCHAR,
+    operation VARCHAR
+) RETURNS VARCHAR AS $$
+DECLARE
+    returnstring VARCHAR;
+BEGIN
+    returnstring = MADLIB_SCHEMA.knn($1,$2,$3,$4,$5,$6,$7,$8,1);
+    RETURN returnstring;
+END;
+$$ LANGUAGE plpgsql VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
