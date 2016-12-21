@@ -1,0 +1,454 @@
+/* ----------------------------------------------------------------------- *//**
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ *
+ *
+ * @file encode_categorical.sql_in
+ *
+ * @brief SQL functions for encoding categorical variables to numerical values
+ * @date Dec 2016
+ *
+ * @sa Encodes categorical variables to numerical values
+ *
+ *//* ----------------------------------------------------------------------- */
+
+
+m4_include(`SQLCommon.m4')
+
+
+/**
+@addtogroup grp_encode_categorical
+
+<div class="toc"><b>Contents</b>
+<ul>
+<li><a href="#categorical">Coding systems for categorical variables</a></li>
+<li><a href="#examples">Examples</a></li>
+</ul>
+</div>
+
+@brief Provides functions to encode categorical variables
+
+@anchor categorical
+@par Coding systems for categorical variables
+Categorical variables require special attention in regression analysis because,
+unlike dichotomous or continuous variables, they cannot be entered into the
+regression equation just as they are.  For example, if you have a variable
+called race that is coded 1 = Hispanic, 2 = Asian, 3 = Black, 4 = White, then
+entering race in your regression will look at the linear effect of race, which
+is probably not what you intended. Instead, categorical variables like this need
+to be recoded into a series of indicator variables which can then be entered
+into the regression model.  There are a variety of coding systems (also called
+as contrasts) that can be used for coding categorical variables including
+dummy, effects, orthogonal, and helmert coding.
+
+We currently only support the one-hot encoding and dummy coding technique.
+
+Dummy coding is used when a researcher wants to compare other groups of the
+predictor variable with one specific group of the predictor variable.
+Often, the specific group to compare with is called the reference group.
+
+One-hot encoding is similar to dummy coding except it builds indicator (0/1)
+columns (cast as numeric) for each value of each category.
+Only one of these columns could take on the value 1 for each row (data point).
+There is no reference category for this function.
+
+<pre class="syntax">
+encode_categorical_variables (
+        source_table,
+        output_table,
+        categorical_cols,
+        categorical_cols_to_exclude,    -- Optional
+        row_id,                         -- Optional
+        top,                            -- Optional
+        value_to_drop,                  -- Optional
+        keep_null,                      -- Optional
+        array_output,                   -- Optional
+        output_dictionary,              -- Optional
+        distributed_by                  -- Optional
+)
+</pre>
+\b Arguments
+<dl class="arglist">
+    <dt>source_table</dt>
+    <dd>VARCHAR. Name of the source table, containing data for categorical variables.</dd>
+
+    <dt>output_table</dt>
+    <dd>VARCHAR. Name of the result table.
+    Note: If there are index columns in the source_table specified by the parameter
+    <em>row_id</em>, then the output table will contain only the index <em>row_id</em> and the
+    encoded columns.  If the parameter <em>row_id</em> is not specified, then all columns,
+    other than the original encoded columns, from the source_table will be included.
+    </dd>
+
+    <dt>categorical_cols</dt>
+    <dd>VARCHAR. Comma-separated string of column names of categorical variables to encode.
+    Can also be '*' implying all columns are to be encoded (except the ones
+    specified in categorical_cols_to_exclude). Please note that all Boolean,
+    integer and text columns are considered categorical columns and will be
+    encoded for ‘*’ argument.
+    </dd>
+
+    <dt>categorical_cols_to_exclude (optional)</dt>
+    <dd>VARCHAR. Comma-separated string of column names to exclude from the
+    categorical variables to encode. Applicable only if 'categorical_cols' = '*'.
+    </dd>
+
+    <dt>row_id (optional)</dt>
+    <dd>VARCHAR. Comma-separated column name(s) corresponding to the primary key(s) of the
+    source table. This parameter determines the format of the output_table as
+    described above. If 'categorical_cols' = '*', then these columns will be
+    excluded from encoding (but will be included in the output table).
+    </dd>
+
+    <dt>top (optional)</dt>
+    <dd>VARCHAR. default: NULL.  If INTEGER, encodes the top n values
+    by frequency.  If FLOAT in the range (0.0, 1.0), encodes the specified fraction
+    of values by frequency (e.g., 0.1 means top 10%).  Can be specified as a global
+    for all categorical columns, or as a dictionary with separate values for each
+    categorical variable. Set to NULL to encode all levels (values) of all categorical
+    columns.
+    </dd>
+
+    <dt>value_to_drop (optional)</dt>
+    <dd>VARCHAR. Default: NULL.
+
+    - For dummy coding, indicate the desired value (reference) to drop for each
+    categorical variable. The expected input is a comma-separated text
+    containing items of the form `name=value`, where 'name' is the column name
+    and 'value' is the reference value to be dropped. Only one value per variable
+    is allowed.
+
+    - Set to NULL for one-hot encoding (default)
+    </dd>
+
+    <dt>keep_null (optional)</dt>
+    <dd>BOOLEAN. default: FALSE. Whether 'NULL' should be treated as one of the
+    values of the categorical variable. If TRUE, then an indicator
+    variable is created corresponding to the NULL value. If FALSE, then
+    all indicator variables for that tuple will be set to NULL.
+    </dd>
+
+    <dt>array_output (optional)</dt>
+    <dd>VARCHAR. default: NULL.
+
+    This parameter controls the output format of the indicator variables. If NULL,
+    a column is created for each indicator variable. Postgresql limits the
+    number of columns in a table. If the total number of indicator columns, exceeds
+    this limit, then this parameter can be used to combine the indicator columns
+    into an array. The parameter can take following values:
+
+    - Set to '*' to place all indicator variables in a single array. The order of
+    the columns is the same as <em>categorical_cols</em>.
+    - Set to '|' to create a separate array for each categorical column
+    - Set to a comma-separated list of column names to create arrays for only
+    specific columns
+    </dd>
+
+    <dt>output_dictionary (optional)</dt>
+    <dd>BOOLEAN. default: FALSE.
+    This parameter is used to handle auto-generated column names that exceed the
+    PostgreSQL limit of 63 bytes.
+
+    - If TRUE, column names will be set as
+    numerical IDs and will create a dictionary table called <em>output_table</em>_dictionary
+    (<em>output_table</em> appended with <em>_dictionary</em>).
+
+    - If FALSE, will auto-generate column names in the
+    usual way unless the limit of 63 bytes will be exceeded. In this case, a
+    dictionary output file will be created and a message given to the user.
+    </dd>
+
+    <dt>distributed_by (optional)</dt>
+    <dd>VARCHAR. default: NULL. Columns to use for the distribution policy of
+    the output table. When NULL, either 'row_id' is used as distribution policy
+    (when provided), else the distribution policy of 'source_table' will be used.
+    This argument is not available for POSTGRESQL platforms.
+
+    - NULL:  By default, the distribution policy of the source_table will be used.
+    - Comma-separated column names: Column(s) to be used for the distribution key.
+    - randomly: Use random distribution policy (only if there does not exist a column named 'randomly').
+
+    </dd>
+</dl>
+
+@anchor examples
+@examp
+
+-#  Use a subset of the abalone dataset.
+<pre class="example">
+DROP TABLE IF EXISTS abalone;
+CREATE TABLE abalone (
+    sex character varying,
+    length double precision,
+    diameter double precision,
+    height double precision
+);
+COPY abalone (sex, length, diameter, height) FROM stdin WITH DELIMITER '|' NULL as '@';
+M| 0.455 |   0.365 | 0.095
+F| 0.53  |   0.42  | 0.135
+M| 0.35  |   0.265 | 0.09
+F| 0.53  |   0.415 | 0.15
+M| 0.44  |   0.365 | 0.125
+F| 0.545 |   0.425 | 0.125
+I| 0.33  |   0.255 | 0.08
+F| 0.55  |   0.44  | 0.15
+I| 0.425 |   0.30  | 0.095
+F| 0.525 |   0.38  | 0.140
+M| 0.475 |   0.37  | 0.125
+F| 0.535 |   0.405 | 0.145
+M| 0.43  |   0.358 | 0.11
+F| 0.47  |   0.355 | 0.100
+M| 0.49  |   0.38  | 0.135
+F| 0.44  |   0.340 | 0.100
+M| 0.5   |   0.400 | 0.13
+F| 0.565 |   0.44  | 0.155
+I| 0.355 |   0.280 | 0.085
+F| 0.550 |   0.415 | 0.135
+@| 0.475 |   0.37  | 0.125
+\\.
+</pre>
+
+-# Create new table with dummy-coded indicator variables
+<pre class="example">
+drop table if exists abalone_out;
+select madlib.create_indicator_variables ('abalone', 'abalone_out', 'sex');
+select * from abalone_out;
+</pre>
+<pre class="result">
+ sex  | length | diameter | height | sex_F  | sex_I  | sex_M
+&nbsp; -----+--------+----------+--------+--------+--------+-------
+ F    |   0.53 |     0.42 |  0.135 |      1 |      0 |     0
+ F    |   0.53 |    0.415 |   0.15 |      1 |      0 |     0
+ F    |  0.545 |    0.425 |  0.125 |      1 |      0 |     0
+ F    |   0.55 |     0.44 |   0.15 |      1 |      0 |     0
+ F    |  0.525 |     0.38 |   0.14 |      1 |      0 |     0
+ F    |  0.535 |    0.405 |  0.145 |      1 |      0 |     0
+ F    |   0.47 |    0.355 |    0.1 |      1 |      0 |     0
+ F    |   0.44 |     0.34 |    0.1 |      1 |      0 |     0
+ F    |  0.565 |     0.44 |  0.155 |      1 |      0 |     0
+ F    |   0.55 |    0.415 |  0.135 |      1 |      0 |     0
+ M    |  0.455 |    0.365 |  0.095 |      0 |      0 |     1
+ M    |   0.35 |    0.265 |   0.09 |      0 |      0 |     0
+ M    |   0.44 |    0.365 |  0.125 |      0 |      0 |     0
+ I    |   0.33 |    0.255 |   0.08 |      0 |      1 |     0
+ I    |  0.425 |      0.3 |  0.095 |      0 |      1 |     0
+ M    |  0.475 |     0.37 |  0.125 |      0 |      0 |     0
+ M    |   0.43 |    0.358 |   0.11 |      0 |      0 |     0
+ M    |   0.49 |     0.38 |  0.135 |      0 |      0 |     0
+ M    |    0.5 |      0.4 |   0.13 |      0 |      0 |     0
+ I    |  0.355 |     0.28 |  0.085 |      0 |      1 |     0
+ NULL |   0.55 |    0.415 |  0.135 |   NULL |   NULL |  NULL
+</pre>
+
+-# Create indicator variable for 'NULL' value (note the additional column '"sex_NULL"')
+<pre class="example">
+drop table if exists abalone_out;
+select madlib.create_indicator_variables'abalone', 'abalone_out', 'sex', True);
+select * from abalone_out;
+</pre>
+<pre class="result">
+ sex  | length | diameter | height | sex_F  | sex_I  | sex_M | sex_NULL
+&nbsp; ------+--------+----------+--------+--------+--------+-------+-------
+ F    |   0.53 |     0.42 |  0.135 |      1 |      0 |     0 |     0
+ F    |   0.53 |    0.415 |   0.15 |      1 |      0 |     0 |     0
+ F    |  0.545 |    0.425 |  0.125 |      1 |      0 |     0 |     0
+ F    |   0.55 |     0.44 |   0.15 |      1 |      0 |     0 |     0
+ F    |  0.525 |     0.38 |   0.14 |      1 |      0 |     0 |     0
+ F    |  0.535 |    0.405 |  0.145 |      1 |      0 |     0 |     0
+ F    |   0.47 |    0.355 |    0.1 |      1 |      0 |     0 |     0
+ F    |   0.44 |     0.34 |    0.1 |      1 |      0 |     0 |     0
+ F    |  0.565 |     0.44 |  0.155 |      1 |      0 |     0 |     0
+ F    |   0.55 |    0.415 |  0.135 |      1 |      0 |     0 |     0
+ M    |  0.455 |    0.365 |  0.095 |      0 |      0 |     1 |     0
+ M    |   0.35 |    0.265 |   0.09 |      0 |      0 |     0 |     0
+ M    |   0.44 |    0.365 |  0.125 |      0 |      0 |     0 |     0
+ I    |   0.33 |    0.255 |   0.08 |      0 |      1 |     0 |     0
+ I    |  0.425 |      0.3 |  0.095 |      0 |      1 |     0 |     0
+ M    |  0.475 |     0.37 |  0.125 |      0 |      0 |     0 |     0
+ M    |   0.43 |    0.358 |   0.11 |      0 |      0 |     0 |     0
+ M    |   0.49 |     0.38 |  0.135 |      0 |      0 |     0 |     0
+ M    |    0.5 |      0.4 |   0.13 |      0 |      0 |     0 |     0
+ I    |  0.355 |     0.28 |  0.085 |      0 |      1 |     0 |     0
+ NULL |   0.55 |    0.415 |  0.135 |      0 |      0 |     0 |     1
+</pre>
+*/
+
+-------------------------------------------------------------------------
+
+/**
+ * @brief Encode categorical columns using either one-hot encoding or dummy coding
+ *
+ * @param source_table Name of table containing categorical variable
+ * @param output_table Name of table to output dummy variables
+ * @param categorical_cols Comma-separated list of column names to dummy code (can be '*')
+ * @param categorical_cols_to_exclude Comma-separated list of column names to exclude (if categorical_cols = '*')
+ * @param row_id Columns from source table to index output table
+ * @param top Parameter to include only top values of a categorical variable
+ * @param value_to_drop Parameter to set reference column in dummy coding
+ * @param keep_null Boolean to determine the behavior for rows with NULL value
+ * @param array_output Boolean to determine if output should be in an array or columns
+ * @param output_dictionary Boolean to simplify column naming and with a separate
+ *                              mapping table to actual values
+ * @param distributed_by Comma-separated list of column names to use for distribution of output
+ *
+ * @return Void
+ *
+ */
+
+-- We don't create the below function for PostgreSQL since it does not contain a
+-- distribution policy.
+m4_changequote(<!,!>)
+m4_ifdef(<!__POSTGRESQL__!>, <!!>, <!
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.encode_categorical_variables(
+    source_table                    VARCHAR,
+    output_table                    VARCHAR,
+    categorical_cols                VARCHAR,
+    categorical_cols_to_exclude     VARCHAR,
+    row_id                          VARCHAR,
+    top                             VARCHAR,
+    value_to_drop                   VARCHAR,
+    keep_null                       BOOLEAN,
+    array_output                    BOOLEAN,
+    output_dictionary               BOOLEAN,
+    distributed_by                  VARCHAR
+) RETURNS VOID AS $$
+    PythonFunction(utilities, encode_categorical, encode_categorical_variables)
+$$ LANGUAGE plpythonu
+m4_ifdef(<!__HAS_FUNCTION_PROPERTIES__!>, <!MODIFIES SQL DATA!>, <!!>);
+!>)
+m4_changequote(<!`!>, <!'!>)
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.encode_categorical_variables(
+    source_table                    VARCHAR,
+    output_table                    VARCHAR,
+    categorical_cols                VARCHAR,
+    categorical_cols_to_exclude     VARCHAR,
+    row_id                          VARCHAR,
+    top                             VARCHAR,
+    value_to_drop                   VARCHAR,
+    keep_null                       BOOLEAN,
+    array_output                    BOOLEAN,
+    output_dictionary               BOOLEAN
+) RETURNS VOID AS $$
+    PythonFunction(utilities, encode_categorical, encode_categorical_variables)
+$$ LANGUAGE plpythonu
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+-- Overloaded functions --------------------------------------------------------
+-- Default values are set by underlying Python function
+--------------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.encode_categorical_variables(
+    source_table                    VARCHAR,
+    output_table                    VARCHAR,
+    categorical_cols                VARCHAR,
+    categorical_cols_to_exclude     VARCHAR,
+    row_id                          VARCHAR,
+    top                             VARCHAR,
+    value_to_drop                   VARCHAR,
+    keep_null                       BOOLEAN,
+    array_output                    BOOLEAN
+) RETURNS VOID AS $$
+    PythonFunction(utilities, encode_categorical, encode_categorical_variables)
+$$ LANGUAGE plpythonu
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.encode_categorical_variables(
+    source_table                    VARCHAR,
+    output_table                    VARCHAR,
+    categorical_cols                VARCHAR,
+    categorical_cols_to_exclude     VARCHAR,
+    row_id                          VARCHAR,
+    top                             VARCHAR,
+    value_to_drop                   VARCHAR,
+    keep_null                       BOOLEAN
+) RETURNS VOID AS $$
+    PythonFunction(utilities, encode_categorical, encode_categorical_variables)
+$$ LANGUAGE plpythonu
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.encode_categorical_variables(
+    source_table                    VARCHAR,
+    output_table                    VARCHAR,
+    categorical_cols                VARCHAR,
+    categorical_cols_to_exclude     VARCHAR,
+    row_id                          VARCHAR,
+    top                             VARCHAR,
+    value_to_drop                   VARCHAR
+) RETURNS VOID AS $$
+    PythonFunction(utilities, encode_categorical, encode_categorical_variables)
+$$ LANGUAGE plpythonu
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.encode_categorical_variables(
+    source_table                    VARCHAR,
+    output_table                    VARCHAR,
+    categorical_cols                VARCHAR,
+    categorical_cols_to_exclude     VARCHAR,
+    row_id                          VARCHAR,
+    top                             VARCHAR
+) RETURNS VOID AS $$
+    PythonFunction(utilities, encode_categorical, encode_categorical_variables)
+$$ LANGUAGE plpythonu
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.encode_categorical_variables(
+    source_table                    VARCHAR,
+    output_table                    VARCHAR,
+    categorical_cols                VARCHAR,
+    categorical_cols_to_exclude     VARCHAR,
+    row_id                          VARCHAR
+) RETURNS VOID AS $$
+    PythonFunction(utilities, encode_categorical, encode_categorical_variables)
+$$ LANGUAGE plpythonu
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.encode_categorical_variables(
+    source_table                    VARCHAR,
+    output_table                    VARCHAR,
+    categorical_cols                VARCHAR,
+    categorical_cols_to_exclude     VARCHAR
+) RETURNS VOID AS $$
+    PythonFunction(utilities, encode_categorical, encode_categorical_variables)
+$$ LANGUAGE plpythonu
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.encode_categorical_variables(
+    source_table                    VARCHAR,
+    output_table                    VARCHAR,
+    categorical_cols                VARCHAR
+) RETURNS VOID AS $$
+    PythonFunction(utilities, encode_categorical, encode_categorical_variables)
+$$ LANGUAGE plpythonu
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+-- Online help -----------------------------------------------------------------
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.encode_categorical_variables(
+    message VARCHAR
+) RETURNS VARCHAR AS $$
+    PythonFunction(utilities, encode_categorical, encode_categorical_help)
+$$ LANGUAGE plpythonu IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `CONTAINS SQL', `');
+
+--------------------------------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.encode_categorical_variables()
+RETURNS VARCHAR AS $$
+    SELECT MADLIB_SCHEMA.encode_categorical_variables('');
+$$ LANGUAGE sql IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `CONTAINS SQL', `');
+--------------------------------------------------------------------------------

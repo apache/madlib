@@ -212,9 +212,9 @@ include(OSXUtils)
 # -- Add subdirectories --------------------------------------------------------
 
 add_subdirectory(src)
-if(CMAKE_COMPILER_IS_GNUCC AND CMAKE_COMPILER_IS_GNUCXX)
-    add_subdirectory(doc) #e.g., Clang/Clang++ does not work
-endif(CMAKE_COMPILER_IS_GNUCC AND CMAKE_COMPILER_IS_GNUCXX)
+add_subdirectory(doc)
+# if(CMAKE_COMPILER_IS_GNUCC AND CMAKE_COMPILER_IS_GNUCXX)
+# endif(CMAKE_COMPILER_IS_GNUCC AND CMAKE_COMPILER_IS_GNUCXX)
 add_subdirectory(deploy)
 
 # -- Install path for specific madlib version ----------------------------------
