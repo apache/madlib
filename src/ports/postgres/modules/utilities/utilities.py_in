@@ -10,6 +10,38 @@ if __name__ != "__main__":
     import plpy
 
 
+m4_changequote(`<!', `!>')
+
+
+def get_seg_number():
+    """ Find out how many primary segments exist in the distribution
+        Might be useful for partitioning data.
+    """
+    m4_ifdef(<!__POSTGRESQL__!>, <!return 1!>, <!
+    return plpy.execute(
+        """
+        SELECT count(*) from gp_segment_configuration
+        WHERE role = 'p'
+        """)[0]['count']
+    !>)
+# ------------------------------------------------------------------------------
+
+
+def is_orca():
+    m4_ifdef(<!__HAS_FUNCTION_PROPERTIES__!>, <!
+    optimizer = plpy.execute("show optimizer")[0]["optimizer"]
+    return True if optimizer == 'on' else False
+    !>, <!
+    return False
+    !>)
+# ------------------------------------------------------------------------------
+
+
+def is_platform_pg():
+    return m4_ifdef(<!__POSTGRESQL__!>, <!True!>, <!False!>)
+# ------------------------------------------------------------------------------
+
+
 def _assert(condition, msg):
     """
     @brief if the given condition is false, then raise an error with the message
@@ -32,7 +64,6 @@ def warn(condition, msg):
 # ------------------------------------------------------------------------------
 
 
-m4_changequote(`<!', `!>')
 def get_distribution_policy(source_table):
     """ Return a list of columns that define the distribution policy of source_table
     Args:
@@ -62,35 +93,6 @@ def get_distribution_policy(source_table):
         ON distkey.attnum = pga.attnum AND distkey.localoid = pga.attrelid
     """.format(table_name=table_name, schema_name=schema_name))[0]["dist_attr"]
     return dist_attr
-# ------------------------------------------------------------------------------
-
-
-def get_seg_number():
-    """ Find out how many primary segments exist in the distribution
-        Might be useful for partitioning data.
-    """
-    m4_ifdef(<!__POSTGRESQL__!>, <!return 1!>, <!
-    return plpy.execute(
-        """
-        SELECT count(*) from gp_segment_configuration
-        WHERE role = 'p'
-        """)[0]['count']
-    !>)
-# ------------------------------------------------------------------------------
-
-
-def is_orca():
-    m4_ifdef(<!__HAS_FUNCTION_PROPERTIES__!>, <!
-    optimizer = plpy.execute("show optimizer")[0]["optimizer"]
-    return True if optimizer == 'on' else False
-    !>, <!
-    return False
-    !>)
-# ------------------------------------------------------------------------------
-
-
-def is_platform_pg():
-    return m4_ifdef(<!__POSTGRESQL__!>, <!True!>, <!False!>)
 # ------------------------------------------------------------------------------
 
 
@@ -228,12 +230,15 @@ def _array_to_string(origin):
     return "{" + ",".join(map(str, origin)) + "}"
 # ------------------------------------------------------------------------
 
+
 def _cast_if_null(input, alias=''):
     if input:
         return str(input)
     else:
         null_str = "NULL::text"
         return null_str + " as " + alias if alias else null_str
+# ------------------------------------------------------------------------
+
 
 def set_client_min_messages(new_level):
     """
@@ -488,7 +493,7 @@ def preprocess_keyvalue_params(input_params, split_char='=', quote_char='"'):
 
                    |              # either array (above) or string (below)
 
-                (?P<quote>\"?)[\w\s\-\%]+\.?[\w\s\-\%]*(?P=quote)
+                (?P<quote>\"?)[\w\s\-\%]*\.?[\w\s\-\%]+(?P=quote)
                                  #  if value is string, it can be alphanumeric
                                  #    character string with a decimal dot,
                                  #    optionally quoted by double quotes
@@ -504,7 +509,8 @@ def extract_keyvalue_params(input_params,
                             input_param_types=None,
                             default_values=None,
                             split_char='=',
-                            allow_duplicates=True):
+                            allow_duplicates=True,
+                            lower_case_names=True):
     """ Extract key value pairs from input parameters or set the default values
 
     Args:
@@ -525,6 +531,7 @@ def extract_keyvalue_params(input_params,
                                 where the last occurence will be reflected
                                 in the output. If False, then a ValueError is
                                 raised.
+        @param lower_case_names: bool, Convert parameter names to lower case.
 
     Returns:
         Dict. Dictionary of input parameter values with key as parameter name
@@ -546,10 +553,13 @@ def extract_keyvalue_params(input_params,
         if (len(items) != 2):
             raise KeyError("Input parameter list has incorrect format")
 
-        param_name = items[0].strip(" \"").lower()
-        param_value = items[1].strip()
+        param_name = items[0].strip(" \"")
         if not param_name or param_name in ('none', 'null'):
             plpy.error("Invalid input param name: {0} ".format(str(param_name)))
+
+        if lower_case_names:
+            param_name = param_name.lower()
+        param_value = items[1].strip()
 
         if not allow_duplicates and param_name in parameter_dict:
             raise ValueError("Invalid input: {0} duplicated in the param list".
@@ -646,10 +656,12 @@ class UtilitiesTestCase(unittest.TestCase):
     """
     def setUp(self):
         self.optimizer_params1 = 'max_iter=10, optimizer::text="irls", precision=1e-4'
-        self.optimizer_params2 = 'max_iter=2.01, optimizer=newton-irls, precision=1e-5'
+        self.optimizer_params2 = 'max_iter=.01, optimizer=newton-irls, precision=1e-5'
         self.optimizer_params3 = 'max_iter=10, 10, optimizer=, lambda={1,"2,2",3,4}'
         self.optimizer_params4 = ('max_iter=10, optimizer="irls",'
                                   'precision=0.02.01, lambda={1,2,3,4}')
+        self.optimizer_params5 = ('max_iter=10, optimizer="irls",'
+                                  'precision=0.02.01, PRECISION=0.02.01, lambda={1,2,3,4}')
         self.optimizer_types = {'max_iter': int, 'optimizer': str, 'optimizer::text': str,
                                 'lambda': list, 'precision': float}
 
@@ -657,7 +669,7 @@ class UtilitiesTestCase(unittest.TestCase):
         self.assertEqual(preprocess_keyvalue_params(self.optimizer_params1),
                          ['max_iter=10', 'optimizer::text="irls"', 'precision=1e-4'])
         self.assertEqual(preprocess_keyvalue_params(self.optimizer_params2),
-                         ['max_iter=2.01', 'optimizer=newton-irls', 'precision=1e-5'])
+                         ['max_iter=.01', 'optimizer=newton-irls', 'precision=1e-5'])
         self.assertEqual(preprocess_keyvalue_params(self.optimizer_params3),
                          ['max_iter=10', 'lambda={1,"2,2",3,4}'])
         self.assertEqual(preprocess_keyvalue_params(self.optimizer_params4),
@@ -674,8 +686,17 @@ class UtilitiesTestCase(unittest.TestCase):
         self.assertEqual({'max_iter': '10', 'optimizer': '"irls"', 'precision': '0.02',
                           'lambda': '{1,2,3,4}'},
                          extract_keyvalue_params(self.optimizer_params4))
+        self.assertEqual({'max_iter': '10', 'optimizer': '"irls"',
+                          'PRECISION': '0.02', 'precision': '0.02',
+                          'lambda': '{1,2,3,4}'},
+                         extract_keyvalue_params(self.optimizer_params5,
+                                                 allow_duplicates=False,
+                                                 lower_case_names=False
+                                                 ))
         self.assertRaises(ValueError,
                           extract_keyvalue_params, self.optimizer_params2, self.optimizer_types)
+        self.assertRaises(ValueError,
+                          extract_keyvalue_params, self.optimizer_params5, allow_duplicates=False)
 
     def test_split_delimited_string(self):
         self.assertEqual(['max_iter=10', 'optimizer::text="irls"', 'precision=1e-4'],
