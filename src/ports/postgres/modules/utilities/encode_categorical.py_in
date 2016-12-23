@@ -58,7 +58,7 @@ class CategoricalEncoder(object):
                  row_id=None,
                  top=None,
                  value_to_drop=None,
-                 keep_null=False,
+                 encode_null=False,
                  array_output=False,
                  output_dictionary=False,
                  distributed_by=None,
@@ -72,7 +72,7 @@ class CategoricalEncoder(object):
         self.row_id = row_id
         self.top = top
         self.value_to_drop = value_to_drop
-        self.keep_null = keep_null
+        self.encode_null = encode_null
         self.array_output = array_output
         self.output_dictionary = output_dictionary
         self.distributed_by = distributed_by
@@ -341,7 +341,8 @@ class CategoricalEncoder(object):
             )
         """.format(tbl=dict_tbl_name))
         global_seq = count(1)
-        for col, values in col_to_values.items():
+        for col in self._output_cols:
+            values = col_to_values[col]
             local_seq = count(1)
             col_no_quotes = strip_end_quotes(col)
             if self.array_output:
@@ -419,7 +420,7 @@ class CategoricalEncoder(object):
         """
         top_val_sql_list = []
         for col in self._output_cols:
-            if not self.keep_null:
+            if not self.encode_null:
                 filter_str = 'WHERE {col} IS NOT NULL'.format(col=col)
             else:
                 filter_str = ''
@@ -456,7 +457,7 @@ class CategoricalEncoder(object):
                 plpy.error("Encoding categorical error: "
                            "No top values found for {0} or "
                            "all values dropped as per function arguments"
-                           "(value_to_drop, keep_null)".format(col))
+                           "(value_to_drop, encode_null)".format(col))
 
             if col in self._top:
                 # for each column find at which point does the top 'k' values occur
@@ -497,7 +498,7 @@ class CategoricalEncoder(object):
                                    format(c=c, c_quoted=quote_ident(c))
                                    for c in self._output_cols)
 
-        if self.keep_null:
+        if self.encode_null:
             # Some platforms don't include NULL values as part of the
             # array_agg(DISTINCT ...). Below checks explicitly for NULL values
             null_str = ', ' + ',\n'.join(
@@ -520,9 +521,9 @@ class CategoricalEncoder(object):
                 dv.remove(self._value_to_drop[col])
 
             # check for NULL values
-            if not self.keep_null:
+            if not self.encode_null:
                 if None in dv:
-                    # ignore NULL if keep_null = False
+                    # ignore NULL if encode_null = False
                     dv.remove(None)
             else:
                 null_col_name = '"{c}_isnull"'.format(c=strip_end_quotes(col.strip()))
@@ -534,7 +535,7 @@ class CategoricalEncoder(object):
                 plpy.error("Encoding categorical error: "
                            "No distinct values found for {0} or "
                            "all distinct values dropped as per function arguments"
-                           "(value_to_drop, keep_null)".format(col))
+                           "(value_to_drop, encode_null)".format(col))
             distinct_values[col] = list(sorted(dv))
         return distinct_values
 # ------------------------------------------------------------------------------
@@ -546,7 +547,7 @@ def encode_categorical_variables(
         row_id=None,
         top=None,
         value_to_drop=None,
-        keep_null=False,
+        encode_null=False,
         array_output=None,
         output_dictionary=False,
         distributed_by=None,
@@ -561,7 +562,7 @@ def encode_categorical_variables(
         @param row_id: str, Columns from source table to index output table
         @param top: str, Parameter to include only top values of a categorical variable
         @param value_to_drop: str, Parameter to set reference column in dummy coding
-        @param keep_null: bool, If True, NULL is treated as a categorical value
+        @param encode_null: bool, If True, NULL is treated as a categorical value
         @param array_output: bool, Parameter to determine if output should be in an array or columns
         @param output_dictionary: bool, If True columns names are simplified and
                     a separate mapping table is created to understand the names
@@ -570,7 +571,7 @@ def encode_categorical_variables(
     with MinWarning('warning'):
         encoder = CategoricalEncoder(schema_madlib, source_table, output_table,
                                      categorical_cols, categorical_cols_to_exclude,
-                                     row_id, top, value_to_drop, keep_null,
+                                     row_id, top, value_to_drop, encode_null,
                                      array_output, output_dictionary,
                                      distributed_by)
         encoder.build_output_table()
