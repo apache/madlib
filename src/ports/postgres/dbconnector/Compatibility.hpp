@@ -54,7 +54,7 @@ namespace {
     #define type_is_array(x) is_array_type(x)
 #endif
 
-#if (PG_VERSION_NUM < 90000 || (defined(GP_VERSION_NUMBER) && GP_VERSION_NUMBER < 40399)
+#if (PG_VERSION_NUM < 90000)  
 
 /**
  * The following has existed in PostgresSQL since commit ID
