@@ -470,7 +470,7 @@ def madlib_version(schema_madlib):
 # ------------------------------------------------------------------------
 
 
-def preprocess_keyvalue_params(input_params, split_char='=', quote_char='"'):
+def preprocess_keyvalue_params(input_params, split_char='='):
     """
     Parse the input_params string and split it using the split_char
 
@@ -480,12 +480,12 @@ def preprocess_keyvalue_params(input_params, split_char='=', quote_char='"'):
             value is either and
     @param split_char: str, character that splits the key and value elements.
                         Default set to '='
-
-
     """
     re_str = (r"([-:\w]+\s*" +    # key is any alphanumeric character
                                   # (including - and :) string
+
               split_char +        # key and value are separated by split_char
+
               r"""
                 \s*([\(\{\[]      # value can be string or array
                 [^\[\]\(\)\{\}]*  #  if value is array then accept anything inside
@@ -493,10 +493,11 @@ def preprocess_keyvalue_params(input_params, split_char='=', quote_char='"'):
 
                    |              # either array (above) or string (below)
 
-                (?P<quote>\"?)[\w\s\-\%]*\.?[\w\s\-\%]+(?P=quote)
+                (?P<quote>\"?)[\w\s\-\%.]+(?P=quote)
                                  #  if value is string, it can be alphanumeric
                                  #    character string with a decimal dot,
-                                 #    optionally quoted by double quotes
+                                 #    hyphen, or percent
+                                 #    optionally quoted by `quote_char`
                   )
                )"""
               )
@@ -661,7 +662,7 @@ class UtilitiesTestCase(unittest.TestCase):
         self.optimizer_params4 = ('max_iter=10, optimizer="irls",'
                                   'precision=0.02.01, lambda={1,2,3,4}')
         self.optimizer_params5 = ('max_iter=10, optimizer="irls",'
-                                  'precision=0.02.01, PRECISION=0.02.01, lambda={1,2,3,4}')
+                                  'precision=0.02, PRECISION=2., lambda={1,2,3,4}')
         self.optimizer_types = {'max_iter': int, 'optimizer': str, 'optimizer::text': str,
                                 'lambda': list, 'precision': float}
 
@@ -673,21 +674,18 @@ class UtilitiesTestCase(unittest.TestCase):
         self.assertEqual(preprocess_keyvalue_params(self.optimizer_params3),
                          ['max_iter=10', 'lambda={1,"2,2",3,4}'])
         self.assertEqual(preprocess_keyvalue_params(self.optimizer_params4),
-                         ['max_iter=10', 'optimizer="irls"', 'precision=0.02', 'lambda={1,2,3,4}'])
+                         ['max_iter=10', 'optimizer="irls"', 'precision=0.02.01', 'lambda={1,2,3,4}'])
 
     def test_extract_optimizers(self):
         self.assertEqual({'max_iter': 10, 'optimizer::text': '"irls"', 'precision': 0.0001},
                          extract_keyvalue_params(self.optimizer_params1, self.optimizer_types))
         self.assertEqual({'max_iter': 10, 'lambda': ['1', '"2,2"', '3', '4']},
                          extract_keyvalue_params(self.optimizer_params3, self.optimizer_types))
-        self.assertEqual({'max_iter': 10, 'optimizer': '"irls"', 'precision': 0.02,
-                          'lambda': ['1', '2', '3', '4']},
-                         extract_keyvalue_params(self.optimizer_params4, self.optimizer_types))
-        self.assertEqual({'max_iter': '10', 'optimizer': '"irls"', 'precision': '0.02',
+        self.assertEqual({'max_iter': '10', 'optimizer': '"irls"', 'precision': '0.02.01',
                           'lambda': '{1,2,3,4}'},
                          extract_keyvalue_params(self.optimizer_params4))
         self.assertEqual({'max_iter': '10', 'optimizer': '"irls"',
-                          'PRECISION': '0.02', 'precision': '0.02',
+                          'PRECISION': '2.', 'precision': '0.02',
                           'lambda': '{1,2,3,4}'},
                          extract_keyvalue_params(self.optimizer_params5,
                                                  allow_duplicates=False,
@@ -697,6 +695,8 @@ class UtilitiesTestCase(unittest.TestCase):
                           extract_keyvalue_params, self.optimizer_params2, self.optimizer_types)
         self.assertRaises(ValueError,
                           extract_keyvalue_params, self.optimizer_params5, allow_duplicates=False)
+        self.assertRaises(ValueError,
+                          extract_keyvalue_params, self.optimizer_params4, self.optimizer_types)
 
     def test_split_delimited_string(self):
         self.assertEqual(['max_iter=10', 'optimizer::text="irls"', 'precision=1e-4'],
