@@ -71,6 +71,7 @@ DECLARE
     class_test_source REGCLASS;
     class_point_source REGCLASS;
     l FLOAT;
+    outputTableFlag INTEGER;
     id INTEGER;
     vector DOUBLE PRECISION[];
     cur_pid integer;
@@ -95,40 +96,31 @@ BEGIN
     END IF;
     PERFORM MADLIB_SCHEMA.create_schema_pg_temp();
     
-    EXECUTE format('DROP TABLE IF EXISTS %I',output_table);
-    EXECUTE format('CREATE TABLE %I(%I integer, %I DOUBLE PRECISION[], predlabel float)',output_table,id_column_name,test_column_name);
+    EXECUTE 
+	$sql$ 
+	SELECT count(*) FROM information_schema.tables WHERE table_name = '$sql$ || output_table || $sql$'$sql$ into outputTableFlag; 
+    IF (outputTableFlag != 0) THEN
+	RAISE Exception '% table exists. Drop it or use different name', output_table;
+    END IF;
+    --EXECUTE format('DROP TABLE IF EXISTS %I',output_table);
+    --EXECUTE format('CREATE TABLE %I(%I integer, %I DOUBLE PRECISION[], predlabel float)',output_table,id_column_name,test_column_name);
 	
-    
-    FOR r IN EXECUTE format('SELECT %I,%I FROM %I', id_column_name, test_column_name, test_source)
-    LOOP
-	cur_pid := r.id;
-	vector := r.vector;
-	EXECUTE
+    EXECUTE
         $sql$
-	DROP TABLE IF EXISTS pg_temp.knn_vector;
-        CREATE TABLE pg_temp.knn_vector(vec DOUBLE PRECISION[]);
-	$sql$;
-	EXECUTE 'INSERT INTO pg_temp.knn_vector values($1)'
-	USING vector;
-	EXECUTE
-        $sql$
-	DROP TABLE IF EXISTS pg_temp.knn_interm;
-	CREATE TABLE pg_temp.knn_interm AS
-	
-        SELECT madlib.squared_dist_norm2($sql$ || point_column_name || $sql$, vec) as dist, $sql$ || label_column_name || $sql$ FROM $sql$ || textin(regclassout(point_source)) || $sql$, knn_vector order by dist limit $sql$ || k;
+	DROP TABLE IF EXISTS pg_temp.madlib_knn_interm;
+	CREATE TABLE pg_temp.madlib_knn_interm AS    
+	select * from ( select row_number() over (partition by test_id order by dist) as r, x.* from (select test. $sql$ || id_column_name || $sql$ as test_id, madlib.squared_dist_norm2(train.$sql$ || point_column_name || $sql$,test.$sql$ || test_column_name || $sql$) as dist, $sql$ || label_column_name || $sql$ from $sql$ || textin(regclassout(point_source)) || $sql$ as train, $sql$ || textin(regclassout(test_source)) || $sql$ as test)x)y where y.r <= $sql$ || k;
 	IF (operation = 'c') THEN
     	EXECUTE
         $sql$
-        SELECT mode() within group (order by $sql$ || label_column_name || $sql$) FROM  pg_temp.knn_interm $sql$
-    	INTO l;
+	CREATE TABLE $sql$ || output_table || $sql$ AS
+	select test_id as id, $sql$ || test_column_name || $sql$, mode() within group(order by $sql$ || label_column_name || $sql$) as predLabel from pg_temp.madlib_knn_interm join $sql$ || textin(regclassout(test_source)) || $sql$  on test_id=$sql$ || id_column_name || $sql$ group by test_id, $sql$ || test_column_name;
         ELSE
         EXECUTE
         $sql$
-        SELECT avg( $sql$ || label_column_name || $sql$ ) FROM  pg_temp.knn_interm $sql$
-        INTO l;
+	CREATE TABLE $sql$ || output_table || $sql$ AS
+        select test_id as id, $sql$ || test_column_name || $sql$ ,avg($sql$ || label_column_name || $sql$) as predLabel from pg_temp.madlib_knn_interm join $sql$ || textin(regclassout(test_source)) || $sql$  on test_id=$sql$ || id_column_name || $sql$ group by test_id, $sql$ || test_column_name || $sql$ order by test_id $sql$;
         END IF;
-	EXECUTE format('INSERT INTO %I values($1,$2,$3)',output_table) USING cur_pid, vector, l;
-    END LOOP;
 
    EXECUTE 'SET client_min_messages TO ' || oldClientMinMessages;
    IF (operation = 'c') THEN
@@ -136,8 +128,7 @@ BEGIN
    ELSE
         returnstring := 'The regression results have been written to table';
    END IF;
-   DROP TABLE knn_interm;
-   DROP TABLE knn_vector;
+   DROP TABLE pg_temp.madlib_knn_interm;
    RETURN returnstring;
 END;
 $$ LANGUAGE plpgsql VOLATILE
