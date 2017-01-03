@@ -24,6 +24,7 @@
 
 """
 from itertools import count
+from bisect import bisect
 
 import plpy
 from control import MinWarning
@@ -422,6 +423,11 @@ class CategoricalEncoder(object):
         here is to compute top values only for requested columns and use
         distinct values for others.
         """
+        def _cum_sum(values, start=0):
+            for v in values:
+                start += v
+                yield start
+
         top_val_sql_list = []
         for col in self._output_cols:
             if not self.encode_null:
@@ -450,12 +456,11 @@ class CategoricalEncoder(object):
             col, ordered_values, ordered_freq = [each_col_data[i]
                                                  for i in ('col_name', 'value', 'freq')]
             # drop reference from distinct values
-            if (col in self._value_to_drop):
-                drop_val = self._value_to_drop[col]
-                if drop_val in ordered_values:
-                    drop_index = ordered_values.index(drop_val)
-                    ordered_values.pop(drop_index)
-                    ordered_freq.pop(drop_index)
+            if (col in self._value_to_drop and
+                    self._value_to_drop[col] in ordered_values):
+                drop_index = ordered_values.index(self._value_to_drop[col])
+                ordered_values.pop(drop_index)
+                ordered_freq.pop(drop_index)
 
             if not ordered_values:
                 plpy.error("Encoding categorical error: "
@@ -472,17 +477,8 @@ class CategoricalEncoder(object):
                 else:
                     # ..., top < 1 is considered a percent of total count
                     threshold = int(math.ceil(top_arg * sum(ordered_freq)))
-                    covered_frac = 0
-                    for i, freq in enumerate(ordered_freq):
-                        # iterate ordered frequencies to find the point
-                        # at which cumsum(freq) goes over the threshold
-                        if covered_frac > threshold:
-                            k = i
-                            break
-                        else:
-                            covered_frac += freq
-                    else:
-                        k = i  # max k is len(ordered_values) - 1
+                    cum_freq = list(_cum_sum(ordered_freq))
+                    k = bisect(cum_freq, threshold, 0, len(ordered_values)-2) + 1
 
                 top_distinct_values[col] = ordered_values[:k]
                 if k < len(ordered_values):
@@ -531,7 +527,7 @@ class CategoricalEncoder(object):
                     dv.remove(None)
             else:
                 null_col_name = '"{c}_isnull"'.format(c=strip_end_quotes(col.strip()))
-                col_contains_null = col_values_data[null_col_name]
+                col_contains_null = self._get_quoted_unquoted(col_values_data, null_col_name)
                 if col_contains_null and None not in dv:
                     dv.append(None)
 
@@ -540,7 +536,8 @@ class CategoricalEncoder(object):
                            "No distinct values found for {0} or "
                            "all distinct values dropped as per function arguments"
                            "(value_to_drop, encode_null)".format(col))
-            distinct_values[col] = list(sorted(dv))
+
+            distinct_values[col] = dv
         return distinct_values
 # ------------------------------------------------------------------------------
 
