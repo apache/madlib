@@ -331,54 +331,17 @@ SELECT {schema_madlib}.pca_sparse_project('usage');
 --
         """.format(schema_madlib=schema_madlib)
 
-
-def _validate_args_output_table(out_table, residual_table=None,
-                   result_summary_table=None):
-    """
-    Validates the output table(s) arguments to the PCA project function
-
-    Args:
-        @param out_table  Name of output table to store projection result
-        @param residual_table  Name of the residual table (to store error in projection)
-        @param result_summary_table  Name of result summary table
-    Returns:
-        None
-    Throws:
-        plpy.error if any argument is invalid
-    """
-    # Make sure that the output table does not exist
-    # Also check that the output table is not null
-    _assert(out_table and out_table.strip(),
-            "PCA error: Invalid output table name.")
-    _assert(not table_exists(out_table, only_first_schema=True),
-            "PCA error: Output table {0} already exists!".format(str(out_table)))
-
-        # Check that the result summary table is not empty
-    if result_summary_table is not None:
-        _assert(result_summary_table.strip(),
-                "PCA error: Invalid result summary table name!")
-        _assert(not table_exists(result_summary_table, only_first_schema=True),
-                "PCA error: Result summary table {0} already exists!".
-                format(result_summary_table))
-
-    # Check that the result summary table is not empty
-    if residual_table is not None:
-        _assert(residual_table.strip(),
-                "PCA error: Invalid residual table name!")
-        _assert(not table_exists(residual_table, only_first_schema=True),
-                "PCA error: Residual table {0} already exists!".
-                format(residual_table))
-
-# Validate arguments: Same as pca
-# ------------------------------------------------------------------------
 def _validate_args(schema_madlib,
                    source_table,
                    pc_table,
+                   out_table,
                    row_id,
                    col_id=None,
                    val_id=None,
                    row_dim=None,
-                   col_dim=None):
+                   col_dim=None,
+                   residual_table=None,
+                   result_summary_table=None):
     """
     Validates all arguments passed to the PCA function
 
@@ -408,6 +371,29 @@ def _validate_args(schema_madlib,
     _assert(table_exists(add_postfix(pc_table, "_mean")),
             "PCA error: Source data table column means does not exist!")
 
+    # Make sure that the output table does not exist
+    # Also check that the output table is not null
+    _assert(out_table and out_table.strip(),
+            "PCA error: Invalid output table name.")
+    _assert(not table_exists(out_table, only_first_schema=True),
+            "PCA error: Output table {0} already exists!".format(str(out_table)))
+
+    # Check that the result summary table is not empty
+    if result_summary_table is not None:
+        _assert(result_summary_table.strip(),
+                "PCA error: Invalid result summary table name!")
+        _assert(not table_exists(result_summary_table, only_first_schema=True),
+                "PCA error: Result summary table {0} already exists!".
+                format(result_summary_table))
+
+    # Check that the result summary table is not empty
+    if residual_table is not None:
+        _assert(residual_table.strip(),
+                "PCA error: Invalid residual table name!")
+        _assert(not table_exists(residual_table, only_first_schema=True),
+                "PCA error: Residual table {0} already exists!".
+                format(residual_table))
+
     # Check that the row_id exists
     _assert(columns_exist_in_table(source_table, [row_id], schema_madlib),
             "PCA error: {1} column does not exist in {0}!".
@@ -428,10 +414,8 @@ def _validate_args(schema_madlib,
         _assert(row_dim > 0 and col_dim > 0,
                 "PCA error: row_dim/col_dim should be positive integer")
 
-        validate_sparse(source_table,
-                        {'row': row_id, 'col': col_id, 'val': val_id},
-                        check_col=False)
 # ------------------------------------------------------------------------
+
 
 def pca_sparse_project(schema_madlib,
                        source_table,
@@ -523,6 +507,14 @@ def pca_project_wrap(schema_madlib, source_table, pc_table, out_table,
                                   WHERE name='client_min_messages'
                                   """)[0]['setting']
     plpy.execute('SET client_min_messages TO warning')
+    if is_sparse:
+        _validate_args(schema_madlib, source_table, pc_table, out_table,
+                   row_id, col_id, val_id, row_dim, col_dim, residual_table,
+                   result_summary_table)
+    else:
+        _validate_args(schema_madlib, source_table, pc_table, out_table,
+                   row_id, None, None, None, None,
+                   residual_table, result_summary_table)
     # If we add new columns to the pca_train output table in the future, they should
     # be included in this list:
     pc_table_model_cols = ['row_id', 'principal_components', 'std_dev', 'proportion']
@@ -530,7 +522,6 @@ def pca_project_wrap(schema_madlib, source_table, pc_table, out_table,
     grouping_cols = ''
     if grouping_cols_list:
         grouping_cols = ', '.join(grouping_cols_list)
-    _validate_args_output_table(out_table, residual_table, result_summary_table)
 
     other_columns_in_table = [col for col in get_cols(source_table) if col not in grouping_cols_list]
     grouping_cols_clause = ''
@@ -547,7 +538,7 @@ def pca_project_wrap(schema_madlib, source_table, pc_table, out_table,
         cols_names_types = get_cols_and_types(source_table)
         grouping_cols_clause = ', ' + ', '.join([c_name+" "+c_type
             for (c_name, c_type) in cols_names_types if c_name in grouping_cols_list])
-    ## Create all output tables
+    # Create all output tables
     plpy.execute("""
             DROP TABLE IF EXISTS {0};
             CREATE TABLE {0} (
@@ -567,7 +558,7 @@ def pca_project_wrap(schema_madlib, source_table, pc_table, out_table,
                 ) """.format(result_summary_table, grouping_cols_clause))
     else:
         result_summary_table = ''
-    if residual_table and grouping_cols:
+    if residual_table:
         plpy.execute("""
             DROP TABLE IF EXISTS {0};
             CREATE TABLE {0} (
@@ -581,25 +572,17 @@ def pca_project_wrap(schema_madlib, source_table, pc_table, out_table,
     # declare variables whose values will be different for each group, if
     # grouping_cols is specified
     grouping_where_clause = ''
+    sparse_where_condition = ''
     select_grouping_cols = ''
-    temp_source_table_columns = ''
     grouping_cols_values = ''
     result_summary_table_temp = ''
     other_columns_in_pc_table = [col for col in get_cols(pc_table) if col not in grouping_cols_list]
     temp_pc_table_columns = ', '.join(other_columns_in_pc_table)
     original_row_id = row_id
+
     other_columns_in_table.remove(row_id)
-    temp_source_table_columns = """ ROW_NUMBER() OVER({partition_over}) AS row_id,
-                        """.format(partition_over='' if not grouping_cols else 'PARTITION BY {0}'.format(grouping_cols)) +\
-                        ','.join(other_columns_in_table)
-    # We can now ignore the original row_id for all computations since we will
-    # create a new table with a row_id column that has perfect serially increasing
-    # row_id value. This is to support the scenario where users are not forced
-    # to have a row_id that follows a particular format. This restriction of having to
-    # provide a serially increasing row_id value starting from 1 becomes a pain
-    # point when grouping is used, since the row_id for each group will then have
-    # to start from 1.
-    row_id = 'row_id'
+    temp_source_table_columns = ','.join(other_columns_in_table)
+
     pca_union_call_list = []
     grp_id = 0
     if not is_sparse:
@@ -610,15 +593,17 @@ def pca_project_wrap(schema_madlib, source_table, pc_table, out_table,
     while True:
         if grouping_cols:
             grp_value_dict = distinct_grouping_values[grp_id]
-            grouping_where_clause = ' WHERE ' + ' AND '.join([str(key)+"="+str(value) for (key, value) in grp_value_dict.items()])
+            where_conditions = ' AND '.join([str(key)+"="+str(value) for (key, value) in grp_value_dict.items()])
+            sparse_where_condition = ' AND ' + where_conditions
+            grouping_where_clause = ' WHERE ' + where_conditions
             select_grouping_cols = ', ' + ', '.join([str(value)+" AS "+key for (key, value) in grp_value_dict.items()])
             grouping_cols_values = ', ' + ', '.join([str(value) for (key, value) in grp_value_dict.items()])
 
         pca_union_call_list.append("""
             {schema_madlib}._pca_project_union('{source_table}', '{pc_table}', '{out_table}',
                 '{row_id}', '{original_row_id}', '{grouping_cols}',
-                '{grouping_cols_clause}', '{residual_table}',
-                '{result_summary_table}', {grp_id}, '{grouping_where_clause}', '{select_grouping_cols}',
+                '{grouping_cols_clause}', '{residual_table}', '{result_summary_table}',
+                {grp_id}, '{grouping_where_clause}', '{sparse_where_condition}','{select_grouping_cols}',
                 '{grouping_cols_values}', '{temp_source_table_columns}', '{temp_pc_table_columns}',
                 {is_sparse}, '{col_id}', '{val_id}', {row_dim}, {col_dim})
             """.format(schema_madlib=schema_madlib,
@@ -630,6 +615,7 @@ def pca_project_wrap(schema_madlib, source_table, pc_table, out_table,
                 residual_table=residual_table,
                 result_summary_table=result_summary_table,
                 grp_id=grp_id, grouping_where_clause=grouping_where_clause,
+                sparse_where_condition=sparse_where_condition,
                 select_grouping_cols=select_grouping_cols,
                 grouping_cols_values=grouping_cols_values,
                 temp_source_table_columns=temp_source_table_columns,
@@ -641,31 +627,15 @@ def pca_project_wrap(schema_madlib, source_table, pc_table, out_table,
     # "SELECT <query_1>, <query_2>, <query_3>, ..." is expected to run each
     # <query_i> in parallel.
     pca_union_call = 'SELECT ' + ', '.join(pca_union_call_list)
-    try:
-        plpy.execute(pca_union_call)
-    except Exception as e:
-        ## drop the output tables that were created if PCA errored out.
-        plpy.execute("""
-            DROP TABLE IF EXISTS {0};
-            """.format(out_table))
-        if result_summary_table:
-            plpy.execute("""
-                    DROP TABLE IF EXISTS {0}
-                """.format(result_summary_table))
-        if residual_table:
-            plpy.execute("""
-                    DROP TABLE IF EXISTS {0}
-                """.format(residual_table))
-        plpy.error(str(e) + "\n" + str(e.args) + "\n" + str(e.strerror))
-        raise
-
+    plpy.execute(pca_union_call)
     plpy.execute("SET client_min_messages TO %s" % old_msg_level)
 
 def _pca_project_union(schema_madlib, source_table, pc_table, out_table,
         row_id, original_row_id, grouping_cols, grouping_cols_clause,
         residual_table, result_summary_table, grp_id, grouping_where_clause,
-        select_grouping_cols, grouping_cols_values, temp_source_table_columns,
-        temp_pc_table_columns, is_sparse, col_id, val_id, row_dim, col_dim, **kwargs):
+        sparse_where_condition, select_grouping_cols, grouping_cols_values,
+        temp_source_table_columns, temp_pc_table_columns, is_sparse, col_id,
+        val_id, row_dim, col_dim, **kwargs):
     """
     The pca_project is performed over each group, if any.
 
@@ -696,23 +666,10 @@ def _pca_project_union(schema_madlib, source_table, pc_table, out_table,
         None
     """
     out_table_grouped = "pg_temp." + unique_string() + "group_" + str(grp_id)
-    ## Creation of this temp table is unnecessary if the scenario does not involve
-    ## grouping, and/or, the input table had perfect values for the row_id column.
-    ## This temp table will ensure pca works even when row_id of the source_table
-    ## does not have serially increasing numbers starting from 1;
-    source_table_grouped = "pg_temp." + unique_string() + "group_" + str(grp_id)
-    plpy.execute("""
-                CREATE TEMP TABLE {source_table_grouped} AS
-                SELECT {temp_source_table_columns}
-                FROM {source_table}
-                {grouping_where_clause}
-            """.format(source_table_grouped=source_table_grouped,
-                source_table=source_table, grouping_where_clause=grouping_where_clause,
-                temp_source_table_columns=temp_source_table_columns))
     if grouping_cols:
         pc_table_grouped = "pg_temp." + unique_string() + "group_" + str(grp_id)
         plpy.execute("""
-                CREATE TEMP TABLE {pc_table_grouped} AS
+                CREATE TABLE {pc_table_grouped} AS
                 SELECT {temp_pc_table_columns}
                 FROM {pc_table}
                 {grouping_where_clause}
@@ -725,15 +682,15 @@ def _pca_project_union(schema_madlib, source_table, pc_table, out_table,
     t0 = time.time()  # measure the starting time
     # Step 1: Validate the input arguments
     if is_sparse:
-        _validate_args(schema_madlib, source_table_grouped, pc_table, row_id,
-                       col_id, val_id, row_dim, col_dim)
         # Step 1.1: Create a copy of the sparse matrix and add row_dims and col_dims
         # Warning: This changes the column names of the table
         sparse_table_copy = "pg_temp." + unique_string() + "_sparse_table_copy"
-        create_temp_sparse_matrix_table_with_dims(source_table_grouped, sparse_table_copy,
+        create_temp_sparse_matrix_table_with_dims(source_table, sparse_table_copy,
                                                   row_id, col_id, val_id,
-                                                  row_dim, col_dim)
-
+                                                  row_dim, col_dim, sparse_where_condition)
+        validate_sparse(sparse_table_copy,
+                        {'row': row_id, 'col': col_id, 'val': val_id},
+                        check_col=False)
         # Step 1.2: Densify the input matrix
         x_dense = "pg_temp." + unique_string() + "_dense"
         plpy.execute("""
@@ -747,16 +704,29 @@ def _pca_project_union(schema_madlib, source_table, pc_table, out_table,
             DROP TABLE IF EXISTS {0};
             """.format(sparse_table_copy))
         source_table_grouped = x_dense
-        row_id = 'row_id'
     else:
+        # For Dense matrix format only:
+        # We can now ignore the original row_id for all computations since we will
+        # create a new table with a row_id column that has not duplicates and ranges
+        # from 1 to number of rows in the group/table. This is to mainly support the
+        # grouping scneario where the row_id values might not range between 1 and
+        # number of rows in the group, for each group. Doing this also just extends
+        # this behavior for non-grouping scenarios too. If creating a new temp table
+        # that corrects the row_id column is not of much importance in non-grouping
+        # cases, we can avoid creating the temp table and save some computation time.
+        # But, at the moment, the code creates the temp table even for the non-grouping
+        # scenario.
+        # We don't need to do this for sparse representation because of the nature
+        # of its definition.
+
         # Preserve the mapping between new row_id created and the original row_id. This is
         # required only for dense input format.
         temp_row_id = original_row_id + unique_string()
         row_id_map_table = "rowid" + unique_string()
         plpy.execute("""
-                CREATE TEMP TABLE {row_id_map_table} AS
+                CREATE TABLE {row_id_map_table} AS
                 SELECT
-                    {original_row_id} AS {temp_row_id},
+                    {source_table}.{original_row_id} AS {temp_row_id},
                     {select_clause}
                 FROM {source_table}
                 {grouping_where_clause}
@@ -764,14 +734,31 @@ def _pca_project_union(schema_madlib, source_table, pc_table, out_table,
                 original_row_id=original_row_id,
                 temp_row_id=temp_row_id,
                 source_table=source_table,
-                select_clause="""
-                    ROW_NUMBER() OVER({partition_over}) AS row_id
-                """.format(partition_over='' if not grouping_cols else 'PARTITION BY {0}'.format(grouping_cols)),
+                select_clause=""" ROW_NUMBER() OVER() AS row_id """,
                 grouping_where_clause=grouping_where_clause))
-        ## Validate the arguments
-        _validate_args(schema_madlib, source_table_grouped, pc_table,
-                       row_id, None, None, None, None)
 
+        # Creation of this temp table is unnecessary if the scenario does not involve
+        # grouping, and/or, the input table had perfect values for the row_id column.
+        # This temp table will ensure pca works even when row_id of the source_table
+        # does not have serially increasing numbers starting from 1;
+        source_table_grouped = "pg_temp." + unique_string() + "group_" + str(grp_id)
+        plpy.execute("""
+                    CREATE TABLE {source_table_grouped} AS
+                    SELECT {row_id_map_table}.row_id, {temp_source_table_columns}
+                    FROM
+                        (
+                            SELECT *
+                            FROM {source_table}
+                            {grouping_where_clause}
+                        ) t1
+                    INNER JOIN {row_id_map_table}
+                    ON {row_id_map_table}.{temp_row_id}=t1.{row_id}
+                """.format(source_table_grouped=source_table_grouped,
+                    temp_row_id=temp_row_id, row_id_map_table=row_id_map_table, row_id=row_id,
+                    source_table=source_table, grouping_where_clause=grouping_where_clause,
+                    temp_source_table_columns=temp_source_table_columns))
+
+    row_id = 'row_id'
     # Make sure that the table has row_id and row_vec
     source_table_copy = "pg_temp." + unique_string()
     need_new_column_names = cast_dense_input_table_to_correct_columns(
@@ -779,7 +766,6 @@ def _pca_project_union(schema_madlib, source_table, pc_table, out_table,
 
     if(need_new_column_names):
         source_table_grouped = source_table_copy
-
     [row_dim, col_dim] = get_dims(source_table_grouped,
                                   {'row': 'row_id', 'col': 'col_id',
                                    'val': 'row_vec'})
@@ -833,10 +819,7 @@ def _pca_project_union(schema_madlib, source_table, pc_table, out_table,
     # Residual table: res = mat - proj
     create_residual_table = False
     if residual_table or result_summary_table:
-        if grouping_cols:
-            residual_table_grouped = "pg_temp." + unique_string() + "_temp_residual"
-        else:
-            residual_table_grouped = residual_table
+        residual_table_grouped = "pg_temp." + unique_string() + "_temp_residual"
         create_temp_residual_table = False
         if not residual_table:
             create_temp_residual_table = True
@@ -928,14 +911,13 @@ def _pca_project_union(schema_madlib, source_table, pc_table, out_table,
     if is_sparse:
         ## We don't have to join based on row_id for sparse project.
         if create_residual_table:
-            if grouping_cols:
-                plpy.execute("""
-                        INSERT INTO {residual_table}
-                        SELECT * {select_grouping_cols}
-                        FROM {residual_table_grouped}
-                    """.format(residual_table=residual_table,
-                        select_grouping_cols=select_grouping_cols,
-                        residual_table_grouped=residual_table_grouped))
+            plpy.execute("""
+                    INSERT INTO {residual_table}
+                    SELECT * {select_grouping_cols}
+                    FROM {residual_table_grouped}
+                """.format(residual_table=residual_table,
+                    select_grouping_cols=select_grouping_cols,
+                    residual_table_grouped=residual_table_grouped))
         plpy.execute("""
                 INSERT INTO {out_table}
                 SELECT * {select_grouping_cols}
@@ -954,21 +936,16 @@ def _pca_project_union(schema_madlib, source_table, pc_table, out_table,
                 out_table_cols=', '.join(output_table_cols),
                 select_grouping_cols=select_grouping_cols)
         if create_residual_table:
-            if grouping_cols:
-                plpy.execute("""
-                    INSERT INTO {residual_table}
-                    SELECT {select_clause}
-                    FROM {residual_table_grouped}
-                    INNER JOIN {row_id_map_table}
-                    ON {row_id_map_table}.row_id={residual_table_grouped}.row_id
-                    """.format(residual_table=residual_table,
-                        select_clause=output_table_select_clause,
-                        residual_table_grouped=residual_table_grouped,
-                        row_id_map_table=row_id_map_table))
-                plpy.execute("""
-                        DROP TABLE IF EXISTS {0}
-                    """.format(residual_table_grouped))
-
+            plpy.execute("""
+                INSERT INTO {residual_table}
+                SELECT {select_clause}
+                FROM {residual_table_grouped}
+                INNER JOIN {row_id_map_table}
+                ON {row_id_map_table}.row_id={residual_table_grouped}.row_id
+                """.format(residual_table=residual_table,
+                    select_clause=output_table_select_clause,
+                    residual_table_grouped=residual_table_grouped,
+                    row_id_map_table=row_id_map_table))
         plpy.execute("""
                     INSERT INTO {out_table}
                     SELECT {select_clause}
@@ -982,6 +959,10 @@ def _pca_project_union(schema_madlib, source_table, pc_table, out_table,
         plpy.execute("""
                 DROP TABLE IF EXISTS {0};
             """.format(row_id_map_table))
+    if residual_table or result_summary_table:
+        plpy.execute("""
+                DROP TABLE IF EXISTS {0}
+            """.format(residual_table_grouped))
     plpy.execute("""
             DROP TABLE IF EXISTS {0};
             DROP TABLE IF EXISTS {1};
