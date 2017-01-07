@@ -1106,7 +1106,6 @@ DecisionTree<Container>::displayLeafNode(
     std::stringstream display_str;
     display_str << "\"" << id_prefix << id << "\" [label=\"" << predict_str.str();
 
-    // uncomment below if distribution of rows is required in leaf node
     if(verbose){
         display_str << "\\n samples = " << statCount(predictions.row(id)) << "\\n value = ";
         if (is_regression)
@@ -1153,7 +1152,6 @@ DecisionTree<Container>::displayInternalNode(
 
     std::stringstream display_str;
     display_str << "\"" << id_prefix << id << "\" [label=\"" << label_str.str();
-    // uncomment below if distribution of rows is required in internal node
     if(verbose){
 
         display_str << "\\n impurity = "<< impurity(predictions.row(id)) << "\\n samples = " << statCount(predictions.row(id)) << "\\n value = ";
