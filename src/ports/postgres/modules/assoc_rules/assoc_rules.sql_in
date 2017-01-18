@@ -96,9 +96,9 @@ S (X) = \frac{Total X}{Total transactions}
 
 Given any association rule "If X, then Y", the association rules function will
 also calculate the following metrics:
-- Count: The number of transactions that contain X U Y
+- Count: The number of transactions that contain X,Y
 
-- Support: The ratio of transactions that contain X U Y to all transactions, T
+- Support: The ratio of transactions that contain X,Y to all transactions, T
 \f[
 S (X \Rightarrow Y) = \frac{Total(X \cup Y)}{Total transactions}
 \f]
@@ -257,8 +257,13 @@ This generates all association rules that satisfy the specified minimum
   </dd>
 
   <dt>verbose</dt>
-  <dd>BOOLEAN, default FALSE. Determines if details are printed for each iteration
+  <dd>BOOLEAN, default: FALSE. Determines if details are printed for each iteration
   as the algorithm progresses.</dd>
+
+  <dt>max_itemset_size</dt>
+  <dd>INTEGER, default: itemsets of ALL sizes. Determines the maximum size of frequent
+  itemsets allowed that are used for generating association rules. Value less
+  than 2 throws an error..</dd>
 </dl>
 
 
@@ -330,6 +335,39 @@ Result:
       5 | {chips}         | {beer,diapers} |     2 | 0.285714285714286 | 0.666666666666667 | 0.933333333333333 | 0.857142857142857
       6 | {beer,chips}    | {diapers}      |     2 | 0.285714285714286 | 0.666666666666667 | 0.933333333333333 | 0.857142857142857
 (7 rows)
+</pre>
+Let us now find association rules generated from itemsets of size at most 2:
+<pre class="example">
+SELECT * FROM madlib.assoc_rules( .25,
+                                  .5,
+                                  'trans_id',
+                                  'product',
+                                  'test_data',
+                                  NULL,
+                                  TRUE, 2
+                                );
+</pre>
+Result (iteration details not shown):
+<pre class="result">
+ output_schema | output_table | total_rules |   total_time
+---------------+--------------+-------------+-----------------
+ public        | assoc_rules  |           4 | 00:00:00.053899
+(1 row)
+</pre>
+The association rules are again stored in the assoc_rules table:
+<pre class="example">
+SELECT * FROM assoc_rules
+ORDER BY support DESC, confidence DESC;
+</pre>
+Result:
+<pre class="result">
+ ruleid |    pre    |   post    | count |      support      |    confidence     |       lift        |    conviction
+--------+-----------+-----------+-------+-------------------+-------------------+-------------------+-------------------
+      4 | {diapers} | {beer}    |     5 | 0.714285714285714 |                 1 |                 1 |                 0
+      3 | {beer}    | {diapers} |     5 | 0.714285714285714 | 0.714285714285714 |                 1 |                 1
+      1 | {chips}   | {beer}    |     3 | 0.428571428571429 |                 1 |                 1 |                 0
+      2 | {chips}   | {diapers} |     2 | 0.285714285714286 | 0.666666666666667 | 0.933333333333333 | 0.857142857142857
+(4 rows)
 </pre>
 
 -# Post-processing can now be done on the output table in the case that
@@ -447,7 +485,8 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.assoc_rules
     item_col TEXT,
     input_table TEXT,
     output_schema TEXT,
-    verbose BOOLEAN
+    verbose BOOLEAN,
+    max_itemset_size INTEGER
    )
 RETURNS MADLIB_SCHEMA.assoc_rules_results
 AS $$
@@ -465,7 +504,8 @@ AS $$
         item_col,
         input_table,
         output_schema,
-        verbose
+        verbose,
+        max_itemset_size
         );
 
 $$ LANGUAGE plpythonu
@@ -502,8 +542,57 @@ AS $$
         item_col,
         input_table,
         output_schema,
-        False
+        False,
+        'NULL'
         );
 
 $$ LANGUAGE plpythonu
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.assoc_rules
+    (
+    support FLOAT8,
+    confidence FLOAT8,
+    tid_col TEXT,
+    item_col TEXT,
+    input_table TEXT,
+    output_schema TEXT,
+    verbose BOOLEAN
+    )
+RETURNS MADLIB_SCHEMA.assoc_rules_results
+AS $$
+
+    PythonFunctionBodyOnly(`assoc_rules', `assoc_rules')
+
+    plpy.execute("SET client_min_messages = error;")
+
+    # schema_madlib comes from PythonFunctionBodyOnly
+    return assoc_rules.assoc_rules(
+        schema_madlib,
+        support,
+        confidence,
+        tid_col,
+        item_col,
+        input_table,
+        output_schema,
+        verbose,
+        'NULL'
+        );
+
+$$ LANGUAGE plpythonu
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+--------------------------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.assoc_rules(message TEXT)
+RETURNS text AS $$
+PythonFunction(assoc_rules, assoc_rules, assoc_rules_help_message)
+$$ language plpythonu
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `CONTAINS SQL', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.assoc_rules()
+RETURNS text AS $$
+    SELECT MADLIB_SCHEMA.assoc_rules('');
+$$ language SQL
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `CONTAINS SQL', `');
