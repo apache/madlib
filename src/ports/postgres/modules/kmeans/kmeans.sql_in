@@ -105,7 +105,7 @@ are skipped during analysis.
 </dd>
 
 <dt>expr_point</dt>
-<dd>TEXT. The name of the column with point coordinates.</dd>
+<dd>TEXT. The name of the column with point coordinates or an array expression.</dd>
 
 <dt>k</dt>
 <dd>INTEGER. The number of centroids to calculate.</dd>
@@ -501,7 +501,6 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.__kmeans_validate_src(
 $$ LANGUAGE plpythonu
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `READS SQL DATA', `');
 
-
 CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.__seeding_validate_args(
     rel_source VARCHAR,
     expr_point VARCHAR,
@@ -532,6 +531,17 @@ BEGIN
         Number of clusters k must be <= 32767 (for results to be returned in a
         reasonable amount of time).';
     END IF;
+
+    -- A block with an exception clause is more expensive but this validation
+    -- function is only called once per seeding.
+    BEGIN
+      EXECUTE $sql$
+      SELECT $sql$ || expr_point || $sql$
+      FROM $sql$ || rel_source || $sql$ LIMIT 0 $sql$;
+    EXCEPTION WHEN others THEN
+      RAISE EXCEPTION 'Kmeans error: % is not a valid column or array!', expr_point;
+    END;
+
     EXECUTE $sql$ SELECT count(*)
                   FROM $sql$ || textin(regclassout(rel_source_regclass)) || $sql$
                   WHERE abs(coalesce(MADLIB_SCHEMA.svec_elsum($sql$ || expr_point || $sql$), 'Infinity'::FLOAT8)) < 'Infinity'::FLOAT8 $sql$
