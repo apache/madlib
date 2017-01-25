@@ -191,9 +191,8 @@ def _get_relative_maddir(maddir_lib, port):
     'maddir_lib', which uses the absolute path of GPHOME, is hardcoded into each
     madlib function definition. Replacing the GPHOME path with the equivalent
     relative path makes it simpler to perform DB upgrades without breaking MADlib.
-
     """
-    if port != 'greenplum' or port != 'hawq':
+    if port not in ('greenplum', 'hawq'):
         # do nothing for postgres
         return maddir_lib
 
@@ -206,12 +205,12 @@ def _get_relative_maddir(maddir_lib, port):
 
     link_name = 'greenplum-db' if port == 'greenplum' else 'hawq-db'
     # os.pardir is equivalent to ..
-    db_relpath = os.path.join(db_abspath, os.pardir, link_name)
-
-    if os.path.islink(db_relpath) and os.path.realpath(db_relpath) == db_abspath:
-        # the relative link exists and is pointing to current location.
-        # return relative location of madlib
+    # os.path.normpath removes the extraneous .. from that path
+    db_relpath = os.path.normpath(os.path.join(db_abspath, os.pardir, link_name))
+    if os.path.islink(db_relpath) and os.path.realpath(db_relpath) == os.path.realpath(db_abspath):
+        # if the relative link exists and is pointing to current location
         return os.path.join(db_relpath, 'madlib', tail)
+    return maddir_lib
 # ------------------------------------------------------------------------------
 
 
