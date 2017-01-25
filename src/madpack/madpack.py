@@ -35,8 +35,7 @@ if sys.version_info[:2] < py_min_ver:
 # two levels up in the directory hierarchy. We use (a) os.path.realpath and
 # (b) __file__ (instead of sys.argv[0]) because madpack.py could be called
 # (a) through a symbolic link and (b) not as the main module.
-maddir = os.path.abspath(os.path.dirname(os.path.realpath(
-    __file__)) + "/..")   # MADlib root dir
+maddir = os.path.abspath(os.path.dirname(os.path.realpath(__file__)) + "/..")   # MADlib root dir
 sys.path.append(maddir + "/madpack")
 
 # Import MADlib python modules
@@ -182,10 +181,45 @@ def _internal_run_query(sql, show_error):
 # ------------------------------------------------------------------------------
 
 
+def _get_relative_maddir(maddir_lib, port):
+    """ Return a relative path version of maddir
+
+    GPDB and HAWQ installations have a symlink outside of GPHOME that
+    links to the current GPHOME. After a DB upgrade, this symlink is updated to
+    the new GPHOME.
+
+    'maddir_lib', which uses the absolute path of GPHOME, is hardcoded into each
+    madlib function definition. Replacing the GPHOME path with the equivalent
+    relative path makes it simpler to perform DB upgrades without breaking MADlib.
+
+    """
+    if port != 'greenplum' or port != 'hawq':
+        # do nothing for postgres
+        return maddir_lib
+
+    # e.g. maddir_lib = $GPHOME/madlib/Versions/1.9/lib/libmadlib.so
+    # 'madlib' is supposed to be in this path
+    try:
+        db_abspath, tail = maddir_lib.split('madlib/')
+    except ValueError:
+        return maddir_lib
+
+    link_name = 'greenplum-db' if port == 'greenplum' else 'hawq-db'
+    # os.pardir is equivalent to ..
+    db_relpath = os.path.join(db_abspath, os.pardir, link_name)
+
+    if os.path.islink(db_relpath) and os.path.realpath(db_relpath) == db_abspath:
+        # the relative link exists and is pointing to current location.
+        # return relative location of madlib
+        return os.path.join(db_relpath, 'madlib', tail)
+# ------------------------------------------------------------------------------
+
+
 def _run_sql_file(schema, maddir_mod_py, module, sqlfile,
                   tmpfile, logfile, pre_sql, upgrade=False,
                   sc=None):
-    """Run SQL file
+    """
+        Run SQL file
             @param schema name of the target schema
             @param maddir_mod_py name of the module dir with Python code
             @param module  name of the module
@@ -221,7 +255,7 @@ def _run_sql_file(schema, maddir_mod_py, module, sqlfile,
                   '-DMADLIB_SCHEMA=' + schema,
                   '-DPLPYTHON_LIBDIR=' + maddir_mod_py,
                   '-DEXT_PYTHON_LIBDIR=' + maddir_ext_py,
-                  '-DMODULE_PATHNAME=' + maddir_lib,
+                  '-DMODULE_PATHNAME=' + _get_relative_maddir(maddir_lib, portid),
                   '-DMODULE_NAME=' + module,
                   '-I' + maddir_madpack,
                   sqlfile]
