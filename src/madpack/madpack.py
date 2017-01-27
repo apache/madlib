@@ -203,7 +203,7 @@ def _get_relative_maddir(maddir_lib, port):
     except ValueError:
         return maddir_lib
 
-    link_name = 'greenplum-db' if port == 'greenplum' else 'hawq-db'
+    link_name = 'greenplum-db' if port == 'greenplum' else 'hawq'
     # os.pardir is equivalent to ..
     # os.path.normpath removes the extraneous .. from that path
     db_relpath = os.path.normpath(os.path.join(db_abspath, os.pardir, link_name))
