@@ -492,6 +492,14 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.__kmeans_validate_src(
 $$ LANGUAGE plpythonu
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `READS SQL DATA', `');
 
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.__kmeans_validate_expr(
+    rel_source      VARCHAR,
+    expr_point      VARCHAR
+) RETURNS BOOLEAN AS $$
+    PythonFunction(kmeans, kmeans, kmeans_validate_expr)
+$$ LANGUAGE plpythonu
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `READS SQL DATA', `');
+
 CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.__seeding_validate_args(
     rel_source VARCHAR,
     expr_point VARCHAR,
@@ -506,6 +514,11 @@ DECLARE
   rel_source_regclass REGCLASS;
   rel_filtered VARCHAR;
 BEGIN
+
+    -- Validate the expr_point input. Since we don't need a view at this
+    -- point, the output is safe to ignore.
+    PERFORM MADLIB_SCHEMA.__kmeans_validate_expr(rel_source,expr_point);
+
     rel_source_regclass := rel_source;
 
     IF (initial_centroids IS NOT NULL) THEN
@@ -522,16 +535,6 @@ BEGIN
         Number of clusters k must be <= 32767 (for results to be returned in a
         reasonable amount of time).';
     END IF;
-
-    -- A block with an exception clause is more expensive but this validation
-    -- function is only called once per seeding.
-    BEGIN
-      EXECUTE $sql$
-      SELECT $sql$ || expr_point || $sql$
-      FROM $sql$ || rel_source || $sql$ LIMIT 0 $sql$;
-    EXCEPTION WHEN others THEN
-      RAISE EXCEPTION 'Kmeans error: % is not a valid column or array!', expr_point;
-    END;
 
     EXECUTE $sql$ SELECT count(*)
                   FROM $sql$ || textin(regclassout(rel_source_regclass)) || $sql$
@@ -1571,6 +1574,10 @@ BEGIN
         EXECUTE $sql$ SET optimizer=off $sql$;', `') -- disable ORCA before MPP-23166 is fixed
 
     PERFORM MADLIB_SCHEMA.__kmeans_validate_src(rel_source);
+
+    -- Validate the expr_point input. Since we don't need a view at this
+    -- point, the output is safe to ignore.
+    PERFORM MADLIB_SCHEMA.__kmeans_validate_expr(rel_source,expr_point);
 
     class_rel_source := rel_source;
 
