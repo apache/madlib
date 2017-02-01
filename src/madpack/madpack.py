@@ -47,8 +47,6 @@ this = os.path.basename(sys.argv[0])    # name of this script
 
 # Default directories
 maddir_conf = maddir + "/config"           # Config dir
-
-# TODO
 maddir_lib = maddir + "/lib/libmadlib.so"  # C/C++ libraries
 
 # Read the config files
