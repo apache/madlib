@@ -10,6 +10,44 @@ See the project webpage  [`MADlib Home`](http://madlib.incubator.apache.org/) fo
 latest binary and source packages. For installation and contribution guides,
 please see [`MADlib Wiki`](https://cwiki.apache.org/confluence/display/MADLIB/)
 
+Development with Docker
+=======================
+We provide a docker image with necessary dependencies required to compile and test MADlib. You can
+view the dependency docker file at `./src/tool/docker/base/Dockerfile_postgres_9_6`. The image is
+hosted on docker hub at `njayaram/madlib:postgres_9.6`. This docker image is currently under heavy
+development.
+
+Some useful commands to use the docker file:
+```
+# Build the image from the docker file:
+docker build -t madlib -f tool/docker/postgres/Dockerfile_9_6 .
+
+# Run the container, mounting the source code's folder to the container:
+docker run -d -it --name madlib -v (path-to-incubator-madlib)/src:/incubator-madlib/src madlib
+
+# When the container is up, connect to it and install MADlib:
+docker exec -it madlib /incubator-madlib/build/src/bin/madpack -p postgres -c postgres/postgres@localhost:5432/postgres install
+
+# Run install-check on the source code:
+docker exec -it madlib /incubator-madlib/build/src/bin/madpack -p postgres -c postgres/postgres@localhost:5432/postgres install-check
+
+## To change code, build and run install check on the changed code:
+# Go into the container to run various build related commands:
+docker exec -it madlib bash
+cd /incubator-madlib/build
+
+# Compile MADlib after changing code in your source repo (note that code changes made in your source folder
+# will be reflected in the container too, since we mounted the volume when docker run was performed).
+make
+
+# Run install check on a specific module, say svm:
+src/bin/madpack -p postgres  -c postgres/postgres@localhost:5432/postgres install-check -t svm
+
+# Install or reinstall MADlib if required:
+src/bin/madpack -p postgres  -c postgres/postgres@localhost:5432/postgres install
+src/bin/madpack -p postgres  -c postgres/postgres@localhost:5432/postgres reinstall
+```
+
 User and Developer Documentation
 ==================================
 The latest documentation of MADlib modules can be found at [`MADlib
