@@ -14,7 +14,7 @@ Development with Docker
 =======================
 We provide a docker image with necessary dependencies required to compile and test MADlib. You can
 view the dependency docker file at `./src/tool/docker/base/Dockerfile_postgres_9_6`. The image is
-hosted on docker hub at `njayaram/madlib:postgres_9.6`. This docker image is currently under heavy
+hosted on docker hub at `madlib/postgres_9.6:latest`. This docker image is currently under heavy
 development.
 
 Some useful commands to use the docker file:
