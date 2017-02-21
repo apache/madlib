@@ -1,0 +1,102 @@
+# coding=utf-8
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Graph Methods
+
+# Please refer to the graph.sql_in file for the documentation
+
+"""
+@file graph.py_in
+
+@namespace graph
+"""
+
+import plpy
+from utilities.control import MinWarning
+from utilities.utilities import _assert
+from utilities.utilities import extract_keyvalue_params
+from utilities.utilities import unique_string
+from utilities.validate_args import get_cols
+from utilities.validate_args import unquote_ident
+from utilities.validate_args import table_exists
+from utilities.validate_args import columns_exist_in_table
+from utilities.validate_args import table_is_empty
+
+
+def validate_graph_coding(vertex_table, vertex_id, edge_table, edge_params,
+	out_table, **kwargs):
+	"""
+	Validates graph tables (vertex and edge) as well as the output table.
+	"""
+	_assert(out_table and out_table.strip().lower() not in ('null', ''),
+		"Graph SSSP: Invalid output table name!")
+	_assert(not table_exists(out_table),
+		"Graph SSSP: Output table already exists!")
+
+	_assert(vertex_table and vertex_table.strip().lower() not in ('null', ''),
+		"Graph SSSP: Invalid vertex table name!")
+	_assert(table_exists(vertex_table),
+		"Graph SSSP: Vertex table ({0}) is missing!".format(vertex_table))
+	_assert(not table_is_empty(vertex_table),
+		"Graph SSSP: Vertex table ({0}) is empty!".format(vertex_table))
+
+	_assert(edge_table and edge_table.strip().lower() not in ('null', ''),
+		"Graph SSSP: Invalid edge table name!")
+	_assert(table_exists(edge_table),
+		"Graph SSSP: Edge table ({0}) is missing!".format(edge_table))
+	_assert(not table_is_empty(edge_table),
+		"Graph SSSP: Edge table ({0}) is empty!".format(edge_table))
+
+	existing_cols = set(unquote_ident(i) for i in get_cols(vertex_table))
+	_assert(vertex_id in existing_cols,
+		"""Graph SSSP: The vertex column {vertex_id} is not present in vertex
+		table ({vertex_table}) """.format(**locals()))
+	_assert(columns_exist_in_table(edge_table, edge_params.values()),
+		"Graph SSSP: Not all columns from {0} present in edge table ({1})".
+		format(edge_params.values(), edge_table))
+
+	return None
+
+def get_graph_usage(schema_madlib, func_name, other_text):
+
+	usage = """
+----------------------------------------------------------------------------
+                            USAGE
+----------------------------------------------------------------------------
+ SELECT {schema_madlib}.{func_name}(
+    vertex_table  TEXT, -- Name of the table that contains the vertex data.
+    vertex_id     TEXT, -- Name of the column containing the vertex ids.
+    edge_table    TEXT, -- Name of the table that contains the edge data.
+    edge_args     TEXT, -- A comma-delimited string containing multiple
+    			-- named arguments of the form "name=value".
+    {other_text}
+    out_table     TEXT  -- Name of the table to store the result of SSSP.
+);
+
+The following parameters are supported for edge table arguments ('edge_args'
+	above):
+
+src (default = 'src')		: Name of the column containing the source
+				vertex ids in the edge table.
+dest (default = 'dest')		: Name of the column containing the destination
+				vertex ids in the edge table.
+weight (default = 'weight')	: Name of the column containing the weight of
+				edges in the edge table.
+""".format(**locals())
+	return usage
