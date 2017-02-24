@@ -19,33 +19,39 @@ development.
 
 Some useful commands to use the docker file:
 ```
-# Build the image from the docker file:
-docker build -t madlib -f tool/docker/postgres/Dockerfile_9_6 .
+## 1) Pull down the `madlib/postgres_9.6:latest` image from docker hub:
+docker pull madlib/postgres_9.6:latest
 
-# Run the container, mounting the source code's folder to the container:
-docker run -d -it --name madlib -v (path-to-incubator-madlib)/src:/incubator-madlib/src madlib
+############################################## * WARNING * ##############################################
+# Beware of mounting a volume as shown below. Changes you make in the "incubator-madlib" folder inside the
+# docker container will be reflected on your disk (and vice versa). Accidental deletion of data in the
+# mounted volume from a docker container will result in deletion of the data in your local disk as well.
+#########################################################################################################
+## 2) Launch a container corresponding to the MADlib image, mounting the source code's folder to the container.
+docker run -d -it --name madlib -v (path-to-incubator-madlib-source-code):/incubator-madlib/ madlib/postgres_9.6
 
-# When the container is up, connect to it and install MADlib:
-docker exec -it madlib /incubator-madlib/build/src/bin/madpack -p postgres -c postgres/postgres@localhost:5432/postgres install
-
-# Run install-check on the source code:
-docker exec -it madlib /incubator-madlib/build/src/bin/madpack -p postgres -c postgres/postgres@localhost:5432/postgres install-check
-
-## To change code, build and run install check on the changed code:
-# Go into the container to run various build related commands:
-docker exec -it madlib bash
-cd /incubator-madlib/build
-
-# Compile MADlib after changing code in your source repo (note that code changes made in your source folder
-# will be reflected in the container too, since we mounted the volume when docker run was performed).
+## 3) When the container is up, connect to it and build MADlib:
+mkdir /incubator-madlib/build-docker
+cd /incubator-madlib/build-docker
+cmake ..
 make
+make doc
+make install
 
-# Run install check on a specific module, say svm:
-src/bin/madpack -p postgres  -c postgres/postgres@localhost:5432/postgres install-check -t svm
+## 4) Install MADlib:
+src/bin/madpack -p postgres -c postgres/postgres@localhost:5432/postgres install
 
-# Install or reinstall MADlib if required:
-src/bin/madpack -p postgres  -c postgres/postgres@localhost:5432/postgres install
-src/bin/madpack -p postgres  -c postgres/postgres@localhost:5432/postgres reinstall
+## 5) Several other commands, apart from the ones above can now be run, such as:
+# Run install check, on all modules:
+src/bin/madpack -p postgres -c postgres/postgres@localhost:5432/postgres install-check
+# Run install check, on a specific module, say svm:
+src/bin/madpack -p postgres -c postgres/postgres@localhost:5432/postgres install-check -t svm
+# Reinstall MADlib:
+src/bin/madpack -p postgres -c postgres/postgres@localhost:5432/postgres reinstall
+
+## 6) Kill and remove containers (after exiting the container):
+docker kill madlib
+docker rm madlib
 ```
 
 User and Developer Documentation
