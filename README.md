@@ -12,25 +12,25 @@ please see [`MADlib Wiki`](https://cwiki.apache.org/confluence/display/MADLIB/)
 
 Development with Docker
 =======================
-We provide a docker image with necessary dependencies required to compile and test MADlib. You can
-view the dependency docker file at `./src/tool/docker/base/Dockerfile_postgres_9_6`. The image is
-hosted on docker hub at `madlib/postgres_9.6:latest`. This docker image is currently under heavy
-development.
+We provide a Docker image with necessary dependencies required to compile and test MADlib on PostgreSQL 9.6. You can view the dependency Docker file at ./tool/docker/base/Dockerfile_postgres_9_6. The image is hosted on Docker Hub at madlib/postgres_9.6:latest. Later we will provide a similar Docker image for Greenplum Database.
 
 Some useful commands to use the docker file:
 ```
 ## 1) Pull down the `madlib/postgres_9.6:latest` image from docker hub:
 docker pull madlib/postgres_9.6:latest
 
-############################################## * WARNING * ##############################################
-# Beware of mounting a volume as shown below. Changes you make in the "incubator-madlib" folder inside the
-# docker container will be reflected on your disk (and vice versa). Accidental deletion of data in the
-# mounted volume from a docker container will result in deletion of the data in your local disk as well.
-#########################################################################################################
-## 2) Launch a container corresponding to the MADlib image, mounting the source code's folder to the container.
-docker run -d -it --name madlib -v (path-to-incubator-madlib-source-code):/incubator-madlib/ madlib/postgres_9.6
+## 2) Launch a container corresponding to the MADlib image, mounting the source code folder to the container:
+docker run -d -it --name madlib -v (path to incubator-madlib directory):/incubator-madlib/ madlib/postgres_9.6
+# where incubator-madlib is the directory where the MADlib source code resides.
+
+############################################## * WARNING * ##################################################
+# Please be aware that when mounting a volume as shown above, any changes you make in the "incubator-madlib"
+# folder inside the Docker container will be reflected on your local disk (and vice versa). This means that
+# deleting data in the mounted volume from a Docker container will delete the data from your local disk also.
+#############################################################################################################
 
 ## 3) When the container is up, connect to it and build MADlib:
+docker exec -it madlib bash
 mkdir /incubator-madlib/build-docker
 cd /incubator-madlib/build-docker
 cmake ..
