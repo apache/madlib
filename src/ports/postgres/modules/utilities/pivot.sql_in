@@ -59,7 +59,8 @@ pivot(
     aggregate_func,
     fill_value,
     keep_null,
-    output_col_dictionary
+    output_col_dictionary,
+    output_type
     )
 </pre>
 \b Arguments
@@ -67,6 +68,7 @@ pivot(
     <dt>source_table</dt>
     <dd>VARCHAR. Name of the source table (or view) containing data to
     pivot.</dd>
+
     <dt>output_table</dt>
     <dd>VARCHAR. Name of output table that contains the pivoted data.
     The output table contains all the columns present in
@@ -81,18 +83,21 @@ pivot(
     - aggregate function
     - name of the pivot column <em>'pivot_cols'</em>
     - values in the pivot column
-
     </dd>
+
     <dt>index </dt>
     <dd>VARCHAR. Comma-separated columns that will form the index of the output
     pivot table.  By index we mean the values to group by; these are the rows
     in the output pivot table.</dd>
+
     <dt>pivot_cols </dt>
     <dd>VARCHAR. Comma-separated columns that will form the columns of the
     output pivot table.</dd>
+
     <dt>pivot_values </dt>
     <dd>VARCHAR. Comma-separated columns that contain the values to be
     summarized in the output pivot table.</dd>
+
     <dt>aggregate_func (optional)</dt>
     <dd>VARCHAR. default: 'AVG'. A comma-separated list of aggregates to be
     applied to values. These can be PostgreSQL built-in aggregates [1] or UDAs. It is
@@ -113,10 +118,12 @@ pivot(
     values resulting from pivot operation. This is a global parameter (not
     applied per aggregate) and is applied post-aggregation to the output
     table.</dd>
+
     <dt>keep_null (optional)</dt>
     <dd>BOOLEAN. default: FALSE. If TRUE, then pivot columns are created
     corresponding to NULL categories. If FALSE, then no pivot columns will be
     created for NULL categories.</dd>
+
     <dt>output_col_dictionary (optional)</dt>
     <dd>BOOLEAN. default: FALSE. This parameter is used to handle
     auto-generated column names that exceed the PostgreSQL limit of 63 bytes
@@ -125,6 +132,18 @@ pivot(
     appended with _dictionary. If FALSE, will auto-generate column names in
     the usual way unless the limit of 63 bytes will be exceeded. In this case,
     a dictionary output file will be created and a message given to the user.
+    </dd>
+
+    <dt>output_type (optional)</dt>
+    <dd>VARCHAR. default: 'column'.  This parameter controls the output format
+    of the pivoted variables. If 'column', a column is created for each pivot
+    variable. PostgreSQL limits the number of columns in a table.
+    If the total number of output columns exceeds the limit, then make this
+    parameter either 'array' (to combine the output columns into an array) or
+    'svec' (to cast the array output to <em>'madlib.svec'</em> type).
+
+    A dictionary will be created (<em>output_col_dictionary=TRUE</em>)
+    when 'output_type' is 'array' or 'svec' to define each index into the array.
     </dd>
 
 </dl>
@@ -138,8 +157,8 @@ allowed so NULLs are ignored.
 - It is not allowed to set the fill_value parameter without setting the
 aggregate_func parameter due to possible ambiguity. Set
 aggregate_func to NULL for the default behavior and use fill_value as desired.
-Please note that full_value must be of the same type as the output of the 
-aggregate_func (or capable of being cast to the same type by PostgreSQL), 
+Please note that full_value must be of the same type as the output of the
+aggregate_func (or capable of being cast to the same type by PostgreSQL),
 or else an error will result.
 - It is not allowed to set the output_col_dictionary parameter without setting
 the keep_null parameter due to possible ambiguity. Set
@@ -786,12 +805,29 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.pivot(
     aggregate_func          TEXT,
     fill_value              TEXT,
     keep_null               BOOLEAN,
-    output_col_dictionary   BOOLEAN
+    output_col_dictionary   BOOLEAN,
+    output_type             TEXT
 
 ) RETURNS VOID AS $$
     PythonFunction(utilities, pivot, pivot)
 $$ LANGUAGE plpythonu VOLATILE
 m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.pivot(
+    source_table            TEXT,
+    out_table               TEXT,
+    index                   TEXT,
+    pivot_cols              TEXT,
+    pivot_values            TEXT,
+    aggregate_func          TEXT,
+    fill_value              TEXT,
+    keep_null               BOOLEAN,
+    output_col_dictionary   BOOLEAN
+
+) RETURNS VOID AS $$
+    SELECT MADLIB_SCHEMA.pivot($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL)
+$$ LANGUAGE sql VOLATILE
+m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `CONTAINS SQL', `');
 
 CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.pivot(
     source_table        TEXT,
