@@ -29,7 +29,7 @@ grep "Copyright 2016-$(date +"%Y") The Apache Software Foundation" "${workdir}/i
 # Check if pom.xml file version is current
 # It's possible to get a "False Positive" (i.e. not failed when it should have)
 # but won't give a "False Negative" (i.e. if it fails then there's definitely a problem)
-grep "<version>$(cat src/config/Version.yml | cut -d" " -f2)</version>" "${workdir}/incubator-madlib/pom.xml"
+grep "<version>$(cat "${workdir}/incubator-madlib/src/config/Version.yml" | cut -d" " -f2)</version>" "${workdir}/incubator-madlib/pom.xml"
 
 set +x
 
