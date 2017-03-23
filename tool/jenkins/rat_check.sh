@@ -22,12 +22,12 @@
 set -exu
 
 # Check if NOTICE file year is current
-grep "Copyright 2016-$(date +"%Y") The Apache Software Foundation" NOTICE
+grep "Copyright 2016-$(date +"%Y") The Apache Software Foundation" "${workdir}/incubator-madlib/NOTICE"
 
 # Check if pom.xml file version is current
 # It's possible to get a "False Positive" (i.e. not failed when it should have)
 # but won't give a "False Negative" (i.e. if it fails then there's definitely a problem)
-grep "<version>$(cat src/config/Version.yml | cut -d" " -f2)</version>" pom.xml
+grep "<version>$(cat src/config/Version.yml | cut -d" " -f2)</version>" "${workdir}/incubator-madlib/pom.xml"
 
 set +x
 
@@ -36,7 +36,7 @@ badfiles_found=false
 
 for extension in ${badfile_extentions}; do
     echo "Searching for ${extension} files:"
-    badfile_count=$(find . -name "*.${extension}" | wc -l)
+    badfile_count=$(find . -name "${workdir}/incubator-madlib/*.${extension}" | wc -l)
     if [ ${badfile_count} != 0 ]; then
         echo "----------------------------------------------------------------------"
         echo "FATAL: ${extension} files should not exist"
@@ -44,7 +44,7 @@ for extension in ${badfile_extentions}; do
         echo "binary (jar) files as users have a hard time verifying their"
         echo "contents."
 
-        find . -name "*.${extension}"
+        find . -name "${workdir}/incubator-madlib/*.${extension}"
         echo "----------------------------------------------------------------------"
         badfiles_found=true
     else
