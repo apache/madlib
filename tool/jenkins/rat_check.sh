@@ -21,6 +21,8 @@
 
 set -exu
 
+workdir=`pwd`
+
 # Check if NOTICE file year is current
 grep "Copyright 2016-$(date +"%Y") The Apache Software Foundation" "${workdir}/incubator-madlib/NOTICE"
 
