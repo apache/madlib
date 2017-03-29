@@ -47,9 +47,14 @@ def validate_pagerank_args(vertex_table, vertex_id, edge_table, edge_params,
     validate_graph_coding(vertex_table, vertex_id, edge_table, edge_params,
         out_table, module_name)
     _assert(damping_factor >= 0.0 and damping_factor <= 1.0,
-        """PageRank: Invalid damping factor value ({0}), must be between 0 and 1.""".format(damping_factor))
+        """PageRank: Invalid damping factor value ({0}), must be between 0
+            and 1.""".format(damping_factor))
+    _assert(threshold >= 0.0 and threshold <= 1.0,
+        """PageRank: Invalid threshold value ({0}), must be between 0
+            and 1.""".format(damping_factor))
     _assert(max_iter > 0,
-        """PageRank: Invalid max_iter value ({0}), must be a positive integer.""".format(max_iter))
+        """PageRank: Invalid max_iter value ({0}), must be a positive integer.
+        """.format(max_iter))
 
 def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
     out_table, damping_factor, max_iter, threshold, **kwargs):
@@ -139,14 +144,28 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
         """.format(**locals()))
 
     for i in range(max_iter):
+        #####################################################################
+        # PageRank for node 'A' at any given iteration 'i' is given by:
+        # PR_i(A) = damping_factor(PR_i-1(B)/degree(B) + PR_i-1(C)/degree(C) + ...) + (1-damping_factor)/N
+        # where 'N' is the number of vertices in the graph,
+        # B, C are nodes that have edges to node A, and
+        # degree(node) represents the number of outgoing edges from 'node'
+        #####################################################################
+        # Essentially, the pagerank for a node is based on an aggregate of a
+        # fraction of the pagerank values of all the nodes that have incoming
+        # edges to it, along with a small random probability.
+        # More information can be found at:
+        # https://en.wikipedia.org/wiki/PageRank#Damping_factor
+
+        # The query below computes the PageRank of each node using the above formula.
         plpy.execute("""
                 CREATE TABLE {message} AS
                 SELECT {edge_temp_table}.{dest} AS {vertex_id},
                         SUM({v1}.pagerank/{out_cnts}.{out_cnts_cnt})*{damping_factor}+{random_prob} AS pagerank
-                FROM {cur}, {out_cnts}, {edge_temp_table}, {cur} AS {v1}
-                WHERE {edge_temp_table}.{dest}={cur}.{vertex_id} AND
-                      {out_cnts}.{vertex_id}={edge_temp_table}.{src} AND
-                      {v1}.{vertex_id}={edge_temp_table}.{src}
+                FROM {edge_temp_table}
+                    INNER JOIN {cur} ON {edge_temp_table}.{dest}={cur}.{vertex_id}
+                    INNER JOIN {out_cnts} ON {out_cnts}.{vertex_id}={edge_temp_table}.{src}
+                    INNER JOIN {cur} AS {v1} ON {v1}.{vertex_id}={edge_temp_table}.{src}
                 GROUP BY {edge_temp_table}.{dest}
             """.format(**locals()))
         # If there are nodes that have no incoming edges, they are not captured in the message table.
@@ -192,10 +211,7 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
 
     ## Step 4: Cleanup
     plpy.execute("""
-        DROP TABLE IF EXISTS {0};
-        DROP TABLE IF EXISTS {1};
-        DROP TABLE IF EXISTS {2};
-        DROP TABLE IF EXISTS {3};
+        DROP TABLE IF EXISTS {0},{1},{2},{3};
         """.format(out_cnts, edge_temp_table, cur, message))
     plpy.execute("SET client_min_messages TO %s" % old_msg_level)
 
@@ -215,10 +231,11 @@ def pagerank_help(schema_madlib, message, **kwargs):
             message.lower() in ("usage", "help", "?"):
         help_string = "Get from method below"
         help_string = get_graph_usage(schema_madlib, 'PageRank',
-            """out_table       TEXT, -- Name of the output table for PageRank
-damping_factor, DOUBLE PRECISION, -- Damping factor in random surfer model (DEFAULT = 0.85)
-max_iter,       INTEGER, -- Maximum iteration number (DEFAULT = 100)
-threshold       DOUBLE PRECISION -- Stopping criteria (DEFAULT = 1e-5)
+            """out_table       TEXT,  -- Name of the output table for PageRank
+    damping_factor, DOUBLE PRECISION, -- Damping factor in random surfer model
+                                      -- (DEFAULT = 0.85)
+    max_iter,       INTEGER,          -- Maximum iteration number (DEFAULT = 100)
+    threshold       DOUBLE PRECISION  -- Stopping criteria (DEFAULT = 1e-5)
 """)
     else:
         if message is not None and \
