@@ -27,7 +27,6 @@ from utilities.validate_args import table_is_empty
 from utilities.validate_args import columns_exist_in_table
 from utilities.validate_args import is_var_valid
 from utilities.validate_args import unquote_ident
-from utilities.validate_args import quote_ident
 from utilities.utilities import _assert
 from utilities.utilities import extract_keyvalue_params
 from utilities.utilities import unique_string
@@ -137,14 +136,14 @@ def _get_features_to_use(schema_madlib, training_table_name,
 # ------------------------------------------------------------
 
 
-def _get_col_value(input_dict, col_name):
+def _dict_get_quoted(input_dict, col_name):
     """Return value from dict where key could be quoted or unquoted name"""
     return input_dict.get(
         col_name, input_dict.get(unquote_ident(col_name)))
 # -------------------------------------------------------------------------
 
 
-def _classify_features(all_feature_names_types, features):
+def _classify_features(feature_to_type, features):
     """ Returns
     1) an array of categorical features (all casted to string)
     2) an array of continuous features
@@ -155,24 +154,28 @@ def _classify_features(all_feature_names_types, features):
     text_types = ['text', 'varchar', 'character varying', 'char', 'character']
     boolean_types = ['boolean']
     cat_types = int_types + text_types + boolean_types
+    ordered_cat_types = int_types
 
-    cat_features = [col for col in features
-                    if _get_col_value(all_feature_names_types, col) in cat_types]
+    cat_features = [c for c in features
+                    if _dict_get_quoted(feature_to_type, c) in cat_types]
+    ordered_cat_features = [c for c in features if _dict_get_quoted(
+                            feature_to_type, c) in ordered_cat_types]
+
     cat_features_set = set(cat_features)
     # continuous types - 'real' is cast to 'double precision' for uniformity
     con_types = ['real', 'float8', 'double precision']
-    con_features = [col for col in features
-                    if (not col in cat_features_set and
-                        _get_col_value(all_feature_names_types, col) in con_types)]
+    con_features = [c for c in features
+                    if (c not in cat_features_set and
+                        _dict_get_quoted(feature_to_type, c) in con_types)]
 
     # In order to be able to form an array, all categorical variables
-    # will be casted into TEXT type, but GPDB cannot cast a boolean
-    # directly into a text. Thus, boolean type categorical variables
-    # needs special treatment: cast them into integers before casting
+    # will be cast into TEXT type, but GPDB cannot cast a boolean
+    # directly into a text. Thus, boolean categorical variables
+    # need special treatment: cast them into integers before casting
     # into text.
-    boolean_cats = [col for col in features
-                    if _get_col_value(all_feature_names_types, col) in boolean_types]
-    return cat_features, con_features, boolean_cats
+    boolean_cats = [c for c in features
+                    if _dict_get_quoted(feature_to_type, c) in boolean_types]
+    return cat_features, ordered_cat_features, con_features, boolean_cats
 # ------------------------------------------------------------
 
 
@@ -357,8 +360,9 @@ def _extract_pruning_params(pruning_params_str):
 def _get_tree_states(schema_madlib, is_classification, split_criterion,
                      training_table_name, output_table_name, id_col_name,
                      dependent_variable, dep_is_bool,
-                     grouping_cols, cat_features, con_features,
-                     n_bins, boolean_cats, min_split, min_bucket, weights,
+                     grouping_cols, cat_features, ordered_cat_features,
+                     con_features, n_bins, boolean_cats,
+                     min_split, min_bucket, weights,
                      max_depth, grp_key_to_cp, compute_cp_list=False,
                      max_n_surr=0, **kwargs):
     """
@@ -407,7 +411,8 @@ def _get_tree_states(schema_madlib, is_classification, split_criterion,
         # 3)  Find the splitting bins, one dict containing two arrays:
         #       categorical bins and continuous bins
         bins = _get_bins(schema_madlib, training_table_name, cat_features,
-                         con_features, n_bins, dep_var_str, boolean_cats, n_rows,
+                         ordered_cat_features, boolean_cats,
+                         con_features, n_bins, dep_var_str, n_rows,
                          is_classification, dep_n_levels, filter_null)
         # some features may be dropped if they have only one value
         cat_features = bins['cat_features']
@@ -429,7 +434,8 @@ def _get_tree_states(schema_madlib, is_classification, split_criterion,
                 # result in excessive memory usage.
                 plpy.notice("Analyzing data to compute split boundaries for variables")
                 bins = _get_bins_grps(schema_madlib, training_table_name,
-                                      cat_features, con_features, n_bins,
+                                      cat_features, ordered_cat_features,
+                                      con_features, n_bins,
                                       dep_var_str,
                                       boolean_cats, grouping_cols,
                                       grouping_array_str, n_rows,
@@ -450,7 +456,7 @@ def _get_tree_states(schema_madlib, is_classification, split_criterion,
     # 5) prune the tree using provided 'cp' value and produce a list of
     #   cp values if cross-validation is required (cp_list = [] if not)
     for tree in tree_states:
-        if 'cp' in tree:
+        if 'cp' in tree and tree['cp'] > 0:
             pruned_tree = _prune_and_cplist(schema_madlib, tree['tree_state'],
                                             tree['cp'], compute_cp_list=compute_cp_list)
             tree['tree_state'] = pruned_tree['tree_state']
@@ -474,7 +480,7 @@ def get_grouping_array_str(table_name, grouping_cols, qualifier=None):
 
     all_cols_types = dict(get_cols_and_types(table_name))
     grouping_cols_list = [col.strip() for col in grouping_cols.split(',')]
-    grouping_cols_and_types = [(col, _get_col_value(all_cols_types, col))
+    grouping_cols_and_types = [(col, _dict_get_quoted(all_cols_types, col))
                                for col in grouping_cols_list]
     grouping_array_str = 'array_to_string(array[' + \
         ','.join("(case when " + col + " then 'True' else 'False' end)::text"
@@ -489,7 +495,8 @@ def get_grouping_array_str(table_name, grouping_cols, qualifier=None):
 def _build_tree(schema_madlib, is_classification, split_criterion,
                 training_table_name, output_table_name, id_col_name,
                 dependent_variable, dep_is_bool,
-                cat_features,  boolean_cats, con_features, grouping_cols,
+                cat_features, ordered_cat_features,
+                boolean_cats, con_features, grouping_cols,
                 weights, max_depth, min_split, min_bucket, n_bins,
                 cp_table, max_n_surr=0, msg_level="warning", k=0, **kwargs):
 
@@ -556,7 +563,7 @@ def tree_train(schema_madlib, training_table_name, output_table_name,
     """
     msg_level = "notice" if verbose_mode else "warning"
 
-    #### Set default values for optional arguments
+    # Set default values for optional arguments
     min_split = 20 if (min_split is None and min_bucket is None) else min_split
     min_bucket = min_split // 3 if min_bucket is None else min_bucket
     min_split = min_bucket * 3 if min_split is None else min_split
@@ -591,8 +598,8 @@ def tree_train(schema_madlib, training_table_name, output_table_name,
 
         # 2)
         all_cols_types = dict(get_cols_and_types(training_table_name))
-        cat_features, con_features, boolean_cats = _classify_features(
-            all_cols_types, features)
+        cat_features, ordered_cat_features, con_features, boolean_cats = \
+            _classify_features(all_cols_types, features)
         # get all rows
         n_all_rows = plpy.execute("SELECT count(*) FROM {source_table}".
                                   format(source_table=training_table_name)
@@ -687,8 +694,9 @@ def _is_dep_categorical(training_table_name, dependent_variable):
 # ------------------------------------------------------------
 
 
-def _get_bins(schema_madlib, training_table_name, cat_features,
-              con_features, n_bins, dependent_variable, boolean_cats,
+def _get_bins(schema_madlib, training_table_name,
+              cat_features, ordered_cat_features, boolean_cats,
+              con_features, n_bins, dependent_variable,
               n_rows, is_classification, dep_n_levels, filter_null):
     """ Compute the bins of all features
 
@@ -757,39 +765,35 @@ def _get_bins(schema_madlib, training_table_name, cat_features,
     else:
         con_splits = {'con_splits': ''}   # no continuous features present
 
-    # For categorical variables, different from the continuous
-    # variable case, we scan the whole table to extract all the
+    # For categorical variables, scan the whole table to extract all the
     # levels of the categorical variables, and at the same time
     # sort the levels according to the entropy of the dependent
     # variable.
     # So this aggregate returns a composite type with two columns:
     # col 1 is the array of ordered levels; col 2 is the number of
-    # levels in col1.
+    # levels in col 1.
 
     # TODO When n_bins is larger than 2^k - 1, where k is the number
     # of levels of a given categrical feature, we can actually compute
     # all combinations of levels and obtain a complete set of splits
-    # instead of using sorting to get an approximate set of splits. This
-    # can also be done in the following aggregate, but we may not need it
-    # in the initial draft. Implement this optimization only if it is
-    # necessary.
-
+    # instead of using sorting to get an approximate set of splits.
+    #
     # We will use integer to represent levels of categorical variables.
     # So before everything, we need to create a mapping from categorical
     # variable levels to integers, and keep this mapping in the memory.
     if len(cat_features) > 0:
         if is_classification:
             # For classifications
-            order_fun = ("{schema_madlib}._dst_compute_entropy("
-                         "{dependent_variable}, {n})".
-                         format(schema_madlib=schema_madlib,
-                                dependent_variable=dependent_variable,
+            order_fun = ("{madlib}._dst_compute_entropy({dep}, {n})".
+                         format(madlib=schema_madlib,
+                                dep=dependent_variable,
                                 n=dep_n_levels))
         else:
             # For regressions
             order_fun = \
-                "AVG({dependent_variable})".format(dependent_variable=dependent_variable)
+                "AVG({0})".format(dependent_variable)
 
+        # sql_cat_levels goes through two levels of formatting
         sql_cat_levels = """
             SELECT
                 '{{col_name}}'::text AS colname,
@@ -801,7 +805,7 @@ def _get_bins(schema_madlib, training_table_name, cat_features,
                 FROM (
                     SELECT
                         ({{col}})::text AS levels,
-                        {order_fun} AS dep_avg
+                        {{order_fun}} AS dep_avg
                     FROM {training_table_name}
                     WHERE {filter_null}
                         AND {{col}} is not NULL
@@ -810,15 +814,18 @@ def _get_bins(schema_madlib, training_table_name, cat_features,
             ) s1
             WHERE array_upper(levels, 1) > 1
             """.format(training_table_name=training_table_name,
-                       order_fun=order_fun, filter_null=filter_null)
+                       filter_null=filter_null)
 
         # Try to obtain all the levels in one scan of the table.
         # () are needed when casting the categorical variables because
         # they can be expressions.
-        sql_all_cats = ' UNION ALL '.join(
-            sql_cat_levels.format(col="(CASE WHEN " + col + " THEN 'True' ELSE 'False' END)"
-                                  if col in boolean_cats else col,
-                                  col_name=col) for col in cat_features)
+        sql_all_cats = ' UNION '.join(
+            sql_cat_levels.format(
+                col="(CASE WHEN " + col + " THEN 'True' ELSE 'False' END)"
+                    if col in boolean_cats else col,
+                col_name=col,
+                order_fun=col if col in ordered_cat_features else order_fun)
+            for col in cat_features)
         all_levels = plpy.execute(sql_all_cats)
 
         if len(all_levels) != len(cat_features):
@@ -863,6 +870,8 @@ def _create_result_table(schema_madlib, tree_state,
         header = "insert into " + output_table_name + " "
     else:
         header = "create table " + output_table_name + " as "
+    depth = (tree_state['pruned_depth'] if 'pruned_depth' in tree_state
+             else tree_state['tree_depth'])
     if len(cat_features) > 0:
         sql = header + """
                 SELECT
@@ -870,10 +879,11 @@ def _create_result_table(schema_madlib, tree_state,
                     $1 as tree,
                     $2 as cat_levels_in_text,
                     $3 as cat_n_levels,
-                    {tree_depth} as tree_depth
+                    {depth} as tree_depth
                     {fold}
-            """.format(tree_depth=tree_state['pruned_depth'],
-                       cp=tree_state['cp'], fold=fold)
+            """.format(depth=depth,
+                       cp=tree_state['cp'],
+                       fold=fold)
         sql_plan = plpy.prepare(sql, ['{0}.bytea8'.format(schema_madlib),
                                       'text[]', 'integer[]'])
         plpy.execute(sql_plan, [tree_state['tree_state'], cat_origin, cat_n])
@@ -884,10 +894,11 @@ def _create_result_table(schema_madlib, tree_state,
                     $1 as tree,
                     NULL::text[] as cat_levels_in_text,
                     NULL::integer[] as cat_n_levels,
-                    {tree_depth} as tree_depth
+                    {depth} as tree_depth
                     {fold}
-            """.format(tree_depth=tree_state['pruned_depth'],
-                       cp=tree_state['cp'], fold=fold)
+            """.format(depth=depth,
+                       cp=tree_state['cp'],
+                       fold=fold)
         sql_plan = plpy.prepare(sql, ['{0}.bytea8'.format(schema_madlib)])
         plpy.execute(sql_plan, [tree_state['tree_state']])
 
@@ -895,7 +906,7 @@ def _create_result_table(schema_madlib, tree_state,
 
 
 def _get_bins_grps(
-        schema_madlib, training_table_name, cat_features,
+        schema_madlib, training_table_name, cat_features, ordered_cat_features,
         con_features, n_bins, dependent_variable, boolean_cats,
         grouping_cols, grouping_array_str, n_rows, is_classification,
         dep_n_levels, filter_null):
@@ -1012,7 +1023,7 @@ def _get_bins_grps(
                         SELECT
                             {grouping_array_str} as grp_key,
                             ({{col}})::text as levels,
-                            {order_fun} as dep_avg
+                            {{order_fun}} as dep_avg
                         FROM {training_table_name}
                         WHERE {filter_null}
                             AND {{col}} is not NULL
@@ -1027,7 +1038,8 @@ def _get_bins_grps(
             sql_cat_levels.format(
                 col=("(CASE WHEN " + col + " THEN 'True' ELSE 'False' END)"
                      if col in boolean_cats else col),
-                col_name=col)
+                col_name=col,
+                order_fun=col if col in ordered_cat_features else order_fun)
             for col in cat_features)
 
         all_levels = list(plpy.execute(sql_all_cats))
@@ -1454,7 +1466,8 @@ def _create_grp_result_table(
         plpy.execute(sql_plan, [
             [t['grp_key'] for t in tree_states],
             [t['tree_state'] for t in tree_states],
-            [t['pruned_depth'] for t in tree_states],
+            [t['pruned_depth'] if 'pruned_depth' in t else t['tree_depth']
+             for t in tree_states],
             [t['cp'] for t in tree_states],
             bins['grp_key_cat'],
             bins['cat_n'],
@@ -1469,9 +1482,10 @@ def _create_grp_result_table(
         plpy.execute(sql_plan, [
             [t['grp_key'] for t in tree_states],
             [t['tree_state'] for t in tree_states],
-            [t['pruned_depth'] for t in tree_states],
+            [t['pruned_depth'] if 'pruned_depth' in t else t['tree_depth']
+             for t in tree_states],
             [t['cp'] for t in tree_states]
-            ])
+        ])
 # ------------------------------------------------------------
 
 
@@ -1511,7 +1525,7 @@ def _create_summary_table(
                         "$dep_list$")
     else:
         dep_list_str = "NULL"
-    indep_type = ', '.join(_get_col_value(all_cols_types, col)
+    indep_type = ', '.join(_dict_get_quoted(all_cols_types, col)
                            for col in cat_features + con_features)
     dep_type = _get_dep_type(training_table_name, dependent_variable)
     cat_features_str = ','.join(cat_features)
@@ -1560,8 +1574,12 @@ def _create_summary_table(
 # ------------------------------------------------------------
 
 
-def _get_filter_str(schema_madlib, cat_features, con_features, boolean_cats,
-                    dependent_variable, grouping_cols, max_n_surr=0):
+def _get_filter_str(schema_madlib, cat_features, con_features,
+                    boolean_cats, dependent_variable,
+                    grouping_cols, max_n_surr=0):
+    """ Return a 'WHERE' clause string that filters out all rows that contain a
+    NULL.
+    """
     if grouping_cols:
         g_filter = ' and '.join('(' + s.strip() + ') is not NULL' for s in grouping_cols.split(','))
     else:
@@ -1585,6 +1603,7 @@ def _get_filter_str(schema_madlib, cat_features, con_features, boolean_cats,
                 con_features_array='array[' + ','.join(con_features) + ']')
     else:
         con_filter = None
+    cat_filter = con_filter = None
 
     dep_filter = '(' + dependent_variable + ") is not NULL"
     return ' and '.join(filter(None, [g_filter, cat_filter, con_filter, dep_filter]))
@@ -1592,7 +1611,7 @@ def _get_filter_str(schema_madlib, cat_features, con_features, boolean_cats,
 
 
 def _validate_predict(schema_madlib, model, source, output, use_existing_tables):
-       # validations for inputs
+    # validations for inputs
     _assert(source and source.strip().lower() not in ('null', ''),
             "Decision tree error: Invalid data table name: {0}".format(source))
     _assert(table_exists(source),
@@ -2003,7 +2022,7 @@ def _prune_and_cplist(schema_madlib, tree_state, cp, compute_cp_list=False):
 def _xvalidate(schema_madlib, tree_states, training_table_name, output_table_name,
                id_col_name, dependent_variable,
                list_of_features, list_of_features_to_exclude,
-               cat_features, con_features, boolean_cats,
+               cat_features, ordered_cat_features, boolean_cats, con_features,
                split_criterion, grouping_cols, weights, max_depth,
                min_split, min_bucket, n_bins, is_classification,
                dep_is_bool, dep_n_levels, n_folds, n_rows,
@@ -2074,18 +2093,20 @@ def _xvalidate(schema_madlib, tree_states, training_table_name, output_table_nam
     pred_name = '"estimated_{0}"'.format(dependent_variable.strip(' "'))
     grouping_str = 'NULL' if not grouping_cols else '"' + grouping_cols + '"'
     cat_feature_str = _array_to_string(cat_features)
-    con_feature_str = _array_to_string(con_features)
+    ordered_cat_feature_str = _array_to_string(ordered_cat_features)
     boolean_cat_str = _array_to_string(boolean_cats)
+    con_feature_str = _array_to_string(con_features)
     modeling_params = [str(i) for i in
                        (is_classification,
                         split_criterion, "%data%", "%model%", id_col_name,
                         dependent_variable, dep_is_bool,
-                        cat_feature_str, boolean_cat_str, con_feature_str,
+                        cat_feature_str, ordered_cat_feature_str,
+                        boolean_cat_str, con_feature_str,
                         grouping_str, weights, max_depth,
                         min_split, min_bucket, n_bins,
                         "%explore%", max_n_surr, msg_level)]
     modeling_param_types = (["BOOLEAN"] + ["TEXT"] * 5 + ["BOOLEAN"] +
-                            ["VARCHAR[]"] * 3 + ["TEXT"] * 2 + ["INTEGER"] * 4 +
+                            ["VARCHAR[]"] * 4 + ["TEXT"] * 2 + ["INTEGER"] * 4 +
                             ["TEXT", "SMALLINT", "TEXT"])
 
     cross_validation_grouping_w_params(
@@ -2118,7 +2139,6 @@ def _xvalidate(schema_madlib, tree_states, training_table_name, output_table_nam
         group_by_str = "GROUP BY " + grouping_cols
         group_select_str = grouping_cols + ","
 
-    plpy.notice(str(list(plpy.execute("SELECT * FROM {0}".format(model_cv)))))
     validation_result_query = """
             SELECT
                 {grouping_array_str_comma}
@@ -2134,10 +2154,7 @@ def _xvalidate(schema_madlib, tree_states, training_table_name, output_table_nam
             ) min_cv_error
             {qualified_group_by_str}
         """.format(**locals())
-    plpy.notice("validation_result_query:")
-    plpy.notice(validation_result_query)
     validation_result = plpy.execute(validation_result_query)
-    plpy.notice("finished validation_result_query, validation_result = " + str(list(validation_result)))
 
     grp_key_to_best_cp = dict((row['grp_key'], row['cp']) for row in validation_result)
 
@@ -2184,9 +2201,9 @@ def _tree_train_using_bins(
                    max_n_surr=max_n_surr))[0]
     plpy.notice("Starting tree building")
     tree_depth = -1
-    while not tree_state['finished']:
-        tree_depth += 1
+    while tree_state['finished'] == 0:
         #  finished: 0 = running, 1 = finished training, 2 = terminated prematurely
+        tree_depth += 1
         tree_state = _one_step(
             schema_madlib, training_table_name,
             cat_features, con_features, boolean_cats, bins,
