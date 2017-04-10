@@ -239,28 +239,30 @@ def graph_sssp(schema_madlib, vertex_table, vertex_id, edge_table,
 		# g1 values are 0 or 1. g2 values are 5 or 6
 		if grouping_cols is not None:
 
-			# Collate the groups into a single column (string).
-			gsql = "::text || ',' || ".join(glist)
-			gsql = gsql + "::text "
-
-			# Find every distinct group.
+			# Find every distinct group
 			# Example: This will give us (0,5), (0,6), (1,5) and (1,6)
 			groups = plpy.execute(
-				"""SELECT array_agg(DISTINCT {gsql}) AS gsql
+				"""SELECT array_agg(DISTINCT ({grouping_cols})) AS gsql
 				FROM {edge_table} """.format(**locals()))[0]['gsql']
 
 			# For each group initialize the output table.
 			for i in range(0,len(groups)):
 				gslist = []
-				gi = groups[i]
 
-				gvals = _string_to_array(gi)
+				# If we have more than 1 grouping columns,
+				# we have to prepare them induvidually
+				if len(glist) > 1:
+					gi = groups[i][1:-1]
+ 					gvals = _string_to_array(gi)
+ 					for j in range(0,len(glist)):
+						gslist.append(glist[j] + " = " + gvals[j])
 
-				# Prepare the sql check for a particular group.
-				# Example: gcomp will be "g1 = 0 AND g2 = 5"
-				for j in range(0,len(glist)):
-					gslist.append(glist[j] + " = " + gvals[j])
-				gcomp = " AND ".join(gslist)
+					# Prepare the sql check for a particular group
+					# Example: gcomp will be "g1 = 0 AND g2 = 5"
+					gcomp = " AND ".join(gslist)
+ 				else:
+ 					gi = groups[i]
+ 					gcomp = glist[0] + " = " + str(gi)
 
 				# Find the vertices that are involved in this group
 				plpy.execute(
@@ -428,7 +430,7 @@ def graph_sssp(schema_madlib, vertex_table, vertex_id, edge_table,
 				# are in a negative cycle.
 
 				negs = plpy.execute(
-					""" SELECT array_agg(DISTINCT {gsql}) AS grp
+					""" SELECT array_agg(DISTINCT ({grouping_cols})) AS grp
 						FROM {oldupdate}
 					""".format(**locals()))[0]['grp']
 
