@@ -196,7 +196,6 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
                 ON {grouping_where_clause}
                 GROUP BY {group_by_clause}
             """.format(**locals()))
-        plpy.execute("DROP TABLE {0}".format(distinct_grp_table))
 
         grouping_where_clause = ' AND '.join(
             [vertices_per_group+'.'+col+'='+subq+'.'+col
@@ -226,27 +225,28 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
                 if grouping_cols else '', **locals()))
 
         message_grp = ' AND '.join(
-            [cur+'.'+col+'='+message+'.'+col for col in grouping_cols_list])
+            ["{cur}.{col}={message}.{col}".format(**locals()) for col in grouping_cols_list])
         cur_join_clause = cur_join_clause + ' AND ' + ' AND '.join(
-            [edge_temp_table+'.'+col+'='+cur+'.'+col
+            ["{edge_temp_table}.{col}={cur}.{col}".format(**locals())
                 for col in grouping_cols_list])
         out_cnts_join_clause = out_cnts_join_clause + ' AND ' + ' AND '.join(
-            [edge_temp_table+'.'+col+'='+out_cnts+'.'+col
+            ["{edge_temp_table}.{col}={out_cnts}.{col}".format(**locals())
                 for col in grouping_cols_list])
         v1_join_clause = v1_join_clause + ' AND ' + ' AND '.join(
-            [edge_temp_table+'.'+col+'='+v1+'.'+col
+            ["{edge_temp_table}.{col}={v1}.{col}".format(**locals())
                 for col in grouping_cols_list])
         vpg_join_clause = ' AND '.join(
-            [edge_temp_table+'.'+col+'='+vpg+'.'+col
+            ["{edge_temp_table}.{col}={vpg}.{col}".format(**locals())
                 for col in grouping_cols_list])
         vpg_cur_join_clause = ' AND '.join(
-            [cur+'.'+col+'='+vpg+'.'+col for col in grouping_cols_list])
+            ["{cur}.{col}={vpg}.{col}".format(**locals())
+                for col in grouping_cols_list])
         # join clause specific to populating random_prob for nodes without any
         # incoming edges.
         edge_grouping_cols_select = ', '.join(
-            [edge_temp_table+'.'+col for col in grouping_cols_list])
+            ["{edge_temp_table}.{col}".format(**locals()) for col in grouping_cols_list])
         cur_grouping_cols_select = ', '.join(
-            [cur+'.'+col for col in grouping_cols_list])
+            ["{cur}.{col}".format(**locals()) for col in grouping_cols_list])
         # Create output summary table:
         cols_names_types = get_cols_and_types(edge_table)
         grouping_cols_clause = ', '.join([c_name+" "+c_type for
@@ -368,59 +368,71 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
                 **locals()))
 
         # Check for convergence:
-        # message_unconv and cur_unconv will contain the unconverged groups
-        # after current # and previous iterations respectively. Groups that
-        # are missing in message_unconv but appear in cur_unconv are the
-        # groups that have converged after this iteration's computations.
-        # If no grouping columns are specified, then we check if there is
-        # at least one unconverged node (limit 1 is used in the query).
+        ## Check for convergence only if threshold != 0.
+        if threshold != 0:
+            # message_unconv and cur_unconv will contain the unconverged groups
+            # after current # and previous iterations respectively. Groups that
+            # are missing in message_unconv but appear in cur_unconv are the
+            # groups that have converged after this iteration's computations.
+            # If no grouping columns are specified, then we check if there is
+            # at least one unconverged node (limit 1 is used in the query).
+            plpy.execute("""
+                    CREATE TEMP TABLE {message_unconv} AS
+                    SELECT {grouping_cols_select}
+                    FROM {message}
+                    INNER JOIN {cur}
+                    ON {cur}.{vertex_id}={message}.{vertex_id}
+                    WHERE {message_grp_clause}
+                        ABS({cur}.pagerank-{message}.pagerank) > {threshold}
+                    {ignore_group_clause}
+                    {group_by_grouping_cols}
+                    {limit}
+                """.format(grouping_cols_select=cur_grouping_cols_select
+                        if grouping_cols else '{0}.{1}'.format(cur, vertex_id),
+                    group_by_grouping_cols=' GROUP BY {0}'.format(cur_grouping_cols_select)
+                        if grouping_cols else '',
+                    message_grp_clause='{0} AND '.format(message_grp)
+                        if grouping_cols else '',
+                    ignore_group_clause=' AND '+get_ignore_groups(summary_table, cur,
+                        grouping_cols_list) if iteration_num>0 and grouping_cols else '',
+                    limit='' if grouping_cols else ' LIMIT 1 ',
+                    **locals()))
+            unconverged = plpy.execute("""SELECT COUNT(*) AS cnt FROM {0}
+                """.format(message_unconv))[0]["cnt"]
+            if iteration_num > 0 and grouping_cols:
+                # Update result and summary tables for groups that have converged
+                # since the last iteration.
+                update_result_tables(temp_summary_table, iteration_num,
+                    summary_table, out_table, message, grouping_cols_list,
+                    cur_unconv, message_unconv)
+            plpy.execute("""
+                DROP TABLE IF EXISTS {cur_unconv};
+                ALTER TABLE {message_unconv} RENAME TO {cur_unconv}
+                """.format(**locals()))
+        else:
+            # Do not run convergence test if threshold=0, since that implies
+            # the user wants to run max_iter iterations.
+            unconverged = 1
         plpy.execute("""
-                CREATE TEMP TABLE {message_unconv} AS
-                SELECT {grouping_cols_select}
-                FROM {message}
-                INNER JOIN {cur}
-                ON {cur}.{vertex_id}={message}.{vertex_id}
-                WHERE {message_grp_clause}
-                    ABS({cur}.pagerank-{message}.pagerank) > {threshold}
-                {ignore_group_clause}
-                {group_by_grouping_cols}
-                {limit}
-            """.format(grouping_cols_select=cur_grouping_cols_select
-                    if grouping_cols else '{0}.{1}'.format(cur, vertex_id),
-                group_by_grouping_cols=' GROUP BY {0}'.format(cur_grouping_cols_select)
-                    if grouping_cols else '',
-                message_grp_clause='{0} AND '.format(message_grp)
-                    if grouping_cols else '',
-                ignore_group_clause=' AND '+get_ignore_groups(summary_table, cur,
-                    grouping_cols_list) if iteration_num>0 and grouping_cols else '',
-                limit='' if grouping_cols else ' LIMIT 1 ',
-                **locals()))
-        unconverged = plpy.execute("""SELECT COUNT(*) AS cnt FROM {0}
-            """.format(message_unconv))[0]["cnt"]
-        if iteration_num > 0 and grouping_cols:
-            # Update result and summary tables for groups that have converged
-            # since the last iteration.
-            update_result_tables(temp_summary_table, iteration_num,
-                summary_table, out_table, message, grouping_cols_list,
-                cur_unconv, message_unconv)
-        plpy.execute("""
-            DROP TABLE IF EXISTS {cur_unconv};
-            ALTER TABLE {message_unconv} RENAME TO {cur_unconv}
-            """.format(**locals()))
-        plpy.execute("""
-                DROP TABLE IF EXISTS {cur};
-                ALTER TABLE {message} RENAME TO {cur}
-            """.format(**locals()))
+                    DROP TABLE IF EXISTS {cur};
+                    ALTER TABLE {message} RENAME TO {cur}
+                """.format(**locals()))
         if unconverged == 0:
             break
 
     # If there still are some unconverged groups/(entire table), update results.
     if grouping_cols:
         if unconverged > 0:
-            # We completed max_iters, but there are still some unconverged groups
-            # Update the result and summary tables for unconverged groups.
-            update_result_tables(temp_summary_table, iteration_num,
-                summary_table, out_table, cur, grouping_cols_list, cur_unconv)
+            if threshold != 0:
+                # We completed max_iters, but there are still some unconverged groups
+                # Update the result and summary tables for unconverged groups.
+                update_result_tables(temp_summary_table, iteration_num,
+                    summary_table, out_table, cur, grouping_cols_list, cur_unconv)
+            else:
+                # No group has converged. List of all group values are in
+                # distinct_grp_table.
+                update_result_tables(temp_summary_table, iteration_num,
+                    summary_table, out_table, cur, grouping_cols_list, distinct_grp_table)
     else:
         plpy.execute("""ALTER TABLE {table_name} RENAME TO {out_table}
             """.format(table_name=cur, **locals()))
@@ -434,8 +446,9 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
         """.format(out_cnts, edge_temp_table, cur, message, cur_unconv,
                     message_unconv))
     if grouping_cols:
-        plpy.execute("""DROP TABLE IF EXISTS {0},{1};
-            """.format(vertices_per_group, temp_summary_table))
+        plpy.execute("""DROP TABLE IF EXISTS {0},{1},{2};
+            """.format(vertices_per_group, temp_summary_table,
+                distinct_grp_table))
     plpy.execute("SET client_min_messages TO %s" % old_msg_level)
 
 def update_result_tables(temp_summary_table, i, summary_table, out_table,
@@ -476,7 +489,7 @@ def update_result_tables(temp_summary_table, i, summary_table, out_table,
         INNER JOIN {temp_summary_table}
         ON {join_condition}
         """.format(join_condition=' AND '.join(
-                [res_table+'.'+col+'='+temp_summary_table+'.'+col
+                ["{res_table}.{col}={temp_summary_table}.{col}".format(**locals())
                 for col in grouping_cols_list]), **locals()))
     plpy.execute("DROP TABLE {0}".format(temp_summary_table))
 
@@ -487,7 +500,7 @@ def get_ignore_groups(first_table, second_table, grouping_cols_list):
     """
     return """
         ({second_table_cols}) NOT IN (SELECT {grouping_cols} FROM {first_table})
-    """.format(second_table_cols=', '.join([second_table+'.'+col
+    """.format(second_table_cols=', '.join(["{second_table}.{col}".format(**locals())
             for col in grouping_cols_list]),
         grouping_cols=', '.join([col for col in grouping_cols_list]),
         **locals())
