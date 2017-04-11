@@ -54,10 +54,8 @@ def _check_groups(tbl1, tbl2, grp_list):
 		@param grp_list   The list of grouping columns
 	"""
 
-	sql = []
-	for i in grp_list:
-		sql.append(" "+tbl1+"."+i+" = "+tbl2+"."+i+" ")
-	return " AND ".join(sql)
+	return ' AND '.join([" {tbl1}.{i} = {tbl2}.{i} ".format(**locals())
+		for i in grp_list])
 
 def _grp_from_table(tbl, grp_list):
 
@@ -67,11 +65,8 @@ def _grp_from_table(tbl, grp_list):
 		@param tbl        Name of the table
 		@param grp_list   The list of grouping columns
 	"""
-
-	sql = []
-	for i in grp_list:
-		sql.append(" "+tbl+"."+i+" ")
-	return " , ".join(sql)
+	return ' , '.join([" {tbl}.{i} ".format(**locals())
+		for i in grp_list])
 
 def graph_sssp(schema_madlib, vertex_table, vertex_id, edge_table,
 		edge_args, source_vertex, out_table, grouping_cols, **kwargs):
@@ -80,14 +75,14 @@ def graph_sssp(schema_madlib, vertex_table, vertex_id, edge_table,
     Single source shortest path function for graphs using the Bellman-Ford
     algorhtm [1].
     Args:
-        @param vertex_table     Name of the table that contains the vertex data.
-        @param vertex_id        Name of the column containing the vertex ids.
-        @param edge_table       Name of the table that contains the edge data.
-        @param edge_args        A comma-delimited string containing multiple
-                                named arguments of the form "name=value".
-        @param source_vertex    The source vertex id for the algorithm to start.
-        @param out_table        Name of the table to store the result of SSSP.
-        @param grouping_cols    The list of grouping columns.
+        @param vertex_table    Name of the table that contains the vertex data.
+        @param vertex_id       Name of the column containing the vertex ids.
+        @param edge_table      Name of the table that contains the edge data.
+        @param edge_args       A comma-delimited string containing multiple
+                               named arguments of the form "name=value".
+        @param source_vertex   The source vertex id for the algorithm to start.
+        @param out_table       Name of the table to store the result of SSSP.
+        @param grouping_cols   The list of grouping columns.
 
     [1] https://en.wikipedia.org/wiki/Bellman-Ford_algorithm
     """
@@ -236,57 +231,41 @@ def graph_sssp(schema_madlib, vertex_table, vertex_id, edge_table,
 
 		# Example:
 		# Assume there are two grouping columns g1 and g2
-		# g1 values are 0 or 1. g2 values are 5 or 6
+		# g1 values are 0 and 1. g2 values are 5 and 6
 		if grouping_cols is not None:
 
-			# Find every distinct group
-			# Example: This will give us (0,5), (0,6), (1,5) and (1,6)
-			groups = plpy.execute(
-				"""SELECT array_agg(DISTINCT ({grouping_cols})) AS gsql
-				FROM {edge_table} """.format(**locals()))[0]['gsql']
+			distinct_grp_table = unique_string(desp='grp')
+			plpy.execute(""" DROP TABLE IF EXISTS {distinct_grp_table};
+                CREATE TEMP TABLE {distinct_grp_table} AS
+                SELECT DISTINCT ({grouping_cols}) FROM {edge_table}
+            """.format(**locals()))
 
-			# For each group initialize the output table.
-			for i in range(0,len(groups)):
-				gslist = []
+			subq = unique_string(desp='subquery')
 
-				# If we have more than 1 grouping columns,
-				# we have to prepare them induvidually
-				if len(glist) > 1:
-					gi = groups[i][1:-1]
- 					gvals = _string_to_array(gi)
- 					for j in range(0,len(glist)):
-						gslist.append(glist[j] + " = " + gvals[j])
+			checkg_ds_sub = _check_groups(distinct_grp_table,subq,glist)
+			grp_d_comma = _grp_from_table(distinct_grp_table,glist) +","
 
-					# Prepare the sql check for a particular group
-					# Example: gcomp will be "g1 = 0 AND g2 = 5"
-					gcomp = " AND ".join(gslist)
- 				else:
- 					gi = groups[i]
- 					gcomp = glist[0] + " = " + str(gi)
+			plpy.execute(
+				""" INSERT INTO {out_table}
+				SELECT {grp_d_comma} {vertex_id} AS {vertex_id},
+					{init_w} AS {weight}, NULL::INT AS parent
+				FROM {distinct_grp_table} INNER JOIN
+					(
+					SELECT {src} AS {vertex_id} {comma_grp}
+					FROM {edge_table}
+					UNION
+					SELECT {dest} AS {vertex_id} {comma_grp}
+					FROM {edge_table}
+					) {subq} ON ({checkg_ds_sub})
+				WHERE {vertex_id} IS NOT NULL
+				""".format(**locals()))
 
-				# Find the vertices that are involved in this group
-				plpy.execute(
-					""" INSERT INTO {out_table}
-					SELECT DISTINCT ON ({vertex_id})
-						{grp_comma} {vertex_id} AS {vertex_id},
-						{init_w} AS {weight},
-					NULL::INT AS parent
-					FROM (
-						SELECT {src} AS {vertex_id} {comma_grp}
-						FROM {edge_table} WHERE {gcomp}
-						UNION
-						SELECT {dest} AS {vertex_id} {comma_grp}
-						FROM {edge_table} WHERE {gcomp}
-						) x
-					WHERE {vertex_id} IS NOT NULL
-					""".format(**locals()))
-
-				# The source can be reached with 0 cost and
-				# it has itself as the parent.
-				plpy.execute(
-					""" INSERT INTO {oldupdate}
-						VALUES({source_vertex},0,{source_vertex},{gi})
-					""".format(**locals()))
+			plpy.execute(
+				""" INSERT INTO {oldupdate}
+					SELECT {source_vertex}, 0, {source_vertex},
+					{grouping_cols}
+					FROM {distinct_grp_table}
+				""".format(**locals()))
 
 			# The maximum number of vertices for any group.
 			# Used for determining negative cycles.
@@ -306,7 +285,8 @@ def graph_sssp(schema_madlib, vertex_table, vertex_id, edge_table,
 				WHERE {vertex_id} IS NOT NULL
 				 """.format(**locals()))
 
-			# The source can be reached with 0 cost and it has itself as the parent.
+			# The source can be reached with 0 cost and it has itself as the
+			# parent.
 			plpy.execute(
 				""" INSERT INTO {oldupdate}
 					VALUES({source_vertex},0,{source_vertex})
@@ -374,8 +354,8 @@ def graph_sssp(schema_madlib, vertex_table, vertex_id, edge_table,
 			# for comparison.
 
 			# Once we have a list of edges and values (stores as 'message'),
-			# we check if these values are lower than the existing shortest path
-			# values.
+			# we check if these values are lower than the existing shortest
+			# path values.
 
 			sql = (""" INSERT INTO {newupdate}
 				SELECT DISTINCT ON (message.id {comma_grp})
@@ -471,117 +451,158 @@ def graph_sssp(schema_madlib, vertex_table, vertex_id, edge_table,
 
 	return None
 
-def _path_helper(plan_name, dest_vertex, path_table, gset):
-	"""
-	Helper function for graph_sssp_get_path. Invoked once per group.
-	@param plan_name    Name of the plan that finds the parent of a given
-	                    vertex.
-    @param dest_vertex  The vertex that will be the destination of the
-                        desired path.
-    @param path_table   Name of the output table that will contain the path(s).
-    @param gset	        List of grouping columns values followed by a comma.
-                        Empty string if there are no grouping columns.
-	"""
-
-	ret = [str(dest_vertex)]
-	cur = dest_vertex
-	sql = "EXECUTE {plan_name} ({cur})"
-	parent = plpy.execute(sql.format(**locals()))
-	if parent.nrows() > 0:
-		while 1:
-			parent = parent[0]['parent']
-			if parent == cur:
-				ret.reverse()
-				ret = ",".join(ret)
-				plpy.execute(
-					""" INSERT INTO {path_table} VALUES ({gset} '{ret}')
-					""".format(**locals()))
-				return True
-			else:
-				ret.append(str(parent))
-				cur = parent
-
-			parent = plpy.execute(sql.format(**locals()))
-
-	return False
-
 def graph_sssp_get_path(schema_madlib, sssp_table, dest_vertex, path_table,
 	**kwargs):
 	"""
     Helper function that can be used to get the shortest path for a vertex
     Args:
-        @param source_table Name of the table that contains the SSSP output.
-        @param out_table    The vertex that will be the destination of the
+        @param sssp_table   Name of the table that contains the SSSP output.
+        @param dest_vertex  The vertex that will be the destination of the
                             desired path.
         @param path_table   Name of the output table that contains the path.
 	"""
 	with MinWarning("warning"):
+		_validate_get_path(sssp_table, dest_vertex, path_table)
 
-		_validate_get_path(sssp_table, dest_vertex)
-		plan_name = unique_string(desp='plan')
+		is_hawq = m4_ifdef(<!__HAWQ__!>, <!True!>, <!False!>)
+
+		temp1_name = unique_string(desp='temp1')
+		temp2_name = unique_string(desp='temp2')
 
 		select_grps = ""
-		gsql = ""
-
-		path_flag = False
+		check_grps_t1 = ""
+		check_grps_t2 = ""
+		check_grps_pt1 = ""
+		check_grps_pt2 = ""
+		checkg_po = ""
+		grp_comma = ""
+		tmp = ""
 
 		summary = plpy.execute("SELECT * FROM {0}_summary".format(sssp_table))
 		vertex_id = summary[0]['vertex_id']
+
 		if vertex_id == "NULL":
 			vertex_id = "id"
 
 		grouping_cols = summary[0]['grouping_cols']
-		if grouping_cols != "NULL":
+		if grouping_cols == "NULL":
+			grouping_cols = None
+
+		if grouping_cols is not None:
 			glist = split_quoted_delimited_str(grouping_cols)
 			select_grps = _grp_from_table(sssp_table,glist) + " , "
+			check_grps_t1 = " AND " + _check_groups(
+				sssp_table,temp1_name,glist)
+			check_grps_t2 = " AND " + _check_groups(
+				sssp_table,temp2_name,glist)
+			check_grps_pt1 = " WHERE " + _check_groups(
+				path_table,temp1_name,glist)
+			check_grps_pt2 = " WHERE " + _check_groups(
+				path_table,temp2_name,glist)
 
-		plpy.execute("""
-			CREATE TABLE {path_table} AS
-				SELECT {select_grps} ''::text as path
+			checkg_po = " WHERE " + _check_groups(
+				path_table,"oldupdate",glist)
+			grp_comma = grouping_cols + " , "
+
+		plpy.execute( "DROP TABLE IF EXISTS {0},{1}".
+			format(temp1_name,temp2_name));
+		out = plpy.execute("""
+			CREATE TEMP TABLE {temp1_name} AS
+				SELECT {grp_comma} {sssp_table}.parent AS {vertex_id},
+					{sssp_table}.parent || ', {dest_vertex}' AS path
 				FROM {sssp_table}
-				LIMIT 0
+				WHERE {vertex_id} = {dest_vertex}
 			""".format(**locals()))
 
-		plan = """ PREPARE {plan_name} (int) AS
-			SELECT parent FROM {sssp_table}
-			WHERE {vertex_id} = $1 AND parent IS NOT NULL {gsql} LIMIT 1
-			"""
-
-		if grouping_cols == "NULL":
-			plpy.execute(plan.format(**locals()))
-			path_flag = _path_helper(plan_name,dest_vertex,path_table,"")
-
-		else:
-			gvalues = plpy.execute(
-				""" SELECT {grouping_cols} FROM {sssp_table}
-					GROUP BY {grouping_cols}""".format(**locals()))
-
-			for i in gvalues:
-				cur = dest_vertex
-				gcheck = []
-				gset = []
-				for j in glist:
-					gcheck.append("{0} = {1}".format(j,i[j]))
-					gset.append("{0}".format(i[j]))
-				gsql = " AND " + " AND ".join(gcheck)
-				gset = " , ".join(gset) + " , "
-
-				# Follow the 'parent' chain until you reach the source.
-				# We don't need to know what the source is since it is the
-				# only vertex with itself as its parent
-				plpy.execute(plan.format(**locals()))
-				path_flag = path_flag | _path_helper(
-					plan_name,dest_vertex,path_table,gset)
-
-				plpy.execute("DEALLOCATE {0}".format(plan_name))
-
-		if path_flag is False:
-			plpy.execute("DROP TABLE IF EXISTS {0}".format(path_table))
+		if out.nrows() == 0:
 			plpy.error(
 				"Graph SSSP: Vertex {0} is not present in the sssp table {1}".
 				format(dest_vertex,sssp_table))
 
+		plpy.execute("""
+			CREATE TEMP TABLE {temp2_name} AS
+				SELECT * FROM {temp1_name} LIMIT 0
+			""".format(**locals()))
+
+		# Greenplum does not allow updates on the distribution columns.
+		# If there are no grouping columns, path is the only remaining column
+		# to distribute on.
+		# Instead we use random distribution since there is a single record.
+		distribution = m4_ifdef(<!__GREENPLUM__!>,
+			<!"DISTRIBUTED RANDOMLY"!>, <!''!>)
+		distribution = distribution if grouping_cols is None else ''
+
+		plpy.execute("""
+			CREATE TABLE {path_table} AS SELECT {grp_comma} path
+			FROM {temp1_name} {distribution}
+			""".format(**locals()))
+
+		# Since HAWQ does not allow us to update, we create a new table and
+		# rename at every iteration
+		temp_table = unique_string(desp='temp')
+		sql = m4_ifdef(<!__HAWQ__!>,
+			""" CREATE TABLE {temp_table} AS SELECT * FROM {path_table}
+			""",  <!''!>)
+
+		plpy.execute(sql.format(**locals()))
+
+		# Follow the 'parent' chain until you reach the source.
+		# We don't need to know what the source is since it is the only vertex
+		# with itself as its parent
+		while out.nrows() > 0:
+
+			sql = m4_ifdef(<!__HAWQ__!>,
+				<!""" TRUNCATE TABLE {temp_table};
+					INSERT INTO {temp_table}
+						SELECT *
+						FROM {path_table}
+						WHERE NOT EXISTS (
+							SELECT 1
+							FROM {temp1_name} as oldupdate
+							 {checkg_po})
+						UNION
+						SELECT {grp_comma} path FROM {temp1_name};
+					DROP TABLE {path_table};
+					ALTER TABLE {temp_table} RENAME TO {path_table};
+					CREATE TABLE {temp_table} AS (
+						SELECT * FROM {path_table} LIMIT 0);
+				"""!>,
+				<!""" UPDATE {path_table} SET
+			 	path = {temp1_name}.path
+			 	FROM {temp1_name}
+			 	{check_grps_pt1}
+				"""!>)
+
+			plpy.execute(sql.format(**locals()))
+			plpy.execute("TRUNCATE TABLE {temp2_name}".format(**locals()))
+
+			out = plpy.execute(
+				""" INSERT INTO {temp2_name}
+				SELECT {select_grps} {sssp_table}.parent AS {vertex_id},
+					{sssp_table}.parent || ', ' || {temp1_name}.path AS path
+				FROM {sssp_table} INNER JOIN {temp1_name} ON
+					({sssp_table}.{vertex_id} = {temp1_name}.{vertex_id}
+						{check_grps_t1})
+				WHERE {sssp_table}.{vertex_id} <> {sssp_table}.parent
+				""".format(**locals()))
+
+			tmp = temp2_name
+			temp2_name = temp1_name
+			temp1_name = tmp
+
+			tmp = check_grps_t1
+			check_grps_t1 = check_grps_t2
+			check_grps_t2 = tmp
+
+			tmp = check_grps_pt1
+			check_grps_pt1 = check_grps_pt2
+			check_grps_pt2 = tmp
+
+		plpy.execute("DROP TABLE IF EXISTS {temp1_name}, {temp1_name}".
+			format(**locals()))
+
 	return None
+
 
 def _validate_sssp(vertex_table, vertex_id, edge_table, edge_params,
 	source_vertex, out_table, glist, **kwargs):
@@ -614,7 +635,7 @@ def _validate_sssp(vertex_table, vertex_id, edge_table, edge_params,
 			format(**locals()))
 
 	_assert(not table_exists(out_table+"_summary"),
-		"Graph SSSP: Output summary table already exists!".format(**locals()))
+		"Graph SSSP: Output summary table already exists!")
 
 	if glist is not None:
 		_assert(columns_exist_in_table(edge_table, glist),
@@ -623,7 +644,7 @@ def _validate_sssp(vertex_table, vertex_id, edge_table, edge_params,
 
 	return None
 
-def _validate_get_path(sssp_table, dest_vertex, **kwargs):
+def _validate_get_path(sssp_table, dest_vertex, path_table, **kwargs):
 
 	_assert(sssp_table and sssp_table.strip().lower() not in ('null', ''),
 		"Graph SSSP: Invalid SSSP table name!")
@@ -637,6 +658,9 @@ def _validate_get_path(sssp_table, dest_vertex, **kwargs):
 		"Graph SSSP: SSSP summary table ({0}) is missing!".format(summary))
 	_assert(not table_is_empty(summary),
 		"Graph SSSP: SSSP summary table ({0}) is empty!".format(summary))
+
+	_assert(not table_exists(path_table),
+		"Graph SSSP: Output path table already exists!")
 
 	return None
 
