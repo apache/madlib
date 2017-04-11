@@ -411,9 +411,9 @@ def _get_tree_states(schema_madlib, is_classification, split_criterion,
         # 3)  Find the splitting bins, one dict containing two arrays:
         #       categorical bins and continuous bins
         bins = _get_bins(schema_madlib, training_table_name, cat_features,
-                         ordered_cat_features, boolean_cats,
-                         con_features, n_bins, dep_var_str, n_rows,
-                         is_classification, dep_n_levels, filter_null)
+                         ordered_cat_features, con_features, n_bins,
+                         dep_var_str, boolean_cats,
+                         n_rows, is_classification, dep_n_levels, filter_null)
         # some features may be dropped if they have only one value
         cat_features = bins['cat_features']
 
@@ -456,11 +456,15 @@ def _get_tree_states(schema_madlib, is_classification, split_criterion,
     # 5) prune the tree using provided 'cp' value and produce a list of
     #   cp values if cross-validation is required (cp_list = [] if not)
     for tree in tree_states:
-        if 'cp' in tree and tree['cp'] > 0:
-            pruned_tree = _prune_and_cplist(schema_madlib, tree['tree_state'],
-                                            tree['cp'], compute_cp_list=compute_cp_list)
+        if 'cp' in tree:
+            pruned_tree = _prune_and_cplist(schema_madlib, tree,
+                                            tree['cp'],
+                                            compute_cp_list=compute_cp_list)
             tree['tree_state'] = pruned_tree['tree_state']
-            tree['pruned_depth'] = pruned_tree['pruned_depth']
+            if 'pruned_depth' in pruned_tree:
+                tree['pruned_depth'] = pruned_tree['pruned_depth']
+            else:
+                tree['pruned_depth'] = pruned_tree['tree_depth']
             if 'cp_list' in pruned_tree:
                 tree['cp_list'] = pruned_tree['cp_list']
 
@@ -569,7 +573,7 @@ def tree_train(schema_madlib, training_table_name, output_table_name,
     min_split = min_bucket * 3 if min_split is None else min_split
     n_bins = 100 if n_bins is None else n_bins
     split_criterion = 'gini' if not split_criterion else split_criterion
-    plpy.notice("split_criterion:"+split_criterion)
+    plpy.notice("split_criterion:" + split_criterion)
     pruning_param_dict = _extract_pruning_params(pruning_params)
     cp = pruning_param_dict['cp']
     n_folds = pruning_param_dict['n_folds']
@@ -695,8 +699,8 @@ def _is_dep_categorical(training_table_name, dependent_variable):
 
 
 def _get_bins(schema_madlib, training_table_name,
-              cat_features, ordered_cat_features, boolean_cats,
-              con_features, n_bins, dependent_variable,
+              cat_features, ordered_cat_features,
+              con_features, n_bins, dependent_variable, boolean_cats,
               n_rows, is_classification, dep_n_levels, filter_null):
     """ Compute the bins of all features
 
@@ -1603,7 +1607,6 @@ def _get_filter_str(schema_madlib, cat_features, con_features,
                 con_features_array='array[' + ','.join(con_features) + ']')
     else:
         con_filter = None
-    cat_filter = con_filter = None
 
     dep_filter = '(' + dependent_variable + ") is not NULL"
     return ' and '.join(filter(None, [g_filter, cat_filter, con_filter, dep_filter]))
@@ -1980,13 +1983,13 @@ SELECT * FROM tree_predict_out;
 # ------------------------------------------------------------
 
 
-def _prune_and_cplist(schema_madlib, tree_state, cp, compute_cp_list=False):
+def _prune_and_cplist(schema_madlib, tree, cp, compute_cp_list=False):
     """ Prune tree with given cost-complexity parameters
         and return a list of cp values at which tree can be pruned
 
         Args:
             @param schema_madlib: str, MADlib schema name
-            @param tree_state: schema_madlib.bytea8, tree to prune
+            @param tree: Tree data to prune
             @param cp: float, cost-complexity parameter, all splits that have a
                                 complexity lower than 'cp' will be pruned
             @param compute_cp_list: bool, optionally return a list of cp values that
@@ -2001,20 +2004,22 @@ def _prune_and_cplist(schema_madlib, tree_state, cp, compute_cp_list=False):
                 cp_list: list of cp values at which tree can be pruned
                          (returned only if compute_cp_list=True)
     """
+    if cp <= 0 and not compute_cp_list:
+        return tree
     sql = """
         SELECT (pruned_tree).*
         FROM (
-            SELECT {schema_madlib}._prune_and_cplist(
+            SELECT {madlib}._prune_and_cplist(
                         $1,
                         ({cp})::double precision,
                         ({compute_cp_list})::boolean
                     ) as pruned_tree
         ) q
-    """.format(schema_madlib=schema_madlib, cp=cp,
+    """.format(madlib=schema_madlib, cp=cp,
                compute_cp_list=bool(compute_cp_list))
 
-    sql_plan = plpy.prepare(sql, ['{schema_madlib}.bytea8'.format(schema_madlib=schema_madlib)])
-    pruned_tree = plpy.execute(sql_plan, [tree_state])[0]
+    sql_plan = plpy.prepare(sql, [schema_madlib + '.bytea8'])
+    pruned_tree = plpy.execute(sql_plan, [tree['tree_state']])[0]
     return pruned_tree
 # -------------------------------------------------------------------------
 
@@ -2087,7 +2092,7 @@ def _xvalidate(schema_madlib, tree_states, training_table_name, output_table_nam
         plpy.execute(plan, [grp_list, cp_list])
 
     # 2) call CV function to actually cross-validate _build_tree
-    # expect output table model_cv({grouping_cols), cp, avg, stddev)
+    # expects output table model_cv({grouping_cols), cp, avg, stddev)
     model_cv = output_table_name + "_cv"
     metric_function = "_tree_misclassified" if is_classification else "_tree_rmse"
     pred_name = '"estimated_{0}"'.format(dependent_variable.strip(' "'))
@@ -2139,6 +2144,7 @@ def _xvalidate(schema_madlib, tree_states, training_table_name, output_table_nam
         group_by_str = "GROUP BY " + grouping_cols
         group_select_str = grouping_cols + ","
 
+    plpy.notice(str(list(plpy.execute("SELECT * FROM {0}".format(model_cv)))))
     validation_result_query = """
             SELECT
                 {grouping_array_str_comma}
@@ -2154,11 +2160,13 @@ def _xvalidate(schema_madlib, tree_states, training_table_name, output_table_nam
             ) min_cv_error
             {qualified_group_by_str}
         """.format(**locals())
+    plpy.notice("validation_result_query:")
+    plpy.notice(validation_result_query)
     validation_result = plpy.execute(validation_result_query)
+    plpy.notice("finished validation_result_query, validation_result = " + str(list(validation_result)))
 
     grp_key_to_best_cp = dict((row['grp_key'], row['cp']) for row in validation_result)
 
-    plpy.notice("Finished cross validation, final pruning ...")
     # 4) update tree_states to have the best cp cross-validated
     for tree in tree_states:
         best_cp = grp_key_to_best_cp[tree['grp_key']]
@@ -2168,11 +2176,16 @@ def _xvalidate(schema_madlib, tree_states, training_table_name, output_table_nam
             # giving the optimal pruned tree.
             # This time we don't need the cp_list.
             pruned_tree = _prune_and_cplist(schema_madlib,
-                                            tree['tree_state'],
+                                            tree,
                                             tree['cp'],
                                             compute_cp_list=False)
             tree['tree_state'] = pruned_tree['tree_state']
-            tree['pruned_depth'] = pruned_tree['pruned_depth']
+            if 'pruned_depth' in pruned_tree:
+                tree['pruned_depth'] = pruned_tree['pruned_depth']
+            elif 'tree_depth' in pruned_tree:
+                tree['pruned_depth'] = pruned_tree['tree_depth']
+            else:
+                tree['pruned_depth'] = 0
 
     plpy.execute("DROP TABLE {group_to_param_list_table}".format(**locals()))
 # ------------------------------------------------------------
