@@ -641,7 +641,8 @@ def _create_output_tables(schema_madlib, training_table_name, output_table_name,
     if not grouping_cols:
         _create_result_table(schema_madlib, tree_states[0],
                              bins['cat_origin'], bins['cat_n'], cat_features,
-                             con_features, output_table_name, use_existing_tables, running_cv, k)
+                             con_features, output_table_name,
+                             use_existing_tables, running_cv, k)
     else:
         _create_grp_result_table(
             schema_madlib, tree_states, bins, cat_features,
@@ -794,10 +795,12 @@ def _get_bins(schema_madlib, training_table_name,
                                 n=dep_n_levels))
         else:
             # For regressions
-            order_fun = \
-                "AVG({0})".format(dependent_variable)
+            order_fun = "AVG({0})".format(dependent_variable)
 
-        # sql_cat_levels goes through two levels of formatting
+        # Note that 'sql_cat_levels' goes through two levels of formatting
+        # Try to obtain all the levels in one scan of the table.
+        # () are needed when casting the categorical variables because
+        # they can be expressions.
         sql_cat_levels = """
             SELECT
                 '{{col_name}}'::text AS colname,
@@ -820,9 +823,6 @@ def _get_bins(schema_madlib, training_table_name,
             """.format(training_table_name=training_table_name,
                        filter_null=filter_null)
 
-        # Try to obtain all the levels in one scan of the table.
-        # () are needed when casting the categorical variables because
-        # they can be expressions.
         sql_all_cats = ' UNION '.join(
             sql_cat_levels.format(
                 col="(CASE WHEN " + col + " THEN 'True' ELSE 'False' END)"
@@ -836,7 +836,8 @@ def _get_bins(schema_madlib, training_table_name,
             plpy.warning("Decision tree warning: Categorical columns with only "
                          "one value are dropped from the tree model.")
             use_cat_features = [row['colname'] for row in all_levels]
-            cat_features = [feature for feature in cat_features if feature in use_cat_features]
+            cat_features = [feature for feature in cat_features
+                            if feature in use_cat_features]
 
         col_to_row = dict((row['colname'], i) for i, row in enumerate(all_levels))
 
