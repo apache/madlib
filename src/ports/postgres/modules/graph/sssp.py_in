@@ -168,7 +168,7 @@ def graph_sssp(schema_madlib, vertex_table, vertex_id, edge_table,
 
 		# We keep a table of every vertex, the minimum cost to that destination
 		# seen so far and the parent to this vertex in the associated shortest
-		# path. This table will be updated throughtout the execution.
+		# path. This table will be updated throughout the execution.
 		plpy.execute(
 			""" CREATE TABLE {out_table} AS ( SELECT
 					{grp_comma} {src} AS {vertex_id}, {weight},
@@ -275,6 +275,7 @@ def graph_sssp(schema_madlib, vertex_table, vertex_id, edge_table,
 						FROM {out_table}
 						GROUP BY {grouping_cols}) x
 				""".format(**locals()))[0]['max']
+			plpy.execute("DROP TABLE IF EXISTS {0}".format(distinct_grp_table))
 		else:
 			plpy.execute(
 				""" INSERT INTO {out_table}
@@ -394,12 +395,15 @@ def graph_sssp(schema_madlib, vertex_table, vertex_id, edge_table,
 			oldupdate = newupdate
 			newupdate = tmp
 
+		plpy.execute("DROP TABLE IF EXISTS {0}".format(newupdate))
 		# The algorithm should converge in less than |V| iterations.
 		# Otherwise there is a negative cycle in the graph.
 		if i == v_cnt:
 			if grouping_cols is None:
-				plpy.execute("DROP TABLE IF EXISTS {out_table}".
-					format(**locals()))
+				plpy.execute("DROP TABLE IF EXISTS {0},{1},{2}".
+					format(out_table, out_table+"_summary", oldupdate))
+				if is_hawq:
+					plpy.execute("DROP TABLE IF EXISTS {0}".format(temp_table))
 				plpy.error("Graph SSSP: Detected a negative cycle in the graph.")
 
 			# It is possible that not all groups has negative cycles.
@@ -445,6 +449,7 @@ def graph_sssp(schema_madlib, vertex_table, vertex_id, edge_table,
 					"""sub-graphs of following groups: {0}.""".
 					format(str(negs)[1:-1]))
 
+		plpy.execute("DROP TABLE IF EXISTS {0}".format(oldupdate))
 		if is_hawq:
 			plpy.execute("DROP TABLE IF EXISTS {temp_table} ".
 				format(**locals()))
@@ -674,20 +679,25 @@ To retrieve the path for a specific vertex:
 ----------------------------------------------------------------------------
                             OUTPUT
 ----------------------------------------------------------------------------
-The output table ('out_table' above) will contain a row for every vertex from
-vertex_table and have the following columns:
+The output of SSSP ('out_table' above) contains a row for every vertex of
+every group and have the following columns (in addition to the grouping
+columns):
+  - vertex_id : The id for the destination. Will use the input parameter
+                'vertex_id' for column naming.
+  - weight    : The total weight of the shortest path from the source vertex
+              to this particular vertex.
+              Will use the input parameter 'weight' for column naming.
+  - parent    : The parent of this vertex in the shortest path from source.
+              Will use 'parent' for column naming.
 
-vertex_id 	: The id for the destination. Will use the input parameter
-		(vertex_id) for column naming.
-weight 		: The total weight of the shortest path from the source vertex
-		to this particular vertex. Will use the input parameter (weight)
-		for column naming.
-parent 		: The parent of this vertex in the shortest path from source.
-		Will use "parent" for column naming.
-
-# The graph_sssp_get_path function will return an INT array that contains the
-# shortest path from the initial source vertex to the desired destination vertex.
-# """
+The output of graph_sssp_get_path ('path_table' above) contains a row for
+every group and has the following columns:
+  - grouping_cols : The grouping columns given in the creation of the SSSP
+                  table. If there are no grouping columns, these columns
+                  will not exist and the table will have a single row.
+  - path (ARRAY)  : The shortest path from the source vertex (as specified
+                  in the SSSP execution) to the destination vertex.
+"""
 	elif message.lower() in ("example", "examples"):
 		help_string = """
 ----------------------------------------------------------------------------
@@ -745,6 +755,21 @@ SELECT * FROM out ORDER BY id;
 -- View the actual shortest path for a vertex:
 SELECT graph_sssp_get_path('out',5,'out_path');
 SELECT * FROM out_path;
+
+-- Create a graph with 2 groups:
+DROP TABLE IF EXISTS edge_gr;
+CREATE TABLE edge_gr AS
+(
+  SELECT *, 0 AS grp FROM edge
+  UNION
+  SELECT *, 1 AS grp FROM edge WHERE src < 6 AND dest < 6
+);
+INSERT INTO edge_gr VALUES
+(4,5,-20,1);
+
+-- Find SSSP for all groups:
+DROP TABLE IF EXISTS out_gr, out_gr_summary;
+SELECT graph_sssp('vertex',NULL,'edge_gr',NULL,0,'out_gr','grp');
 """
 	else:
 		help_string = "No such option. Use {schema_madlib}.graph_sssp()"
@@ -752,6 +777,6 @@ SELECT * FROM out_path;
 	return help_string.format(schema_madlib=schema_madlib,
 		graph_usage=get_graph_usage(schema_madlib, 'graph_sssp',
     """source_vertex INT,  -- The source vertex id for the algorithm to start.
-    out_table     TEXT  -- Name of the table to store the result of SSSP.
+    out_table     TEXT, -- Name of the table to store the result of SSSP.
     grouping_cols TEXT  -- The list of grouping columns."""))
 # ---------------------------------------------------------------------
