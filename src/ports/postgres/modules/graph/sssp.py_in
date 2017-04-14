@@ -238,8 +238,8 @@ def graph_sssp(schema_madlib, vertex_table, vertex_id, edge_table,
 			plpy.execute(""" DROP TABLE IF EXISTS {distinct_grp_table} """.
 				format(**locals()))
 			plpy.execute( """ CREATE TEMP TABLE {distinct_grp_table} AS
-                SELECT DISTINCT {grouping_cols} FROM {edge_table} """.
-            	format(**locals()))
+				SELECT DISTINCT {grouping_cols} FROM {edge_table} """.
+				format(**locals()))
 			subq = unique_string(desp='subquery')
 
 			checkg_ds_sub = _check_groups(distinct_grp_table,subq,glist)
@@ -464,8 +464,6 @@ def graph_sssp_get_path(schema_madlib, sssp_table, dest_vertex, path_table,
 	with MinWarning("warning"):
 		_validate_get_path(sssp_table, dest_vertex, path_table)
 
-		is_hawq = m4_ifdef(<!__HAWQ__!>, <!True!>, <!False!>)
-
 		temp1_name = unique_string(desp='temp1')
 		temp2_name = unique_string(desp='temp2')
 
@@ -480,6 +478,7 @@ def graph_sssp_get_path(schema_madlib, sssp_table, dest_vertex, path_table,
 
 		summary = plpy.execute("SELECT * FROM {0}_summary".format(sssp_table))
 		vertex_id = summary[0]['vertex_id']
+		source_vertex = summary[0]['source_vertex']
 
 		if vertex_id == "NULL":
 			vertex_id = "id"
@@ -495,95 +494,48 @@ def graph_sssp_get_path(schema_madlib, sssp_table, dest_vertex, path_table,
 				sssp_table,temp1_name,glist)
 			check_grps_t2 = " AND " + _check_groups(
 				sssp_table,temp2_name,glist)
-			check_grps_pt1 = " WHERE " + _check_groups(
-				path_table,temp1_name,glist)
-			check_grps_pt2 = " WHERE " + _check_groups(
-				path_table,temp2_name,glist)
 
 			checkg_po = " WHERE " + _check_groups(
 				path_table,"oldupdate",glist)
 			grp_comma = grouping_cols + " , "
 
+		if source_vertex == dest_vertex:
+			plpy.execute("""
+				CREATE TABLE {path_table} AS
+				SELECT {grp_comma} '{{{dest_vertex}}}'::INT[] AS path
+				FROM {sssp_table} WHERE {vertex_id} = {dest_vertex}
+				""".format(**locals()))
+			return
+
 		plpy.execute( "DROP TABLE IF EXISTS {0},{1}".
 			format(temp1_name,temp2_name));
-		out = plpy.execute("""
-			CREATE TEMP TABLE {temp1_name} AS
+		out = plpy.execute(""" CREATE TEMP TABLE {temp1_name} AS
 				SELECT {grp_comma} {sssp_table}.parent AS {vertex_id},
-					ARRAY[{sssp_table}.parent, {dest_vertex}] AS path
+					ARRAY[{dest_vertex}] AS path
 				FROM {sssp_table}
 				WHERE {vertex_id} = {dest_vertex}
+					AND {sssp_table}.parent IS NOT NULL
 			""".format(**locals()))
-
-		if out.nrows() == 0:
-			plpy.error(
-				"Graph SSSP: Vertex {0} is not present in the sssp table {1}".
-				format(dest_vertex,sssp_table))
 
 		plpy.execute("""
 			CREATE TEMP TABLE {temp2_name} AS
 				SELECT * FROM {temp1_name} LIMIT 0
 			""".format(**locals()))
 
-		# Greenplum does not allow updates on the distribution columns.
-		# If there are no grouping columns, path is the only remaining column
-		# to distribute on.
-		# Instead we use random distribution since there is a single record.
-		distribution = m4_ifdef(<!__GREENPLUM__!>,
-			<!"DISTRIBUTED RANDOMLY"!>, <!''!>)
-		distribution = distribution if grouping_cols is None else ''
-
-		plpy.execute("""
-			CREATE TABLE {path_table} AS SELECT {grp_comma} path
-			FROM {temp1_name} {distribution}
-			""".format(**locals()))
-
-		# Since HAWQ does not allow us to update, we create a new table and
-		# rename at every iteration
-		temp_table = unique_string(desp='temp')
-		sql = m4_ifdef(<!__HAWQ__!>,
-			""" CREATE TABLE {temp_table} AS SELECT * FROM {path_table}
-			""",  <!''!>)
-
-		plpy.execute(sql.format(**locals()))
-
 		# Follow the 'parent' chain until you reach the source.
-		# We don't need to know what the source is since it is the only vertex
-		# with itself as its parent
 		while out.nrows() > 0:
 
-			sql = m4_ifdef(<!__HAWQ__!>,
-				<!""" TRUNCATE TABLE {temp_table};
-					INSERT INTO {temp_table}
-						SELECT *
-						FROM {path_table}
-						WHERE NOT EXISTS (
-							SELECT 1
-							FROM {temp1_name} as oldupdate
-							 {checkg_po})
-						UNION
-						SELECT {grp_comma} path FROM {temp1_name};
-					DROP TABLE {path_table};
-					ALTER TABLE {temp_table} RENAME TO {path_table};
-					CREATE TABLE {temp_table} AS (
-						SELECT * FROM {path_table} LIMIT 0);
-				"""!>,
-				<!""" UPDATE {path_table} SET
-			 	path = {temp1_name}.path
-			 	FROM {temp1_name}
-			 	{check_grps_pt1}
-				"""!>)
-
-			plpy.execute(sql.format(**locals()))
 			plpy.execute("TRUNCATE TABLE {temp2_name}".format(**locals()))
-
+			# If the vertex id is not the source vertex,
+			# Add it to the path and move to its parent
 			out = plpy.execute(
 				""" INSERT INTO {temp2_name}
 				SELECT {select_grps} {sssp_table}.parent AS {vertex_id},
-					{sssp_table}.parent || {temp1_name}.path AS path
+					{sssp_table}.{vertex_id} || {temp1_name}.path AS path
 				FROM {sssp_table} INNER JOIN {temp1_name} ON
 					({sssp_table}.{vertex_id} = {temp1_name}.{vertex_id}
 						{check_grps_t1})
-				WHERE {sssp_table}.{vertex_id} <> {sssp_table}.parent
+				WHERE {source_vertex} <> {sssp_table}.{vertex_id}
 				""".format(**locals()))
 
 			tmp = temp2_name
@@ -594,9 +546,26 @@ def graph_sssp_get_path(schema_madlib, sssp_table, dest_vertex, path_table,
 			check_grps_t1 = check_grps_t2
 			check_grps_t2 = tmp
 
-			tmp = check_grps_pt1
-			check_grps_pt1 = check_grps_pt2
-			check_grps_pt2 = tmp
+		# Add the source vertex to the beginning of every path and
+		# add the empty arrays for the groups that don't have a path to reach
+		# the destination vertex
+		plpy.execute("""
+			CREATE TABLE {path_table} AS
+			SELECT {grp_comma} {source_vertex} || path AS path
+			FROM {temp2_name}
+			UNION
+			SELECT {grp_comma} '{{}}'::INT[] AS path
+			FROM {sssp_table}
+			WHERE {vertex_id} = {dest_vertex}
+				AND {sssp_table}.parent IS NULL
+			""".format(**locals()))
+
+		out = plpy.execute("SELECT 1 FROM {0} LIMIT 1".format(path_table))
+
+		if out.nrows() == 0:
+			plpy.error(
+				"Graph SSSP: Vertex {0} is not present in the SSSP table {1}".
+				format(dest_vertex,sssp_table))
 
 		plpy.execute("DROP TABLE IF EXISTS {temp1_name}, {temp1_name}".
 			format(**locals()))
@@ -663,7 +632,6 @@ def _validate_get_path(sssp_table, dest_vertex, path_table, **kwargs):
 		"Graph SSSP: Output path table already exists!")
 
 	return None
-
 
 def graph_sssp_help(schema_madlib, message, **kwargs):
 	"""
