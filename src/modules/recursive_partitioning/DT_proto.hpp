@@ -285,6 +285,12 @@ public:
     uint32_type total_n_cat_levels;
     // n_leaf_nodes = 2^{dt.tree_depth-1} for dt.tree_depth > 0
     uint16_type n_leaf_nodes;
+
+    // Not all "leaf" nodes at a tree level are reachable. A leaf becomes
+    // non-reachable when one of its ancestor is itself a leaf.
+    // For a full tree, n_leaf_nodes = n_reachable_leaf_nodes
+    uint16_type n_reachable_leaf_nodes;
+
     // For regression, stats_per_split = 4, i.e. (w, w*y, w*y^2, 1)
     // For classification, stats_per_split = (number of class labels + 1)
     // i.e. (w_1, w_2, ..., w_c, 1)
@@ -305,10 +311,11 @@ public:
     // con_stats and cat_stats are matrices that contain the statistics used
     // during training.
     // cat_stats is a matrix of size:
-    // (n_leaf_nodes) x (total_n_cat_levels * stats_per_split * 2)
+    // (n_reachable_leaf_nodes) x (total_n_cat_levels * stats_per_split * 2)
     Matrix_type cat_stats;
+
     // con_stats is a matrix:
-    // (n_leaf_nodes) x (n_con_features * n_bins * stats_per_split * 2)
+    // (n_reachable_leaf_nodes) x (n_con_features * n_bins * stats_per_split * 2)
     Matrix_type con_stats;
 
     // node_stats is used to keep a statistic of all the rows that land on a
@@ -317,6 +324,13 @@ public:
     // cat_stats/con_stats. In the presence of NULL value, the stats could be
     // different.
     Matrix_type node_stats;
+
+    // Above stats matrices are used as pseudo-sparse matrices since not all
+    // leaf nodes are reachable (esp. as tree gets deeper).
+    // Each lookup vector is of size 'n_leaf_nodes'
+    IntegerVector_type cat_stats_lookup;
+    IntegerVector_type con_stats_lookup;
+    IntegerVector_type node_stats_lookup;
 };
 // ------------------------------------------------------------------------
 

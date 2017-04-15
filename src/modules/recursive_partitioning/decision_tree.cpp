@@ -235,7 +235,14 @@ dt_apply::run(AnyType & args){
     else{
         return_code = TERMINATED;  // indicates termination due to error
     }
+    uint32_t n_valid_nodes = 0;
+    for (Index i=0; i < dt.feature_indices.size(); i++){
+        if (dt.feature_indices(i) != dt.NODE_NON_EXISTING)
+            n_valid_nodes ++;
+    }
 
+    elog(INFO, "Depth = %d, n_valid_nodes = %d",
+         static_cast<int>(dt.tree_depth), n_valid_nodes);
     AnyType output_tuple;
     output_tuple << dt.storage()
                  << return_code
