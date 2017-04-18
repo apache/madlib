@@ -482,9 +482,12 @@ DecisionTree<Container>::expand(const Accumulator &state,
     const uint16_t &sps = state.stats_per_split;  // short form for brevity
     for (Index i=0; i < state.n_leaf_nodes; i++) {
         Index current = n_non_leaf_nodes + i;
+        Index stats_i = static_cast<Index>(state.stats_lookup(i));
+        assert(stats_i >= 0);
+
         if (feature_indices(current) == IN_PROCESS_LEAF) {
             // 1. Set the prediction for current node from stats of all rows
-            predictions.row(current) = state.node_stats.row(i);
+            predictions.row(current) = state.node_stats.row(stats_i);
 
             // 2. Compute the best feature to split current node by
 
@@ -502,14 +505,14 @@ DecisionTree<Container>::expand(const Accumulator &state,
                     // each value of feature
                     Index fv_index = state.indexCatStats(f, v, true);
                     double gain = impurityGain(
-                        state.cat_stats.row(i).segment(fv_index, sps * 2), sps);
+                        state.cat_stats.row(stats_i).
+                            segment(fv_index, sps * 2), sps);
                     if (gain > max_impurity_gain){
                         max_impurity_gain = gain;
                         max_feat = f;
                         max_bin = v;
                         max_is_cat = true;
-                        max_stats = state.cat_stats.row(i).segment(fv_index,
-                                                                   sps * 2);
+                        max_stats = state.cat_stats.row(stats_i).segment(fv_index, sps * 2);
                     }
                 }
             }
@@ -519,14 +522,13 @@ DecisionTree<Container>::expand(const Accumulator &state,
                     // each bin of feature
                     Index fb_index = state.indexConStats(f, b, true);
                     double gain = impurityGain(
-                        state.con_stats.row(i).segment(fb_index, sps * 2), sps);
+                        state.con_stats.row(stats_i).segment(fb_index, sps * 2), sps);
                     if (gain > max_impurity_gain){
                         max_impurity_gain = gain;
                         max_feat = f;
                         max_bin = b;
                         max_is_cat = false;
-                        max_stats = state.con_stats.row(i).segment(fb_index,
-                                                                   sps * 2);
+                        max_stats = state.con_stats.row(stats_i).segment(fb_index, sps * 2);
                     }
                 }
             }
@@ -626,8 +628,8 @@ DecisionTree<Container>::pickSurrogates(
     Matrix cat_stats_counts(state.cat_stats * cat_agg_matrix);
     Matrix con_stats_counts(state.con_stats * con_agg_matrix);
 
-    // cat_stats_counts size = n_nodes x n_cats*2
-    // con_stats_counts size = n_nodes x n_cons*2
+    // cat_stats_counts size = n_reachable_leaf_nodes x n_cats*2
+    // con_stats_counts size = n_reachable_leaf_nodes x n_cons*2
     // *_stats_counts now contains the agreement count for each split where
     // each even col represents forward surrogate split count and
     // each odd col represents reverse surrogate split count.
@@ -641,6 +643,8 @@ DecisionTree<Container>::pickSurrogates(
     for (Index i=0; i < n_surr_nodes; i++){
         Index curr_node = n_ancestors + i;
         assert(curr_node >= 0 && curr_node < feature_indices.size());
+        Index stats_i = static_cast<Index>(state.stats_lookup(i));
+        assert(stats_i >= 0);
 
         if (feature_indices(curr_node) >= 0){
             // 1. Compute the max count and corresponding split threshold for
@@ -652,11 +656,11 @@ DecisionTree<Container>::pickSurrogates(
             for (Index each_cat=0; each_cat < n_cats; each_cat++){
                 Index n_levels = state.cat_levels_cumsum(each_cat) - prev_cum_levels;
                 Index max_label;
-                (cat_stats_counts.row(i).segment(
+                (cat_stats_counts.row(stats_i).segment(
                     prev_cum_levels * 2, n_levels * 2)).maxCoeff(&max_label);
                 cat_max_thres(each_cat) = static_cast<double>(max_label / 2);
                 cat_max_count(each_cat) =
-                        cat_stats_counts(i, prev_cum_levels*2 + max_label);
+                        cat_stats_counts(stats_i, prev_cum_levels*2 + max_label);
                 // every odd col is for reverse, hence i % 2 == 1 for reverse index i
                 cat_max_is_reverse(each_cat) = (max_label % 2 == 1) ? 1 : 0;
                 prev_cum_levels = state.cat_levels_cumsum(each_cat);
@@ -667,11 +671,11 @@ DecisionTree<Container>::pickSurrogates(
             IntegerVector con_max_is_reverse = IntegerVector::Zero(n_cons);
             for (Index each_con=0; each_con < n_cons; each_con++){
                 Index max_label;
-                (con_stats_counts.row(i).segment(
+                (con_stats_counts.row(stats_i).segment(
                         each_con*n_bins*2, n_bins*2)).maxCoeff(&max_label);
                 con_max_thres(each_con) = con_splits(each_con, max_label / 2);
                 con_max_count(each_con) =
-                        con_stats_counts(i, each_con*n_bins*2 + max_label);
+                        con_stats_counts(stats_i, each_con*n_bins*2 + max_label);
                 con_max_is_reverse(each_con) = (max_label % 2 == 1) ? 1 : 0;
             }
 
@@ -756,9 +760,12 @@ DecisionTree<Container>::expand_by_sampling(const Accumulator &state,
 
     for (Index i=0; i < state.n_leaf_nodes; i++) {
         Index current = n_non_leaf_nodes + i;
+        Index stats_i = static_cast<Index>(state.stats_lookup(i));
+        assert(stats_i >= 0);
+
         if (feature_indices(current) == IN_PROCESS_LEAF) {
             // 1. Set the prediction for current node from stats of all rows
-            predictions.row(current) = state.node_stats.row(i);
+            predictions.row(current) = state.node_stats.row(stats_i);
 
             for (int j=0; j<total_cat_con_features; j++) {
                 cat_con_feature_indices[j] = j;
@@ -785,14 +792,16 @@ DecisionTree<Container>::expand_by_sampling(const Accumulator &state,
                         // each value of feature
                         Index fv_index = state.indexCatStats(f, v, true);
                         double gain = impurityGain(
-                            state.cat_stats.row(i).segment(fv_index, sps * 2), sps);
+                            state.cat_stats.row(stats_i).
+                                segment(fv_index, sps * 2),
+                            sps);
                         if (gain > max_impurity_gain){
                             max_impurity_gain = gain;
                             max_feat = f;
                             max_bin = v;
                             max_is_cat = true;
-                            max_stats = state.cat_stats.row(i).segment(fv_index,
-                                                                       sps * 2);
+                            max_stats = state.cat_stats.row(stats_i).
+                                            segment(fv_index, sps * 2);
                         }
                     }
 
@@ -804,14 +813,16 @@ DecisionTree<Container>::expand_by_sampling(const Accumulator &state,
                         // each bin of feature
                         Index fb_index = state.indexConStats(f, b, true);
                         double gain = impurityGain(
-                            state.con_stats.row(i).segment(fb_index, sps * 2), sps);
+                            state.con_stats.row(stats_i).
+                                segment(fb_index, sps * 2),
+                            sps);
                         if (gain > max_impurity_gain){
                             max_impurity_gain = gain;
                             max_feat = f;
                             max_bin = b;
                             max_is_cat = false;
-                            max_stats = state.con_stats.row(i).segment(fb_index,
-                                                                       sps * 2);
+                            max_stats = state.con_stats.row(stats_i).
+                                            segment(fb_index, sps * 2);
                         }
                     }
                 }
@@ -1520,8 +1531,8 @@ TreeAccumulator<Container, DTree>::TreeAccumulator(
  * there is no guarantee yet that the element can indeed be accessed. It is
  * cruicial to first check this.
  *
- * Provided that this methods correctly lists all member variables, all other
- * methods can, however, rely on that fact that all variables are correctly
+ * Provided that this method correctly lists all member variables, all other
+ * methods can rely on that fact that all variables are correctly
  * initialized and accessible.
  */
 template <class Container, class DTree>
@@ -1536,6 +1547,7 @@ TreeAccumulator<Container, DTree>::bind(ByteStream_type& inStream) {
              >> n_con_features
              >> total_n_cat_levels
              >> n_leaf_nodes
+             >> n_reachable_leaf_nodes
              >> stats_per_split
              >> weights_as_rows ;
 
@@ -1543,7 +1555,8 @@ TreeAccumulator<Container, DTree>::bind(ByteStream_type& inStream) {
     uint16_t n_cat = 0;
     uint16_t n_con = 0;
     uint32_t tot_levels = 0;
-    uint16_t n_leafs = 0;
+    uint16_t n_leaves = 0;
+    uint16_t n_reachable_leaves = 0;
     uint16_t n_stats = 0;
 
     if (!n_rows.isNull()){
@@ -1551,15 +1564,17 @@ TreeAccumulator<Container, DTree>::bind(ByteStream_type& inStream) {
         n_cat = n_cat_features;
         n_con = n_con_features;
         tot_levels = total_n_cat_levels;
-        n_leafs = n_leaf_nodes;
+        n_leaves = n_leaf_nodes;
+        n_reachable_leaves = n_reachable_leaf_nodes;
         n_stats = stats_per_split;
     }
 
     inStream
         >> cat_levels_cumsum.rebind(n_cat)
-        >> cat_stats.rebind(n_leafs, tot_levels * n_stats * 2)
-        >> con_stats.rebind(n_leafs, n_con * n_bins_tmp * n_stats * 2)
-        >> node_stats.rebind(n_leafs, n_stats);
+        >> cat_stats.rebind(n_reachable_leaves, tot_levels * n_stats * 2)
+        >> con_stats.rebind(n_reachable_leaves, n_con * n_bins_tmp * n_stats * 2)
+        >> node_stats.rebind(n_reachable_leaves, n_stats)
+        >> stats_lookup.rebind(n_leaves);
 }
 // -------------------------------------------------------------------------
 
@@ -1574,7 +1589,8 @@ void
 TreeAccumulator<Container, DTree>::rebind(
         uint16_t in_n_bins, uint16_t in_n_cat_feat,
         uint16_t in_n_con_feat, uint32_t in_n_total_levels,
-        uint16_t tree_depth, uint16_t in_n_stats, bool in_weights_as_rows) {
+        uint16_t tree_depth, uint16_t in_n_stats,
+        bool in_weights_as_rows, uint16_t n_reachable_leaves) {
 
     n_bins = in_n_bins;
     n_cat_features = in_n_cat_feat;
@@ -1585,6 +1601,10 @@ TreeAccumulator<Container, DTree>::rebind(
         n_leaf_nodes = static_cast<uint16_t>(pow(2, tree_depth - 1));
     else
         n_leaf_nodes = 1;
+    if (n_reachable_leaves >= n_leaf_nodes)
+        n_reachable_leaf_nodes = n_leaf_nodes;
+    else
+        n_reachable_leaf_nodes = n_reachable_leaves;
     stats_per_split = in_n_stats;
     this->resize();
 }
@@ -1710,8 +1730,7 @@ TreeAccumulator<Container, DTree>::operator<<(const surr_tuple_type& inTuple) {
             if (dt.feature_indices(dt_parent_index) >= 0){
                 Index row_index = dt_parent_index - n_non_surr_nodes;
 
-                assert(row_index >= 0 && row_index < cat_stats.rows() &&
-                       row_index < con_stats.rows());
+                assert(row_index >= 0 && row_index < stats_lookup.rows());
 
                 for (Index i=0; i < n_cat_features; ++i){
                     if (is_primary_cat && i == primary_index)
@@ -1800,7 +1819,8 @@ TreeAccumulator<Container, DTree>::updateNodeStats(bool is_regression,
         stats(static_cast<uint16_t>(response)) = weight;
         stats.tail(1)(0) = n_rows;
     }
-    node_stats.row(node_index) += stats;
+    assert(stats_lookup(node_index) >= 0);
+    node_stats.row(stats_lookup(node_index)) += stats;
 }
 // -------------------------------------------------------------------------
 
@@ -1826,11 +1846,12 @@ TreeAccumulator<Container, DTree>::updateStats(bool is_regression,
         stats(static_cast<uint16_t>(response)) = weight;
         stats.tail(1)(0) = n_rows;
     }
-
+    Index stats_i = stats_lookup(row_index);
+    assert(stats_i >= 0);
     if (is_cat) {
-        cat_stats.row(row_index).segment(stats_index, stats_per_split) += stats;
+        cat_stats.row(stats_i).segment(stats_index, stats_per_split) += stats;
     } else {
-        con_stats.row(row_index).segment(stats_index, stats_per_split) += stats;
+        con_stats.row(stats_i).segment(stats_index, stats_per_split) += stats;
     }
 }
 // -------------------------------------------------------------------------
@@ -1854,10 +1875,12 @@ TreeAccumulator<Container, DTree>::updateSurrStats(
     else
         stats << 0, dup_count;
 
+    Index stats_i = stats_lookup(row_index);
+    assert(stats_i >= 0);
     if (is_cat) {
-        cat_stats.row(row_index).segment(stats_index, stats_per_split) += stats;
+        cat_stats.row(stats_i).segment(stats_index, stats_per_split) += stats;
     } else {
-        con_stats.row(row_index).segment(stats_index, stats_per_split) += stats;
+        con_stats.row(stats_i).segment(stats_index, stats_per_split) += stats;
     }
 }
 // -------------------------------------------------------------------------
@@ -1881,7 +1904,8 @@ TreeAccumulator<Container, DTree>::indexCatStats(Index feature_index,
                                                  int   cat_value,
                                                  bool  is_split_true) const {
     // cat_stats is a matrix
-    //   size = (n_leaf_nodes) x (total_n_cat_levels * stats_per_split * 2)
+    //   size = (n_reachable_leaf_nodes) x
+    //                  (total_n_cat_levels * stats_per_split * 2)
     assert(feature_index < n_cat_features);
     unsigned int cat_cumsum_value = (feature_index == 0) ? 0 : cat_levels_cumsum(feature_index - 1);
     return computeSubIndex(static_cast<Index>(cat_cumsum_value),

@@ -245,7 +245,8 @@ public:
     void bind(ByteStream_type& inStream);
     void rebind(uint16_t n_bins, uint16_t n_cat_feat,
                 uint16_t n_con_feat, uint32_t n_total_levels,
-                uint16_t tree_depth, uint16_t n_stats, bool weights_as_rows);
+                uint16_t tree_depth, uint16_t n_stats, bool weights_as_rows,
+                uint16_t n_reachable_leaf_nodes);
 
     TreeAccumulator& operator<<(const tuple_type& inTuple);
     TreeAccumulator& operator<<(const surr_tuple_type& inTuple);
@@ -327,10 +328,7 @@ public:
 
     // Above stats matrices are used as pseudo-sparse matrices since not all
     // leaf nodes are reachable (esp. as tree gets deeper).
-    // Each lookup vector is of size 'n_leaf_nodes'
-    IntegerVector_type cat_stats_lookup;
-    IntegerVector_type con_stats_lookup;
-    IntegerVector_type node_stats_lookup;
+    IntegerVector_type stats_lookup;
 };
 // ------------------------------------------------------------------------
 
