@@ -1136,7 +1136,7 @@ DecisionTree<Container>::displayLeafNode(
                     n_elem = NUM_PER_LINE;
                 } else {
                     // less than NUM_PER_LINE left, avoid reading past the end
-                    n_elem = pred_size - i;
+                    n_elem = static_cast<uint16_t>(pred_size - i);
                 }
                 display_str << predictions.row(id).segment(i, n_elem) << "\n";
             }
@@ -1180,7 +1180,7 @@ DecisionTree<Container>::displayInternalNode(
         size_t to_skip = 0;
         for (Index i=0; i < feature_indices(id); i++)
             to_skip += cat_n_levels[i];
-        const size_t index = to_skip + feature_thresholds(id);
+        const size_t index = to_skip + static_cast<size_t>(feature_thresholds(id));
         label_str << get_text(cat_levels_text, index);
     }
 
@@ -1206,7 +1206,7 @@ DecisionTree<Container>::displayInternalNode(
                     // not overflowing the vector
                     n_elem = NUM_PER_LINE;
                 } else {
-                    n_elem = pred_size - i;
+                    n_elem = static_cast<uint16_t>(pred_size - i);
                 }
                 display_str << predictions.row(id).segment(i, n_elem) << "\n";
             }
