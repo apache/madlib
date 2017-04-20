@@ -154,7 +154,6 @@ compute_leaf_stats_transition::run(AnyType & args){
     }
 
     if (state.empty()){
-
         // To initialize the accumulator, first find which of the leaf nodes
         // in current tree are actually reachable.
         // The lookup vector maps the leaf node index in a (fictional) complete
@@ -162,7 +161,7 @@ compute_leaf_stats_transition::run(AnyType & args){
         ColumnVector leaf_feature_indices =
             dt.feature_indices.tail(dt.feature_indices.size()/2 + 1).cast<double>();
         ColumnVector leaf_node_lookup(leaf_feature_indices.size());
-        Index n_leaves_not_finished = 0;
+        size_t n_leaves_not_finished = 0;
         for (Index i=0; i < leaf_feature_indices.size(); i++){
             if ((leaf_feature_indices(i) != dt.NODE_NON_EXISTING) &&
                     (leaf_feature_indices(i) != dt.FINISHED_LEAF)){
@@ -187,7 +186,7 @@ compute_leaf_stats_transition::run(AnyType & args){
                      static_cast<uint16_t>(dt.tree_depth),
                      stats_per_split,
                      weights_as_rows,
-                     n_leaves_not_finished
+                     static_cast<uint32_t>(n_leaves_not_finished)
                     );
         for (Index i=0; i < state.stats_lookup.size(); i++)
             state.stats_lookup(i) = leaf_node_lookup(i);
@@ -265,8 +264,6 @@ dt_apply::run(AnyType & args){
             n_valid_nodes ++;
     }
 
-    elog(INFO, "Depth = %d, n_valid_nodes = %d",
-         static_cast<int>(dt.tree_depth), n_valid_nodes);
     AnyType output_tuple;
     output_tuple << dt.storage()
                  << return_code

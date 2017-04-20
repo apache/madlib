@@ -246,7 +246,7 @@ public:
     void rebind(uint16_t n_bins, uint16_t n_cat_feat,
                 uint16_t n_con_feat, uint32_t n_total_levels,
                 uint16_t tree_depth, uint16_t n_stats, bool weights_as_rows,
-                uint16_t n_reachable_leaf_nodes);
+                uint32_t n_reachable_leaf_nodes);
 
     TreeAccumulator& operator<<(const tuple_type& inTuple);
     TreeAccumulator& operator<<(const surr_tuple_type& inTuple);
@@ -285,12 +285,12 @@ public:
     // sum of num of levels in each categorical variable
     uint32_type total_n_cat_levels;
     // n_leaf_nodes = 2^{dt.tree_depth-1} for dt.tree_depth > 0
-    uint16_type n_leaf_nodes;
+    uint32_type n_leaf_nodes;
 
     // Not all "leaf" nodes at a tree level are reachable. A leaf becomes
     // non-reachable when one of its ancestor is itself a leaf.
     // For a full tree, n_leaf_nodes = n_reachable_leaf_nodes
-    uint16_type n_reachable_leaf_nodes;
+    uint32_type n_reachable_leaf_nodes;
 
     // For regression, stats_per_split = 4, i.e. (w, w*y, w*y^2, 1)
     // For classification, stats_per_split = (number of class labels + 1)

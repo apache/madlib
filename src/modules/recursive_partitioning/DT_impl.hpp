@@ -475,7 +475,7 @@ DecisionTree<Container>::expand(const Accumulator &state,
                                 const uint16_t &min_split,
                                 const uint16_t &min_bucket,
                                 const uint16_t &max_depth) {
-    uint16_t n_non_leaf_nodes = static_cast<uint16_t>(state.n_leaf_nodes - 1);
+    uint32_t n_non_leaf_nodes = static_cast<uint16_t>(state.n_leaf_nodes - 1);
     bool children_not_allocated = true;
     bool children_wont_split = true;
 
@@ -637,8 +637,8 @@ DecisionTree<Container>::pickSurrogates(
     // Number of nodes in a last layer = 2^(tree_depth-1). (since depth starts from 1)
     // For n_surr_nodes, we need number of nodes in 2nd last layer,
     // so we use 2^(tree_depth-2)
-    uint16_t n_surr_nodes = static_cast<uint16_t>(pow(2, tree_depth - 2));
-    uint16_t n_ancestors = static_cast<uint16_t>(n_surr_nodes - 1);
+    uint32_t n_surr_nodes = static_cast<uint32_t>(pow(2, tree_depth - 2));
+    uint32_t n_ancestors = static_cast<uint32_t>(n_surr_nodes - 1);
 
     for (Index i=0; i < n_surr_nodes; i++){
         Index curr_node = n_ancestors + i;
@@ -744,7 +744,7 @@ DecisionTree<Container>::expand_by_sampling(const Accumulator &state,
                                 const uint16_t &max_depth,
                                 const int &n_random_features) {
 
-    uint16_t n_non_leaf_nodes = static_cast<uint16_t>(state.n_leaf_nodes - 1);
+    uint32_t n_non_leaf_nodes = static_cast<uint32_t>(state.n_leaf_nodes - 1);
     bool children_not_allocated = true;
     bool children_wont_split = true;
 
@@ -1072,7 +1072,7 @@ DecisionTree<Container>::recomputeTreeDepth() const{
         return tree_depth;
 
     for(uint16_t depth_counter = 2; depth_counter <= tree_depth; depth_counter++){
-        uint32_t n_leaf_nodes = static_cast<uint16_t>(pow(2, depth_counter - 1));
+        uint32_t n_leaf_nodes = static_cast<uint32_t>(pow(2, depth_counter - 1));
         uint32_t leaf_start_index = n_leaf_nodes - 1;
         bool all_non_existing = true;
         for (uint32_t leaf_index=0; leaf_index < n_leaf_nodes; leaf_index++){
@@ -1555,8 +1555,8 @@ TreeAccumulator<Container, DTree>::bind(ByteStream_type& inStream) {
     uint16_t n_cat = 0;
     uint16_t n_con = 0;
     uint32_t tot_levels = 0;
-    uint16_t n_leaves = 0;
-    uint16_t n_reachable_leaves = 0;
+    uint32_t n_leaves = 0;
+    uint32_t n_reachable_leaves = 0;
     uint16_t n_stats = 0;
 
     if (!n_rows.isNull()){
@@ -1590,7 +1590,7 @@ TreeAccumulator<Container, DTree>::rebind(
         uint16_t in_n_bins, uint16_t in_n_cat_feat,
         uint16_t in_n_con_feat, uint32_t in_n_total_levels,
         uint16_t tree_depth, uint16_t in_n_stats,
-        bool in_weights_as_rows, uint16_t n_reachable_leaves) {
+        bool in_weights_as_rows, uint32_t n_reachable_leaves) {
 
     n_bins = in_n_bins;
     n_cat_features = in_n_cat_feat;
@@ -1598,7 +1598,7 @@ TreeAccumulator<Container, DTree>::rebind(
     total_n_cat_levels = in_n_total_levels;
     weights_as_rows = in_weights_as_rows;
     if (tree_depth > 0)
-        n_leaf_nodes = static_cast<uint16_t>(pow(2, tree_depth - 1));
+        n_leaf_nodes = static_cast<uint32_t>(pow(2, tree_depth - 1));
     else
         n_leaf_nodes = 1;
     if (n_reachable_leaves >= n_leaf_nodes)
@@ -1638,7 +1638,7 @@ TreeAccumulator<Container, DTree>::operator<<(const tuple_type& inTuple) {
         } else if (n_con_features != static_cast<uint16_t>(con_features.size())) {
             warning("Inconsistent numbers of continuous independent variables.");
         } else{
-            uint16_t n_non_leaf_nodes = static_cast<uint16_t>(n_leaf_nodes - 1);
+            uint32_t n_non_leaf_nodes = static_cast<uint32_t>(n_leaf_nodes - 1);
             Index dt_search_index = dt.search(cat_features, con_features);
             if (dt.feature_indices(dt_search_index) != dt.FINISHED_LEAF &&
                    dt.feature_indices(dt_search_index) != dt.NODE_NON_EXISTING) {
@@ -1707,8 +1707,8 @@ TreeAccumulator<Container, DTree>::operator<<(const surr_tuple_type& inTuple) {
     } else{
         // the accumulator is setup to train for the 2nd last layer
         // hence the n_leaf_nodes is same as n_surr_nodes
-        uint16_t n_surr_nodes = n_leaf_nodes;
-        uint16_t n_non_surr_nodes = static_cast<uint16_t>(n_surr_nodes - 1);
+        uint32_t n_surr_nodes = n_leaf_nodes;
+        uint32_t n_non_surr_nodes = static_cast<uint32_t>(n_surr_nodes - 1);
 
         Index dt_parent_index = dt.parentIndex(dt.search(cat_features, con_features));
 
