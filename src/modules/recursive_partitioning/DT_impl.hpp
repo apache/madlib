@@ -475,17 +475,17 @@ DecisionTree<Container>::expand(const Accumulator &state,
                                 const uint16_t &min_split,
                                 const uint16_t &min_bucket,
                                 const uint16_t &max_depth) {
-    uint32_t n_non_leaf_nodes = static_cast<uint16_t>(state.n_leaf_nodes - 1);
+    uint32_t n_non_leaf_nodes = static_cast<uint32_t>(state.n_leaf_nodes - 1);
     bool children_not_allocated = true;
     bool children_wont_split = true;
 
     const uint16_t &sps = state.stats_per_split;  // short form for brevity
     for (Index i=0; i < state.n_leaf_nodes; i++) {
         Index current = n_non_leaf_nodes + i;
-        Index stats_i = static_cast<Index>(state.stats_lookup(i));
-        assert(stats_i >= 0);
-
         if (feature_indices(current) == IN_PROCESS_LEAF) {
+            Index stats_i = static_cast<Index>(state.stats_lookup(i));
+            assert(stats_i >= 0);
+
             // 1. Set the prediction for current node from stats of all rows
             predictions.row(current) = state.node_stats.row(stats_i);
 
@@ -550,7 +550,8 @@ DecisionTree<Container>::expand(const Accumulator &state,
                 }
                 children_wont_split &=
                     updatePrimarySplit(
-                        current, static_cast<int>(max_feat),
+                        current,
+                        static_cast<int>(max_feat),
                         max_threshold, max_is_cat,
                         min_split,
                         max_stats.segment(0, sps),   // true_stats
