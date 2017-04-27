@@ -1023,10 +1023,11 @@ def parse_arguments():
                   reinstall      : performs uninstall and install
                   version        : compare and print MADlib version (binaries vs database objects)
                   install-check  : test all installed modules
+                  dev-check      : test all installed modules, for developers, covering larger test cases
 
                   (uninstall is currently unavailable for the HAWQ port)"""
     choice_list = ['install', 'update', 'upgrade', 'uninstall',
-                   'reinstall', 'version', 'install-check']
+                   'reinstall', 'version', 'install-check', 'dev-check']
 
     parser.add_argument('command', metavar='COMMAND', nargs=1,
                         choices=choice_list, help=help_msg)
@@ -1060,7 +1061,7 @@ def parse_arguments():
                         help="Temporary directory location for installation log files.")
 
     parser.add_argument('-t', '--testcase', dest='testcase', default="",
-                        help="Module names to test, comma separated. Effective only for install-check.")
+                        help="Module names to test, comma separated. Effective only for install-check and dev-check.")
 
     # Get the arguments
     return parser.parse_args()
@@ -1377,7 +1378,8 @@ def main(argv):
             _error("MADlib upgrade failed.", True)
 
     # COMMAND: install-check
-    if args.command[0] == 'install-check':
+    if args.command[0] in ['install-check', 'dev-check']:
+        test_folder = 'test' if args.command[0] == 'install-check' else 'dev_test'
 
         # 1) Compare OS and DB versions. Continue if OS = DB.
         if _get_rev_num(dbrev) != _get_rev_num(rev):
@@ -1432,7 +1434,7 @@ def main(argv):
             _info("> - %s" % module, verbose)
 
             # Make a temp dir for this module (if doesn't exist)
-            cur_tmpdir = tmpdir + '/' + module + '/test'  # tmpdir is a global variable
+            cur_tmpdir = tmpdir + '/' + module + '/' + test_folder  # tmpdir is a global variable
             _make_dir(cur_tmpdir)
 
             # Find the Python module dir (platform specific or generic)
@@ -1462,7 +1464,7 @@ def main(argv):
                       % (test_user, test_schema, schema)
 
             # Loop through all test SQL files for this module
-            sql_files = maddir_mod_sql + '/' + module + '/test/*.sql_in'
+            sql_files = maddir_mod_sql + '/' + module + '/'+test_folder+'/*.sql_in'
             for sqlfile in sorted(glob.glob(sql_files), reverse=True):
                 # work-around for HAWQ
                 algoname = os.path.basename(sqlfile).split('.')[0]
