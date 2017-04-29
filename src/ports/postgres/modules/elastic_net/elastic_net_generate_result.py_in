@@ -35,9 +35,7 @@ def _elastic_net_generate_result(optimizer, iteration_run, **args):
         cols_types = dict(get_cols_and_types(args["tbl_source"]))
         grouping_str1 = grouping_column + ","
 
-        select_x_mean = ''
-        select_x_std = ''
-        select_y_mean = ''
+        select_mean_and_std = ''
         inner_join_x = ''
         inner_join_y = ''
         if data_scaled:
@@ -53,9 +51,9 @@ def _elastic_net_generate_result(optimizer, iteration_run, **args):
             y_grp_cols = ' AND '.join([
                     'n_tuples_including_nulls_subq.{0}={1}.{2}'.format(grp,
                     args["y_mean_table"], grp) for grp in grouping_cols_list])
-            select_x_mean = ' {0}.mean AS x_mean, '.format(args["x_mean_table"])
-            select_y_mean = ' {0}.mean AS y_mean, '.format(args["y_mean_table"])
-            select_x_std = ' {0}.std AS x_std, '.format(args["x_mean_table"])
+            select_mean_and_std = ' {0}.mean AS x_mean, '.format(args["x_mean_table"]) +\
+                ' {0}.mean AS y_mean, '.format(args["y_mean_table"]) +\
+                ' {0}.std AS x_std, '.format(args["x_mean_table"])
             inner_join_x = ' INNER JOIN {0} ON {1} '.format(
                 args["x_mean_table"], x_grp_cols)
             inner_join_y = ' INNER JOIN {0} ON {1} '.format(
@@ -63,7 +61,7 @@ def _elastic_net_generate_result(optimizer, iteration_run, **args):
         out_table_qstr = """
             SELECT
                 {select_grp}
-                {select_x_mean} {select_x_std} {select_y_mean}
+                {select_mean_and_std}
                 (result).coefficients AS coef,
                 (result).intercept AS intercept
             FROM
@@ -72,7 +70,7 @@ def _elastic_net_generate_result(optimizer, iteration_run, **args):
                         {grouping_str1}
                         array_to_string(ARRAY[{grouping_str}], ',') AS {col_grp_key}
                     FROM {source_table}
-                    GROUP BY {grouping_col}, {col_grp_key}
+                    GROUP BY {grouping_column}, {col_grp_key}
                 ) n_tuples_including_nulls_subq
                 INNER JOIN
                 (
@@ -82,22 +80,8 @@ def _elastic_net_generate_result(optimizer, iteration_run, **args):
                 ) t USING ({col_grp_key})
                 {inner_join_x}
                 {inner_join_y}
-            """.format(result_func=result_func,
-                       tbl_state=tbl_state,
-                       grouping_col=grouping_column,
-                       col_grp_iteration=args["col_grp_iteration"],
-                       iteration_run=iteration_run,
-                       grouping_str1=grouping_str1,
-                       grouping_str=grouping_str,
-                       col_grp_key=col_grp_key,
-                       source_table=source_table,
-                       schema_madlib=args["schema_madlib"],
-                       select_grp=select_grp,
-                       select_x_mean=select_x_mean,
-                       select_y_mean=select_y_mean,
-                       select_x_std=select_x_std,
-                       inner_join_x=inner_join_x,
-                       inner_join_y=inner_join_y)
+            """.format(schema_madlib=args["schema_madlib"],
+                       col_grp_iteration=args["col_grp_iteration"], **locals())
     else:
         # It's a much simpler query when there is no grouping.
         grouping_str1 = ""
@@ -213,7 +197,7 @@ def _restore_scale(coef, intercept, args,
     """
     Restore the original scales
     """
-    if x_mean == None and x_std == None and y_mean == None:
+    if x_mean is None and x_std is None and y_mean is None:
         x_mean = args["x_scales"]["mean"]
         y_mean = args["y_scale"]["mean"]
         x_std = args["x_scales"]["std"]

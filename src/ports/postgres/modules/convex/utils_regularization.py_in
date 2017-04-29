@@ -12,9 +12,11 @@ version_wrapper = __mad_version()
 mad_vec = version_wrapper.select_vecfunc()
 
 # ========================================================================
-def __utils_ind_var_scales(**kwargs):
+
+def __utils_ind_var_scales(tbl_data, col_ind_var, dimension, schema_madlib):
     """
-    The mean and standard deviation for each dimension of an array stored in a column.
+    The mean and standard deviation for each dimension of an array stored
+    in a column.
 
     Returns:
         Dictionary with keys 'mean' and 'std' each with a value of an array of
@@ -31,25 +33,23 @@ def __utils_ind_var_scales(**kwargs):
             FROM
                 {tbl_data}
         ) q2
-        """.format(**kwargs))[0]
+        """.format(**locals()))[0]
     x_scales["mean"] = mad_vec(x_scales["mean"], text=False)
     x_scales["std"] = mad_vec(x_scales["std"], text=False)
     return x_scales
 # ========================================================================
 
-def __utils_ind_var_scales_grouping(**kwargs):
+def __utils_ind_var_scales_grouping(tbl_data, col_ind_var, dimension,
+        schema_madlib, grouping_col, x_mean_table):
     """
-    The mean and standard deviation for each dimension of an array stored in a column.
-
-    Returns:
-        Dictionary with keys 'mean' and 'std' each with a value of an array of
-        the mean and std. dev values respectively.
-
+    The mean and standard deviation for each dimension of an array stored in
+    a column. Creates a table containing the mean (array) and std of each
+    dimension of the independent variable, for each group.
     """
-    group_col = _cast_if_null(kwargs.get('grouping_col', None), unique_string('grp_col'))
+    group_col = _cast_if_null(grouping_col, unique_string('grp_col'))
     x_scales = plpy.execute(
         """
-        CREATE TABLE {x_mean_table} AS
+        CREATE TEMP TABLE {x_mean_table} AS
         SELECT (f).*, {group_col}
         FROM (
             SELECT {group_col},
@@ -59,34 +59,14 @@ def __utils_ind_var_scales_grouping(**kwargs):
                 {tbl_data}
             GROUP BY {group_col}
         ) q2
-        """.format(group_col=group_col, **kwargs))
+        """.format(**locals()))
 # ========================================================================
 
-def __utils_dep_var_scale_grouping_binomial(**kwargs):
-    """
-    The mean and standard deviation for each element of the dependent variable,
-    which is a scalar in ridge and lasso. For Binomial, the mean and std are
-    set to 0 and 1 respectively for each group.
-    """
-    group_col = _cast_if_null(kwargs.get('grouping_col', None),
-        unique_string('grp_col'))
-    plpy.execute(
-        """
-        CREATE TABLE {y_mean_table} AS
-        SELECT {group_col},
-            0 as mean,
-            1 as std
-        from {tbl_data}
-        GROUP BY {group_col}
-        """.format(group_col=group_col, **kwargs))
-# ========================================================================
-
-def __utils_dep_var_scale(**kwargs):
+def __utils_dep_var_scale(schema_madlib, tbl_data, col_ind_var,
+        col_dep_var):
     """
     The mean and standard deviation for each element of the dependent variable,
     which is a scalar in ridge and lasso.
-
-    The output will be stored in a temp table: a mean array and a std array
 
     This function is also used in lasso.
 
@@ -98,53 +78,67 @@ def __utils_dep_var_scale(**kwargs):
     """
     y_scale = plpy.execute(
         """
-        select
-            avg(case when not {schema_madlib}.array_contains_null({col_ind_var}) then {col_dep_var} end) as mean,
-            1 as std
-        from {tbl_data}
-        """.format(**kwargs))[0]
+        SELECT
+            avg(CASE WHEN NOT {schema_madlib}.array_contains_null({col_ind_var}) THEN {col_dep_var} END) AS mean,
+            1 AS std
+        FROM {tbl_data}
+        """.format(**locals()))[0]
     return y_scale
 # ========================================================================
 
-def __utils_dep_var_scale_grouping(**kwargs):
+def __utils_dep_var_scale_grouping(y_mean_table, tbl_data, grouping_col,
+        family, schema_madlib=None, col_ind_var=None, col_dep_var=None):
     """
     The mean and standard deviation for each element of the dependent variable,
-    which is a scalar in ridge and lasso.
+    w.r.t a group, which is a scalar in ridge and lasso.
 
-    The output will be stored in a temp table: a mean array and a std array
+    The output will be stored in a temp table: a mean array and a std array,
+    for each group.
+    If the family is Binomial, mean and std for each group is set to 0 and 1
+    respectively.
 
     This function is also used in lasso.
 
     Parameters:
+    y_mean_table -- name of the output table to write into
+    tbl_data -- input table
+    grouping_col -- the columns to group the data on
+    family -- if family is Gaussian, ALL following parameters must be defined
     schema_madlib -- madlib schema
-    tbl_data -- original data
     col_ind_var -- independent variables column
     col_dep_var -- dependent variable column
     """
-    group_col = _cast_if_null(kwargs.get('grouping_col', None),
-        unique_string('grp_col'))
+    group_col = _cast_if_null(grouping_col, unique_string('grp_col'))
+    if family == 'binomial':
+        mean_str = '0'
+    else:
+        # If the family is Gaussian, schema_madlib, col_ind_var and
+        # col_dep_var must be passed along.
+        if schema_madlib is None or col_ind_var is None or col_dep_var is None:
+            plpy.error("Schema name, indpendent column and dependent column names required.")
+        mean_str = ' avg(CASE WHEN NOT {0}.array_contains_null({1}) THEN {2} END) '.format(
+                schema_madlib, col_ind_var, col_dep_var)
     plpy.execute(
         """
-        CREATE TABLE {y_mean_table} AS
+        CREATE TEMP TABLE {y_mean_table} AS
         SELECT {group_col},
-            avg(case when not {schema_madlib}.array_contains_null({col_ind_var}) then {col_dep_var} end) as mean,
-            1 as std
-        from {tbl_data}
+            {mean_str} AS mean,
+            1 AS std
+        FROM {tbl_data}
         GROUP BY {group_col}
-        """.format(group_col=group_col, **kwargs))
+        """.format(**locals()))
 # ========================================================================
 
 def __utils_normalize_data_grouping(y_decenter=True, **kwargs):
     """
-    Normalize the independent and dependent variables using the calculated mean's and std's
-    in __utils_ind_var_scales and __utils_dep_var_scale.
+    Normalize the independent and dependent variables using the calculated
+    mean's and std's in __utils_ind_var_scales and __utils_dep_var_scale.
 
-    Compute the scaled variables by: scaled_value = (origin_value - mean) / std, and special
-    care is needed if std is zero.
+    Compute the scaled variables by: scaled_value = (origin_value - mean) / std,
+    and special care is needed if std is zero.
 
-    The output is a table with scaled independent and dependent variables.
-
-    This function is also used in lasso.
+    The output is a table with scaled independent and dependent variables,
+    based on mean and std for each group. This function is also used in lasso.
 
     Parameters:
     tbl_data -- original data
@@ -156,6 +150,9 @@ def __utils_normalize_data_grouping(y_decenter=True, **kwargs):
     tbl_data_scaled -- scaled data result
     col_ind_var_norm_new -- create a new name for the scaled array
                        to be compatible with array[...] expressions
+    x_mean_table -- name of the table containing mean of 'x' for each group
+    y_mean_table -- name of the table containing mean of 'y' for each group
+    grouping_col -- columns to group the data on
     """
     group_col = kwargs.get('grouping_col')
     group_col_list = split_quoted_delimited_str(group_col)
@@ -166,15 +163,15 @@ def __utils_normalize_data_grouping(y_decenter=True, **kwargs):
     ydecenter_str = "- __y__.mean".format(**kwargs) if y_decenter else ""
     plpy.execute(
         """
-        create temp table {tbl_data_scaled} as
-            select
+        CREATE TEMP TABLE {tbl_data_scaled} AS
+            SELECT
                 ({schema_madlib}.utils_normalize_data({col_ind_var},
                                             __x__.mean::double precision[],
                                             __x__.std::double precision[]))
-                    as {col_ind_var_norm_new},
-                ({col_dep_var} {ydecenter_str})  as {col_dep_var_norm_new},
+                    AS {col_ind_var_norm_new},
+                ({col_dep_var} {ydecenter_str})  AS {col_dep_var_norm_new},
                 {tbl_data}.{group_col}
-            from {tbl_data}
+            FROM {tbl_data}
             INNER JOIN {x_mean_table} AS __x__ ON {group_where_x}
             INNER JOIN {y_mean_table} AS __y__ ON {group_where_y}
         """.format(ydecenter_str=ydecenter_str, group_col=group_col,
@@ -208,19 +205,18 @@ def __utils_normalize_data(y_decenter=True, **kwargs):
     ydecenter_str = "- {y_mean}".format(**kwargs) if y_decenter else ""
     plpy.execute(
         """
-        create temp table {tbl_data_scaled} as
-            select
+        CREATE TEMP TABLE {tbl_data_scaled} AS
+            SELECT
                 ({schema_madlib}.utils_normalize_data({col_ind_var},
                                             '{x_mean_str}'::double precision[],
                                             '{x_std_str}'::double precision[]))
-                    as {col_ind_var_norm_new},
-                ({col_dep_var} {ydecenter_str})  as {col_dep_var_norm_new}
-            from {tbl_data}
+                    AS {col_ind_var_norm_new},
+                ({col_dep_var} {ydecenter_str})  AS {col_dep_var_norm_new}
+            FROM {tbl_data}
         """.format(ydecenter_str=ydecenter_str, **kwargs))
 
     return None
 # ========================================================================
-
 
 def __utils_cv_preprocess(kwargs):
     """

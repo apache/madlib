@@ -9,7 +9,6 @@ from convex.utils_regularization import __utils_normalize_data
 from convex.utils_regularization import __utils_ind_var_scales_grouping
 from convex.utils_regularization import __utils_dep_var_scale_grouping
 from convex.utils_regularization import __utils_normalize_data_grouping
-from convex.utils_regularization import __utils_dep_var_scale_grouping_binomial
 from utilities.validate_args import table_exists
 
 from collections import namedtuple
@@ -195,37 +194,26 @@ def _elastic_net_validate_args(tbl_source, col_ind_var, col_dep_var,
 # ------------------------------------------------------------------------
 
 def _compute_data_scales_grouping(args):
-    __utils_ind_var_scales_grouping(tbl_data=args["tbl_source"],
-        col_ind_var=args["col_ind_var"], dimension=args["dimension"],
-        schema_madlib=args["schema_madlib"],
-        grouping_col=args["grouping_col"],
-        x_mean_table=args["x_mean_table"])
+    __utils_ind_var_scales_grouping(args["tbl_source"], args["col_ind_var"],
+        args["dimension"], args["schema_madlib"], args["grouping_col"],
+        args["x_mean_table"])
     if args["family"] == "binomial":
         # set mean and std to 0 and 1 respectively, for each group.
-        __utils_dep_var_scale_grouping_binomial(
-            tbl_data=args["tbl_source"],
-            grouping_col=args["grouping_col"],
-            y_mean_table=args["y_mean_table"])
+        __utils_dep_var_scale_grouping(args["y_mean_table"],
+            args["tbl_source"], args["grouping_col"], args["family"])
     else:
-        __utils_dep_var_scale_grouping(schema_madlib=args["schema_madlib"],
-            tbl_data=args["tbl_source"],
-            col_ind_var=args["col_ind_var"],
-            col_dep_var=args["col_dep_var"],
-            grouping_col=args["grouping_col"],
-            y_mean_table=args["y_mean_table"])
+        __utils_dep_var_scale_grouping(args["y_mean_table"],
+            args["tbl_source"], args["grouping_col"], args["family"],
+            args["schema_madlib"], args["col_ind_var"], args["col_dep_var"])
 
 def _compute_data_scales(args):
-    args["x_scales"] = __utils_ind_var_scales(tbl_data=args["tbl_source"],
-        col_ind_var=args["col_ind_var"], dimension=args["dimension"],
-        schema_madlib=args["schema_madlib"])
-
+    args["x_scales"] = __utils_ind_var_scales(args["tbl_source"],
+        args["col_ind_var"], args["dimension"], args["schema_madlib"])
     if args["family"] == "binomial":
         args["y_scale"] = dict(mean=0, std=1)
     else:
-        args["y_scale"] = __utils_dep_var_scale(
-            schema_madlib=args["schema_madlib"],
-            tbl_data=args["tbl_source"], col_ind_var=args["col_ind_var"],
-            col_dep_var=args["col_dep_var"])
+        args["y_scale"] = __utils_dep_var_scale(args["schema_madlib"],
+            args["tbl_source"], args["col_ind_var"], args["col_dep_var"])
 
     args["xmean_str"] = _array_to_string(args["x_scales"]["mean"])
 # ------------------------------------------------------------------------
@@ -240,7 +228,14 @@ def _normalize_data(args):
     """
     y_decenter = True if args["family"] == "gaussian" else False
     if args["grouping_col"]:
+        # When grouping_col is defined, we must find an array containing
+        # the mean of every dimension in the independent variable (x), the
+        # mean of dependent variable (y) and the standard deviation for them
+        # specific to groups. Store these results in temp tables x_mean_table
+        # and y_mean_table.
         _compute_data_scales_grouping(args)
+        # __utils_normalize_data_grouping reads the various means and stds
+        # from the tables.
         __utils_normalize_data_grouping(y_decenter=y_decenter,
                                tbl_data=args["tbl_source"],
                                col_ind_var=args["col_ind_var"],
@@ -253,6 +248,9 @@ def _normalize_data(args):
                                y_mean_table=args["y_mean_table"],
                                grouping_col=args["grouping_col"])
     else:
+        # When no grouping_col is defined, the mean and std for both 'x' and
+        # 'y' can be defined using strings, stored in x_mean_str, x_std_str
+        # etc. We don't need a table like how we needed for grouping.
         _compute_data_scales(args)
         __utils_normalize_data(y_decenter=y_decenter,
                                tbl_data=args["tbl_source"],
