@@ -97,7 +97,9 @@ def _add_test_case(out_log, test_results):
                   'status="{t.status}" time="{d}">'.
                   format(t=t, d=duration)]
         if t.status == "FAIL":
-            output.append('<failure>{0}</failure>'.format(t.message))
+            output.append("""<failure><![CDATA[
+                          {0}
+                          ]]></failure>""".format(t.message))
         output.append('</testcase>')
         out_log.write('\n'.join(output))
 
