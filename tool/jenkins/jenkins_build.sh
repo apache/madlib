@@ -92,4 +92,4 @@ echo "-------------------------------"
 cat <<EOF
 python incubator-madlib/tool/jenkins/junit_export.py $workdir/logs/madlib_install_check.log $workdir/logs/madlib_install_check.xml
 EOF
-python incubator-madlib/tool/jenkins/junit_export.py $workdir/logs/madlib_install_check.log $workdir/logs/madlib_install_check.xml
+python incubator-madlib/tool/jenkins/junit_export.py $workdir $workdir/logs/madlib_install_check.log $workdir/logs/madlib_install_check.xml
