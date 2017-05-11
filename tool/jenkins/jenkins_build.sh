@@ -40,6 +40,7 @@ docker rm madlib
 
 echo "Creating docker container"
 # Pull down the base docker images
+echo "docker pull madlib/postgres_9.6:jenkins"
 docker pull madlib/postgres_9.6:jenkins
 # Launch docker container with volume mounted from workdir
 echo "-------------------------------"
@@ -69,11 +70,15 @@ mkdir -p $workdir/tmp
 docker exec madlib /build/src/bin/madpack -p postgres  -c postgres/postgres@localhost:5432/postgres -d $workdir/tmp install-check | tee $workdir/logs/madlib_install_check.log
 EOF
 docker exec madlib /build/src/bin/madpack -p postgres -c postgres/postgres@localhost:5432/postgres install | tee $workdir/logs/madlib_install.log
-docker exec madlib /build/src/bin/madpack -p postgres  -c postgres/postgres@localhost:5432/postgres install-check | tee $workdir/logs/madlib_install_check.log
+
+docker exec madlib bash -c 'mkdir /tmp'
+docker exec madlib /build/src/bin/madpack -p postgres  -c postgres/postgres@localhost:5432/postgres -d /tmp install-check | tee $workdir/logs/madlib_install_check.log
 
 echo "--------- Copying packages -----------------"
 echo "docker cp madlib:build $workdir"
 docker cp madlib:build $workdir
+echo "docker cp madlib:tmp $workdir"
+docker cp madlib:tmp $workdir
 
 echo "-------------------------------"
 echo "ls -la"
