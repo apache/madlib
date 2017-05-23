@@ -348,18 +348,18 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
         # PageRank values.
         plpy.execute("""
                 CREATE TABLE {nodes_with_no_incoming_edges} AS
-                SELECT __t1__.*, {vpg}.{random_prob} AS pagerank
-                FROM (SELECT {grouping_cols}, {src} AS {vertex_id}
-                      FROM {edge_temp_table}) __t1__ {vpg_from_clause_ins}
-                WHERE ({t1group} __t1__.{vertex_id}) NOT IN (
-                    SELECT {grouping_cols}, {dest}
-                    FROM {edge_temp_table}
-                    GROUP BY {gb})
-                    {vpg_where_clause_ins}
-            """.format(t1group=','.join(['__t1__.{0}'.format(col)
-                        for col in grouping_cols_list])+',',
-                    gb=','.join([str(i)
-                        for i in range(1,len(grouping_cols_list)+2)]),
+                SELECT {select_group_cols}, __t1__.{src} AS {vertex_id},
+                        {vpg}.{random_prob} AS pagerank
+                FROM {edge_temp_table} AS __t1__ {vpg_from_clause_ins}
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM {edge_temp_table} AS __t2__
+                    WHERE __t1__.{src}=__t2__.{dest} AND {where_group_clause}
+                ) {vpg_where_clause_ins}
+            """.format(select_group_cols=','.join(['__t1__.{0}'.format(col)
+                        for col in grouping_cols_list]),
+                    where_group_clause=' AND '.join(['__t1__.{0}=__t2__.{0}'.format(col)
+                        for col in grouping_cols_list]),
                     **locals()))
     else:
         # cur and out_cnts tables can be simpler when no grouping is involved.
