@@ -183,6 +183,9 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
     message_grp_where_ins = ''
     ignore_group_clause_ins = ''
 
+    nodes_with_no_incoming_edges = unique_string(desp='no_incoming')
+    ignore_group_clause_ins_noincoming = ''
+
     grouping_cols_select_conv = '{0}.{1}'.format(cur, vertex_id)
     group_by_grouping_cols_conv = ''
     message_grp_clause_conv = ''
@@ -271,8 +274,8 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
         vpg_join_clause = ' AND '.join(
             ["{edge_temp_table}.{col}={vpg}.{col}".format(**locals())
                 for col in grouping_cols_list])
-        vpg_cur_join_clause = ' AND '.join(
-            ["{cur}.{col}={vpg}.{col}".format(**locals())
+        vpg_t1_join_clause = ' AND '.join(
+            ["__t1__.{col}={vpg}.{col}".format(**locals())
                 for col in grouping_cols_list])
         # join clause specific to populating random_prob for nodes without any
         # incoming edges.
@@ -317,12 +320,14 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
             AS {vpg} ON {vpg_join_clause}""".format(**locals())
         ignore_group_clause_pr=' WHERE '+get_ignore_groups(summary_table,
             edge_temp_table, grouping_cols_list)
+        ignore_group_clause_ins_noincoming = ' WHERE '+get_ignore_groups(
+            summary_table, nodes_with_no_incoming_edges, grouping_cols_list)
         # Strings required for updating PageRank scores of vertices that have
         # no incoming edges
         grouping_cols_select_ins = cur_grouping_cols_select+','
         vpg_from_clause_ins = ', {vertices_per_group} AS {vpg}'.format(
             **locals())
-        vpg_where_clause_ins = '{vpg_cur_join_clause} AND '.format(
+        vpg_where_clause_ins = ' AND {vpg_t1_join_clause} '.format(
             **locals())
         message_grp_where_ins = 'WHERE {message_grp}'.format(**locals())
         ignore_group_clause_ins = ' AND '+get_ignore_groups(summary_table,
@@ -335,6 +340,27 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
         ignore_group_clause_conv = ' AND '+get_ignore_groups(summary_table,
             cur, grouping_cols_list)
         limit = ''
+
+        # Find all nodes, in each group, that have no incoming edges. The PageRank
+        # value of these nodes are not updated using the first query in the
+        # following for loop. They must be explicitly plugged back in to the
+        # message table, with their corresponding group's random_prob as their
+        # PageRank values.
+        plpy.execute("""
+                CREATE TABLE {nodes_with_no_incoming_edges} AS
+                SELECT __t1__.*, {vpg}.{random_prob} AS pagerank
+                FROM (SELECT {grouping_cols}, {src} AS {vertex_id}
+                      FROM {edge_temp_table}) __t1__ {vpg_from_clause_ins}
+                WHERE ({t1group} __t1__.{vertex_id}) NOT IN (
+                    SELECT {grouping_cols}, {dest}
+                    FROM {edge_temp_table}
+                    GROUP BY {gb})
+                    {vpg_where_clause_ins}
+            """.format(t1group=','.join(['__t1__.{0}'.format(col)
+                        for col in grouping_cols_list])+',',
+                    gb=','.join([str(i)
+                        for i in range(1,len(grouping_cols_list)+2)]),
+                    **locals()))
     else:
         # cur and out_cnts tables can be simpler when no grouping is involved.
         init_value = 1.0/nvertices
@@ -361,6 +387,16 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
                 CREATE TABLE {summary_table} (
                     __iterations__ INTEGER
                 )
+            """.format(**locals()))
+        # Find all nodes in the graph that don't have any incoming edges and
+        # assign random_prob as their pagerank values.
+        plpy.execute("""
+                CREATE TABLE {nodes_with_no_incoming_edges} AS
+                SELECT DISTINCT({src}), {random_probability} AS pagerank
+                FROM {edge_temp_table}
+                EXCEPT
+                    (SELECT DISTINCT({dest}), {random_probability} AS pagerank
+                    FROM {edge_temp_table})
             """.format(**locals()))
     unconverged = 0
     iteration_num = 0
@@ -404,20 +440,12 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
         # with random_prob.
         plpy.execute("""
                 INSERT INTO {message}
-                SELECT {grouping_cols_select_ins} {cur}.{vertex_id},
-                    {random_jump_prob} AS pagerank
-                FROM {cur} {vpg_from_clause_ins}
-                WHERE {vpg_where_clause_ins} {vertex_id} NOT IN (
-                    SELECT {vertex_id}
-                    FROM {message}
-                    {message_grp_where_ins}
-                )
+                SELECT *
+                FROM {nodes_with_no_incoming_edges}
                 {ignore_group_clause}
-                GROUP BY {grouping_cols_select_ins} {cur}.{vertex_id}
-            """.format(ignore_group_clause=ignore_group_clause_ins
+            """.format(ignore_group_clause=ignore_group_clause_ins_noincoming
                     if iteration_num>0 else ignore_group_clause_first,
-                **locals()))
-
+                    **locals()))
         # Check for convergence:
         ## Check for convergence only if threshold != 0.
         if threshold != 0:
@@ -489,9 +517,9 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
             """.format(**locals()))
 
     ## Step 4: Cleanup
-    plpy.execute("""DROP TABLE IF EXISTS {0},{1},{2},{3},{4},{5};
+    plpy.execute("""DROP TABLE IF EXISTS {0},{1},{2},{3},{4},{5},{6};
         """.format(out_cnts, edge_temp_table, cur, message, cur_unconv,
-                    message_unconv))
+                    message_unconv, nodes_with_no_incoming_edges))
     if grouping_cols:
         plpy.execute("""DROP TABLE IF EXISTS {0},{1},{2};
             """.format(vertices_per_group, temp_summary_table,
