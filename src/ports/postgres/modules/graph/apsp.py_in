@@ -331,6 +331,19 @@ def graph_apsp(schema_madlib, vertex_table, vertex_id, edge_table,
 			ot_sql1 = ot_sql.format(**locals())
 			out_table_1 = out_table
 
+		if v_cnt < 2:
+			plpy.execute("DROP VIEW IF EXISTS {0}".format(tmp_view))
+			plpy.execute("DROP TABLE IF EXISTS {0},{1}".
+					format(out_table, out_table+"_summary"))
+			if is_hawq:
+				plpy.execute("DROP TABLE IF EXISTS {0},{1}".format(
+					out_table_1,out_table_2))
+			if grouping_cols:
+				plpy.error(("Graph APSP: {0} has less than 2 vertices in "+
+					"every group.").format(edge_table))
+			else:
+				plpy.error("Graph APSP: {0} has less than 2 vertices.".format(
+					vertex_table))
 
 		for i in range(0,v_cnt+1):
 
@@ -747,25 +760,27 @@ To retrieve the path for a specific vertex pair:
                             OUTPUT
 ----------------------------------------------------------------------------
 The output of apsp ('out_table' above) contains a row for every vertex of
-every group and have the following columns (in addition to the grouping
+every group and has the following columns (in addition to the grouping
 columns):
   - source_vertex : The id for the source vertex. Will use the input edge
                     column 'src' for column naming.
-  - source_vertex : The id for the destination vertex. Will use the input edge
+  - dest_vertex   : The id for the destination vertex. Will use the input edge
                     column 'dest' for column naming.
   - weight        : The total weight of the shortest path from the source
                     vertex to this particular vertex.
                     Will use the input parameter 'weight' for column naming.
-  - parent        : The parent of this vertex in the shortest path from source.
-                    Will use 'parent' for column naming.
+  - parent        : The parent of the destination vertex in the shortest path
+                    from source. praent will be equal to dest_vertex is there
+                    are no more intermediary vertices. Will use 'parent' for
+                    column naming.
 
 The output of graph_apsp_get_path ('path_table' above) contains a row for
 every group and has the following columns:
   - grouping_cols : The grouping columns given in the creation of the apsp
                   table. If there are no grouping columns, these columns
                   will not exist and the table will have a single row.
-  - path (ARRAY)  : The shortest path from the source vertex (as specified
-                  in the apsp execution) to the destination vertex.
+  - path (ARRAY)  : The shortest path from the source vertex to the
+                  destination vertex.
 """
 	elif message.lower() in ("example", "examples"):
 		help_string = """
@@ -809,12 +824,12 @@ INSERT INTO edge VALUES
 ;
 
 -- Compute the apsp:
-DROP TABLE IF EXISTS pagerank_out;
+DROP TABLE IF EXISTS out;
 SELECT madlib.graph_apsp(
 	'vertex',                            -- Vertex table
 	'id',                                -- Vertix id column
 	'edge',                              -- Edge table
-	'src=src, dest=dest, weight=weight', -- Comma delimted string of edge arguments
+	'src=src, dest=dest, weight=weight', -- Comma delimited string of edge arguments
 	'out'                                -- Output table of apsp
 );
 -- View the apsp costs for every vertex:
