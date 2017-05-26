@@ -100,6 +100,7 @@ def graph_apsp(schema_madlib, vertex_table, vertex_id, edge_table,
 			<!"DISTRIBUTED BY ({0})".format(src)!>)
 
 		is_hawq = m4_ifdef(<!__HAWQ__!>, <!True!>, <!False!>)
+
 		_validate_apsp(vertex_table, vertex_id, edge_table,
 			edge_params, out_table, glist)
 
@@ -129,6 +130,8 @@ def graph_apsp(schema_madlib, vertex_table, vertex_id, edge_table,
 		checkg_vv = ""
 		checkg_o2v = ""
 		checkg_oy = ""
+		checkg_vv_sub = "TRUE"
+		grp_by = ""
 
 		if grouping_cols is not None:
 
@@ -155,6 +158,8 @@ def graph_apsp(schema_madlib, vertex_table, vertex_id, edge_table,
 			checkg_vv = " AND " + _check_groups("v1","v2",glist)
 			checkg_o2v = " AND " + _check_groups(out_table_2,"v2",glist)
 			checkg_oy = " AND " + _check_groups("out","y",glist)
+			checkg_vv_sub = _check_groups("v1","v2",glist)
+			grp_by = " GROUP BY " + grouping_cols
 
 		w_type = get_expr_type(weight,edge_table).lower()
 		init_w = INT_MAX
@@ -232,22 +237,6 @@ def graph_apsp(schema_madlib, vertex_table, vertex_id, edge_table,
 				""".format(**locals())
 			plpy.execute(fill_sql)
 
-			# Find the maximum number of iterations to try
-			# If not done by v_cnt iterations, there is a negative cycle.
-			if grouping_cols is not None:
-				v_cnt = plpy.execute(
-					""" SELECT max(count) as max FROM (
-							SELECT count({src}) AS count
-							FROM {out_table_1}
-							GROUP BY {grouping_cols}) x
-					""".format(**locals()))[0]['max']
-			else:
-				v_cnt = plpy.execute(
-					""" SELECT count(*) FROM {vertex_table}
-						WHERE {vertex_id} IS NOT NULL
-					""".format(**locals()))[0]['count']
-				v_cnt = v_cnt * v_cnt
-
 			ot_sql1 = ot_sql.format(out_table = out_table_1, init_w = init_w,
 				weight = weight, src = src, dest = dest)
 			ot_sql2 = ot_sql.format(out_table = out_table_2, init_w = init_w,
@@ -261,46 +250,15 @@ def graph_apsp(schema_madlib, vertex_table, vertex_id, edge_table,
 					{src} AS parent FROM {edge_table} LIMIT 0)
 				{distribution} """.format(**locals()))
 
-			# Initialize the output table
-			if grouping_cols is not None:
-
-				checkg_vv_sub = _check_groups("v1","v2",glist)
-				# Initialize the output table with every possible combination
-				# of src->dest vertices for each group
-				plpy.execute( """ INSERT INTO {out_table}
-					SELECT {grp_v1_comma}
-						v1.{vertex_id} AS {src}, v2.{vertex_id} AS {dest},
-						{init_w} AS {weight}, NULL::INT AS parent
-					FROM
-						{tmp_view} AS v1 INNER JOIN
-						{tmp_view} AS v2 ON ({checkg_vv_sub})
-						""".format(**locals()))
-				plpy.execute("DROP VIEW IF EXISTS {0}".format(tmp_view))
-
-				v_cnt = plpy.execute(
-					""" SELECT max(count) as max FROM (
-							SELECT count({src}) AS count
-							FROM {out_table}
-							GROUP BY {grouping_cols}) x
-					""".format(**locals()))[0]['max']
-
-			else :
-
-				plpy.execute(
-				""" INSERT INTO {out_table}
-					SELECT {v1}.{vertex_id} AS {src},
-						{v2}.{vertex_id} AS {dest},
-						{init_w} AS {weight}, NULL::INT AS parent
-					FROM {vertex_table} {v1}, {vertex_table} {v2}
-					WHERE {v1}.{vertex_id} IS NOT NULL AND
-						{v2}.{vertex_id} IS NOT NULL
+			plpy.execute( """ INSERT INTO {out_table}
+				SELECT {grp_v1_comma}
+					v1.{vertex_id} AS {src}, v2.{vertex_id} AS {dest},
+					{init_w} AS {weight}, NULL::INT AS parent
+				FROM
+					{tmp_view} AS v1 INNER JOIN
+					{tmp_view} AS v2 ON ({checkg_vv_sub})
 					""".format(**locals()))
-
-				v_cnt = plpy.execute(
-					""" SELECT count(*) FROM {vertex_table}
-						WHERE {vertex_id} IS NOT NULL
-					""".format(**locals()))[0]['count']
-				v_cnt = v_cnt * v_cnt
+			plpy.execute("DROP VIEW IF EXISTS {0}".format(tmp_view))
 
 			# GPDB and HAWQ have distributed by clauses to help them with indexing.
 			# For Postgres we add the indices manually.
@@ -330,6 +288,15 @@ def graph_apsp(schema_madlib, vertex_table, vertex_id, edge_table,
 
 			ot_sql1 = ot_sql.format(**locals())
 			out_table_1 = out_table
+
+		# Find the maximum number of iterations to try
+		# If not done by v_cnt iterations, there is a negative cycle.
+		v_cnt = plpy.execute(
+			""" SELECT max(count) as max FROM (
+					SELECT count({src}) AS count
+					FROM {out_table_1}
+					{grp_by}) x
+			""".format(**locals()))[0]['max']
 
 		if v_cnt < 2:
 			plpy.execute("DROP VIEW IF EXISTS {0}".format(tmp_view))
@@ -375,7 +342,8 @@ def graph_apsp(schema_madlib, vertex_table, vertex_id, edge_table,
 
 			plpy.execute("DROP VIEW IF EXISTS {0}".format(tmp_view))
 			update_sql = """ CREATE VIEW {tmp_view} AS
-				SELECT {grp_o_comma} y.{src}, y.{dest}, y.{weight}, y.parent
+				SELECT DISTINCT ON ({grp_o_comma} y.{src}, y.{dest})
+					{grp_o_comma} y.{src}, y.{dest},y.{weight}, y.parent
 				FROM  {out_table_1} AS out
 				INNER JOIN
 					(SELECT x.{src}, x.{dest}, x.{weight},
