@@ -26,6 +26,8 @@
 #ifndef MADLIB_MODULES_CONVEX_TASK_MLP_HPP_
 #define MADLIB_MODULES_CONVEX_TASK_MLP_HPP_
 
+#include <dbconnector/dbconnector.hpp>
+
 namespace madlib {
 
 namespace modules {
@@ -46,23 +48,27 @@ public:
 
     static void gradientInPlace(
             model_type                          &model,
-            const independent_variables_type    &y,
-            const dependent_variable_type       &z,
+            const independent_variables_type    &x,
+            const dependent_variable_type       &y,
             const double                        &stepsize);
 
     static double loss(
             const model_type                    &model,
-            const independent_variables_type    &y,
-            const dependent_variable_type       &z);
+            const independent_variables_type    &x,
+            const dependent_variable_type       &y);
 
     static ColumnVector predict(
             const model_type                    &model,
-            const independent_variables_type    &y,
+            const independent_variables_type    &x,
             const bool                          get_class);
 
     const static int RELU = 0;
     const static int SIGMOID = 1;
     const static int TANH = 2;
+    static double lambda;
+
+private:
+
 
     static double sigmoid(const double &xi) {
         return 1. / (1. + std::exp(-xi));
@@ -76,8 +82,6 @@ public:
         return std::tanh(xi);
     }
 
-
-private:
 
     static double sigmoidDerivative(const double &xi) {
         double value = sigmoid(xi);
@@ -95,17 +99,11 @@ private:
 
     static void feedForward(
             const model_type                    &model,
-            const independent_variables_type    &y,
+            const independent_variables_type    &x,
             std::vector<ColumnVector>           &net,
-            std::vector<ColumnVector>           &x);
+            std::vector<ColumnVector>           &o);
 
-    static void endLayerDeltaError(
-            const std::vector<ColumnVector>     &net,
-            const std::vector<ColumnVector>     &x,
-            const dependent_variable_type       &z,
-            ColumnVector                        &delta_N);
-
-    static void errorBackPropagation(
+    static void backPropogate(
             const ColumnVector                  &delta_N,
             const std::vector<ColumnVector>     &net,
             const model_type                    &model,
@@ -113,41 +111,37 @@ private:
 };
 
 template <class Model, class Tuple>
+double MLP<Model, Tuple>::lambda = 0;
+
+template <class Model, class Tuple>
 void
 MLP<Model, Tuple>::gradientInPlace(
         model_type                          &model,
-        const independent_variables_type    &y,
-        const dependent_variable_type       &z,
+        const independent_variables_type    &x,
+        const dependent_variable_type       &y_true,
         const double                        &stepsize) {
     (void) model;
-    (void) z;
-    (void) y;
+    (void) y_true;
+    (void) x;
     (void) stepsize;
     std::vector<ColumnVector> net;
-    std::vector<ColumnVector> x;
+    std::vector<ColumnVector> o;
     std::vector<ColumnVector> delta;
     ColumnVector delta_N;
 
-    feedForward(model, y, net, x);
-    endLayerDeltaError(net, x, z, delta_N);
-    errorBackPropagation(delta_N, net, model, delta);
+    feedForward(model, x, net, o);
+    delta_N = o.back() - y_true;
+    backPropogate(delta_N, net, model, delta);
 
     uint16_t N = model.u.size(); // assuming nu. of layers >= 1
-    uint16_t k, s, j;
+    uint16_t k;
 
-    std::vector<uint16_t> n; n.clear(); //nu. of units in each layer
-
-    n.push_back(model.u[0].rows() - 1);
-    for (k = 1; k <= N; k ++) {
-        n.push_back(model.u[k-1].cols() - 1);
-    }
-
-    for (k=1; k <= N; k++){
-        for (s=0; s <= n[k-1]; s++){
-            for (j=1; j <= n[k]; j++){
-                model.u[k-1](s,j) -= stepsize *  (delta[k](j) * x[k-1](s));
-            }
-        }
+    for (k=0; k < N; k++){
+        int n = model.u[k].rows();
+        Matrix regularization = MLP<Model, Tuple>::lambda*model.u[k];
+        // Do not update bias
+        regularization.row(0).setZero();
+        model.u[k] -= stepsize * (o[k] * delta[k].transpose() + regularization);
     }
 }
 
@@ -155,30 +149,31 @@ template <class Model, class Tuple>
 double
 MLP<Model, Tuple>::loss(
         const model_type                    &model,
-        const independent_variables_type    &y,
-        const dependent_variable_type       &z) {
+        const independent_variables_type    &x,
+        const dependent_variable_type       &y_true) {
     // Here we compute the loss. In the case of regression we use sum of square errors
     // In the case of classification the loss term is cross entropy.
     std::vector<ColumnVector> net;
-    std::vector<ColumnVector> x;
+    std::vector<ColumnVector> o;
 
-    feedForward(model, y, net, x);
+    feedForward(model, x, net, o);
     double loss = 0.;
     uint16_t j;
 
-    for (j = 1; j < z.rows() + 1; j ++) {
+    ColumnVector y_estimated = o.back();
+    for (j = 0; j < y_true.size(); j ++) {
         if(model.is_classification){
-            // Cross entropy: RHS term is negative
-            loss -= z(j-1)*std::log(x.back()(j)) + (1-z(j-1))*std::log(1-x.back()(j));
+            // Cross entropy
+            double clip = 1.e-10;
+            y_estimated = y_estimated.cwiseMax(clip).cwiseMin(1.-clip);
+            loss -= (y_true(j)*std::log(y_estimated(j)) + (1-y_true(j))*std::log(1-y_estimated(j)));
         }else{
-            double diff = x.back()(j) - z(j-1);
+            double diff = y_estimated(j) - y_true(j);
             loss += diff * diff;
         }
     }
     if(!model.is_classification){
         loss /= 2.;
-    }else{
-        loss /= z.rows();
     }
     return loss;
 }
@@ -187,22 +182,19 @@ template <class Model, class Tuple>
 ColumnVector
 MLP<Model, Tuple>::predict(
         const model_type                    &model,
-        const independent_variables_type    &y,
+        const independent_variables_type    &x,
         const bool                          get_class
         ) {
-    (void) model;
-    (void) y;
     std::vector<ColumnVector> net;
-    std::vector<ColumnVector> x;
+    std::vector<ColumnVector> o;
 
-    feedForward(model, y, net, x);
-    // Don't return the offset
-    ColumnVector output = x.back().tail(x.back().size()-1);
+    feedForward(model, x, net, o);
+    ColumnVector output = o.back();
     if(get_class){
         int max_idx;
         output.maxCoeff(&max_idx);
         output.resize(1);
-        output[0] = (double)max_idx;
+        output[0] = (double) max_idx;
     }
     return output;
 }
@@ -212,113 +204,66 @@ template <class Model, class Tuple>
 void
 MLP<Model, Tuple>::feedForward(
         const model_type                    &model,
-        const independent_variables_type    &y,
+        const independent_variables_type    &x,
         std::vector<ColumnVector>           &net,
-        std::vector<ColumnVector>           &x){
+        std::vector<ColumnVector>           &o){
     // meta data and x_k^0 = 1
-    uint16_t k, j, s;
+    uint16_t k;
     uint16_t N = model.u.size(); // assuming >= 1
     net.resize(N + 1);
-    x.resize(N + 1);
+    o.resize(N + 1);
 
-    std::vector<uint16_t> n; n.clear();
-    n.push_back(model.u[0].rows() - 1);
-    x[0].resize(n[0] + 1);
-    x[0](0) = 1.;
-    for (k = 1; k <= N; k ++) {
-        n.push_back(model.u[k-1].cols() - 1);
-        net[k].resize(n[k] + 1);
-        x[k].resize(n[k] + 1);
-        // Bias
-        x[k](0) = 1.;
-    }
+    double (*activation)(const double&);
+    if(model.activation==RELU)
+        activation = &relu;
+    else if(model.activation==SIGMOID)
+        activation = &sigmoid;
+    else
+        activation = &tanh;
 
-    // y is a mapped parameter from DB, aligning with x here
-    for (j = 1; j <= n[0]; j ++) { x[0](j) = y(j-1); }
+    o[0].resize(x.size()+1);
+    o[0] << 1.,x;
 
     for (k = 1; k < N; k ++) {
-        for (j = 1; j <= n[k]; j ++) {
-            net[k](j) = 0.;
-            for (s = 0; s <= n[k-1]; s ++) {
-                net[k](j) += x[k-1](s) * model.u[k-1](s, j);
-            }
-            if(model.activation==RELU)
-                x[k](j) = relu(net[k](j));
-            else if(model.activation==SIGMOID)
-                x[k](j) = sigmoid(net[k](j));
-            else
-                x[k](j) = tanh(net[k](j));
-        }
+        net[k] = model.u[k-1].transpose() * o[k-1];
+        o[k] = ColumnVector(model.u[k-1].cols()+1);
+        o[k] << 1., net[k].unaryExpr(activation);
     }
+    o[N] = model.u[N-1].transpose() * o[N-1];
 
-    // output layer computation
-    for (j = 1; j <= n[N]; j ++) {
-        x[N](j) = 0.;
-        for (s = 0; s <= n[N-1]; s ++) {
-            x[N](j) += x[N-1](s) * model.u[N-1](s, j);
-        }
-    }
     // Numerically stable calculation of softmax
-    ColumnVector last_x = x[N].tail(n[N]);
     if(model.is_classification){
-        double max_x = last_x.maxCoeff();
-        last_x = (last_x.array() - max_x).exp();
-        last_x /= last_x.sum();
-    }
-    x[N].tail(n[N]) = last_x;
-}
-
-template <class Model, class Tuple>
-void
-MLP<Model, Tuple>::endLayerDeltaError(
-        const std::vector<ColumnVector>     &net,
-        const std::vector<ColumnVector>     &x,
-        const dependent_variable_type       &z,
-        ColumnVector                        &delta_N) {
-    //meta data
-    uint16_t t;
-    uint16_t N = x.size() - 1; // assuming >= 1
-    uint16_t n_N = x[N].rows() - 1;
-    delta_N.resize(n_N + 1);
-
-    for (t = 1; t <= n_N; t ++) {
-		delta_N(t) = (x[N](t) - z(t-1));
+        double max_x = o[N].maxCoeff();
+        o[N] = (o[N].array() - max_x).exp();
+        o[N] /= o[N].sum();
     }
 }
 
 template <class Model, class Tuple>
 void
-MLP<Model, Tuple>::errorBackPropagation(
+MLP<Model, Tuple>::backPropogate(
         const ColumnVector                  &delta_N,
         const std::vector<ColumnVector>     &net,
         const model_type                    &model,
         std::vector<ColumnVector>           &delta) {
     // meta data
-    uint16_t k, j, t;
+    uint16_t k;
     uint16_t N = model.u.size(); // assuming >= 1
-    delta.resize(N + 1);
+    delta.resize(N);
 
-    std::vector<uint16_t> n; n.clear();
-    n.push_back(model.u[0].rows() - 1);
-    for (k = 1; k <= N; k ++) {
-        n.push_back(model.u[k-1].cols() - 1);
-        delta[k].resize(n[k]+1);
-    }
-    delta[N] = delta_N;
+    double (*activationDerivative)(const double&);
+    if(model.activation==RELU)
+        activationDerivative = &reluDerivative;
+    else if(model.activation==SIGMOID)
+        activationDerivative = &sigmoidDerivative;
+    else
+        activationDerivative = &tanhDerivative;
 
+    delta.back() = delta_N;
     for (k = N - 1; k >= 1; k --) {
-        for (j = 0; j <= n[k]; j ++) {
-            delta[k](j) = 0.;
-            for (t = 1; t <= n[k+1]; t ++) {
-                delta[k](j) += delta[k+1](t) * model.u[k](j, t);
-            }
-            if(model.activation==RELU)
-                delta[k](j) = delta[k](j) * reluDerivative(net[k](j));
-            else if(model.activation==SIGMOID)
-                delta[k](j) = delta[k](j) * sigmoidDerivative(net[k](j));
-            else
-                delta[k](j) = delta[k](j) * tanhDerivative(net[k](j));
-        }
+        // Do not include the bias terms
+        delta[k-1] = model.u[k].bottomRows(model.u[k].rows()-1) * delta[k];
+        delta[k-1] = delta[k-1].array() * net[k].unaryExpr(activationDerivative).array();
     }
 }
 
