@@ -453,9 +453,10 @@ DecisionTree<Container>::updatePrimarySplit(
     nonnull_split_count(trueChild(node_index)) = static_cast<double>(true_count);
     nonnull_split_count(falseChild(node_index)) = static_cast<double>(false_count);
 
-    // current node's child won't split if,
-    // 1. child is pure (responses are too similar to split further) OR
-    // 2. child is too small to split further (count < min_split)
+    // current node's each child won't split if,
+    //      1. child is pure (responses are too similar to split further)
+    //      OR
+    //      2. child is too small to split (count < min_split)
     bool children_wont_split = ((isChildPure(true_stats) ||
                                     true_count < min_split) &&
                                 (isChildPure(false_stats) ||
@@ -485,20 +486,23 @@ DecisionTree<Container>::expand(const Accumulator &state,
             Index stats_i = static_cast<Index>(state.stats_lookup(i));
             assert(stats_i >= 0);
 
+            // 1. Update predictions if necessary
             if (statCount(predictions.row(current)) !=
                     statCount(state.node_stats.row(stats_i))){
                 // Predictions for each node is set by its parent using stats
-                // recorded while training parent node. These stats do not include
-                // rows that had a NULL value for the primary split feature.
-                // The NULL count is included in the 'node_stats' while training
-                // current node. Further, presence of NULL rows indicate that
-                // stats used for deciding 'children_wont_split' are inaccurate.
-                // Hence avoid using the flag to decide termination.
+                // recorded while training parent node. These stats do not
+                // include rows that had a NULL value for the primary split
+                // feature. The NULL count is included in 'node_stats' while
+                // training current node.
                 predictions.row(current) = state.node_stats.row(stats_i);
+
+                // Presence of NULL rows indicate that stats used for deciding
+                // 'children_wont_split' are inaccurate. Hence avoid using the
+                // flag to decide termination.
                 children_wont_split = false;
             }
 
-            // 2. Compute the best feature to split current node by
+            // 2. Compute the best feature to split current node
 
             // if a leaf node exists, compute the gain in impurity for each split
             // pick split  with maximum gain and update node with split value
@@ -542,7 +546,7 @@ DecisionTree<Container>::expand(const Accumulator &state,
                 }
             }
 
-            // 3. Create and update child nodes if splitting current
+            // 3. Create and update children if splitting current
             uint64_t true_count = statCount(max_stats.segment(0, sps));
             uint64_t false_count = statCount(max_stats.segment(sps, sps));
             uint64_t total_count = statCount(predictions.row(current));
