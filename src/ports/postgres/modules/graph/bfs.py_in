@@ -111,6 +111,7 @@ def _grp_null_checks(grp_list):
     return ' AND '.join([" {i} IS NOT NULL ".format(**locals())
         for i in grp_list])
 
+
 def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
         edge_args, source_vertex, out_table, max_distance, directed, grouping_cols, **kwargs):
 
@@ -135,11 +136,9 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
     with MinWarning("warning"):
 
         INT_MAX = 2147483647
-        INFINITY = "'Infinity'"
-        EPSILON = 0.000001
 
-        params_types = {'src': str, 'dest': str, 'weight': str}
-        default_args = {'src': 'src', 'dest': 'dest', 'weight': 'weight'}
+        params_types = {'src': str, 'dest': str}
+        default_args = {'src': 'src', 'dest': 'dest'}
         edge_params = extract_keyvalue_params(edge_args,
                                             params_types,
                                             default_args)
@@ -173,8 +172,7 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
 
         src = edge_params["src"]
         dest = edge_params["dest"]
-        weight = edge_params["weight"]
-
+        
         distribution = m4_ifdef(<!__POSTGRESQL__!>, <!''!>,
             <!"DISTRIBUTED BY ({0})".format(vertex_id)!>)
         local_distribution = m4_ifdef(<!__POSTGRESQL__!>, <!''!>,
@@ -443,3 +441,123 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
                     """.format(**locals()))[0]['count']
 
     return None
+
+def graph_bfs_help(schema_madlib, message, **kwargs):
+    """
+    Help function for graph_bfs
+
+    Args:
+        @param schema_madlib
+        @param message: string, Help message string
+        @param kwargs
+
+    Returns:
+        String. Help/usage information
+    """
+
+    if not message:
+        help_string = """
+-----------------------------------------------------------------------
+                            SUMMARY
+-----------------------------------------------------------------------
+
+Given a graph and a source vertex, the Breadth-first Search (BFS) algorithm
+finds all nodes reachable from the source vertex by searching / traversing the graph 
+in a breadth-first manner.
+
+For more details on function usage:
+    SELECT {schema_madlib}.graph_bfs('usage')
+            """
+    elif message.lower() in ['usage', 'help', '?']:
+        help_string = """
+Given a graph and a source vertex, the Breadth-first Search (BFS) algorithm
+finds all nodes reachable from the source vertex by searching / traversing the graph 
+in a breadth-first manner.
+
+{graph_usage}
+
+----------------------------------------------------------------------------
+                            OUTPUT
+----------------------------------------------------------------------------
+The output of BFS ('out_table' above) contains a row for every vertex of that is 
+reachable from the source_vertex. In the presence of grouping columns, only those 
+edges are used for which there are no NULL values in any grouping column.
+The output table will have the following columns (in addition to the 
+grouping columns):
+  - vertex_id : The id for any node reachable from source_vertex. 
+                Will use the input parameter 'vertex_id' for column naming.
+  - dist      : The number of edges (or hops) from the source_vertex to where 
+                this vertex is located. 
+  - parent    : The parent of this vertex in BFS traversal of the graph from 
+                source_vertex. Will use 'parent' for column naming. For the 
+                case where vertex_id = source_vertex, the value for parent is NULL.
+"""
+    elif message.lower() in ("example", "examples"):
+        help_string = """
+----------------------------------------------------------------------------
+                                EXAMPLES
+----------------------------------------------------------------------------
+-- Create a graph, represented as vertex and edge tables.
+DROP TABLE IF EXISTS vertex, edge;
+CREATE TABLE vertex(
+        id INTEGER
+        );
+CREATE TABLE edge(
+        src INTEGER,
+        dest INTEGER
+        );
+INSERT INTO vertex VALUES
+(0),
+(1),
+(2),
+(3),
+(4),
+(5),
+(6),
+(7),
+(8),
+(9),
+(10),
+(11)
+;
+INSERT INTO edge VALUES
+(0, 5),
+(1, 0),
+(1, 3),
+(2, 6),
+(3, 4),
+(3, 5),
+(4, 2),
+(8, 9),
+(9, 10),
+(9, 11),
+(10, 8)
+;
+
+-- Traverse undirected graph from vertex 3:
+DROP TABLE IF EXISTS out, out_summary;
+SELECT madlib.graph_bfs(
+                         'vertex',      -- Vertex table
+                         NULL,          -- Vertix id column (NULL means use default naming)
+                         'edge',        -- Edge table
+                         NULL,          -- Edge arguments (NULL means use default naming)
+                         3,             -- Source vertex for BFS
+                         'out'          -- Output table of nodes reachable from source_vertex
+                        );        
+                        -- Default values used for the other arguments
+SELECT * FROM out ORDER BY dist,id;
+
+SELECT * FROM out_summary;
+
+"""
+    else:
+        help_string = "No such option. Use {schema_madlib}.graph_sssp()"
+
+    return help_string.format(schema_madlib=schema_madlib,
+        graph_usage=get_graph_usage(schema_madlib, 'graph_bfs',
+    """source_vertex INT,  -- The source vertex id for the algorithm to start.
+    out_table     TEXT, -- Name of the table to store the result of BFS.
+    max_distance  INT,  -- Maximum distance from source_vertex to search through in the graph.
+    directed      INT,  -- If TRUE the graph will be treated as directed.
+    grouping_cols TEXT  -- The list of grouping columns."""))
+# ---------------------------------------------------------------------
