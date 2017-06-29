@@ -28,7 +28,9 @@
 """
 
 import plpy
-from graph_utils import *
+from graph_utils import validate_graph_coding
+from graph_utils import get_graph_usage
+from graph_utils import _grp_null_checks
 from utilities.control import MinWarning
 from utilities.utilities import _assert
 from utilities.utilities import extract_keyvalue_params
@@ -89,31 +91,10 @@ def _validate_bfs(vertex_table, vertex_id, edge_table, edge_params,
 
     return None
 
-def _grp_from_table(tbl, grp_list):
-
-    """
-    Helper function for selecting grouping columns of a table
-    Args:
-        @param tbl        Name of the table
-        @param grp_list   The list of grouping columns
-    """
-    return ' , '.join([" {tbl}.{i} ".format(**locals())
-        for i in grp_list])
-
-def _grp_null_checks(grp_list):
-
-    """
-    Helper function for generating NULL checks for grouping columns 
-    to be used within a WHERE clause
-    Args:
-        @param grp_list   The list of grouping columns
-    """
-    return ' AND '.join([" {i} IS NOT NULL ".format(**locals())
-        for i in grp_list])
-
 
 def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
-        edge_args, source_vertex, out_table, max_distance, directed, grouping_cols, **kwargs):
+        edge_args, source_vertex, out_table, max_distance, directed, grouping_cols,
+        **kwargs):
 
     """
     Breadth First Search algorithm for graphs [1].
@@ -242,61 +223,14 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
         # by edges to the source vertex in each group is counted. This is used 
         # below in the BFS iteration loop
 
-        if directed:
-            plpy.execute("""
-                INSERT INTO {out_table}
-                SELECT {grp_comma} 
-                    {source_vertex} AS {vertex_id},
-                    {curr_dist_val} AS {dist_col},
-                    NULL AS {parent_col}
-                FROM {edge_table}
-                WHERE {src} = {source_vertex}
-                    {and_grp_null_checks}
-                GROUP BY {grp_comma} {vertex_id}, {dist_col}
-            """.format(**locals()))
+        insert_qry_undirected_init = ""
+        count_qry_undirected_init = ""
 
-            vct = plpy.execute("""
-                SELECT COUNT(*)
-                FROM {edge_table} 
-                WHERE (
-                    ({grp_comma} {src}) IN (
-                        SELECT {grp_comma} {vertex_id} FROM {out_table} 
-                        WHERE {dist_col}={curr_dist_val}
-                    ) 
-                    AND 
-                    ({grp_comma} {dest}) NOT IN (
-                        SELECT {grp_comma} {vertex_id} FROM {out_table}
-                    )
-                )
-            """.format(**locals()))[0]['count']
+        if not directed:
+            insert_qry_undirected_init = """ OR {dest} = {source_vertex}
+                """.format(**locals())
 
-        else:
-            plpy.execute("""
-                INSERT INTO {out_table}
-                SELECT {grp_comma} 
-                    {source_vertex} AS {vertex_id},
-                    {curr_dist_val} AS {dist_col},
-                    NULL AS {parent_col}
-                FROM {edge_table}
-                WHERE 
-                    ({src} = {source_vertex} OR {dest} = {source_vertex})
-                    {and_grp_null_checks}
-                GROUP BY {grp_comma} {vertex_id}, {dist_col}
-            """.format(**locals()))
-
-            vct = plpy.execute("""
-                SELECT COUNT(*)
-                FROM {edge_table} 
-                WHERE (
-                    ({grp_comma} {src}) IN ( 
-                        SELECT {grp_comma} {vertex_id} FROM {out_table} 
-                        WHERE {dist_col}={curr_dist_val}
-                    ) 
-                    AND 
-                    ({grp_comma} {dest}) NOT IN (
-                        SELECT {grp_comma} {vertex_id} FROM {out_table}
-                    )
-                ) OR (
+            count_qry_undirected_init = """ OR (
                     ({grp_comma} {dest}) IN ( 
                         SELECT {grp_comma} {vertex_id} FROM {out_table} 
                         WHERE {dist_col}={curr_dist_val}
@@ -306,7 +240,34 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
                         SELECT {grp_comma} {vertex_id} FROM {out_table}
                     )
                 )
-            """.format(**locals()))[0]['count']
+            """.format(**locals())
+
+        plpy.execute("""
+                INSERT INTO {out_table}
+                SELECT {grp_comma} 
+                    {source_vertex} AS {vertex_id},
+                    {curr_dist_val} AS {dist_col},
+                    NULL AS {parent_col}
+                FROM {edge_table}
+                WHERE ({src} = {source_vertex} {insert_qry_undirected_init})
+                    {and_grp_null_checks}
+                GROUP BY {grp_comma} {vertex_id}, {dist_col}
+            """.format(**locals()))
+
+        vct = plpy.execute("""
+            SELECT COUNT(*)
+            FROM {edge_table} 
+            WHERE (
+                ({grp_comma} {src}) IN (
+                    SELECT {grp_comma} {vertex_id} FROM {out_table} 
+                    WHERE {dist_col}={curr_dist_val}
+                ) 
+                AND 
+                ({grp_comma} {dest}) NOT IN (
+                    SELECT {grp_comma} {vertex_id} FROM {out_table}
+                )
+            ) {count_qry_undirected_init}
+        """.format(**locals()))[0]['count']
         
         # Main loop for traversing the graph
         while vct > 0 and curr_dist_val < max_distance:
@@ -318,118 +279,34 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
             # 2) Check for any nodes linked to those discovered in Step 1 above
             #    that have not yet been discovered
             # 
-            # If a node has multiple possible parents then the node with the 
-            # smalles ID is chosen as the parent for output
+            # If a node has multiple possible parents then the parent with the 
+            # smallest ID is chosen for output
 
-            if directed:
-                # In the directed graph case only nodes in the {dest} column of 
-                # the edge table are searched to find new nodes reachable from 
-                # previously discovered nodes
-                plpy.execute("""
-                    INSERT INTO {out_table}
-                    SELECT {grp_comma} {vertex_id}, {dist_col}, min({parent_col})
-                    FROM (
-                        SELECT {grp_comma} 
-                            {dest} AS {vertex_id}, 
-                            {curr_dist_val}+1 AS {dist_col}, 
-                            {src} AS {parent_col}
-                        FROM {edge_table} 
-                        WHERE (
-                            ({grp_comma} {src}) IN (
-                                SELECT {grp_comma} {vertex_id} FROM {out_table} 
-                                WHERE {dist_col}={curr_dist_val}
-                            ) 
-                            AND 
-                            ({grp_comma} {dest}) NOT IN (
-                                SELECT {grp_comma} {vertex_id} FROM {out_table}
-                            )
-                        )
-                    ) t1
-                    GROUP BY {grp_comma} {vertex_id}, {dist_col}
-                """.format(**locals()))
+            # In the directed graph case only nodes in the {dest} column of 
+            # the edge table are searched to find new nodes reachable from 
+            # previously discovered nodes
 
-                curr_dist_val = curr_dist_val + 1
+            # In the undirected graph case edges are treated as non-directional 
+            # (or bidirectional). Nodes in both the {src} and {dest} columns of 
+            # the edge table are searched to find new nodes reachable from 
+            # previously discovered nodes.
+            # This approach does NOT require the user to provide a forward edge
+            # and a reverse edge between the same two nodes to indicate the 
+            # graph's undirected nature. However, it will work in that scenario
+            # as well.
 
-                vct = plpy.execute("""
-                    SELECT COUNT(*) 
+            insert_qry_undirected_part = ""
+            count_qry_undirected_part = ""
+            
+            if not directed:
+                insert_qry_undirected_part = """ UNION
+                    SELECT {grp_comma} 
+                        {src} AS {vertex_id}, 
+                        {curr_dist_val}+1 AS {dist_col}, 
+                        {dest} AS {parent_col}
                     FROM {edge_table} 
                     WHERE (
-                        ({grp_comma} {src}) IN ( 
-                            SELECT {grp_comma} {vertex_id} FROM {out_table} 
-                            WHERE {dist_col}={curr_dist_val}
-                        ) 
-                        AND 
-                        ({grp_comma} {dest}) NOT IN (
-                            SELECT {grp_comma} {vertex_id} FROM {out_table}
-                        )
-                    )
-                """.format(**locals()))[0]['count']
-                
-            else:
-                # In the undirected graph case edges are treated as non-directional 
-                # (or bidirectional). Nodes in both the {src} and {dest} columns of 
-                # the edge table are searched to find new nodes reachable from 
-                # previously discovered nodes.
-                # This approach does NOT require the user to provide a forward edge
-                # and a reverse edge between the same two nodes to indicate the 
-                # graph's undirected nature. However, it will work in that scenario
-                # as well.
-
-                plpy.execute("""
-                    INSERT INTO {out_table}
-                    SELECT {grp_comma} {vertex_id}, {dist_col}, min({parent_col})
-                    FROM (
-                        SELECT {grp_comma} 
-                            {dest} AS {vertex_id}, 
-                            {curr_dist_val}+1 AS {dist_col}, 
-                            {src} AS {parent_col}
-                        FROM {edge_table} 
-                        WHERE (
-                            ({grp_comma} {src}) IN ( 
-                                SELECT {grp_comma} {vertex_id} FROM {out_table} 
-                                WHERE {dist_col}={curr_dist_val}
-                            ) 
-                            AND 
-                            ({grp_comma} {dest}) NOT IN (
-                                SELECT {grp_comma} {vertex_id} FROM {out_table}
-                            )
-                        )
-                        UNION
-                        SELECT {grp_comma} 
-                            {src} AS {vertex_id}, 
-                            {curr_dist_val}+1 AS {dist_col}, 
-                            {dest} AS {parent_col}
-                        FROM {edge_table} 
-                        WHERE (
-                            ({grp_comma} {dest}) IN (
-                                SELECT {grp_comma} {vertex_id} FROM {out_table} 
-                                WHERE {dist_col}={curr_dist_val}
-                            ) 
-                            AND 
-                            ({grp_comma} {src}) NOT IN (
-                                SELECT {grp_comma} {vertex_id} FROM {out_table}
-                            )
-                        )
-                    ) t1
-                    GROUP BY {grp_comma} {vertex_id}, {dist_col}
-                """.format(**locals()))
-
-                curr_dist_val = curr_dist_val + 1
-                
-                vct = plpy.execute("""
-                    SELECT COUNT(*) 
-                    FROM {edge_table} 
-                    WHERE (
-                        ({grp_comma} {src}) IN ( 
-                            SELECT {grp_comma} {vertex_id} FROM {out_table} 
-                            WHERE {dist_col}={curr_dist_val}
-                        ) 
-                        AND 
-                        ({grp_comma} {dest}) NOT IN (
-                            SELECT {grp_comma} {vertex_id} FROM {out_table}
-                        )
-                    ) OR (
-                        ({grp_comma} {dest}) IN ( 
+                        ({grp_comma} {dest}) IN (
                             SELECT {grp_comma} {vertex_id} FROM {out_table} 
                             WHERE {dist_col}={curr_dist_val}
                         ) 
@@ -438,7 +315,65 @@ def graph_bfs(schema_madlib, vertex_table, vertex_id, edge_table,
                             SELECT {grp_comma} {vertex_id} FROM {out_table}
                         )
                     )
-                    """.format(**locals()))[0]['count']
+                """.format(**locals())
+                
+                count_qry_undirected_part = """ OR (
+                    ({grp_comma} {dest}) IN ( 
+                        SELECT {grp_comma} {vertex_id} FROM {out_table} 
+                        WHERE {dist_col}={curr_dist_val}
+                    ) 
+                    AND 
+                    ({grp_comma} {src}) NOT IN (
+                        SELECT {grp_comma} {vertex_id} FROM {out_table}
+                    )
+                )
+                """.format(**locals())
+
+            # Discover and store all nodes (not already found) connected to 
+            # those found in the immediate previous iteration
+            plpy.execute("""
+                INSERT INTO {out_table}
+                SELECT {grp_comma} {vertex_id}, {dist_col}, min({parent_col})
+                FROM (
+                    SELECT {grp_comma} 
+                        {dest} AS {vertex_id}, 
+                        {curr_dist_val}+1 AS {dist_col}, 
+                        {src} AS {parent_col}
+                    FROM {edge_table} 
+                    WHERE (
+                        ({grp_comma} {src}) IN (
+                            SELECT {grp_comma} {vertex_id} FROM {out_table} 
+                            WHERE {dist_col}={curr_dist_val}
+                        ) 
+                        AND 
+                        ({grp_comma} {dest}) NOT IN (
+                            SELECT {grp_comma} {vertex_id} FROM {out_table}
+                        )
+                    )
+                    {insert_qry_undirected_part}
+                ) t1
+                GROUP BY {grp_comma} {vertex_id}, {dist_col}
+            """.format(**locals()))
+
+            curr_dist_val = curr_dist_val + 1
+
+            # Count / find any nodes that are connected to those discovered and 
+            # stored in this iteration. This is used to check if the iterations
+            # need to continue.
+            vct = plpy.execute("""
+                SELECT COUNT(*) 
+                FROM {edge_table} 
+                WHERE (
+                    ({grp_comma} {src}) IN ( 
+                        SELECT {grp_comma} {vertex_id} FROM {out_table} 
+                        WHERE {dist_col}={curr_dist_val}
+                    ) 
+                    AND 
+                    ({grp_comma} {dest}) NOT IN (
+                        SELECT {grp_comma} {vertex_id} FROM {out_table}
+                    )
+                ) {count_qry_undirected_part}
+            """.format(**locals()))[0]['count']
 
     return None
 
