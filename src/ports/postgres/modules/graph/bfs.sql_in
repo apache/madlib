@@ -21,7 +21,7 @@
  * @file bfs.sql_in
  *
  * @brief SQL functions for graph analytics
- * @date Nov 2016
+ * @date Jun 2017
  *
  * @sa Provides Breadth First Search graph algorithm.
  *
@@ -72,9 +72,11 @@ vertex ids.  The vertex ids are of type INTEGER with no duplicates.
 They do not need to be contiguous.</dd>
 
 <dt>edge_table</dt>
-<dd>TEXT. Name of the table containing the edge data. The edge table must
-contain columns for source vertex, destination vertex and edge weight.
-Column naming convention is described below in the 'edge_args' parameter.</dd>
+<dd>TEXT. Name of the table containing the edge data. The edge table must contain 
+columns for source vertex and destination vertex. Column naming convention is 
+described below in the 'edge_args' parameter. 
+In addition to vertex columns, if grouping is used then the columns specified
+in the 'grouping_cols' parameter must be present. </dd>
 
 <dt>edge_args</dt>
 <dd>TEXT. A comma-delimited string containing multiple named arguments of
@@ -96,9 +98,11 @@ It contains a row for every vertex that is reachable from the source_vertex.
 In the presence of grouping columns, only those edges are used for which there are no NULL values 
 in any grouping column.
 The output table will have the following columns (in addition to the grouping columns):
-  - vertex_id : The id for any node reachable from source_vertex. 
-                Will use the input parameter 'vertex_id' for column naming.
-  - dist      : The number of edges (or hops) from the source_vertex to where this vertex is located. 
+  - vertex_id : The id for any node reachable from source_vertex in addition to 
+                the source_vertex. Will use the input parameter 'vertex_id' for 
+                column naming.
+  - dist      : The distance in number of edges (or hops) from the source_vertex 
+                to where this vertex is located. 
   - parent    : The parent of this vertex in BFS traversal of the graph from source_vertex. 
                 Will use 'parent' for column naming. For the 
                 case where vertex_id = source_vertex, the value for parent is NULL.
@@ -113,17 +117,23 @@ A summary table named <out_table>_summary is also created. This is an internal t
 <dd>BOOLEAN, default = FALSE. If TRUE the graph will be treated as directed, else it will be treated as an undirected graph.</dd>
 
 <dt>grouping_cols</dt>
-<dd>TEXT, default = NULL. List of columns used to group the input into discrete subgraphs. These columns must exist in the edge table. When this value is NULL, no grouping is used and a single BFS result is generated. </dd>
+<dd>TEXT, default = NULL. A comma-separated list of columns used to group the 
+input into discrete subgraphs. 
+These columns must exist in the edge table. When this value is NULL, no grouping is used 
+and a single BFS result is generated. 
+@note Expressions are not currently supported for 'grouping_cols'.</dd>
+
 </dl>
 
 @anchor notes
 @par Notes
 
-The graph_bfs function is a SQL implementation of the well-known Breadth-first Search algorithm [1].
-It will find any node in the graph reachable from the source_vertex only once. If a node 
-is reachable by many different paths from the source_vertex (i.e. has more than one parent), 
-then only one of those parents is present in the output table. The BFS result 
-will, in general, be different for different choices of source_vertex.
+The graph_bfs function is a SQL implementation of the well-known Breadth-first 
+Search algorithm [1] modified appropriately for a relational database. It will 
+find any node in the graph reachable from the source_vertex only once. If a node 
+is reachable by many different paths from the source_vertex (i.e. has more than 
+one parent), then only one of those parents is present in the output table. 
+The BFS result will, in general, be different for different choices of source_vertex.
 
 @anchor examples
 @examp
@@ -202,7 +212,7 @@ SELECT * FROM out_summary;
 (1 row)
 </pre>
 
--# In this example, we use max_distance to limit the search distance of the graph.
+-# In this example, we use max_distance to limit the search distance.
 <pre class="syntax">
 DROP TABLE IF EXISTS out_max, out_max_summary;
 SELECT madlib.graph_bfs(
@@ -260,7 +270,7 @@ SELECT * FROM out_alt ORDER BY v_id;
 
 -# Now we show an example where the graph is treated as a directed graph.
 <pre class="syntax">
-DROP TABLE IF EXISTS out_alt, out_alt_summary;
+DROP TABLE IF EXISTS out_alt_dir, out_alt_dir_summary;
 SELECT madlib.graph_bfs(
                          'vertex_alt',                  -- Vertex table
                          'v_id',                        -- Vertex id column (NULL means use default naming)
@@ -393,7 +403,9 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.graph_bfs(
     PythonFunction(graph, bfs, graph_bfs)
 $$ LANGUAGE plpythonu VOLATILE
 m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `MODIFIES SQL DATA', `');
+
 -------------------------------------------------------------------------
+
 CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.graph_bfs(
     vertex_table            TEXT,
     vertex_id               TEXT,
@@ -407,7 +419,9 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.graph_bfs(
      SELECT MADLIB_SCHEMA.graph_bfs($1, $2, $3, $4, $5, $6, $7, $8, NULL);
 $$ LANGUAGE sql VOLATILE
 m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `MODIFIES SQL DATA', `');
+
 -------------------------------------------------------------------------
+
 CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.graph_bfs(
     vertex_table            TEXT,
     vertex_id               TEXT,
@@ -420,7 +434,9 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.graph_bfs(
      SELECT MADLIB_SCHEMA.graph_bfs($1, $2, $3, $4, $5, $6, $7, NULL, NULL);
 $$ LANGUAGE sql VOLATILE
 m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `MODIFIES SQL DATA', `');
+
 -------------------------------------------------------------------------
+
 CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.graph_bfs(
     vertex_table            TEXT,
     vertex_id               TEXT,
@@ -432,4 +448,24 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.graph_bfs(
      SELECT MADLIB_SCHEMA.graph_bfs($1, $2, $3, $4, $5, $6, NULL, NULL, NULL);
 $$ LANGUAGE sql VOLATILE
 m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `MODIFIES SQL DATA', `');
+
 -------------------------------------------------------------------------
+
+-- Online help
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.graph_bfs(
+    message VARCHAR
+) RETURNS VARCHAR AS $$
+    PythonFunction(graph, bfs, graph_bfs_help)
+$$ LANGUAGE plpythonu IMMUTABLE
+m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `CONTAINS SQL', `');
+
+--------------------------------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.graph_bfs()
+RETURNS VARCHAR AS $$
+    SELECT MADLIB_SCHEMA.graph_bfs('');
+$$ LANGUAGE sql IMMUTABLE
+m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `CONTAINS SQL', `');
+
+--------------------------------------------------------------------------------
+
