@@ -35,10 +35,15 @@ function prepare_madlib(){
 
         cd \${base_path}/madlib_gppkg/
 
-        gppkg -i madlib-ossv1.11_pv1.9.8_gpdb5-rhel5-x86_64.gppkg
+        gppkg -i madlib-*.gppkg
 
         $GPHOME/madlib/bin/madpack -s madlib -p greenplum -c localhost:\${PGPORT}/postgres install
-        $GPHOME/madlib/bin/madpack -s madlib -p greenplum -c localhost:\${PGPORT}/postgres install-check
+        $GPHOME/madlib/bin/madpack -s madlib -p greenplum -c localhost:\${PGPORT}/postgres install-check | tee IC_gpdb5.0.out
+        if grep -q "|FAIL|" IC_gpdb5.0.out; then
+            echo "FAIL"
+            false
+            exit 1
+        fi
 
 	EOF
 

@@ -22,16 +22,29 @@ set -eox pipefail
 CWDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 source "${CWDIR}/madlib_common.bash"
 
+function disable_orca(){
+    cat > /opt/disable_orca.sh <<-EOF
+        set -exo pipefail
+        base_path=\${1}
+        source /usr/local/greenplum-db-devel/greenplum_path.sh
+        source \${base_path}/gpdb_src/gpAux/gpdemo/gpdemo-env.sh
+        psql postgres -c "ALTER DATABASE postgres SET OPTIMIZER = OFF;"
+EOF
+
+    chmod a+x /opt/disable_orca.sh
+    su - gpadmin -c "bash /opt/disable_orca.sh $(pwd)"
+
+}
+
 function _main() {
 
     configure
     install_gpdb
     setup_gpadmin_user
-    chown -R gpadmin:gpadmin ./madlib_gppkg
     make_cluster
+    disable_orca
     prepare_madlib
     run_test
-    create_gppkg
 }
 
 _main "$@"

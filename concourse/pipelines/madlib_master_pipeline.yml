@@ -1,0 +1,148 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+
+#   http://www.apache.org/licenses/LICENSE-2.0
+
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+groups: []
+resources:
+- name: gpdb_src
+  type: git
+  source:
+    branch: {{gpdb-git-branch}}
+    ignore_paths:
+    - gpdb-doc/*
+    - README*
+    uri: {{gpdb-git-remote}}
+    tag_filter: 5.*
+- name: madlib_src
+  type: git
+  source:
+    branch: {{madlib-git-branch}}
+    uri: {{madlib-git-remote}}
+
+- name: bin_gpdb_centos6
+  type: s3
+  source:
+    access_key_id: {{bucket-access-key-id}}
+    bucket: {{bucket-name}}
+    region_name: {{aws-region}}
+    secret_access_key: {{bucket-secret-access-key}}
+    versioned_file: {{bin_gpdb_centos_versioned_file}}
+- name: bin_gpdb_centos7
+  type: s3
+  source:
+    access_key_id: {{bucket-access-key-id}}
+    bucket: {{bucket-name}}
+    region_name: {{aws-region}}
+    secret_access_key: {{bucket-secret-access-key}}
+    versioned_file: {{bin_gpdb_centos7_versioned_file}}
+- name: centos-gpdb-dev-6
+  type: docker-image
+  source:
+    repository: pivotaldata/centos-gpdb-dev
+    tag: '6-gcc6.2-llvm3.7'
+- name: centos-gpdb-dev-7
+  type: docker-image
+  source:
+    repository: pivotaldata/centos-gpdb-dev
+    tag: 7-gcc6.2-llvm3.7
+
+- name: madlib_gppkg
+  type: s3
+  source:
+    access_key_id: {{madlib-gppkg-access_key_id}}
+    bucket: {{madlib-gppkg-bucket}}
+    region_name: us-west-2
+    secret_access_key: {{madlib-gppkg-secret_access_key}}
+    versioned_file: {{madlib-gppkg-dev-versioned_file}}
+
+jobs:
+- name: MADlib_centos6_ORCA
+  plan:
+  - aggregate:
+    - get: madlib_src
+      trigger: True
+    - get: gpdb_src
+    - get: bin_gpdb
+      resource: bin_gpdb_centos6
+    - get: centos-gpdb-dev-6
+  - task: MADlib_ORCA
+    file: madlib_src/concourse/tasks/madlib_orca.yml
+    params:
+      TARGET_OS: centos
+      TARGET_OS_VERSION: 6
+      BLD_TARGETS: "clients loaders"
+      TEST_OS: centos
+    image: centos-gpdb-dev-6
+  - put: madlib_gppkg
+    params:
+      file: madlib_gppkg/madlib-ossv1.12_dev_pv1.9.8_gpdb5-rhel5-x86_64.gppkg
+- name: MADlib_centos6_planner
+  plan:
+  - aggregate:
+    - get: madlib_src
+      trigger: True
+    - get: gpdb_src
+    - get: bin_gpdb
+      resource: bin_gpdb_centos6
+    - get: centos-gpdb-dev-6
+  - task: MADlib_planner
+    file: madlib_src/concourse/tasks/madlib_planner.yml
+    params:
+      TARGET_OS: centos
+      TARGET_OS_VERSION: 6
+      BLD_TARGETS: "clients loaders"
+      TEST_OS: centos
+    image: centos-gpdb-dev-6
+
+- name: MADlib_Test_gppkg6
+  plan:
+  - aggregate:
+    - get: madlib_src
+    - get: gpdb_src
+    - get: bin_gpdb
+      resource: bin_gpdb_centos6
+    - get: centos-gpdb-dev-6
+    - get: madlib_gppkg
+      trigger: true
+      passed: [MADlib_centos6_ORCA]
+  - task: MADlib_Test_gppkg
+    file: madlib_src/concourse/tasks/madlib_test_gppkg.yml
+    params:
+      TARGET_OS: centos
+      TARGET_OS_VERSION: 6
+      BLD_TARGETS: "clients loaders"
+      TEST_OS: centos
+    image: centos-gpdb-dev-6
+
+- name: MADlib_Test_gppkg7
+  plan:
+  - aggregate:
+    - get: madlib_src
+    - get: gpdb_src
+    - get: bin_gpdb
+      resource: bin_gpdb_centos7
+    - get: centos-gpdb-dev-7
+    - get: madlib_gppkg
+      trigger: true
+      passed: [MADlib_centos6_ORCA]
+  - task: MADlib_Test_gppkg
+    file: madlib_src/concourse/tasks/madlib_test_gppkg.yml
+    params:
+      TARGET_OS: centos
+      TARGET_OS_VERSION: 7
+      BLD_TARGETS: "clients loaders"
+      TEST_OS: centos
+    image: centos-gpdb-dev-7
