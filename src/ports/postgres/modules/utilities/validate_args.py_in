@@ -344,6 +344,50 @@ def get_cols_and_types(tbl):
     return list(zip(col_names, col_types))
 # -------------------------------------------------------------------------
 
+def get_col_type(tbl, col):
+    """
+    Get the data type of a specific column in a table.
+    If the table is schema qualified then the appropriate schema is searched.
+
+    Args:
+        @param tbl: string, Name of the table to search in
+        @param col: string, Name of the column whose type is to be found
+
+    Returns:
+        String, the type of column col.
+
+    The data type returned will be the type name if it is a built-in type, or
+    'ARRAY' if it is some array. For any other case it will be 'USER-DEFINED'.    If no schema qualification is provided then the current schema is used.
+    """
+    if tbl is None or tbl.lower() == 'null':
+        plpy.error('Input error: Table name (NULL) is invalid')
+
+    # determine the exact table_schema and table_name
+    # in case that source_table only contains table_name
+    row = plpy.execute("""
+                        SELECT
+                            nspname AS table_schema,
+                            relname AS table_name
+                        FROM
+                            pg_class AS c,
+                            pg_namespace AS nsp
+                        WHERE
+                            c.oid = '{tbl}'::regclass::oid AND
+                            c.relnamespace = nsp.oid
+                        """.format(tbl=tbl))
+    schema = row[0]['table_schema']
+    table = row[0]['table_name']
+    if columns_exist_in_table(table, [col], schema):
+        sql_string = """SELECT data_type::varchar AS type
+                        FROM information_schema.columns
+                        WHERE table_name = '{table}'
+                        AND table_schema = '{schema}'
+                        AND column_name = '{col}'
+                    """.format(table=table, schema=schema, col=col)
+        result = plpy.execute(sql_string)[0]
+        return result['type']
+    return None
+
 
 def get_expr_type(expr, tbl):
     """ Return the type of an expression run on a given table
