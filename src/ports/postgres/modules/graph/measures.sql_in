@@ -34,18 +34,22 @@ m4_include(`SQLCommon.m4')
 <div class="toc"><b>Contents</b>
 <ul>
 <li><a href="#closeness">Closeness</a></li>
-<li><a href="#notes">Notes</a></li>
 <li><a href="#examples">Examples</a></li>
-<li><a href="#literature">Literature</a></li>
 </ul>
 </div>
 
-@note This function assumes a valid output from a prior APSP run - both the APSP
-table and the associated output summary table. APSP is a computationally
-expensive algorithm because it finds the shortest path between all nodes in the
-graph. The worst case run-time for this implementation is O(V^2 * E) where V is
-the number of vertices and E is the number of edges.  In practice, run-time will
-be generally be much less than this, depending on the graph.
+The Closeness function returns various closeness centrality measures and the
+k-degree for given subset of vertices. The closeness measures are the inverse of
+the sum, the inverse of the average, and the sum of inverses of the shortest
+distances to all reachable target vertices (excluding the source vertex).
+
+@note The closeness measures require a valid output from a prior APSP run - both
+the APSP table and the associated output summary table. APSP is a
+computationally expensive algorithm because it finds the shortest path between
+all nodes in the graph. The worst case run-time for this implementation is O(V^2
+* E) where V is the number of vertices and E is the number of edges.  In
+practice, run-time will be generally be much less than this, depending on the
+graph.
 
 @anchor closeness
 @par Closeness
@@ -95,10 +99,6 @@ Some example inputs:
 </dd>
 </dl>
 
-@anchor notes
-@par Notes
-
-
 @anchor examples
 @examp
 
@@ -147,28 +147,6 @@ SELECT madlib.graph_apsp('vertex',      -- Vertex table
                          'src=src_id, dest=dest_id, weight=edge_weight',
                                         -- Edge arguments (NULL means use default naming)
                          'out_apsp');        -- Output table of shortest paths
-SELECT * FROM out_apsp ORDER BY src,dest;
-</pre>
-<pre class="result">
- src | dest |  weight  | parent
------+------+----------+--------
-   0 |    0 |        0 |      0
-   0 |    1 |        1 |      1
-   0 |    2 |        1 |      2
-   0 |    3 |        2 |      2
-   0 |    4 |       10 |      4
-   0 |    5 |        2 |      2
-   0 |    6 |        3 |      5
-   0 |    7 |        4 |      6
-   1 |    0 |        4 |      3
-   1 |    1 |        0 |      1
-   1 |    2 |        2 |      2
-   1 |    3 |        3 |      2
-   1 |    4 |       14 |      0
-   1 |    5 |        3 |      2
-   1 |    6 |        4 |      5
-   1 |    7 |        5 |      6
-(showing only 16 of 64 rows)
 </pre>
 
 -# Compute the closeness measure for all nodes:
@@ -178,6 +156,17 @@ SELECT madlib.graph_closeness('out_apsp', 'out_closeness');
 SELECT * FROM out_closeness;
 </pre>
 <pre class="result">
+ src_id |  inverse_sum_dist  | inverse_avg_dist  | sum_inverse_dist | k_degree
+--------+--------------------+-------------------+------------------+----------
+      1 | 0.0285714285714286 |               0.2 | 1.93809523809524 |        7
+      3 | 0.0357142857142857 |              0.25 | 2.87424242424242 |        7
+      4 |                 -1 |                -7 |               -1 |        7
+      0 | 0.0434782608695652 | 0.304347826086957 | 3.68333333333333 |        7
+      6 |                  1 |                 1 |                1 |        1
+      2 | 0.0416666666666667 | 0.291666666666667 |             3.75 |        7
+      5 |  0.333333333333333 | 0.666666666666667 |              1.5 |        2
+      7 |             [NULL] |            [NULL] |                0 |        0
+(8 rows)
 </pre>
 
 -# Create a graph with 2 groups and find APSP for each group:
@@ -187,7 +176,7 @@ CREATE TABLE edge_gr AS
 (
   SELECT *, 0 AS grp FROM edge
   UNION
-  SELECT *, 1 AS grp FROM edge WHERE src < 6 AND dest < 6
+  SELECT *, 1 AS grp FROM edge WHERE src_id < 6 AND dest_id < 6
 );
 INSERT INTO edge_gr VALUES
 (4,5,-20,1);
@@ -200,65 +189,37 @@ SELECT madlib.graph_apsp(
                          'vertex',      -- Vertex table
                          NULL,          -- Vertex id column (NULL means use default naming)
                          'edge_gr',     -- Edge table
-                         NULL,          -- Edge arguments (NULL means use default naming)
+                         'src=src_id, dest=dest_id, weight=edge_weight',
                          'out_gr',      -- Output table of shortest paths
                          'grp'          -- Grouping columns
 );
-SELECT * FROM out_gr WHERE src < 2 ORDER BY grp,src,dest;
-</pre>
-<pre class="result">
- grp | src | dest | weight | parent
------+-----+------+--------+--------
-   0 |   0 |    0 |      0 |      0
-   0 |   0 |    1 |      1 |      1
-   0 |   0 |    2 |      1 |      2
-   0 |   0 |    3 |      2 |      2
-   0 |   0 |    4 |     10 |      4
-   0 |   0 |    5 |      2 |      2
-   0 |   0 |    6 |      4 |      2
-   0 |   0 |    7 |      5 |      6
-   0 |   1 |    0 |      4 |      3
-   0 |   1 |    1 |      0 |      1
-   0 |   1 |    2 |      2 |      2
-   0 |   1 |    3 |      3 |      2
-   0 |   1 |    4 |     14 |      0
-   0 |   1 |    5 |      3 |      2
-   0 |   1 |    6 |      4 |      5
-   0 |   1 |    7 |      5 |      6
-   1 |   0 |    0 |      0 |      0
-   1 |   0 |    1 |      1 |      1
-   1 |   0 |    2 |      1 |      2
-   1 |   0 |    3 |      2 |      2
-   1 |   0 |    4 |     10 |      4
-   1 |   0 |    5 |    -10 |      4
-   1 |   1 |    0 |      4 |      3
-   1 |   1 |    1 |      0 |      1
-   1 |   1 |    2 |      2 |      2
-   1 |   1 |    3 |      3 |      2
-   1 |   1 |    4 |     14 |      0
-   1 |   1 |    5 |     -6 |      4
-(28 rows)
 </pre>
 
--# Find the path from vertex 0 to vertex 5 in every group
+-# Compute closeness measure for vertex 0 to vertex 5 in every group
 <pre class="syntax">
 DROP TABLE IF EXISTS out_gr_path;
-SELECT madlib.graph_apsp_get_path('out_gr',0,5,'out_gr_path');
-SELECT * FROM out_gr_path ORDER BY grp;
+SELECT madlib.graph_closeness('out_gr', 'out_gr_closeness', 'src_id >= 0 and src_id <=5');
+SELECT * FROM out_gr_closeness ORDER BY grp;
 </pre>
 <pre class="result">
- grp |  path
------+---------
-   0 | {0,2,5}
-   1 | {0,4,5}
+ grp | src_id |  inverse_sum_dist   |  inverse_avg_dist  | sum_inverse_dist  | k_degree
+-----+--------+---------------------+--------------------+-------------------+----------
+   0 |      0 |  0.0434782608695652 |  0.304347826086957 |  3.68333333333333 |        7
+   0 |      5 |   0.333333333333333 |  0.666666666666667 |               1.5 |        2
+   0 |      4 |                  -1 |                 -7 |                -1 |        7
+   0 |      3 |  0.0357142857142857 |               0.25 |  2.87424242424242 |        7
+   0 |      1 |  0.0285714285714286 |                0.2 |  1.93809523809524 |        7
+   0 |      2 |  0.0416666666666667 |  0.291666666666667 |              3.75 |        7
+   1 |      3 |   0.142857142857143 |  0.714285714285714 |  1.97979797979798 |        5
+   1 |      5 |              [NULL] |             [NULL] |                 0 |        0
+   1 |      0 |                0.25 |               1.25 |               2.5 |        5
+   1 |      1 |  0.0588235294117647 |  0.294117647058824 | 0.988095238095238 |        5
+   1 |      2 |                 0.1 |                0.5 |  1.79166666666667 |        5
+   1 |      4 | -0.0416666666666667 | -0.208333333333333 |             -2.55 |        5
+(12 rows)
 </pre>
 
-@anchor literature
-@par Literature
-
-
 */
-
 -------------------------------------------------------------------------
 
 
@@ -305,11 +266,11 @@ m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `CONTAINS SQL', `');
 <div class="toc"><b>Contents</b>
 <ul>
 <li><a href="#diameter">Diameter</a></li>
-<li><a href="#notes">Notes</a></li>
 <li><a href="#examples">Examples</a></li>
-<li><a href="#literature">Literature</a></li>
 </ul>
 </div>
+
+Diameter is defined as the longest of all shortest paths in a graph.
 
 @note This function assumes a valid output from a prior APSP run - both the APSP
 table and the associated output summary table. APSP is a computationally
@@ -333,41 +294,10 @@ graph_diameter( apsp_table,
 </dd>
 
 <dt>out_table</dt>
-<dd>TEXT. Name of the table to store the closeness measures.
-It contains a row for every vertex of every group and have
-the following columns (in addition to the grouping columns):
-  - inverse_sum_dist: Inverse of the sum of shortest distances to all reachable
-  vertices.
-  - inverse_average_dist: Inverse of the average of shortest distances to all
-  reachable vertices.
-  - sum_inverse_dist: Sum of the inverse of shortest distances to all reachable
-  vertices.
-  - k_degree: Total number of reachable vertices.
+<dd>TEXT. Name of the table to store the diameter. It contains a row for every group, the diameter value and the two vertices that are the farthest apart.
 </dd>
 
-<dt>vertex_filter_expr (optional)</dt>
-
-<dd>TEXT, default = NULL. Valid PostgreSQL expression that describes the
- vertices to generate closeness measures for.  If this parameter is not
-specified, closeness measures are generated for all vertices in the apsp table.
-This input should be treated like a WHERE clause.
-
-Some example inputs:
-- If you want a short list of vertices, say 1, 2 and 3:
-<pre>vertex_id IN (1, 2, 3)</pre>
-- If you want a range of vertices between 1000 and 2000:
-<pre>vertix_id BETWEEN 1000 AND 2000</pre>
-- If you want a set of vertices from a separate table satisfying to a condition
-<pre>EXISTS (SELECT vertex_id FROM vertices_of_interest
-             WHERE vertex_id > 5000 AND condition = 'xyz')
-</pre>
-
-</dd>
 </dl>
-
-@anchor notes
-@par Notes
-
 
 @anchor examples
 @examp
@@ -417,37 +347,19 @@ SELECT madlib.graph_apsp('vertex',      -- Vertex table
                          'src=src_id, dest=dest_id, weight=edge_weight',
                                         -- Edge arguments (NULL means use default naming)
                          'out_apsp');        -- Output table of shortest paths
-SELECT * FROM out_apsp ORDER BY src,dest;
-</pre>
-<pre class="result">
- src | dest |  weight  | parent
------+------+----------+--------
-   0 |    0 |        0 |      0
-   0 |    1 |        1 |      1
-   0 |    2 |        1 |      2
-   0 |    3 |        2 |      2
-   0 |    4 |       10 |      4
-   0 |    5 |        2 |      2
-   0 |    6 |        3 |      5
-   0 |    7 |        4 |      6
-   1 |    0 |        4 |      3
-   1 |    1 |        0 |      1
-   1 |    2 |        2 |      2
-   1 |    3 |        3 |      2
-   1 |    4 |       14 |      0
-   1 |    5 |        3 |      2
-   1 |    6 |        4 |      5
-   1 |    7 |        5 |      6
-(showing only 16 of 64 rows)
 </pre>
 
--# Compute the closeness measure for all nodes:
+-# Compute the diameter measure for the graph:
 <pre class="syntax">
-DROP TABLE IF EXISTS out_closeness;
-SELECT madlib.graph_closeness('out_apsp', 'out_closeness');
-SELECT * FROM out_closeness;
+DROP TABLE IF EXISTS out_diameter;
+SELECT madlib.graph_diameter('out_apsp', 'out_diameter');
+SELECT * FROM out_diameter;
 </pre>
 <pre class="result">
+ diameter | diameter_end_vertices
+----------+-----------------------
+       14 | {{1,4}}
+(1 row)
 </pre>
 
 -# Create a graph with 2 groups and find APSP for each group:
@@ -457,7 +369,7 @@ CREATE TABLE edge_gr AS
 (
   SELECT *, 0 AS grp FROM edge
   UNION
-  SELECT *, 1 AS grp FROM edge WHERE src < 6 AND dest < 6
+  SELECT *, 1 AS grp FROM edge WHERE src_id < 6 AND dest_id < 6
 );
 INSERT INTO edge_gr VALUES
 (4,5,-20,1);
@@ -470,62 +382,25 @@ SELECT madlib.graph_apsp(
                          'vertex',      -- Vertex table
                          NULL,          -- Vertex id column (NULL means use default naming)
                          'edge_gr',     -- Edge table
-                         NULL,          -- Edge arguments (NULL means use default naming)
+                         'src=src_id, dest=dest_id, weight=edge_weight',
                          'out_gr',      -- Output table of shortest paths
                          'grp'          -- Grouping columns
 );
-SELECT * FROM out_gr WHERE src < 2 ORDER BY grp,src,dest;
-</pre>
-<pre class="result">
- grp | src | dest | weight | parent
------+-----+------+--------+--------
-   0 |   0 |    0 |      0 |      0
-   0 |   0 |    1 |      1 |      1
-   0 |   0 |    2 |      1 |      2
-   0 |   0 |    3 |      2 |      2
-   0 |   0 |    4 |     10 |      4
-   0 |   0 |    5 |      2 |      2
-   0 |   0 |    6 |      4 |      2
-   0 |   0 |    7 |      5 |      6
-   0 |   1 |    0 |      4 |      3
-   0 |   1 |    1 |      0 |      1
-   0 |   1 |    2 |      2 |      2
-   0 |   1 |    3 |      3 |      2
-   0 |   1 |    4 |     14 |      0
-   0 |   1 |    5 |      3 |      2
-   0 |   1 |    6 |      4 |      5
-   0 |   1 |    7 |      5 |      6
-   1 |   0 |    0 |      0 |      0
-   1 |   0 |    1 |      1 |      1
-   1 |   0 |    2 |      1 |      2
-   1 |   0 |    3 |      2 |      2
-   1 |   0 |    4 |     10 |      4
-   1 |   0 |    5 |    -10 |      4
-   1 |   1 |    0 |      4 |      3
-   1 |   1 |    1 |      0 |      1
-   1 |   1 |    2 |      2 |      2
-   1 |   1 |    3 |      3 |      2
-   1 |   1 |    4 |     14 |      0
-   1 |   1 |    5 |     -6 |      4
-(28 rows)
 </pre>
 
--# Find the path from vertex 0 to vertex 5 in every group
+-# Find the diameter of graph in every group
 <pre class="syntax">
 DROP TABLE IF EXISTS out_gr_path;
-SELECT madlib.graph_apsp_get_path('out_gr',0,5,'out_gr_path');
-SELECT * FROM out_gr_path ORDER BY grp;
+SELECT madlib.graph_diameter('out_gr', 'out_gr_diameter');
+SELECT * FROM out_gr_diameter ORDER BY grp;
 </pre>
 <pre class="result">
- grp |  path
------+---------
-   0 | {0,2,5}
-   1 | {0,4,5}
+ grp | diameter | diameter_end_vertices
+-----+----------+-----------------------
+   0 |       14 | {{1,4}}
+   1 |       14 | {{1,4}}
+(2 rows)
 </pre>
-
-@anchor literature
-@par Literature
-
 
 */
 
@@ -557,17 +432,19 @@ m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `CONTAINS SQL', `');
 --------------------------------------------------------------------------------
 
 /**
-@addtogroup grp_graph_diameter
-@brief Computes the diameter of a graph.
+@addtogroup grp_graph_avg_path_length
+@brief Computes the average shortest-path length of a graph.
 
 <div class="toc"><b>Contents</b>
 <ul>
-<li><a href="#closeness">Closeness</a></li>
-<li><a href="#notes">Notes</a></li>
+<li><a href="#avg_path_length">Average Path Length</a></li>
 <li><a href="#examples">Examples</a></li>
-<li><a href="#literature">Literature</a></li>
 </ul>
 </div>
+
+This function computes the average of the shortest paths between each pair of
+vertices. Average path length is based on "reachable target vertices", so it
+ignores infinite-length paths between vertices that are not connected.
 
 @note This function assumes a valid output from a prior APSP run - both the APSP
 table and the associated output summary table. APSP is a computationally
@@ -576,57 +453,26 @@ graph. The worst case run-time for this implementation is O(V^2 * E) where V is
 the number of vertices and E is the number of edges.  In practice, run-time will
 be generally be much less than this, depending on the graph.
 
-@anchor closeness
-@par Diameter
+@anchor avg_path_length
+@par Average Path Length
 <pre class="syntax">
-graph_diameter( apsp_table,
-                 output_table,
-                 vertex_filter_expr
-               )
+graph_avg_path_length( apsp_table,
+                       output_table
+                     )
 </pre>
 
 \b Arguments
 <dl class="arglist">
 <dt>apsp_table</dt>
-<dd>TEXT. Name of the output table generated by a prior run of all pairs shortest path (APSP).
+<dd>TEXT. Name of the output table generated by a prior run of all pairs
+shortest path (APSP).
 </dd>
 
 <dt>out_table</dt>
-<dd>TEXT. Name of the table to store the closeness measures.
-It contains a row for every vertex of every group and have
-the following columns (in addition to the grouping columns):
-  - inverse_sum_dist: Inverse of the sum of shortest distances to all reachable
-  vertices.
-  - inverse_average_dist: Inverse of the average of shortest distances to all
-  reachable vertices.
-  - sum_inverse_dist: Sum of the inverse of shortest distances to all reachable
-  vertices.
-  - k_degree: Total number of reachable vertices.
-</dd>
-
-<dt>vertex_filter_expr (optional)</dt>
-
-<dd>TEXT, default = NULL. Valid PostgreSQL expression that describes the
- vertices to generate closeness measures for.  If this parameter is not
-specified, closeness measures are generated for all vertices in the apsp table.
-This input should be treated like a WHERE clause.
-
-Some example inputs:
-- If you want a short list of vertices, say 1, 2 and 3:
-<pre>vertex_id IN (1, 2, 3)</pre>
-- If you want a range of vertices between 1000 and 2000:
-<pre>vertix_id BETWEEN 1000 AND 2000</pre>
-- If you want a set of vertices from a separate table satisfying to a condition
-<pre>EXISTS (SELECT vertex_id FROM vertices_of_interest
-             WHERE vertex_id > 5000 AND condition = 'xyz')
-</pre>
-
+<dd>TEXT. Name of the table to store the average path length. It contains a row
+for every group, and the average path value.
 </dd>
 </dl>
-
-@anchor notes
-@par Notes
-
 
 @anchor examples
 @examp
@@ -676,37 +522,19 @@ SELECT madlib.graph_apsp('vertex',      -- Vertex table
                          'src=src_id, dest=dest_id, weight=edge_weight',
                                         -- Edge arguments (NULL means use default naming)
                          'out_apsp');        -- Output table of shortest paths
-SELECT * FROM out_apsp ORDER BY src,dest;
-</pre>
-<pre class="result">
- src | dest |  weight  | parent
------+------+----------+--------
-   0 |    0 |        0 |      0
-   0 |    1 |        1 |      1
-   0 |    2 |        1 |      2
-   0 |    3 |        2 |      2
-   0 |    4 |       10 |      4
-   0 |    5 |        2 |      2
-   0 |    6 |        3 |      5
-   0 |    7 |        4 |      6
-   1 |    0 |        4 |      3
-   1 |    1 |        0 |      1
-   1 |    2 |        2 |      2
-   1 |    3 |        3 |      2
-   1 |    4 |       14 |      0
-   1 |    5 |        3 |      2
-   1 |    6 |        4 |      5
-   1 |    7 |        5 |      6
-(showing only 16 of 64 rows)
 </pre>
 
--# Compute the closeness measure for all nodes:
+-# Compute the average path length measure:
 <pre class="syntax">
-DROP TABLE IF EXISTS out_closeness;
-SELECT madlib.graph_closeness('out_apsp', 'out_closeness');
-SELECT * FROM out_closeness;
+DROP TABLE IF EXISTS out_avg_path_length;
+SELECT madlib.graph_avg_path_length('out_apsp', 'out_avg_path_length');
+SELECT * FROM out_avg_path_length;
 </pre>
 <pre class="result">
+ avg_path_length
+------------------
+ 2.01785714285714
+(1 row)
 </pre>
 
 -# Create a graph with 2 groups and find APSP for each group:
@@ -716,7 +544,7 @@ CREATE TABLE edge_gr AS
 (
   SELECT *, 0 AS grp FROM edge
   UNION
-  SELECT *, 1 AS grp FROM edge WHERE src < 6 AND dest < 6
+  SELECT *, 1 AS grp FROM edge WHERE src_id < 6 AND dest_id < 6
 );
 INSERT INTO edge_gr VALUES
 (4,5,-20,1);
@@ -729,63 +557,25 @@ SELECT madlib.graph_apsp(
                          'vertex',      -- Vertex table
                          NULL,          -- Vertex id column (NULL means use default naming)
                          'edge_gr',     -- Edge table
-                         NULL,          -- Edge arguments (NULL means use default naming)
+                         'src=src_id, dest=dest_id, weight=edge_weight',
                          'out_gr',      -- Output table of shortest paths
                          'grp'          -- Grouping columns
 );
-SELECT * FROM out_gr WHERE src < 2 ORDER BY grp,src,dest;
-</pre>
-<pre class="result">
- grp | src | dest | weight | parent
------+-----+------+--------+--------
-   0 |   0 |    0 |      0 |      0
-   0 |   0 |    1 |      1 |      1
-   0 |   0 |    2 |      1 |      2
-   0 |   0 |    3 |      2 |      2
-   0 |   0 |    4 |     10 |      4
-   0 |   0 |    5 |      2 |      2
-   0 |   0 |    6 |      4 |      2
-   0 |   0 |    7 |      5 |      6
-   0 |   1 |    0 |      4 |      3
-   0 |   1 |    1 |      0 |      1
-   0 |   1 |    2 |      2 |      2
-   0 |   1 |    3 |      3 |      2
-   0 |   1 |    4 |     14 |      0
-   0 |   1 |    5 |      3 |      2
-   0 |   1 |    6 |      4 |      5
-   0 |   1 |    7 |      5 |      6
-   1 |   0 |    0 |      0 |      0
-   1 |   0 |    1 |      1 |      1
-   1 |   0 |    2 |      1 |      2
-   1 |   0 |    3 |      2 |      2
-   1 |   0 |    4 |     10 |      4
-   1 |   0 |    5 |    -10 |      4
-   1 |   1 |    0 |      4 |      3
-   1 |   1 |    1 |      0 |      1
-   1 |   1 |    2 |      2 |      2
-   1 |   1 |    3 |      3 |      2
-   1 |   1 |    4 |     14 |      0
-   1 |   1 |    5 |     -6 |      4
-(28 rows)
 </pre>
 
--# Find the path from vertex 0 to vertex 5 in every group
+-# Find the average path length in every group
 <pre class="syntax">
 DROP TABLE IF EXISTS out_gr_path;
-SELECT madlib.graph_apsp_get_path('out_gr',0,5,'out_gr_path');
+SELECT madlib.graph_avg_path_length('out_gr', 'out_gr_path');
 SELECT * FROM out_gr_path ORDER BY grp;
 </pre>
 <pre class="result">
- grp |  path
------+---------
-   0 | {0,2,5}
-   1 | {0,4,5}
+ grp |  avg_path_length
+-----+-------------------
+   0 |  2.01785714285714
+   1 | 0.466666666666667
+(2 rows)
 </pre>
-
-@anchor literature
-@par Literature
-
-
 */
 
 
@@ -823,11 +613,14 @@ m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `CONTAINS SQL', `');
 <div class="toc"><b>Contents</b>
 <ul>
 <li><a href="#degrees">In-out degrees</a></li>
-<li><a href="#notes">Notes</a></li>
 <li><a href="#examples">Examples</a></li>
-<li><a href="#literature">Literature</a></li>
 </ul>
 </div>
+
+This function computes the degree of each node. The node degree is the number of
+edges adjacent to that node. The node in-degree is the number of edges pointing
+in to the node and node out-degree is the number of edges pointing out of the
+node.
 
 @anchor degrees
 @par In-out degrees
@@ -870,10 +663,10 @@ this string argument:
   edge table. Default column name is 'weight'.</dd>
 
 <dt>out_table</dt>
-<dd>TEXT. Name of the table to store the result of APSP.
+<dd>TEXT. Name of the table to store the result.
 It contains a row for every vertex of every group and has
 the following columns (in addition to the grouping columns):
-  - vertex: The id for the source vertex. Will use the input edge
+  - vertex: The id for the source vertex. Will use the input vertex
   column 'id' for column naming.
   - indegree: Number of incoming edges to the vertex.
   - outdegree: Number of outgoing edges from the vertex.
@@ -883,9 +676,6 @@ the following columns (in addition to the grouping columns):
 subgraphs. These columns must exist in the edge table. When this value is null,
 no grouping is used and a single result is generated. </dd>
 </dl>
-
-@anchor notes
-@par Notes
 
 @anchor examples
 @examp
@@ -926,56 +716,38 @@ INSERT INTO edge VALUES
 (6, 7, 1.0);
 </pre>
 
--# Calculate the all-pair shortest paths:
+-# Calculate the in-out degrees for each node:
 <pre class="syntax">
-DROP TABLE IF EXISTS out_apsp, out_apsp_summary;
-SELECT madlib.graph_apsp('vertex',      -- Vertex table
-                         'id',          -- Vertix id column (NULL means use default naming)
-                         'edge',        -- Edge table
-                         'src=src_id, dest=dest_id, weight=edge_weight',
-                                        -- Edge arguments (NULL means use default naming)
-                         'out_apsp');        -- Output table of shortest paths
-SELECT * FROM out_apsp ORDER BY src,dest;
+DROP TABLE IF EXISTS degrees;
+SELECT madlib.graph_vertex_degrees(
+    'vertex',      -- Vertex table
+    'id',          -- Vertix id column (NULL means use default naming)
+    'edge',        -- Edge table
+    'src=src_id, dest=dest_id, weight=edge_weight',
+    'degrees');        -- Output table of shortest paths
+SELECT * FROM degrees ORDER BY id;
 </pre>
 <pre class="result">
- src | dest |  weight  | parent
------+------+----------+--------
-   0 |    0 |        0 |      0
-   0 |    1 |        1 |      1
-   0 |    2 |        1 |      2
-   0 |    3 |        2 |      2
-   0 |    4 |       10 |      4
-   0 |    5 |        2 |      2
-   0 |    6 |        3 |      5
-   0 |    7 |        4 |      6
-   1 |    0 |        4 |      3
-   1 |    1 |        0 |      1
-   1 |    2 |        2 |      2
-   1 |    3 |        3 |      2
-   1 |    4 |       14 |      0
-   1 |    5 |        3 |      2
-   1 |    6 |        4 |      5
-   1 |    7 |        5 |      6
-(showing only 16 of 64 rows)
+ id | indegree | outdegree
+----+----------+-----------
+  0 |        2 |         3
+  1 |        1 |         2
+  2 |        2 |         3
+  3 |        2 |         1
+  4 |        1 |         1
+  5 |        1 |         1
+  6 |        2 |         1
+(7 rows)
 </pre>
 
--# Compute the closeness measure for all nodes:
-<pre class="syntax">
-DROP TABLE IF EXISTS out_closeness;
-SELECT madlib.graph_closeness('out_apsp', 'out_closeness');
-SELECT * FROM out_closeness;
-</pre>
-<pre class="result">
-</pre>
-
--# Create a graph with 2 groups and find APSP for each group:
+-# Create a graph with 2 groups and find degrees for each group:
 <pre class="syntax">
 DROP TABLE IF EXISTS edge_gr;
 CREATE TABLE edge_gr AS
 (
   SELECT *, 0 AS grp FROM edge
   UNION
-  SELECT *, 1 AS grp FROM edge WHERE src < 6 AND dest < 6
+  SELECT *, 1 AS grp FROM edge WHERE src_id < 6 AND dest_id < 6
 );
 INSERT INTO edge_gr VALUES
 (4,5,-20,1);
@@ -983,66 +755,26 @@ INSERT INTO edge_gr VALUES
 
 -# Find APSP for all groups:
 <pre class="syntax">
-DROP TABLE IF EXISTS out_gr, out_gr_summary;
-SELECT madlib.graph_apsp(
-                         'vertex',      -- Vertex table
-                         NULL,          -- Vertex id column (NULL means use default naming)
-                         'edge_gr',     -- Edge table
-                         NULL,          -- Edge arguments (NULL means use default naming)
-                         'out_gr',      -- Output table of shortest paths
-                         'grp'          -- Grouping columns
+DROP TABLE IF EXISTS out_gr;
+SELECT madlib.graph_vertex_degrees(
+    'vertex',      -- Vertex table
+    NULL,          -- Vertex id column (NULL means use default naming)
+    'edge_gr',     -- Edge table
+    'src=src_id, dest=dest_id, weight=edge_weight',
+    'out_gr',      -- Output table of shortest paths
+    'grp'          -- Grouping columns
 );
-SELECT * FROM out_gr WHERE src < 2 ORDER BY grp,src,dest;
+SELECT * FROM out_gr WHERE id < 2 ORDER BY grp, id;
 </pre>
 <pre class="result">
- grp | src | dest | weight | parent
------+-----+------+--------+--------
-   0 |   0 |    0 |      0 |      0
-   0 |   0 |    1 |      1 |      1
-   0 |   0 |    2 |      1 |      2
-   0 |   0 |    3 |      2 |      2
-   0 |   0 |    4 |     10 |      4
-   0 |   0 |    5 |      2 |      2
-   0 |   0 |    6 |      4 |      2
-   0 |   0 |    7 |      5 |      6
-   0 |   1 |    0 |      4 |      3
-   0 |   1 |    1 |      0 |      1
-   0 |   1 |    2 |      2 |      2
-   0 |   1 |    3 |      3 |      2
-   0 |   1 |    4 |     14 |      0
-   0 |   1 |    5 |      3 |      2
-   0 |   1 |    6 |      4 |      5
-   0 |   1 |    7 |      5 |      6
-   1 |   0 |    0 |      0 |      0
-   1 |   0 |    1 |      1 |      1
-   1 |   0 |    2 |      1 |      2
-   1 |   0 |    3 |      2 |      2
-   1 |   0 |    4 |     10 |      4
-   1 |   0 |    5 |    -10 |      4
-   1 |   1 |    0 |      4 |      3
-   1 |   1 |    1 |      0 |      1
-   1 |   1 |    2 |      2 |      2
-   1 |   1 |    3 |      3 |      2
-   1 |   1 |    4 |     14 |      0
-   1 |   1 |    5 |     -6 |      4
-(28 rows)
+ grp | id | indegree | outdegree
+-----+----+----------+-----------
+   0 |  0 |        2 |         3
+   0 |  1 |        1 |         2
+   1 |  0 |        2 |         3
+   1 |  1 |        1 |         2
+(4 rows)
 </pre>
-
--# Find the path from vertex 0 to vertex 5 in every group
-<pre class="syntax">
-DROP TABLE IF EXISTS out_gr_path;
-SELECT madlib.graph_apsp_get_path('out_gr',0,5,'out_gr_path');
-SELECT * FROM out_gr_path ORDER BY grp;
-</pre>
-<pre class="result">
- grp |  path
------+---------
-   0 | {0,2,5}
-   1 | {0,4,5}
-</pre>
-
-@anchor literature
-@par Literature
 */
 
 CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.graph_vertex_degrees(
