@@ -22,7 +22,8 @@
 \chapter[Graph]{Graph}
 
 \begin{moduleinfo}
-\item[Authors] \href{mailto:okislal@pivotal.io}{Orhan Kislal}, \href{mailto:njayaram@pivotal.io}{Nandish Jayaram}
+\item[Authors] \href{mailto:okislal@pivotal.io}{Orhan Kislal}, \href{mailto:njayaram@pivotal.io}{Nandish Jayaram},
+	\href{mailto:rraghu@pivotal.io}{Rashmi Raghu}
 \item[History]
 	\begin{modulehistory}
 		\item[v0.1] Initial version, SSSP only.
@@ -30,6 +31,7 @@
         \item[v0.3] PageRank
         \item[v0.4] APSP
         \item[v0.5] Weakly Connected Components
+        \item[v0.6] Breadth-first Search (BFS)
 	\end{modulehistory}
 \end{moduleinfo}
 
@@ -616,3 +618,101 @@ associated with each vertex in $G$. The component ID of all the vertices
 in a component is equal to the smallest vertex ID in the corresponding
 subgraph.
 
+\section{Breadth-first Search} \label{sec:graph:bfs}
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.5\textwidth]{figures/bfs_example.pdf}
+\caption{An example directed graph}
+\label{bfs:example}
+\end{figure}
+
+Given a graph $G$ and a user-specified origin vertex $V_s$, this algorithm 
+searches and discovers connected nodes in a graph in breadth-first order. The 
+graph can be treated as either directed or undirected based on a parameter 
+specified when calling the function. There is also a parameter to control
+the number of hops (edges) to traverse from the source vertex. If not specified, 
+all nodes accessible from the source node will be discovered. The result of 
+running this algorithm is table with 
+
+The implementation in MADlib is a modified version of the standard
+BFS algorithm \cite{bfs_wikipedia}. The modifications are those needed for a SQL implementation
+of the algorithm. The algorithm for a directed graph is as follows:
+
+\begin{algorithm}[BFS$(G,start,directed,maxdist)$] \label{alg:bfs}
+\alginput{Vertex set $V$, \\
+	edge set $E$, \\
+	starting vertex $start$, \\
+	directed graph flag $directed$ (optional), \\
+	maximum distance to search $maxdist$ (optional)}
+\algoutput{Output table $out$ with $id$, distance from start $dist$, parent vertex $parent$ for every vertex}
+\begin{algorithmic}[1]
+	\State Initialize output table $out$ with $start$ vertex id, $0$ distance, $NULL$ parent
+	\State $curdist \set 0$
+	\State $v_{count} \set \text{ Count number of tuples in $E$ where } E.src \in (out.id \text{ where } out.dist = curdist) \text{ and } E.dest \notin out.id$ \label{alg:bfs:vct1}
+	\State If $maxdist$ is not specified then $maxdist \set largest integer$
+	\While{$v_{count} > 0$ and $curdist < maxdist$}
+		\State Insert into $out$, $(id, dist, parent) \set (E.dest, curdist, E.src) \text { where } E.src \in (out.id \text{ where } out.dist = curdist) \text{ and }E.dest \notin out.id$ \label{alg:bfs:insert}
+		\State $curdist \mathrel{+}= 1$
+		\State $v_{count} \set \text{ Count number of tuples in $E$ where } E.src \in (out.id \text{ where } out.dist = curdist) \text{ and } E.dest \notin out.id$ \label{alg:bfs:vct2}
+	\EndWhile
+\end{algorithmic}
+\end{algorithm}
+
+In the undirected graph case, the following lines of the algorithm are modified:
+\begin{itemize}
+	\item Lines~\ref{alg:bfs:vct1} and \ref{alg:bfs:vct2}: \\
+	$v_{count} \set \text{ Count number of tuples in $E$ where } (E.src \in (out.id \text{ where } out.dist = curdist) \text{ and } E.dest \notin out.id) \cup (E.dest \in (out.id \text{ where } out.dist = curdist) \text{ and } E.src \notin out.id)$ 
+	\item Lines~\ref{alg:bfs:insert}: \\
+	Insert into $out$: \\
+	\quad $(id, dist, min(parent) as parent) \set ((E.dest, curdist, E.src) \text { where } E.src \in (out.id \text{ where } out.dist = curdist) \text{ and }E.dest \notin out.id) \, \cup \, ((E.src, curdist, E.dest) \text { where } (E.src \in (out.id \text{ where } out.dist = curdist) \text{ and } E.dest \notin out.id))$
+\end{itemize}
+
+Figure~\ref{bfs:example} shows an example directed graph. In this case, if we start at vertex $8$ and search through all nodes then the result would be as shown in Table~\ref{alg:bfs:dirgraphv8}. In the undirected graph case, if we start at vertex $8$ and search through all nodes the result would be as shown in Table~\ref{alg:bfs:undirgraphv8}. Again in the undirected graph case, if we start at vertex $3$ and search through all nodes the result would be as shown in Table~\ref{alg:bfs:undirgraphv3}. If $maxdist$ is specified then the results table will not include any tuples where $dist > maxdist$.
+
+\begin{table}
+\centering
+  \begin{tabular}{| c | c | c |}
+    \hline
+    id & dist & parent\\ \hline
+    8 & 0 & \\ \hline
+    9 & 1 & 8 \\ \hline
+    10 & 2 & 9 \\ \hline
+    11 & 2 & 9 \\
+    \hline
+  \end{tabular}
+  \caption{BFS output for directed graph starting at vertex $8$}
+  \label{alg:bfs:dirgraphv8}
+\end{table}
+
+\begin{table}
+\centering
+  \begin{tabular}{| c | c | c |}
+    \hline
+    id & dist & parent\\ \hline
+    8 & 0 & \\ \hline
+    9 & 1 & 8 \\ \hline
+    10 & 1 & 8 \\ \hline
+    11 & 2 & 9 \\
+    \hline
+  \end{tabular}
+  \caption{BFS output for undirected graph starting at vertex $8$}
+  \label{alg:bfs:undirgraphv8}
+\end{table}
+
+\begin{table}
+\centering
+  \begin{tabular}{| c | c | c |}
+    \hline
+    id & dist & parent\\ \hline
+    3 & 0 & \\ \hline
+    1 & 1 & 3 \\ \hline
+    4 & 1 & 3 \\ \hline
+    5 & 1 & 3 \\ \hline
+    0 & 2 & 1 \\ \hline
+    2 & 2 & 4 \\ \hline
+    6 & 3 & 2 \\
+    \hline
+  \end{tabular}
+  \caption{BFS output for undirected graph starting at vertex $3$}
+  \label{alg:bfs:undirgraphv3}
+\end{table}
