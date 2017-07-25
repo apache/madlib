@@ -47,7 +47,9 @@ class Graph(object):
     def __init__(self,
                  vertex_table, vertex_col_names,
                  edge_table, edge_col_names,
-                 grouping_cols=None, should_validate=True):
+                 grouping_cols=None,
+                 should_validate=True,
+                 schema_madlib='madlib'):
         self.vertex_table = vertex_table
         self.vertex_id_col = vertex_col_names['id']
 
@@ -56,8 +58,11 @@ class Graph(object):
             edge_col_names['src'], edge_col_names['dest'], edge_col_names['weight'])
 
         self.grouping_cols = grouping_cols
+        self._madlib = schema_madlib
+
         if should_validate:
             self._validate()
+
     # ----------------------------------------------------------------------
 
     @staticmethod
@@ -258,7 +263,9 @@ class Graph(object):
             SELECT
                 {grouping_cols_comma}
                 {e.weight} AS diameter,
-                array_agg(ARRAY[{e.src}, {e.dest}]) as diameter_end_vertices
+                {self._madlib}.matrix_agg(
+                        ARRAY[{e.src}, {e.dest}]::double precision[])::integer[]
+                    AS diameter_end_vertices
             FROM
                 {apsp_table} JOIN
                 (
@@ -304,7 +311,9 @@ def graph_apsp_measures(schema_madlib, apsp_table, out_table,
         edge_col_names = Graph.get_edge_params(s['edge_args'])
         g = Graph(s['vertex_table'], dict([('id', s['vertex_id'])]),
                   s['edge_table'], edge_col_names,
-                  s['grouping_cols'], should_validate=False)
+                  s['grouping_cols'],
+                  should_validate=False,
+                  schema_madlib=schema_madlib)
         try:
             measure_func = getattr(g, measure_name)
             measure_func(out_table, apsp_table,
@@ -344,6 +353,7 @@ def graph_vertex_degrees(schema_madlib, vertex_table, vertex_id, edge_table,
         vertex_id = 'id'
     edge_col_names = Graph.get_edge_params(edge_args)
     g = Graph(vertex_table, dict([('id', vertex_id)]),
-              edge_table, edge_col_names, grouping_cols)
+              edge_table, edge_col_names, grouping_cols,
+              schema_madlib=schema_madlib)
     g.in_out_degrees(out_table)
 # ----------------------------------------------------------------------
