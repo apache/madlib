@@ -38,6 +38,8 @@ from utilities.validate_args import table_exists
 from utilities.validate_args import table_is_empty
 from utilities.validate_args import columns_exist_in_table
 
+from graph_utils import get_graph_usage
+
 from collections import namedtuple
 from functools import partial
 
@@ -357,3 +359,281 @@ def graph_vertex_degrees(schema_madlib, vertex_table, vertex_id, edge_table,
               schema_madlib=schema_madlib)
     g.in_out_degrees(out_table)
 # ----------------------------------------------------------------------
+
+# -----------------------------------------------------------------------
+# All help functions
+# -----------------------------------------------------------------------
+
+
+CREATE_GRAPH_EXAMPLE = """
+-- Create a graph, represented as vertex and edge tables.
+DROP TABLE IF EXISTS vertex,edge,out,out_summary,out_path;
+CREATE TABLE vertex(
+        id INTEGER
+        );
+CREATE TABLE edge(
+        src INTEGER,
+        dest INTEGER,
+        weight DOUBLE PRECISION
+);
+
+INSERT INTO vertex VALUES
+(0),
+(1),
+(2),
+(3),
+(4),
+(5),
+(6),
+(7)
+;
+INSERT INTO edge VALUES
+(0, 1, 1),
+(0, 2, 1),
+(0, 4, 10),
+(1, 2, 2),
+(1, 3, 10),
+(2, 3, 1),
+(2, 5, 1),
+(2, 6, 3),
+(3, 0, 1),
+(4, 0, -2),
+(5, 6, 1),
+(6, 7, 1)
+;
+"""
+
+COMPUTE_APSP_EXAMPLE = """
+-- Compute the apsp:
+DROP TABLE IF EXISTS out;
+SELECT graph_apsp(
+    'vertex',                            -- Vertex table
+    'id',                                -- Vertix id column
+    'edge',                              -- Edge table
+    'src=src, dest=dest, weight=weight', -- Comma delimited string of edge arguments
+    'out'                                -- Output table of apsp
+);
+"""
+
+
+def graph_closeness_help(schema_madlib, message, **kwargs):
+
+    intro = """
+The Closeness function returns various closeness centrality measures and the
+k-degree for given subset of vertices. The closeness measures are the inverse of
+the sum, the inverse of the average, and the sum of inverses of the shortest
+distances to all reachable target vertices (excluding the source vertex).
+    """
+
+    if not message:
+        help_string = intro + """
+For more details:
+    SELECT {schema_madlib}.graph_closeness('usage')
+        """
+    elif message.lower() in ['usage', 'help', '?']:
+        help_string = intro + """
+
+----------------------------------------------------------------------------
+                            USAGE
+----------------------------------------------------------------------------
+SELECT {schema_madlib}.graph_closeness(
+    apsp_table TEXT,            -- Name of table containing APSP results
+    out_table TEXT,             -- Name of table to store Closeness measuress
+    vertex_filter_expr TEXT     -- Valid PostgreSQL expression that describes the
+                                -- vertices to generate closeness measures for.
+)
+
+----------------------------------------------------------------------------
+                            OUTPUT
+----------------------------------------------------------------------------
+The output table contains a row for every vertex of every group and have
+the following columns (in addition to the grouping columns):
+  - inverse_sum_dist    : Inverse of the sum of shortest distances to all reachable
+                            vertices.
+  - inverse_average_dist: Inverse of the average of shortest distances to all
+                            reachable vertices.
+  - sum_inverse_dist    : Sum of the inverse of shortest distances to all reachable
+                            vertices.
+  - k_degree            : Total number of reachable vertices.
+
+        """
+    elif message.lower() in ['example', 'examples']:
+        help_string = """
+----------------------------------------------------------------------------
+                                EXAMPLES
+----------------------------------------------------------------------------
+{create_graph_example}
+{compute_apsp_example}
+
+-# Compute the closeness measure for all nodes:
+DROP TABLE IF EXISTS out_closeness;
+SELECT {schema_madlib}.graph_closeness('out_apsp', 'out_closeness');
+SELECT * FROM out_closeness;
+        """
+    else:
+        help_string = "No such option. Use {schema_madlib}.graph_closeness()"
+
+    return help_string.format(schema_madlib=schema_madlib,
+                              create_graph_example=CREATE_GRAPH_EXAMPLE,
+                              compute_apsp_example=COMPUTE_APSP_EXAMPLE)
+# -------------------------------------------------------------------------
+
+
+def graph_diameter_help(schema_madlib, message, **kwargs):
+
+    intro = """
+Diameter is defined as the longest of all shortest paths in a graph.
+    """
+
+    if not message:
+        help_string = intro + """
+For more details:
+    SELECT {schema_madlib}.graph_diameter('usage')
+        """
+    elif message.lower() in ['usage', 'help', '?']:
+        help_string = intro + """
+
+----------------------------------------------------------------------------
+                            USAGE
+----------------------------------------------------------------------------
+SELECT {schema_madlib}.graph_diameter(
+    apsp_table TEXT,            -- Name of table containing APSP results
+    out_table TEXT              -- Name of table to store Closeness measuress
+)
+
+----------------------------------------------------------------------------
+                            OUTPUT
+----------------------------------------------------------------------------
+It contains a row for every group, the diameter value and the two vertices
+that are the farthest apart.
+        """
+    elif message.lower() in ['example', 'examples']:
+        help_string = """
+----------------------------------------------------------------------------
+                                EXAMPLES
+----------------------------------------------------------------------------
+{create_graph_example}
+{compute_apsp_example}
+
+-# Compute the diameter measure for the graph:
+DROP TABLE IF EXISTS out_diameter;
+SELECT {schema_madlib}.graph_diameter('out_apsp', 'out_diameter');
+SELECT * FROM out_diameter;
+        """
+    else:
+        help_string = "No such option. Use {schema_madlib}.graph_diameter()"
+
+    return help_string.format(schema_madlib=schema_madlib,
+                              create_graph_example=CREATE_GRAPH_EXAMPLE,
+                              compute_apsp_example=COMPUTE_APSP_EXAMPLE)
+# -------------------------------------------------------------------------
+
+
+def graph_avg_path_length_help(schema_madlib, message, **kwargs):
+
+    intro = """
+This function computes the average of the shortest paths between each pair of
+vertices. Average path length is based on "reachable target vertices", so it
+ignores infinite-length paths between vertices that are not connected.
+    """
+
+    if not message:
+        help_string = intro + """
+For more details:
+    SELECT {schema_madlib}.graph_avg_path_length('usage')
+        """
+    elif message.lower() in ['usage', 'help', '?']:
+        help_string = intro + """
+
+----------------------------------------------------------------------------
+                            USAGE
+----------------------------------------------------------------------------
+SELECT {schema_madlib}.graph_avg_path_length(
+    apsp_table TEXT,            -- Name of table containing APSP results
+    out_table TEXT              -- Name of table to store Closeness measuress
+)
+
+----------------------------------------------------------------------------
+                            OUTPUT
+----------------------------------------------------------------------------
+It contains a row for every group, and the average path value.
+"""
+    elif message.lower() in ['example', 'examples']:
+        help_string = """
+----------------------------------------------------------------------------
+                                EXAMPLES
+----------------------------------------------------------------------------
+{create_graph_example}
+{compute_apsp_example}
+
+-# Compute the average path length for the graph:
+DROP TABLE IF EXISTS out_avg_path_length;
+SELECT {schema_madlib}.graph_avg_path_length('out_apsp', 'out_avg_path_length');
+SELECT * FROM out_avg_path_length;
+        """
+    else:
+        help_string = "No such option. Use {schema_madlib}.graph_avg_path_length()"
+
+    return help_string.format(schema_madlib=schema_madlib,
+                              create_graph_example=CREATE_GRAPH_EXAMPLE,
+                              compute_apsp_example=COMPUTE_APSP_EXAMPLE)
+# -------------------------------------------------------------------------
+
+
+def graph_vertex_degrees_help(schema_madlib, message, **kwargs):
+
+    intro = """
+This function computes the degree of each node. The node degree is the number of
+edges adjacent to that node. The node in-degree is the number of edges pointing
+in to the node and node out-degree is the number of edges pointing out of the
+node.
+    """
+    usage_text = get_graph_usage(schema_madlib,
+                                 'graph_vertex_degrees',
+                                 """
+            out_table     TEXT, -- Name of the table to store the result of apsp.
+            grouping_cols TEXT  -- The list of grouping columns.""")
+
+    if not message:
+        help_string = intro + """
+For more details:
+    SELECT {schema_madlib}.graph_vertex_degrees('usage')
+        """
+    elif message.lower() in ['usage', 'help', '?']:
+        help_string = intro + """
+{graph_usage}
+
+----------------------------------------------------------------------------
+                            OUTPUT
+----------------------------------------------------------------------------
+It contains a row for every vertex of every group and has the following columns
+(in addition to the grouping columns):
+  - vertex      : The id for the source vertex. Will use the input vertex
+                    column 'id' for column naming.
+  - indegree    : Number of incoming edges to the vertex.
+  - outdegree   : Number of outgoing edges from the vertex.
+
+"""
+    elif message.lower() in ['example', 'examples']:
+        help_string = """
+----------------------------------------------------------------------------
+                                EXAMPLES
+----------------------------------------------------------------------------
+{create_graph_example}
+
+DROP TABLE IF EXISTS degrees;
+SELECT {schema_madlib}.graph_vertex_degrees(
+    'vertex',      -- Vertex table
+    'id',          -- Vertix id column (NULL means use default naming)
+    'edge',        -- Edge table
+    'src=src, dest=dest, weight=weight',
+    'degrees');        -- Output table of shortest paths
+SELECT * FROM degrees ORDER BY id;
+        """
+    else:
+        help_string = "No such option. Use {schema_madlib}.graph_vertex_degrees()"
+
+    return help_string.format(schema_madlib=schema_madlib,
+                              create_graph_example=CREATE_GRAPH_EXAMPLE,
+                              graph_usage=usage_text)
+# -------------------------------------------------------------------------
