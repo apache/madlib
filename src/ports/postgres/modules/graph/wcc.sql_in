@@ -35,6 +35,11 @@ m4_include(`SQLCommon.m4')
 <div class="toc"><b>Contents</b>
 <ul>
 <li><a href="#wcc">Weakly Connected Components</a></li>
+<li><a href="#rlcc">Retrieve Largest Connected Component</a></li>
+<li><a href="#hist">Build Histogram</a></li>
+<li><a href="#samecpt">Check Vertices in Same Connected Component</a></li>
+<li><a href="#reach">Retrieve Reachable Vertices</a></li>
+<li><a href="#count">Count Connected Components</a></li>
 <li><a href="#examples">Examples</a></li>
 </ul>
 </div>
@@ -44,7 +49,8 @@ m4_include(`SQLCommon.m4')
 Given a directed graph, a weakly connected component (WCC) is a subgraph of
 the original graph where all vertices are connected to each other by some path,
 ignoring the direction of edges. In case of an undirected graph, a weakly
-connected component is also a strongly connected component.
+connected component is also a strongly connected component.  This module also
+includes a number of helper functions that operate on the WCC output.
 
 @anchor wcc
 @par Weakly Connected Components
@@ -95,7 +101,7 @@ the following columns:
 
 A summary table named <out_table>_summary is also created. This is an internal
 table that keeps a record of some of the input parameters and is used by the
-various weakly connected components' helper functions.
+weakly connected component helper functions.
 </dd>
 
 <dt>grouping_cols (optional)</dt>
@@ -109,11 +115,12 @@ weakly connected components are generated for all data
 
 </dl>
 
+@anchor rlcc
 @par Retrieve Largest Connected Component
 
 The largest connected component retrieval function finds the largest weakly
-connected component(s) in a graph. If weakly_connected_components() was run with
-grouping, the largest connected components are computed with respect to groups.
+connected component(s) in a graph. If weakly connected components was run with
+grouping, the largest connected components are computed for each group.
 
 <pre class="syntax">
 graph_wcc_largest_cpt( wcc_table,
@@ -131,20 +138,23 @@ components.</dd>
 <dd>TEXT. Name of the output table that contains the largest component's
 information. It contains one or more rows for every group and has the following
 columns:
-  - grouping_cols : The grouping columns given in the creation of wcc_table.
-                    If there are no grouping columns, this column is not created.
-  - component_id  : The ID of the largest component, if there are multiple
-                    components of the same size, a row is created for each
-                    component. If grouping_cols is specified, the largest
-                    component is computed with respect to groups.
-  - num_vertices  : Number of vertices in the largest component.
+  - grouping_cols: The grouping columns given in the creation of wcc_table.
+  If there are no grouping columns, this column is not created.
+  - component_id: The ID of the largest component.  Recall that we use the 
+  convention where 'component_id' is the id of the first vertex in a 
+  particular group. It means that component ids are generally not contiguous.
+  If there are multiple components of the same size, a row is created for each
+  component. If grouping_cols is specified, the largest
+  component is computed for each group.
+  - num_vertices: Number of vertices in the largest component.
 </dd>
 </dl>
 
+@anchor hist
 @par Retrieve Histogram of Vertices Per Connected Component
 
-This function finds the number of vertices per connected component,
-representing a histogram.
+This function creates a histogram of the number of vertices 
+per connected component.
 
 <pre class="syntax">
 graph_wcc_histogram( wcc_table,
@@ -160,22 +170,23 @@ components.</dd>
 
 <dt>histogram_table</dt>
 <dd>TEXT. Name of the output table that contains the number of vertices per
-component information. A row is created for every comoponent in every group,
-if grouping_cols was specified while using weakly_connected_components().
+component. A row is created for every comoponent in every group
+if grouping_cols was specified when running weakly connected components.
 The output table has the following columns:
-  - grouping_cols : The grouping columns given during the creation of
-                    wcc_table. If there are no grouping columns, this column
-                    is not created.
-  - component_id  : The ID of the component.
-  - num_vertices  : Number of vertices in the component specified by the
-                    component_id column.
+  - grouping_cols: The grouping columns given during the creation of the
+wcc_table. If there are no grouping columns, this column
+is not created.
+  - component_id: The ID of the component.
+  - num_vertices: Number of vertices in the component specified by the
+component_id column.
 
 </dd>
 </dl>
 
+@anchor samecpt
 @par Check if Two Vertices Belong to the Same Component
 
-This function finds if two vertices belong to the same component or not.
+This function determines if two vertices belong to the same component.
 
 <pre class="syntax">
 graph_wcc_vertex_check( wcc_table,
@@ -198,13 +209,14 @@ components.</dd>
 vertex_pair belong to the same component. If wcc_table was generated using
 grouping_cols, all the components in all groups are considered. The output
 table has the following columns:
-  - component_id  : Component ID that contains both the vertices in vertex_pair.
-  - grouping_cols : The grouping columns given in the creation of wcc_table. If
+  - component_id: Component ID that contains both the vertices in vertex_pair.
+  - grouping_cols: The grouping columns given in the creation of wcc_table. If
                     there are no grouping columns, this column is not created.
 
 </dd>
 </dl>
 
+@anchor reach
 @par Retrieve All Vertices Reachable from a Vertex
 
 This function finds all the vertices that can be reached from a given vertex
@@ -239,6 +251,7 @@ reachable from the src vertex. The output table has the following columns:
 </dd>
 </dl>
 
+@anchor count
 @par Count of Connected Components
 
 This function finds the total number of components in the input graph.
@@ -349,7 +362,7 @@ SELECT * FROM wcc_out ORDER BY component_id, id;
 (14 rows)
 </pre>
 
--# Now all the weakly connected components associated with each user
+-# Now get the weakly connected components associated with each 'user_id'
 using the grouping feature:
 <pre class="syntax">
 DROP TABLE IF EXISTS wcc_out, wcc_out_summary;
@@ -380,17 +393,18 @@ SELECT * FROM wcc_out ORDER BY user_id, component_id, id;
  16 |           14 |       2
 (13 rows)
 </pre>
-Note that vertex '4' is not identified as a separate component
-in the above result. This is because disconnected nodes cannot be assigned to
-a particular group with the current graph representation in MADlib.
+Note that vertex 4 is not identified as a separate component
+above. This is because there is no entry in the 
+edge table for vertex 4 indicating which group it belongs to
+(though you could do that if you wanted to).
 
--# Retrieve the largest connected component
+-# Retrieve the largest connected component:
 <pre class="syntax">
 DROP TABLE IF EXISTS largest_cpt_table;
 SELECT madlib.graph_wcc_largest_cpt(
-                         'wcc_out',             -- WCC's output table
+                         'wcc_out',             -- WCC output table
                          'largest_cpt_table');  -- output table containing largest component ID
-SELECT * FROM largest_cpt_table ORDER BY user_id, component_id;
+SELECT * FROM largest_cpt_table ORDER BY component_id;
 </pre>
 <pre class="result">
  user_id | component_id | num_vertices
@@ -399,17 +413,15 @@ SELECT * FROM largest_cpt_table ORDER BY user_id, component_id;
        2 |           10 |            4
 (2 rows)
 </pre>
-<pre class="syntax">
-DROP TABLE largest_cpt_table;
-</pre>
 
--# Retrieve histogram of vertices per connected component
+-# Retrieve histogram of the number of vertices per 
+connected component:
 <pre class="syntax">
 DROP TABLE IF EXISTS histogram_table;
 SELECT madlib.graph_wcc_histogram(
-                         'wcc_out',           -- WCC's output table
+                         'wcc_out',           -- WCC output table
                          'histogram_table');  -- output table containing the histogram of vertices
-SELECT * FROM histogram_table ORDER BY user_id, component_id;
+SELECT * FROM histogram_table ORDER BY component_id;
 </pre>
 <pre class="result">
  user_id | component_id | num_vertices
@@ -419,18 +431,15 @@ SELECT * FROM histogram_table ORDER BY user_id, component_id;
        2 |           14 |            3
 (3 rows)
 </pre>
-<pre class="syntax">
-DROP TABLE histogram_table;
-</pre>
 
--# Check if two vertices belong to the same component
+-# Check if two vertices belong to the same component:
 <pre class="syntax">
 DROP TABLE IF EXISTS vc_table;
 SELECT madlib.graph_wcc_vertex_check(
-                         'wcc_out',    -- WCC's output table
+                         'wcc_out',    -- WCC output table
                          '14,15',      -- Pair of vertex IDs
                          'vc_table');  -- output table containing components that contain the two vertices
-SELECT * FROM vc_table ORDER BY user_id, component_id;
+SELECT * FROM vc_table ORDER BY component_id;
 </pre>
 <pre class="result">
  user_id | component_id
@@ -438,18 +447,15 @@ SELECT * FROM vc_table ORDER BY user_id, component_id;
        2 |           14
 (1 row)
 </pre>
-<pre class="syntax">
-DROP TABLE vc_table;
-</pre>
 
 -# Retrieve all vertices reachable from a vertex
 <pre class="syntax">
 DROP TABLE IF EXISTS reach_table;
 SELECT madlib.graph_wcc_reachable_vertices(
-                         'wcc_out',         -- WCC's output table
+                         'wcc_out',         -- WCC output table
                          '0',               -- source vertex
                          'reach_table');    -- output table containing all vertices reachable from source vertex
-SELECT * FROM reach_table ORDER BY user_id, component_id, dest;
+SELECT * FROM reach_table ORDER BY component_id, dest;
 </pre>
 <pre class="result">
  user_id | component_id | dest
@@ -461,17 +467,14 @@ SELECT * FROM reach_table ORDER BY user_id, component_id, dest;
        1 |            0 |    6
 (5 rows)
 </pre>
-<pre class="syntax">
-DROP TABLE reach_table;
-</pre>
 
--# Count of connected components
+-# Count of connected components:
 <pre class="syntax">
 DROP TABLE IF EXISTS count_table;
 SELECT madlib.graph_wcc_num_cpts(
-                         'wcc_out',       -- WCC's output table
+                         'wcc_out',       -- WCC output table
                          'count_table');  -- output table containing number of components per group
-SELECT * FROM count_table ORDER BY user_id;
+SELECT * FROM count_table;
 </pre>
 <pre class="result">
  user_id | num_components
@@ -479,9 +482,6 @@ SELECT * FROM count_table ORDER BY user_id;
        1 |              1
        2 |              2
 (2 rows)
-</pre>
-<pre class="syntax">
-DROP TABLE count_table;
 </pre>
 
 */

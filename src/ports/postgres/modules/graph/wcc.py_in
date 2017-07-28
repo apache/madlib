@@ -323,6 +323,7 @@ def wcc(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
     plpy.execute("""
             CREATE TABLE {out_table_summary} (
                 {grouping_cols_summary}
+                vertex_table    TEXT,
                 vertex_id   TEXT,
                 vertex_id_type  TEXT
             )
@@ -331,7 +332,8 @@ def wcc(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
     vertex_id_type = get_expr_type(vertex_id, vertex_table)
     plpy.execute("""
             INSERT INTO {out_table_summary} VALUES
-            ({grouping_cols_summary} '{vertex_id}', '{vertex_id_type}')
+            ({grouping_cols_summary} '{vertex_table}', '{vertex_id}',
+            '{vertex_id_type}')
         """.format(grouping_cols_summary='' if not grouping_cols else
                    "'{0}', ".format(grouping_cols), **locals()))
     plpy.execute("""DROP TABLE IF EXISTS {0},{1},{2},{3}
@@ -365,6 +367,32 @@ def preprocess_wcc_table_args(wcc_table, out_table):
     wcc_summary_table = add_postfix(wcc_table, "_summary")
     return extract_wcc_summary_cols(wcc_summary_table)
 
+def check_input_vertex_validity(wcc_args, vertices):
+    """
+    Function to check if vertices are all valid, i.e., are present
+    in the WCC's original input vertex table. Even if one of the input
+    vertices (when more than one) is not valid, return False
+    Args:
+        @param wcc_args (dict)
+        @param vertices (list)
+    Returns:
+        True if all vertices in the list are present in the original input
+        vertex table, False otherwise.
+    """
+    vertex_table = wcc_args['vertex_table']
+    _assert(table_exists(vertex_table),
+            "Graph WCC: Input vertex table '{0}' does not exist.".format(vertex_table))
+    vertex_col = wcc_args['vertex_id']
+    where_clause = ' OR '.join(["{0}='{1}'".format(vertex_col, v)
+                                for v in vertices])
+    count = plpy.execute("""
+            SELECT COUNT(*) as count FROM (
+                SELECT 1 FROM {vertex_table}
+                WHERE {where_clause}
+            ) t
+        """.format(**locals()))[0]['count']
+    _assert(count == len(vertices),
+            "Graph WCC: Invalid input vertex in {0}.".format(str(vertices)))
 
 def create_component_cnts_table(wcc_table, cnts_out_table,
                                 grouping_cols_comma):
@@ -492,6 +520,7 @@ def graph_wcc_vertex_check(schema_madlib,  wcc_table, vertex_pair, pair_table,
         vertices = split_quoted_delimited_str(vertex_pair)
         _assert(vertices and len(vertices) == 2,
                 "Graph WCC: Invalid vertex pair ({0}) input!".format(vertex_pair))
+        check_input_vertex_validity(wcc_args, vertices)
         grouping_cols_comma = ''
         if 'grouping_cols' in wcc_args:
             grouping_cols_comma = wcc_args['grouping_cols'] + ', '
@@ -539,6 +568,7 @@ def graph_wcc_reachable_vertices(schema_madlib,  wcc_table, src,
     with MinWarning("warning"):
         wcc_args = preprocess_wcc_table_args(wcc_table,
                                              reachable_vertices_table)
+        check_input_vertex_validity(wcc_args, split_quoted_delimited_str(src))
         grouping_cols_comma = ''
         grouping_cols = ''
         if 'grouping_cols' in wcc_args:
