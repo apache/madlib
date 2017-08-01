@@ -30,12 +30,17 @@ class OptimizerControl(object):
     """
     @brief: A wrapper that enables/disables the optimizer and
         then sets it back to the original value on exit
+
+    This context manager accesses two GUCs:
+        optimizer: GUC to control the optimizer used in Greenplum and HAWQ platforms
+
+        optimizer_control: Used to check if 'optimizer' GUC can be updated by MADlib.
+                            This is assumed to be True if the GUC is not available
     """
 
     def __init__(self, enable=True, error_on_fail=False):
         self.to_enable = enable
         self.error_on_fail = error_on_fail
-        self.optimizer_enabled = False
 
         # use the fact that all GPDB/HAWQ versions that have the
         # optimizer also define function properties
@@ -44,8 +49,11 @@ class OptimizerControl(object):
     def __enter__(self):
         if self.guc_exists:
             # check if allowed to change the GUC
-            self.optimizer_control = bool(strtobool(
-                plpy.execute("show optimizer_control")[0]["optimizer_control"]))
+            try:
+                self.optimizer_control = bool(strtobool(
+                    plpy.execute("show optimizer_control")[0]["optimizer_control"]))
+            except plpy.SPIError:
+                self.optimizer_control = True
 
             if self.optimizer_control:
                 self.optimizer_enabled = bool(strtobool(
@@ -87,7 +95,7 @@ class HashaggControl(object):
             self.hashagg_enabled = bool(strtobool(enable_hashagg))
             plpy.execute("set enable_hashagg={0}".
                          format(('off', 'on')[self.to_enable]))
-        except:
+        except plpy.SPIError:
             self.guc_exists = False
         finally:
             return self
