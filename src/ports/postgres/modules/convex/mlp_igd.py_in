@@ -103,7 +103,7 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
         source_table, independent_varname, dimension, schema_madlib)
     x_means = py_list_to_sql_string(
         x_scales["mean"], array_type="DOUBLE PRECISION")
-    filtered_stds = [x if x!=0 else 1 for x in x_scales["std"]]
+    filtered_stds = [x if x != 0 else 1 for x in x_scales["std"]]
     x_stds = py_list_to_sql_string(
         filtered_stds, array_type="DOUBLE PRECISION")
 
@@ -137,21 +137,24 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
 
     # Need layers sizes before validating for warm_start
     coeff = []
-    for i in range(len(layer_sizes)-1):
+    for i in range(len(layer_sizes) - 1):
         fan_in = layer_sizes[i]
-        fan_out = layer_sizes[i+1]
-        span = math.sqrt(6.0/(fan_in+fan_out))
-        dim = (layer_sizes[i]+1)*layer_sizes[i+1]
+        fan_out = layer_sizes[i + 1]
+        # Initalize according to Glorot and Bengio (2010)
+        # See design doc for more info
+        span = math.sqrt(6.0 / (fan_in + fan_out))
+        dim = (layer_sizes[i] + 1) * layer_sizes[i + 1]
         rand = plpy.execute("""SELECT array_agg({span}*(random()-0.5))
                                AS random
                                FROM generate_series(0,{dim})
-                """.format(span=span,dim=dim))[0]["random"]
-        coeff+=rand
+                """.format(span=span, dim=dim))[0]["random"]
+        coeff += rand
 
     if warm_start:
-        coeff,x_means,x_stds = _validate_warm_start(source_table, output_table, summary_table, independent_varname,
-                                     original_dependent_varname, layer_sizes, optimizer_params,
-                                     is_classification, weights, warm_start, activation)
+        coeff, x_means, x_stds = _validate_warm_start(
+                source_table, output_table, summary_table, independent_varname,
+                original_dependent_varname, layer_sizes, optimizer_params,
+                is_classification, weights, warm_start, activation)
         plpy.execute("DROP TABLE IF EXISTS {0}".format(output_table))
         plpy.execute("DROP TABLE IF EXISTS {0}".format(summary_table))
     best_state = []
@@ -222,37 +225,16 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
                 curr_state=py_list_to_sql_string(curr_state,
                                                  "DOUBLE PRECISION"))
             state_dist = plpy.execute(dist_sql)[0]["state_dist"]
-            if verbose and 1<current_iteration<=n_iterations:
-                loss = plpy.execute("""
-                SELECT
-                    (result).loss  AS loss
-                FROM (
-                    SELECT
-                        {schema_madlib}.internal_mlp_igd_result(
-                            {final_state_str}
-                        ) AS result
-                ) rel_state_subq
-                """.format(
-                    schema_madlib=schema_madlib,
-                    final_state_str=py_list_to_sql_string(curr_state)))[0]["loss"]
-                plpy.info("Iteration: "+str(current_iteration-1) + ", Loss: " +str(loss))
+            if verbose and 1 < current_iteration <= n_iterations:
+                loss = _get_loss(schema_madlib, curr_state)
+                plpy.info("Iteration: " + str(current_iteration -
+                                              1) + ", Loss: " + str(loss))
             if ((state_dist and state_dist < tolerance)
                     or current_iteration > n_iterations):
                 break
             prev_state = curr_state
             current_iteration += 1
-        final_loss = plpy.execute("""
-        SELECT
-            (result).loss  AS loss
-        FROM (
-            SELECT
-                {schema_madlib}.internal_mlp_igd_result(
-                    {final_state_str}
-                ) AS result
-        ) rel_state_subq
-        """.format(
-            schema_madlib=schema_madlib,
-            final_state_str=py_list_to_sql_string(curr_state)))[0]["loss"]
+        final_loss = _get_loss(schema_madlib, curr_state)
         # We use previous state because the last iteration
         # just calculates loss
         if final_loss < best_loss:
@@ -311,6 +293,21 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
     return None
 
 
+def _get_loss(schema_madlib, state):
+    return plpy.execute("""
+    SELECT
+        (result).loss  AS loss
+    FROM (
+        SELECT
+            {schema_madlib}.internal_mlp_igd_result(
+                {final_state_str}
+            ) AS result
+    ) rel_state_subq
+    """.format(
+        schema_madlib=schema_madlib,
+        final_state_str=py_list_to_sql_string(state)))[0]["loss"]
+
+
 def _build_model_table(schema_madlib, output_table, final_state, loss, n_iterations):
     final_state_str = py_list_to_sql_string(
         final_state, array_type="double precision")
@@ -364,6 +361,7 @@ def _validate_args_classification(source_table, dependent_varname):
             "Dependent variable column should refer to an "
             "integer, boolean, text, varchar, or character type.")
 
+
 def _validate_args_regression(source_table, dependent_varname):
     expr_type = get_expr_type(dependent_varname, source_table)
     int_types = ['integer', 'smallint', 'bigint']
@@ -377,6 +375,7 @@ def _validate_args_regression(source_table, dependent_varname):
             "Dependent variable column should refer to arrays of the same length"
         )
 
+
 def _validate_summary_table(summary_table):
     input_tbl_valid(summary_table, 'MLP')
     cols_in_tbl_valid(summary_table, [
@@ -384,6 +383,7 @@ def _validate_summary_table(summary_table):
         'tolerance', 'learning_rate_init', 'n_iterations', 'n_tries',
         'classes', 'layer_sizes', 'source_table', 'x_means', 'x_stds'
     ], 'MLP')
+
 
 def _validate_warm_start(source_table, output_table, summary_table, independent_varname,
                          dependent_varname, layer_sizes,
@@ -420,7 +420,7 @@ def _validate_warm_start(source_table, output_table, summary_table, independent_
     x_stds = py_list_to_sql_string(
         summary["x_stds"], array_type="DOUBLE PRECISION")
 
-    return coeff,x_means,x_stds
+    return coeff, x_means, x_stds
 
 
 def _validate_args(source_table, output_table, summary_table, independent_varname,

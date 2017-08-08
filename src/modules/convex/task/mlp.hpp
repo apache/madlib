@@ -120,27 +120,18 @@ MLP<Model, Tuple>::gradientInPlace(
         const independent_variables_type    &x,
         const dependent_variable_type       &y_true,
         const double                        &stepsize) {
-    (void) model;
-    (void) y_true;
-    (void) x;
-    (void) stepsize;
-    std::vector<ColumnVector> net;
-    std::vector<ColumnVector> o;
-    std::vector<ColumnVector> delta;
+    uint16_t N = model.u.size(); // assuming nu. of layers >= 1
+    uint16_t k;
+    std::vector<ColumnVector> net, o, delta;
     ColumnVector delta_N;
 
     feedForward(model, x, net, o);
     delta_N = o.back() - y_true;
     backPropogate(delta_N, net, model, delta);
 
-    uint16_t N = model.u.size(); // assuming nu. of layers >= 1
-    uint16_t k;
-
     for (k=0; k < N; k++){
-        int n = model.u[k].rows();
         Matrix regularization = MLP<Model, Tuple>::lambda*model.u[k];
-        // Do not update bias
-        regularization.row(0).setZero();
+        regularization.row(0).setZero(); // Do not update bias
         model.u[k] -= stepsize * (o[k] * delta[k].transpose() + regularization);
     }
 }
@@ -153,29 +144,19 @@ MLP<Model, Tuple>::loss(
         const dependent_variable_type       &y_true) {
     // Here we compute the loss. In the case of regression we use sum of square errors
     // In the case of classification the loss term is cross entropy.
-    std::vector<ColumnVector> net;
-    std::vector<ColumnVector> o;
-
+    std::vector<ColumnVector> net, o;
     feedForward(model, x, net, o);
-    double loss = 0.;
-    uint16_t j;
-
     ColumnVector y_estimated = o.back();
-    for (j = 0; j < y_true.size(); j ++) {
-        if(model.is_classification){
-            // Cross entropy
-            double clip = 1.e-10;
-            y_estimated = y_estimated.cwiseMax(clip).cwiseMin(1.-clip);
-            loss -= (y_true(j)*std::log(y_estimated(j)) + (1-y_true(j))*std::log(1-y_estimated(j)));
-        }else{
-            double diff = y_estimated(j) - y_true(j);
-            loss += diff * diff;
-        }
+
+    if(model.is_classification){
+        double clip = 1.e-10;
+        y_estimated = y_estimated.cwiseMax(clip).cwiseMin(1.-clip);
+        return - (y_true.array()*y_estimated.array().log()
+               + (-y_true.array()+1)*(-y_estimated.array()+1).log()).sum();
     }
-    if(!model.is_classification){
-        loss /= 2.;
+    else{
+        return 0.5 * (y_estimated-y_true).squaredNorm();
     }
-    return loss;
 }
 
 template <class Model, class Tuple>
@@ -185,12 +166,11 @@ MLP<Model, Tuple>::predict(
         const independent_variables_type    &x,
         const bool                          get_class
         ) {
-    std::vector<ColumnVector> net;
-    std::vector<ColumnVector> o;
+    std::vector<ColumnVector> net, o;
 
     feedForward(model, x, net, o);
     ColumnVector output = o.back();
-    if(get_class){
+    if(get_class){ // Return a length 1 array with the predicted index
         int max_idx;
         output.maxCoeff(&max_idx);
         output.resize(1);
@@ -207,9 +187,8 @@ MLP<Model, Tuple>::feedForward(
         const independent_variables_type    &x,
         std::vector<ColumnVector>           &net,
         std::vector<ColumnVector>           &o){
-    // meta data and x_k^0 = 1
-    uint16_t k;
-    uint16_t N = model.u.size(); // assuming >= 1
+    uint16_t k, N;
+    N = model.u.size(); // assuming >= 1
     net.resize(N + 1);
     o.resize(N + 1);
 
@@ -246,9 +225,8 @@ MLP<Model, Tuple>::backPropogate(
         const std::vector<ColumnVector>     &net,
         const model_type                    &model,
         std::vector<ColumnVector>           &delta) {
-    // meta data
-    uint16_t k;
-    uint16_t N = model.u.size(); // assuming >= 1
+    uint16_t k, N;
+    N = model.u.size(); // assuming >= 1
     delta.resize(N);
 
     double (*activationDerivative)(const double&);
