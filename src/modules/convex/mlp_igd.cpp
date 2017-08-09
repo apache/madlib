@@ -171,7 +171,10 @@ mlp_igd_final::run(AnyType &args) {
     state.algo.loss += L2<MLPModelType>::loss(state.task.model);
     MLPIGDAlgorithm::final(state);
 
-    return state;
+    AnyType tuple;
+    tuple << state
+          << (double)state.algo.loss;
+    return tuple;
 }
 
 /**

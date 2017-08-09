@@ -159,6 +159,8 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
         plpy.execute("DROP TABLE IF EXISTS {0}".format(summary_table))
     best_state = []
     best_loss = [float('inf')]
+    prev_loss = float('inf')
+    loss = None
     for _ in range(n_tries):
         while True:
             if prev_state:
@@ -175,7 +177,13 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
             elif learning_rate_policy == "step":
                 step_size = step_size_init * gamma**(
                     math.floor(zero_indexed_iteration / iterations_per_step))
+
+
             train_sql = """
+            SELECT
+                (result).state as state,
+                (result).loss  as loss
+            FROM (
             SELECT
                 {schema_madlib}.mlp_igd_step(
                     ({independent_varname})::DOUBLE PRECISION[],
@@ -192,8 +200,8 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
                     {lmbda},
                     {x_means},
                     {x_stds}
-                    ) as curr_state
-            FROM {source_table} as _src
+                    ) as result
+            FROM {source_table} as _src) _step_q
             """.format(
                 schema_madlib=schema_madlib,
                 independent_varname=independent_varname,
@@ -214,36 +222,24 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
                 lmbda=lmbda,
                 x_means=x_means,
                 x_stds=x_stds)
-            curr_state = plpy.execute(train_sql)[0]["curr_state"]
-            plpy.info("expanding array: ", len(curr_state))
-            curr_state_sql_str = py_list_to_sql_string(curr_state, "DOUBLE PRECISION")
-            plpy.info("done expanding array")
-            dist_sql = """
-            SELECT {schema_madlib}.internal_mlp_igd_distance(
-                    {prev_state},
-                    {curr_state}) as state_dist
-            """.format(
-                schema_madlib=schema_madlib,
-                prev_state=prev_state_str,
-                curr_state=curr_state_sql_str)
-            plpy.info("before execution: ", len(curr_state_sql_str))
-            state_dist = plpy.execute(dist_sql)[0]["state_dist"]
-            plpy.info("after execution")
+            step_result = plpy.execute(train_sql)[0]
+            curr_state = step_result['state']
+            loss = step_result['loss']
             if verbose and 1 < current_iteration <= n_iterations:
-                loss = _get_loss(schema_madlib, curr_state)
                 plpy.info("Iteration: " + str(current_iteration -
                                               1) + ", Loss: " + str(loss))
+            state_dist = abs(loss-prev_loss)
             if ((state_dist and state_dist < tolerance)
                     or current_iteration > n_iterations):
                 break
             prev_state = curr_state
+            prev_loss = loss
             current_iteration += 1
-        final_loss = _get_loss(schema_madlib, curr_state)
         # We use previous state because the last iteration
         # just calculates loss
-        if final_loss < best_loss:
+        if loss < best_loss:
             best_state = prev_state
-            best_loss = final_loss
+            best_loss = loss
         current_iteration = 1
         prev_state = None
     _build_model_table(schema_madlib, output_table, best_state,
@@ -319,9 +315,9 @@ def _build_model_table(schema_madlib, output_table, final_state, loss, n_iterati
     model_table_query = """
     CREATE TABLE {output_table} AS
         SELECT
-            (result).coeff AS coeff,
-            {loss}  AS loss,
-            {n_iterations} AS num_iterations
+            (result).coeff as coeff,
+            {loss}  as loss,
+            {n_iterations} as num_iterations
         FROM (
             SELECT
                 {schema_madlib}.internal_mlp_igd_result(
