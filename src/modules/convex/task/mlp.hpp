@@ -68,8 +68,6 @@ public:
     static double lambda;
 
 private:
-
-
     static double sigmoid(const double &xi) {
         return 1. / (1. + std::exp(-xi));
     }
@@ -81,7 +79,6 @@ private:
     static double tanh(const double &xi) {
         return std::tanh(xi);
     }
-
 
     static double sigmoidDerivative(const double &xi) {
         double value = sigmoid(xi);
@@ -104,7 +101,8 @@ private:
             std::vector<ColumnVector>           &o);
 
     static void backPropogate(
-            const ColumnVector                  &delta_N,
+            const ColumnVector                  &y_true,
+            const ColumnVector                  &y_estimated,
             const std::vector<ColumnVector>     &net,
             const model_type                    &model,
             std::vector<ColumnVector>           &delta);
@@ -123,11 +121,9 @@ MLP<Model, Tuple>::gradientInPlace(
     uint16_t N = model.u.size(); // assuming nu. of layers >= 1
     uint16_t k;
     std::vector<ColumnVector> net, o, delta;
-    ColumnVector delta_N;
 
     feedForward(model, x, net, o);
-    delta_N = o.back() - y_true;
-    backPropogate(delta_N, net, model, delta);
+    backPropogate(y_true, o.back(), net, model, delta);
 
     for (k=0; k < N; k++){
         Matrix regularization = MLP<Model, Tuple>::lambda*model.u[k];
@@ -164,8 +160,7 @@ ColumnVector
 MLP<Model, Tuple>::predict(
         const model_type                    &model,
         const independent_variables_type    &x,
-        const bool                          get_class
-        ) {
+        const bool                          get_class) {
     std::vector<ColumnVector> net, o;
 
     feedForward(model, x, net, o);
@@ -221,7 +216,8 @@ MLP<Model, Tuple>::feedForward(
 template <class Model, class Tuple>
 void
 MLP<Model, Tuple>::backPropogate(
-        const ColumnVector                  &delta_N,
+        const ColumnVector                  &y_true,
+        const ColumnVector                  &y_estimated,
         const std::vector<ColumnVector>     &net,
         const model_type                    &model,
         std::vector<ColumnVector>           &delta) {
@@ -237,7 +233,7 @@ MLP<Model, Tuple>::backPropogate(
     else
         activationDerivative = &tanhDerivative;
 
-    delta.back() = delta_N;
+    delta.back() = y_estimated - y_true;
     for (k = N - 1; k >= 1; k --) {
         // Do not include the bias terms
         delta[k-1] = model.u[k].bottomRows(model.u[k].rows()-1) * delta[k];
