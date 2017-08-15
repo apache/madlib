@@ -127,5 +127,83 @@ def knn_validate_src(schema_madlib, point_source, point_column_name, label_colum
                     "Data type '{0}' is not a valid type for column '{1}' in table '{2}'.".format(colType, id_column_name, test_source))
     return k
 
-# ----------------------------------------------------------------------
-m4_changequote(<!`!>, <!'!>)
+
+
+
+
+def knn(schema_madlib, point_source, point_column_name, label_column_name,
+    test_source, test_column_name, id_column_name, output_table, operation, k):
+
+
+  
+    oldClientMinMessages = plpy.execute("SELECT setting FROM pg_settings WHERE name = 'client_min_messages'")[0]['setting'];
+
+    plpy.execute("SET client_min_messages TO warning");
+
+ 
+    k_val = knn_validate_src(schema_madlib, point_source, point_column_name, 
+                label_column_name, test_source, 
+                test_column_name, id_column_name, 
+                output_table, operation, k) 
+
+
+    plpy.execute("SELECT {schema_madlib}.create_schema_pg_temp()".format(schema_madlib = schema_madlib));
+ 
+    x_temp_table = 'knn' + plpy.execute( " select md5('knn_'||now()::text||random()::text)||'_temp' AS MD5")[0]['md5'];
+    y_temp_table = 'knn' + plpy.execute( " select md5('knn_'||now()::text||random()::text)||'_temp' AS MD5")[0]['md5'];
+    label_column_name_unique = 'label' + plpy.execute( " select md5('knn_'||now()::text||random()::text)||'_name' AS MD5")[0]['md5'];
+    test_id = 'id' + plpy.execute( " select md5('knn_'||now()::text||random()::text)||'_name' AS MD5")[0]['md5'];
+
+    convert_boolean_to_int = '';
+    if operation == 'c':
+        convert_boolean_to_int = '::INTEGER';
+    
+
+    plpy.execute("DROP TABLE IF EXISTS pg_temp.madlib_knn_interm");
+    plpy.execute(
+    """
+    CREATE TEMP TABLE pg_temp.madlib_knn_interm AS
+    SELECT *
+    FROM
+        (
+        SELECT row_number() over (partition by {test_id}  order by dist) AS r , {x_temp_table}.*
+        FROM
+            (
+                SELECT test.{id_column_name} AS  {test_id} , {schema_madlib}.squared_dist_norm2(train.{point_column_name} ,test.{test_column_name}) AS dist, train.{label_column_name} {convert_boolean_to_int} AS {label_column_name_unique}
+                FROM  {point_source} AS train, {test_source}  AS test
+            ) {x_temp_table}
+        ){y_temp_table}
+    WHERE {y_temp_table}.r <= {k_val}""".format(**locals()));
+
+    if operation == 'c':
+        plpy.execute(
+        """
+        CREATE TABLE {output_table} AS
+        SELECT {test_id} AS id, {test_column_name} , {schema_madlib}.mode({label_column_name_unique}) AS prediction
+        FROM pg_temp.madlib_knn_interm join  {test_source}  ON  {test_id} = {id_column_name}  
+        GROUP BY {test_id}  ,  {test_column_name}""".format(**locals()))
+        
+        
+    else:
+        plpy.execute(
+        """ 
+        CREATE TABLE  {output_table} AS
+        SELECT  {test_id}   AS id, {test_column_name} , avg( {label_column_name_unique}  ) AS prediction
+        FROM
+            pg_temp.madlib_knn_interm join {test_source}  on {test_id}  ={id_column_name} 
+        GROUP BY {test_id} ,  {test_column_name} 
+        ORDER BY {test_id}""".format(**locals()))   
+   
+
+    plpy.execute("SET client_min_messages TO "+ oldClientMinMessages)
+
+    if operation == 'c':
+        returnstring = 'The classification results have been written to output table '+ output_table;
+    else:
+        returnstring = 'The regression results have been written to output table '+ output_table;
+
+    plpy.execute("DROP TABLE pg_temp.madlib_knn_interm");
+    return returnstring;
+
+
+
