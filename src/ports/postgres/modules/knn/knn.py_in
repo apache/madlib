@@ -37,6 +37,7 @@ from utilities.validate_args import columns_exist_in_table
 from utilities.validate_args import is_col_array
 from utilities.validate_args import array_col_has_no_null
 from utilities.validate_args import get_cols_and_types
+from utilities.utilities import unique_string
 
 STATE_IN_MEM = m4_ifdef(<!__HAWQ__!>, <!True!>, <!False!>)
 HAS_FUNCTION_PROPERTIES = m4_ifdef(<!__HAS_FUNCTION_PROPERTIES__!>, <!True!>, <!False!>)
@@ -149,20 +150,21 @@ def knn(schema_madlib, point_source, point_column_name, label_column_name,
 
     plpy.execute("SELECT {schema_madlib}.create_schema_pg_temp()".format(schema_madlib = schema_madlib));
  
-    x_temp_table = 'knn' + plpy.execute( " select md5('knn_'||now()::text||random()::text)||'_temp' AS MD5")[0]['md5'];
-    y_temp_table = 'knn' + plpy.execute( " select md5('knn_'||now()::text||random()::text)||'_temp' AS MD5")[0]['md5'];
-    label_column_name_unique = 'label' + plpy.execute( " select md5('knn_'||now()::text||random()::text)||'_name' AS MD5")[0]['md5'];
-    test_id = 'id' + plpy.execute( " select md5('knn_'||now()::text||random()::text)||'_name' AS MD5")[0]['md5'];
+    x_temp_table = unique_string(desp='x_temp_table') 
+    y_temp_table = unique_string(desp='y_temp_table') 
+    label_column_name_unique = unique_string(desp='label_column_name_unique')  
+    test_id = unique_string(desp='test_id')  
 
     convert_boolean_to_int = '';
     if operation == 'c':
         convert_boolean_to_int = '::INTEGER';
     
+    madlib_knn_interm = unique_string(desp='madlib_knn_interm')
 
-    plpy.execute("DROP TABLE IF EXISTS pg_temp.madlib_knn_interm");
+    plpy.execute("""DROP TABLE IF EXISTS pg_temp.{madlib_knn_interm}""".format(**locals()));
     plpy.execute(
     """
-    CREATE TEMP TABLE pg_temp.madlib_knn_interm AS
+    CREATE TEMP TABLE pg_temp.{madlib_knn_interm} AS
     SELECT *
     FROM
         (
@@ -180,7 +182,7 @@ def knn(schema_madlib, point_source, point_column_name, label_column_name,
         """
         CREATE TABLE {output_table} AS
         SELECT {test_id} AS id, {test_column_name} , {schema_madlib}.mode({label_column_name_unique}) AS prediction
-        FROM pg_temp.madlib_knn_interm join  {test_source}  ON  {test_id} = {id_column_name}  
+        FROM pg_temp.{madlib_knn_interm} join  {test_source}  ON  {test_id} = {id_column_name}  
         GROUP BY {test_id}  ,  {test_column_name}""".format(**locals()))
         
         
@@ -190,7 +192,7 @@ def knn(schema_madlib, point_source, point_column_name, label_column_name,
         CREATE TABLE  {output_table} AS
         SELECT  {test_id}   AS id, {test_column_name} , avg( {label_column_name_unique}  ) AS prediction
         FROM
-            pg_temp.madlib_knn_interm join {test_source}  on {test_id}  ={id_column_name} 
+            pg_temp.{madlib_knn_interm} join {test_source}  on {test_id}  ={id_column_name} 
         GROUP BY {test_id} ,  {test_column_name} 
         ORDER BY {test_id}""".format(**locals()))   
    
@@ -202,7 +204,8 @@ def knn(schema_madlib, point_source, point_column_name, label_column_name,
     else:
         returnstring = 'The regression results have been written to output table '+ output_table;
 
-    plpy.execute("DROP TABLE pg_temp.madlib_knn_interm");
+    plpy.execute("""DROP TABLE pg_temp.{madlib_knn_interm}""".format(**locals()));    
+
     return returnstring;
 
 
