@@ -38,6 +38,7 @@ from utilities.validate_args import is_col_array
 from utilities.validate_args import array_col_has_no_null
 from utilities.validate_args import get_cols_and_types
 from utilities.utilities import unique_string
+from utilities.control import MinWarning
 
 
 
@@ -109,7 +110,7 @@ def knn_validate_src(schema_madlib, point_source, point_column_name, label_colum
         if type[0] == label_column_name:
             colType = type[1]
             break
-    if colType not in ['INTEGER','integer','double precision','DOUBLE PRECISION','float','FLOAT','boolean','BOOLEAN'] :
+    if colType not in ['INTEGER','integer','double precision','DOUBLE PRECISION','float','FLOAT','boolean','BOOLEAN']:
         plpy.error("kNN Error: " + \
                     "Data type '{0}' is not a valid type for column '{1}' in table '{2}'.".format(colType, label_column_name, point_source))
 
@@ -119,7 +120,7 @@ def knn_validate_src(schema_madlib, point_source, point_column_name, label_colum
         if type[0] == id_column_name:
             colType = type[1]
             break
-    if colType not in ['INTEGER','integer'] :
+    if colType not in ['INTEGER','integer']:
         plpy.error("kNN Error: " + \
                     "Data type '{0}' is not a valid type for column '{1}' in table '{2}'.".format(colType, id_column_name, test_source))
     return k
@@ -135,91 +136,73 @@ def knn(schema_madlib, point_source, point_column_name, label_column_name,
         KNN function to find the K Nearest neighbours
         Args:
             @param schema_madlib       Name of the Madlib Schema
-            @param point_source        Training data table 
+            @param point_source        Training data table
             @param point_column_name   Name of the column with training data points.
             @param label_column_name   Name of the column with labels/values of training data points.
             @param test_source         Name of the table containing the test data points.
             @param test_column_name    Name of the column with testing data points.
             @param id_column_name      Name of the column having ids of data points in test data table.
             @param output_table        Name of the table to store final results.
+            @param operation           Flag for the operation: 'c' for classification and 'r' for regression
             @param k                   default: 1. Number of nearest neighbors to consider
-
-
-        Returns: 
-            VARCHAR                     Name of the output table.             
-    """                                
-
-  
-    oldClientMinMessages = plpy.execute("SELECT setting FROM pg_settings WHERE name = 'client_min_messages'")[0]['setting'];
-
-    plpy.execute("SET client_min_messages TO warning");
-
- 
-    k_val = knn_validate_src(schema_madlib, point_source, point_column_name, 
-                label_column_name, test_source, 
-                test_column_name, id_column_name, 
-                output_table, operation, k) 
-
-
-    plpy.execute("SELECT {schema_madlib}.create_schema_pg_temp()".format(schema_madlib = schema_madlib));
- 
-    x_temp_table = unique_string(desp='x_temp_table') 
-    y_temp_table = unique_string(desp='y_temp_table') 
-    label_column_name_unique = unique_string(desp='label_column_name_unique')  
-    test_id = unique_string(desp='test_id')  
-
-    convert_boolean_to_int = '';
-    if operation == 'c':
-        convert_boolean_to_int = '::INTEGER';
-    
-    madlib_knn_interm = unique_string(desp='madlib_knn_interm')
-
-    plpy.execute("""DROP TABLE IF EXISTS pg_temp.{madlib_knn_interm}""".format(**locals()));
-    plpy.execute(
+        Returns:
+            VARCHAR                     Name of the output table.
     """
-    CREATE TEMP TABLE pg_temp.{madlib_knn_interm} AS
-    SELECT *
-    FROM
-        (
-        SELECT row_number() over (partition by {test_id}  order by dist) AS r , {x_temp_table}.*
-        FROM
-            (
-                SELECT test.{id_column_name} AS  {test_id} , {schema_madlib}.squared_dist_norm2(train.{point_column_name} ,test.{test_column_name}) AS dist, train.{label_column_name} {convert_boolean_to_int} AS {label_column_name_unique}
-                FROM  {point_source} AS train, {test_source}  AS test
-            ) {x_temp_table}
-        ){y_temp_table}
-    WHERE {y_temp_table}.r <= {k_val}""".format(**locals()));
+    with MinWarning('warning'):
+        k_val = knn_validate_src(schema_madlib, point_source, point_column_name,
+                    label_column_name, test_source,
+                    test_column_name, id_column_name,
+                    output_table, operation, k)
 
-    if operation == 'c':
+
+        plpy.execute("SELECT {schema_madlib}.create_schema_pg_temp()".format(schema_madlib=schema_madlib))
+        x_temp_table = unique_string(desp='x_temp_table')
+        y_temp_table = unique_string(desp='y_temp_table')
+        label_column_name_unique = unique_string(desp='label_column_name_unique')
+        test_id = unique_string(desp='test_id')
+
+        convert_boolean_to_int = ''
+        isClassification = False
+        if operation == 'c':
+            convert_boolean_to_int = '::INTEGER'
+            isClassification = True
+        madlib_knn_interm = unique_string(desp='madlib_knn_interm')
+        plpy.execute("""DROP TABLE IF EXISTS pg_temp.{madlib_knn_interm}""".format(**locals()))
         plpy.execute(
         """
-        CREATE TABLE {output_table} AS
-        SELECT {test_id} AS id, {test_column_name} , {schema_madlib}.mode({label_column_name_unique}) AS prediction
-        FROM pg_temp.{madlib_knn_interm} join  {test_source}  ON  {test_id} = {id_column_name}  
-        GROUP BY {test_id}  ,  {test_column_name}""".format(**locals()))
-        
-        
-    else:
-        plpy.execute(
-        """ 
-        CREATE TABLE  {output_table} AS
-        SELECT  {test_id}   AS id, {test_column_name} , avg( {label_column_name_unique}  ) AS prediction
-        FROM
-            pg_temp.{madlib_knn_interm} join {test_source}  on {test_id}  ={id_column_name} 
-        GROUP BY {test_id} ,  {test_column_name} 
-        ORDER BY {test_id}""".format(**locals()))   
-   
+        CREATE TEMP TABLE pg_temp.{madlib_knn_interm} AS SELECT * FROM
+            (
+            SELECT row_number() over (partition by {test_id}  order by dist) AS r , {x_temp_table}.*
+                FROM
+                (
+                    SELECT test.{id_column_name} AS  {test_id} , {schema_madlib}.squared_dist_norm2(train.{point_column_name} ,test.{test_column_name}) AS dist, train.{label_column_name} {convert_boolean_to_int} AS {label_column_name_unique}
+                        FROM  {point_source} AS train, {test_source}  AS test
+                    ) {x_temp_table}
+                ){y_temp_table}
+            WHERE {y_temp_table}.r <= {k_val}""".format(**locals()))
 
-    plpy.execute("SET client_min_messages TO "+ oldClientMinMessages)
+        if isClassification:
+            plpy.execute(
+            """
+            CREATE TABLE {output_table} AS
+            SELECT {test_id} AS id, {test_column_name} , {schema_madlib}.mode({label_column_name_unique}) AS prediction
+            FROM pg_temp.{madlib_knn_interm} join  {test_source}  ON  {test_id} = {id_column_name}
+            GROUP BY {test_id}  ,  {test_column_name}""".format(**locals()))
+        else:
+            plpy.execute(
+            """
+            CREATE TABLE  {output_table} AS
+            SELECT  {test_id}   AS id, {test_column_name} , avg( {label_column_name_unique}  ) AS prediction
+            FROM
+                pg_temp.{madlib_knn_interm} join {test_source}  on {test_id}  ={id_column_name}
+            GROUP BY {test_id} ,  {test_column_name}
+            ORDER BY {test_id}""".format(**locals()))
 
-    if operation == 'c':
-        returnstring = 'The classification results have been written to output table '+ output_table;
-    else:
-        returnstring = 'The regression results have been written to output table '+ output_table;
+        if isClassification:
+            returnstring = 'The classification results have been written to output table '+ output_table
+        else:
+            returnstring = 'The regression results have been written to output table '+ output_table
 
-    plpy.execute("""DROP TABLE pg_temp.{madlib_knn_interm}""".format(**locals()));    
+        plpy.execute("""DROP TABLE pg_temp.{madlib_knn_interm}""".format(**locals()))
 
-    return returnstring;
-
-
-
+        return returnstring
