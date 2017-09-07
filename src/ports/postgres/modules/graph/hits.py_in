@@ -40,7 +40,7 @@ from graph_utils import *
 
 
 def validate_hits_args(schema_madlib, vertex_table, vertex_id, edge_table,
-                        edge_params, out_table, max_iter, threshold):
+                       edge_params, out_table, max_iter, threshold):
     """
     Function to validate input parameters for HITS
     """
@@ -53,8 +53,9 @@ def validate_hits_args(schema_madlib, vertex_table, vertex_id, edge_table,
             """HITS: Invalid max_iter value ({0}), must be a positive integer.""".
             format(max_iter))
 
+
 def hits(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
-             out_table, max_iter, threshold, **kwargs):
+         out_table, max_iter, threshold, **kwargs):
     """
     Function that computes the HITS scores
 
@@ -71,7 +72,8 @@ def hits(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
     with MinWarning('warning'):
         params_types = {'src': str, 'dest': str}
         default_args = {'src': 'src', 'dest': 'dest'}
-        edge_params = extract_keyvalue_params(edge_args, params_types, default_args)
+        edge_params = extract_keyvalue_params(
+            edge_args, params_types, default_args)
 
         # populate default values for optional params if null
         if max_iter is None:
@@ -80,7 +82,7 @@ def hits(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
             vertex_id = "id"
 
         validate_hits_args(schema_madlib, vertex_table, vertex_id, edge_table,
-                               edge_params, out_table, max_iter, threshold)
+                           edge_params, out_table, max_iter, threshold)
         summary_table = add_postfix(out_table, "_summary")
         _assert(not table_exists(summary_table),
                 "Graph HITS: Output summary table ({summary_table}) already exists."
@@ -89,9 +91,9 @@ def hits(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
         src = edge_params["src"]
         dest = edge_params["dest"]
         n_vertices = plpy.execute("""
-                    SELECT COUNT({0}) AS cnt
-                    FROM {1}
-                """.format(vertex_id, vertex_table))[0]["cnt"]
+                SELECT COUNT({0}) AS cnt
+                FROM {1}
+            """.format(vertex_id, vertex_table))[0]["cnt"]
 
         # Assign default threshold value based on number of nodes in the graph.
         if threshold is None:
@@ -102,7 +104,7 @@ def hits(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
                         "DISTRIBUTED BY ({0})".format(dest))
         plpy.execute("DROP TABLE IF EXISTS {0}".format(edge_temp_table))
         plpy.execute("""
-            CREATE TEMP TABLE {edge_temp_table} AS
+                CREATE TEMP TABLE {edge_temp_table} AS
                 SELECT * FROM {edge_table}
                 {distribution}
             """.format(**locals()))
@@ -110,28 +112,30 @@ def hits(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
         # GPDB and HAWQ have distributed by clauses to help them with indexing.
         # For Postgres we add the index explicitly.
         if is_platform_pg():
-            plpy.execute("CREATE INDEX ON {0}({1})".format(edge_temp_table, dest))
+            plpy.execute("CREATE INDEX ON {0}({1})".format(
+                edge_temp_table, dest))
 
         # Intermediate tables required.
         cur = unique_string(desp='cur')
         message = unique_string(desp='message')
         v1 = unique_string(desp='v1')
-        message_unconv_authority = unique_string(desp='message_unconv_authority')
+        message_unconv_authority = unique_string(
+            desp='message_unconv_authority')
         message_unconv_hub = unique_string(desp="message_unconv_hub")
         tmp = unique_string(desp='tmp')
         tmp2 = unique_string(desp='tmp2')
         tmp3 = unique_string(desp='tmp3')
         v2 = unique_string(desp='v2')
 
-        nodes_with_no_incoming_edges = unique_string(desp='no_incoming')
-
         if is_platform_pg():
             cur_distribution = cnts_distribution = ''
         else:
             cur_distribution = cnts_distribution = \
                 "DISTRIBUTED BY ({0})".format(vertex_id)
-        cur_join_clause = "{edge_temp_table}.{dest} = {cur}.{vertex_id}".format(**locals())
-        v1_join_clause = "{v1}.{vertex_id} = {edge_temp_table}.{src}".format(**locals())
+        cur_join_clause = " {cur}.{vertex_id} = {edge_temp_table}.{dest}".format(
+            **locals())
+        v1_join_clause = "{v1}.{vertex_id} = {edge_temp_table}.{src}".format(
+            **locals())
 
         authority_init_value = 1.0
         hub_init_value = 1.0
@@ -150,21 +154,6 @@ def hits(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
                 )
             """.format(**locals()))
 
-        # Find all nodes in the graph that don't have any incoming edges and
-        # assign 0 as their authority and hub values.
-        no_incoming_node_authority_value = 0.0
-        no_incoming_node_hub_value = 0.0
-        plpy.execute("""
-                CREATE TABLE {nodes_with_no_incoming_edges} AS
-                SELECT DISTINCT({src}), {no_incoming_node_authority_value}::DOUBLE PRECISION AS authority,
-                {no_incoming_node_hub_value}::DOUBLE PRECISION AS hub
-                FROM {edge_temp_table}
-                EXCEPT
-                    (SELECT DISTINCT({dest}), {no_incoming_node_authority_value}::DOUBLE PRECISION AS authority,
-                    {no_incoming_node_hub_value}::DOUBLE PRECISION AS hub
-                    FROM {edge_temp_table})
-            """.format(**locals()))
-
         unconverged_authority_num = 0
         unconverged_hub_num = 0
         iteration_num = 0
@@ -172,90 +161,97 @@ def hits(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
         hub_norm = 0
 
         plpy.execute("""
-                    CREATE TABLE {message_unconv_authority} AS
-                    SELECT {cur}.{vertex_id}
-                    FROM {cur}
-                    LIMIT 0
-                    """.format(**locals()))
+                CREATE TABLE {message_unconv_authority} AS
+                SELECT {cur}.{vertex_id}
+                FROM {cur}
+                LIMIT 0
+            """.format(**locals()))
         plpy.execute("""
-                    CREATE TABLE {message_unconv_hub} AS
-                    SELECT {cur}.{vertex_id}
-                    FROM {cur}
-                    LIMIT 0
-                    """.format(**locals()))
+                CREATE TABLE {message_unconv_hub} AS
+                SELECT {cur}.{vertex_id}
+                FROM {cur}
+                LIMIT 0
+            """.format(**locals()))
 
         for iteration_num in range(max_iter):
-        ##########################################################################
-        # HITS scores for node 'A' at any given iteration 'i' is calculated as following:
-        # authority_i(A) = hub_i(B) + hub_i(C) + ...
-        # After calculating authority score for all nodes, a normalization will 
-        # be done for authority_i(A), authority_i(B), authority_i(C), ... 
-        # Then
-        # hub_i(A) = authority_i(B) + authority_i(C) + ... 
-        # After calculating hub score for all nodes, a normalization will 
-        # be done for hub_i(A), hub_i(B), hub_i(C), ...
-        # B, C are nodes that have edges that point to node A
-        #########################################################################
+            ###################################################################
+            # HITS scores for nodes in a graph at any given iteration 'i' is calculated
+            # as following:
+            # authority_i(A) = hub_i(B) + hub_i(C) + ..., where B, C are nodes that have
+            # edges that point to node A
+            # After calculating authority scores for all nodes, hub scores are calculated
+            # as following:
+            # hub_i(A) = authority_i(D) + authority_i(E) + ..., where D, E are nodes that
+            # A points to
+            # At the end of each iteration, a normalization will
+            # be done for all authority scores and hub scores using L2 distance
+            ###################################################################
 
-            #####################################################################
-            # calculate authority 
-            #####################################################################
+            ###################################################################
+            # calculate authority
+            # if there is no node that point to A, authority_i(A) = 0
+            ###################################################################
             plpy.execute("""
                     CREATE TABLE {message} AS
-                    SELECT {edge_temp_table}.{dest} AS {vertex_id},
-                            SUM({v1}.hub) AS authority,
+                    SELECT {cur}.{vertex_id} AS {vertex_id},
+                            COALESCE(SUM({v1}.hub), 0.0) AS authority,
                             {cur}.hub AS hub
-                    FROM {edge_temp_table}
-                        INNER JOIN {cur} ON {cur_join_clause}
-                        INNER JOIN {cur} AS {v1} ON {v1_join_clause}
-                    GROUP BY {edge_temp_table}.{dest}, {cur}.hub
+                    FROM {cur}
+                        LEFT JOIN {edge_temp_table} ON {cur_join_clause}
+                        LEFT JOIN {cur} AS {v1} ON {v1_join_clause}
+                    GROUP BY {cur}.{vertex_id}, {cur}.hub
+                    ORDER BY {cur}.{vertex_id}
                     {cur_distribution}
                 """.format(**locals()))
 
-            #normalize authority value, since points with 0 authority score are not included
-            # in the message table, norm value will always be positive value
-            authority_norm = math.sqrt(plpy.execute("""
-                SELECT SUM({tmp}.authority_square) AS sum_norm_square
-                FROM
-                (SELECT POWER(authority, 2) AS authority_square
-                FROM {message}) AS {tmp}
-                """.format(**locals()))[0]["sum_norm_square"])
-            plpy.execute("""
-                UPDATE {message}
-                SET authority = authority/{authority_norm}
-                """.format(**locals()))
-
             #####################################################
-            #calculate hub
+            # calculate hub
+            # if node A doesn't point to any node, hub_i(A) = 0
             #####################################################
-            message_join_clause = "{edge_temp_table}.{dest} = {message}.{vertex_id}".format(**locals())
-            v2_join_clause = "{v2}.{vertex_id} = {edge_temp_table}.{src}".format(**locals())
+            message_join_clause = "{message}.{vertex_id} = {edge_temp_table}.{src}".format(
+                **locals())
+            v2_join_clause = "{v2}.{vertex_id} = {edge_temp_table}.{dest}".format(
+                **locals())
             plpy.execute("""
                     UPDATE {message}
                     SET hub = {tmp2}.hub
                     FROM
-                    (SELECT {edge_temp_table}.{dest} AS {vertex_id},
-                            SUM({v2}.authority) AS hub, {message}.authority AS authority
-                    FROM {edge_temp_table}
-                        INNER JOIN {message} ON {message_join_clause}
-                        INNER JOIN {message} AS {v2} ON {v2_join_clause}
-                    GROUP BY {edge_temp_table}.{dest},{message}.authority) AS {tmp2}
+                    (SELECT {message}.{vertex_id} AS {vertex_id},
+                            COALESCE(SUM({v2}.authority), 0) AS hub
+                    FROM {message}
+                        LEFT JOIN {edge_temp_table} ON {message_join_clause}
+                        LEFT JOIN {message} AS {v2} ON {v2_join_clause}
+                    GROUP BY {message}.{vertex_id}) AS {tmp2}
                     WHERE {tmp2}.{vertex_id} = {message}.{vertex_id}
                 """.format(**locals()))
 
-            #normalize hub value, since points with 0 hub score are not included
-            # in the message table, norm value will always be positive value
-            hub_norm = math.sqrt(plpy.execute("""
-            SELECT SUM({tmp3}.hub_square) AS sum_hub_square
-            FROM
-            (SELECT POWER(hub, 2) AS hub_square
-            FROM {message}) AS {tmp3}
-            """.format(**locals()))[0]["sum_hub_square"])
+            # normalize authority value with L2 distance
+            authority_norm = math.sqrt(plpy.execute("""
+                    SELECT SUM({tmp}.authority_square) AS sum_norm_square
+                    FROM
+                    (SELECT POWER(authority, 2) AS authority_square
+                    FROM {message}) AS {tmp}
+                """.format(**locals()))[0]["sum_norm_square"])
 
-            plpy.execute("""
-            UPDATE {message}
-            SET hub = hub/{hub_norm}
-            """.format(**locals()))
+            if authority_norm != 0:
+                plpy.execute("""
+                        UPDATE {message}
+                        SET authority = authority/{authority_norm}
+                    """.format(**locals()))
+
+            # normalize hub value with L2 distance
+            hub_norm = math.sqrt(plpy.execute("""
+                    SELECT SUM({tmp3}.hub_square) AS sum_hub_square
+                    FROM
+                    (SELECT POWER(hub, 2) AS hub_square
+                    FROM {message}) AS {tmp3}
+                """.format(**locals()))[0]["sum_hub_square"])
+
+            if hub_norm != 0:
+                plpy.execute("""
+                        UPDATE {message}
+                        SET hub = hub/{hub_norm}
+                    """.format(**locals()))
 
             # Check for convergence:
             # Check for convergence only if threshold != 0.
@@ -297,34 +293,27 @@ def hits(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
 
             plpy.execute("DROP TABLE IF EXISTS {0}".format(cur))
             plpy.execute("""ALTER TABLE {message} RENAME TO {cur}
-                    """.format(**locals()))
+                """.format(**locals()))
 
             if unconverged_authority_num == 0 and unconverged_hub_num == 0:
                 break
 
         plpy.execute("""
-            ALTER TABLE {table_name}
-            RENAME TO {out_table}
+                ALTER TABLE {table_name}
+                RENAME TO {out_table}
             """.format(table_name=cur, **locals()))
-        # If there are nodes that have no incoming edges, they are not
-        # captured in the previous calculation. The authority and hub value should
-        # both be 0 for those nodes. Insert entries for such nodes with authority=0 
-        # and hub=0 into out_table.
+
+        # update summary_table
         plpy.execute("""
-                INSERT INTO {out_table}
-                SELECT *
-                FROM {nodes_with_no_incoming_edges}
-            """.format(**locals()))
-        #update summary_table
-        plpy.execute("""
-            INSERT INTO {summary_table} 
-            VALUES({iteration_num}+1)
+                INSERT INTO {summary_table}
+                VALUES({iteration_num}+1)
             """.format(**locals()))
 
         # Cleanup All the intermediate tables
-        plpy.execute("""DROP TABLE IF EXISTS {0},{1},{2},{3},{4},{5}
+        plpy.execute("""DROP TABLE IF EXISTS {0},{1},{2},{3},{4}
             """.format(edge_temp_table, cur, message,
-                       message_unconv_authority, message_unconv_hub, nodes_with_no_incoming_edges))
+                       message_unconv_authority, message_unconv_hub))
+
 
 def hits_help(schema_madlib, message, **kwargs):
     """
@@ -343,9 +332,9 @@ def hits_help(schema_madlib, message, **kwargs):
         help_string = "Get from method below"
         help_string = get_graph_usage(schema_madlib, 'HITS',
                                       """out_table     TEXT, -- Name of the output table for HITS
-    max_iter      INTEGER, -- Maximum iteration number (DEFAULT = 100)
-    threshold     DOUBLE PRECISION, -- Stopping criteria (DEFAULT = 1/(N*1000),
-                                    -- N is number of vertices in the graph)
+    max_iter     INTEGER, -- Maximum iteration number (DEFAULT = 100)
+    threshold    DOUBLE PRECISION, -- Stopping criteria (DEFAULT = 1/(N*1000),
+                                -- N is number of vertices in the graph)
 """) + """
 
 A summary table is also created that contains information regarding the
@@ -403,12 +392,12 @@ INSERT INTO edge VALUES
 
 -- Compute the HITS score:
 DROP TABLE IF EXISTS hits_out, hits_out_summary;
-SELECT madlib.hits(
-             'vertex',             -- Vertex table
-             'id',                 -- Vertex id column
-             'edge',               -- Edge table
-             'src=src, dest=dest', -- Comma delimited string of edge arguments
-             'hits_out');      -- Output table of HITS
+SELECT {schema_madlib}.hits(
+                     'vertex',             -- Vertex table
+                     'id',                 -- Vertex id column
+                     'edge',               -- Edge table
+                     'src=src, dest=dest', -- Comma delimited string of edge arguments
+                     'hits_out');      -- Output table of HITS
 
 -- View the authority of all vertices, sorted by their scores.
 SELECT authority FROM hits_out ORDER BY authority DESC;
@@ -436,4 +425,3 @@ SELECT {schema_madlib}.hits('example')
 
     return help_string.format(schema_madlib=schema_madlib)
 # ---------------------------------------------------------------------
-
