@@ -167,9 +167,15 @@ AnyType utils_var_scales_non_zero_std_final::run (AnyType& args)
     state.mean /= static_cast<double>(state.numRows);
     state.std /= static_cast<double>(state.numRows);
     for (uint32_t i = 0; i < state.dimension; i++) {
-        state.std(i) = sqrt(state.std(i) - state.mean(i) * state.mean(i));
-        if(close_to_zero(state.std(i)))
+        if (state.numRows == 1) {
+            state.mean(i) = 0.0;
             state.std(i) = 1.0;
+        }
+        else {
+            state.std(i) = sqrt(state.std(i) - state.mean(i) * state.mean(i));
+            if(close_to_zero(state.std(i)))
+                state.std(i) = 1.0;
+        }
     }
 
     return state;

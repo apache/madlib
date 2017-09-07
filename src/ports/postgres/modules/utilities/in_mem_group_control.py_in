@@ -401,6 +401,31 @@ class GroupIterationController:
     def __exit__(self, type, value, tb):
         self.in_with = False
 
+    def get_state_size(self):
+        """
+            Return the size of the state. Greenplum does not have the
+            array_length() method yet, hence this work-around.
+        """
+        if self.is_state_type_bytea8:
+            unnest_str_current = "unnest($3) AS {col_grp_key}, unnest($4) AS _state_current".format(**self.kwargs)
+            grouped_state_type = "{schema_madlib}.bytea8[]".format(**self.kwargs)
+        else:
+            unnest_str_current = "grp_key AS {col_grp_key}, state AS _state_current FROM {schema_madlib}._gen_state($3, NULL, $4)".format(**self.kwargs)
+            grouped_state_type = "float8[]"
+        eval_plan = plpy.prepare("""
+                SELECT _state_current
+                FROM (
+                    SELECT {unnest_str_current}
+                ) subq1
+            """.format(unnest_str_current=unnest_str_current, **self.kwargs),
+                       ["text[]", grouped_state_type] * 2)
+        state_size = len(plpy.execute(eval_plan,
+                           [self.old_states.keys,
+                            self.old_states.values,
+                            self.new_states.keys,
+                            self.new_states.values])[0]['_state_current'])
+        return state_size
+
     def get_param_value_per_group(self, select_col):
         """
             Return desired values from the current state.
