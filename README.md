@@ -18,7 +18,11 @@ Development with Docker
 =======================
 We provide a Docker image with necessary dependencies required to compile and test MADlib on PostgreSQL 9.6. You can view the dependency Docker file at ./tool/docker/base/Dockerfile_postgres_9_6. The image is hosted on Docker Hub at madlib/postgres_9.6:latest. Later we will provide a similar Docker image for Greenplum Database.
 
-Some useful commands to use the docker file:
+We have a script to quickly run this docker image at ./tool/docker_start.sh, which will mount your local madlib directory, build MADlib and run install check on this Docker image. At the end, it will `docker exec` as postgres user. Note that you have to run this script from one level up from your madlib directory, for example, ~/workspace which has madlib source directory there. 
+
+To kill this docker container, run `docker kill madlib` and `docker rm madlib`.
+
+You can also manually run those commands to do the same thing:
 
 ```
 ## 1) Pull down the `madlib/postgres_9.6:latest` image from docker hub:
