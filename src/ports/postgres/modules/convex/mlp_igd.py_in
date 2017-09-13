@@ -461,6 +461,21 @@ def _update_temp_model_table(args, iteration, temp_output_table, first_try):
     if first_try:
         insert_or_create_str = "CREATE TEMP TABLE {0} as"
     insert_or_create_str = insert_or_create_str.format(temp_output_table)
+    join_clause = ''
+    if args['grouping_col']:
+        join_clause = """
+                JOIN
+                (
+                    SELECT
+                    {grouping_str_comma}
+                    array_to_string(ARRAY[{grouping_str}],
+                                    ','
+                                   ) AS {col_grp_key}
+                    FROM {source_table}
+                    {group_by_clause}
+                ) grouping_q
+                {using_clause}
+            """.format(**args)
     model_table_query = """
     {insert_or_create_str}
         SELECT
@@ -477,19 +492,9 @@ def _update_temp_model_table(args, iteration, temp_output_table, first_try):
                 FROM {rel_state}
                 WHERE {col_grp_iteration} = {iteration}
         ) rel_state_subq
-        JOIN
-        (
-            SELECT
-            {grouping_str_comma}
-            array_to_string(ARRAY[{grouping_str}],
-                            ','
-                           ) AS {col_grp_key}
-            FROM {source_table}
-            {group_by_clause}
-        ) grouping_q
-        {using_clause}
+        {join_clause}
     """.format(insert_or_create_str=insert_or_create_str,
-               iteration=iteration, **args)
+               iteration=iteration, join_clause=join_clause, **args)
     plpy.execute(model_table_query)
 
 
