@@ -20,7 +20,8 @@
 #  This is a script that does the following:
 #  * Pull madlib/postgres_9.6:latest from docker;
 #  * Mount your local madlib directory to docker container;
-#  * Build madlib from source;
+#  * Build madlib from source; build dir is /madlib/docker_build which 
+#    is mounted to your local madlib dir
 #  * Install madlib and run install check;
 #  * Log in to docker container from shell as postgres user, so that you
 #    can run psql and start using madlib from here
@@ -69,25 +70,29 @@ sleep 5
 
 echo "---------- Building MADlib -----------"
 # cmake, make, make install
-docker exec madlib bash -c "rm -rf /build; mkdir /build; cd /build; cmake \
-							../madlib; make; make install" \
+# The build folder is /madlib/docker_build, which is mounted to your local
+# madlib repo
+docker exec madlib bash -c "rm -rf /madlib/docker_build; \
+							mkdir /madlib/docker_build; \
+							cd /madlib/docker_build; \
+							cmake ..; make; make install" \
 			| tee "${workdir}/logs/madlib_compile.log"
 
 echo "---------- Installing and running install-check --------------------"
 # Install MADlib and run install check
-docker exec madlib bash -c "/build/src/bin/madpack -p postgres -c \
-							postgres/postgres@localhost:5432/postgres install" \
+docker exec madlib bash -c "/madlib/docker_build/src/bin/madpack -p postgres \
+							 -c postgres/postgres@localhost:5432/postgres \
+							 install" \
 			| tee "${workdir}/logs/madlib_install.log"
 
-docker exec madlib bash -c 'mkdir -p /tmp'
-docker exec madlib bash -c "/build/src/bin/madpack -p postgres  -c \
-							postgres/postgres@localhost:5432/postgres -d \
-							/tmp install-check" \
+docker exec madlib bash -c "/madlib/docker_build/src/bin/madpack -p postgres \
+							-c postgres/postgres@localhost:5432/postgres \
+							install-check" \
 			| tee "${workdir}/logs/madlib_install_check.log"
 
 # To run psql, you have to login as postgres, not root
 echo "---------- docker exec image as user postgres-----------"
-docker exec madlib bash -c 'chown -R postgres:postgres /build'
+docker exec madlib bash -c 'chown -R postgres:postgres /madlib/docker_build'
 docker exec madlib bash -c 'chown -R postgres:postgres /madlib'
 docker exec --user=postgres -it madlib bash \
 		| tee "${workdir}/logs/docker_exec.log"
