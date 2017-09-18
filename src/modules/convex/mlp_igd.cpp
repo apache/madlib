@@ -91,8 +91,7 @@ mlp_igd_transition::run(AnyType &args) {
             const int is_classification = args[7].getAs<int>();
 
             const bool warm_start = args[9].getAs<bool>();
-            const int n_tuples = args[11].getAs<int>();
-            const double lambda = args[12].getAs<double>();
+            const double lambda = args[11].getAs<double>();
             state.task.lambda = lambda;
             MLPTask::lambda = lambda;
             double is_classification_double = (double) is_classification;
