@@ -513,8 +513,8 @@ def _plpy_check(py_min_ver):
             _internal_run_query("CREATE LANGUAGE plpythonu;", True)
         except:
             _error("""Cannot create language plpythonu. Please check if you
-                have configured and installed postgres with `--with-python`
-                option. Stopping installation...""", False)
+                have configured and installed portid (your platform) with
+                `--with-python` option. Stopping installation...""", False)
             raise Exception
 
     # Check PL/Python version
