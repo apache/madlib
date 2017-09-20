@@ -20,7 +20,7 @@
 #  This is a script that does the following:
 #  * Pull madlib/postgres_9.6:latest from docker;
 #  * Mount your local madlib directory to docker container;
-#  * Build madlib from source; build dir is /madlib/docker_build which 
+#  * Build madlib from source; build dir is /madlib/build_docker which 
 #    is mounted to your local madlib dir
 #  * Install madlib and run install check;
 #  * Log in to docker container from shell as postgres user, so that you
@@ -33,13 +33,21 @@ set -o pipefail
 
 workdir=$(pwd)
 user_name=$(whoami)
-reponame=madlib
+reponame="$(basename $(pwd))"
 
 echo "======================================================================"
 echo "Build user: ${user_name}"
 echo "Work directory: ${workdir}"
 echo "Git reponame: ${reponame}"
 echo "======================================================================"
+
+if [[ -z "${container_name}"]]; then
+	container_name = madlib
+fi
+
+if [[ -z "${image_tag}"]]; then
+	image_tag = latest
+fi
 
 if [[ ! -d "${workdir}/${reponame}" ]]; then
   echo "Error: you have to run this script from one level up from your madlib \
@@ -48,20 +56,20 @@ if [[ ! -d "${workdir}/${reponame}" ]]; then
   exit
 fi
 
-rm -rf logs
-mkdir logs
+rm -rf build_docker_logs
+mkdir build_docker_logs
 
 echo "-----------creating docker container madlib--------------------"
-docker kill madlib
-docker rm madlib
+docker kill "${container_name}"
+docker rm "${container_name}"
 
 # Pull down the base docker images
 echo "Creating docker container"
-docker pull madlib/postgres_9.6:latest
+docker pull madlib/postgres_9.6:"${image_tag}"
 
 # Launch docker container with volume mounted from workdir
-docker run -d --name madlib -v "${workdir}/${reponame}":/madlib \
- 					madlib/postgres_9.6 | tee logs/docker_setup.log
+docker run -d --name "${container_name}" -v "${workdir}":/"${reponame}" \
+ 					madlib/postgres_9.6 | tee build_docker_logs/docker_setup.log
 
 ## This sleep is required since it takes a couple of seconds for the docker
 ## container to come up, which is required by the docker exec command that 
@@ -70,29 +78,29 @@ sleep 5
 
 echo "---------- Building MADlib -----------"
 # cmake, make, make install
-# The build folder is /madlib/docker_build, which is mounted to your local
+# The build folder is /madlib/build_docker, which is mounted to your local
 # madlib repo
-docker exec madlib bash -c "rm -rf /madlib/docker_build; \
-							mkdir /madlib/docker_build; \
-							cd /madlib/docker_build; \
+docker exec "${container_name}" bash -c "rm -rf /madlib/build_docker; \
+							mkdir /madlib/build_docker; \
+							cd /madlib/build_docker; \
 							cmake ..; make; make install" \
-			| tee "${workdir}/logs/madlib_compile.log"
+			| tee "${workdir}/build_docker_logs/madlib_compile.log"
 
 echo "---------- Installing and running install-check --------------------"
 # Install MADlib and run install check
-docker exec madlib bash -c "/madlib/docker_build/src/bin/madpack -p postgres \
+docker exec "${container_name}" bash -c "/madlib/build_docker/src/bin/madpack -p postgres \
 							 -c postgres/postgres@localhost:5432/postgres \
 							 install" \
-			| tee "${workdir}/logs/madlib_install.log"
+			| tee "${workdir}/build_docker_logs/madlib_install.log"
 
-docker exec madlib bash -c "/madlib/docker_build/src/bin/madpack -p postgres \
+docker exec "${container_name}" bash -c "/madlib/build_docker/src/bin/madpack -p postgres \
 							-c postgres/postgres@localhost:5432/postgres \
 							install-check" \
-			| tee "${workdir}/logs/madlib_install_check.log"
+			| tee "${workdir}/build_docker_logs/madlib_install_check.log"
 
 # To run psql, you have to login as postgres, not root
 echo "---------- docker exec image as user postgres-----------"
-docker exec madlib bash -c 'chown -R postgres:postgres /madlib/docker_build'
-docker exec madlib bash -c 'chown -R postgres:postgres /madlib'
-docker exec --user=postgres -it madlib bash \
-		| tee "${workdir}/logs/docker_exec.log"
+docker exec "${container_name}" bash -c 'chown -R postgres:postgres /madlib/build_docker'
+docker exec "${container_name}" bash -c 'chown -R postgres:postgres /madlib'
+docker exec --user=postgres -it "${container_name}" bash \
+		| tee "${workdir}/build_docker_logs/docker_exec.log"
