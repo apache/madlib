@@ -18,9 +18,13 @@ Development with Docker
 =======================
 We provide a Docker image with necessary dependencies required to compile and test MADlib on PostgreSQL 9.6. You can view the dependency Docker file at ./tool/docker/base/Dockerfile_postgres_9_6. The image is hosted on Docker Hub at madlib/postgres_9.6:latest. Later we will provide a similar Docker image for Greenplum Database.
 
-We have a script to quickly run this docker image at ./tool/docker_start.sh, which will mount your local madlib directory, build MADlib and run install check on this Docker image. At the end, it will `docker exec` as postgres user. Note that you have to run this script from one level up from your madlib directory, for example, ~/workspace which has madlib source directory there. 
+We provide a script to quickly run this docker image at ./tool/docker_start.sh, which will mount your local madlib directory, build MADlib and run install check on this Docker image. At the end, it will `docker exec` as postgres user. Note that you have to run this script from inside your madlib directory, and you can specify your docker CONTAINER_NAME (default is madlib) and IMAGE_TAG (default is latest). Here is an example:
 
-To kill this docker container, run `docker kill madlib` and `docker rm madlib`.
+```
+CONTAINER_NAME=my_madlib IMAGE_TAG=LaTex ./tool/docker_start.sh
+```
+
+To kill this docker container, run `docker kill YOUR_CONTAINER_NAME` and `docker rm YOUR_CONTAINER_NAME`.
 
 You can also manually run those commands to do the same thing:
 
@@ -28,8 +32,8 @@ You can also manually run those commands to do the same thing:
 ## 1) Pull down the `madlib/postgres_9.6:latest` image from docker hub:
 docker pull madlib/postgres_9.6:latest
 
-## 2) Launch a container corresponding to the MADlib image, mounting the
-##    source code folder to the container:
+## 2) Launch a container corresponding to the MADlib image, name it
+##    madlib, mounting the source code folder to the container:
 docker run -d -it --name madlib \
     -v (path to madlib directory):/madlib/ madlib/postgres_9.6
 # where madlib is the directory where the MADlib source code resides.
@@ -44,8 +48,8 @@ docker run -d -it --name madlib \
 
 ## 3) When the container is up, connect to it and build MADlib:
 docker exec -it madlib bash
-mkdir /madlib/build-docker
-cd /madlib/build-docker
+mkdir /madlib/build_docker
+cd /madlib/build_docker
 cmake ..
 make
 make doc
