@@ -23,8 +23,18 @@ We provide a script to quickly run this docker image at ./tool/docker_start.sh, 
 ```
 CONTAINER_NAME=my_madlib IMAGE_TAG=LaTex ./tool/docker_start.sh
 ```
+Notice that this script only needs to be run once. After that, you will have a local docker container with CONTAINER_NAME running. To get access to the container, run the following command and you can keep working on it.
 
-To kill this docker container, run `docker kill YOUR_CONTAINER_NAME` and `docker rm YOUR_CONTAINER_NAME`.
+```
+docker exec -it CONTAINER_NAME bash
+```
+
+To kill this docker container, run:
+
+```
+docker kill CONTAINER_NAME
+docker rm CONTAINER_NAME
+```
 
 You can also manually run those commands to do the same thing:
 
@@ -69,6 +79,16 @@ src/bin/madpack -p postgres -c postgres/postgres@localhost:5432/postgres reinsta
 ## 6) Kill and remove containers (after exiting the container):
 docker kill madlib
 docker rm madlib
+```
+
+Instruction for building design pdf on Docker:
+
+For users who wants to build design pdf, make sure you use the `IMAGE_TAG=LaTex` parameter when running the script. After launching your docker container, run the following to get `design.pdf`:
+
+```
+cd /madlib/build_docker
+make design_pdf
+cd doc/design
 ```
 
 Detailed build instructions are available in [`ReadMe_Build.txt`](ReadMe_Build.txt)
