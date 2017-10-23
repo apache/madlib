@@ -135,13 +135,17 @@ def knn(schema_madlib, point_source, point_column_name, point_id, label_column_n
         test_id_temp = unique_string(desp='test_id_temp')
 
         if output_neighbors is None or '':
-            output_neighbors = False
+            output_neighbors = True
 
         interim_table = unique_string(desp='interim_table')
 
         if label_column_name is None or label_column_name == '':
-            plpy.execute(
-                """
+
+            if output_neighbors is False:
+                plpy.error("kNN error: Either label_column_name or "
+                       "output_neighbors has to be non-NULL.")
+
+            sql1 = """
                 CREATE TEMP TABLE {interim_table} AS
                 SELECT * FROM
                     (
@@ -160,20 +164,23 @@ def knn(schema_madlib, point_source, point_column_name, point_id, label_column_n
                         ) {x_temp_table}
                     ) {y_temp_table}
                 WHERE {y_temp_table}.r <= {k_val}
-                """.format(**locals()))
-            plpy.execute(
-                """
+                """.format(**locals())
+            plpy.execute(sql1)
+
+            sql2 = """
                 CREATE TABLE {output_table} AS
                     SELECT {test_id_temp} AS id, {test_column_name} ,
                         CASE WHEN {output_neighbors}
-                        THEN array_agg(knn_temp.train_id)
+                        THEN array_agg(knn_temp.train_id
+                            ORDER BY knn_temp.dist ASC)
                         ELSE NULL END  AS k_nearest_neighbours
                     FROM pg_temp.{interim_table} AS knn_temp
                     join
                         {test_source} AS knn_test ON
                         knn_temp.{test_id_temp} = knn_test.{test_id}
                     GROUP BY {test_id_temp}  ,  {test_column_name}
-                """.format(**locals()))
+                """.format(**locals())
+            plpy.execute(sql2)
             return
 
         is_classification = False
@@ -215,7 +222,8 @@ def knn(schema_madlib, point_source, point_column_name, point_id, label_column_n
         knn_pred_class = schema_madlib + \
             '.mode(' + label_col_temp + ') AS prediction'
         knn_pred_reg = 'avg(' + label_col_temp + ') AS prediction'
-        knn_neighbours = ', array_agg(knn_temp.train_id) AS k_nearest_neighbours '
+        knn_neighbours = ', array_agg(knn_temp.train_id ORDER BY knn_temp.dist ASC)'\
+            +' AS k_nearest_neighbours '
         knn_group_by = 'FROM pg_temp.' + interim_table + ' AS knn_temp join ' \
             + test_source + ' AS knn_test ON  knn_temp.' + test_id_temp + '= knn_test.' \
             + test_id + ' GROUP BY ' + test_id_temp + ', ' + test_column_name
