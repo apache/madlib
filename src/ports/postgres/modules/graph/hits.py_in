@@ -541,10 +541,13 @@ def hits_help(schema_madlib, message, **kwargs):
             message.lower() in ("usage", "help", "?"):
         help_string = "Get from method below"
         help_string = get_graph_usage(schema_madlib, 'HITS',
-"""out_table     TEXT, -- Name of the output table for HITS
-    max_iter     INTEGER, -- Maximum iteration number (DEFAULT = 100)
-    threshold    DOUBLE PRECISION, -- Stopping criteria (DEFAULT = 1/(N*1000),
-                                   -- N is number of vertices in the graph)
+"""
+        out_table   TEXT, -- Name of the output table for HITS
+        max_iter    INTEGER, -- Maximum iteration number (DEFAULT = 100)
+        threshold   DOUBLE PRECISION, -- Stopping criteria (DEFAULT =
+                                      -- 1/(N*1000), N is number of vertices in the graph)
+        grouping_cols   TEXT -- Comma separated column names to group on
+                             -- (DEFAULT = NULL, no grouping)
 """) + """
 
 A summary table is also created that contains information regarding the
@@ -588,7 +591,17 @@ INSERT INTO edge VALUES
 (3, 0, 1),
 (4, 0, 1),
 (5, 6, 1),
-(6, 3, 1);
+(6, 3, 1),
+(0, 1, 2),
+(0, 2, 2),
+(0, 4, 2),
+(1, 2, 2),
+(1, 3, 2),
+(2, 3, 2),
+(3, 0, 2),
+(4, 0, 2),
+(5, 6, 2),
+(6, 3, 2);
 
 -- Compute the HITS score:
 DROP TABLE IF EXISTS hits_out, hits_out_summary;
@@ -597,15 +610,29 @@ SELECT {schema_madlib}.hits(
                      'id',                 -- Vertex id column
                      'edge',               -- Edge table
                      'src=src, dest=dest', -- Comma delimited string of edge arguments
-                     'hits_out');      -- Output table of HITS
+                     'hits_out');          -- Output table of HITS
+-- View the authority and hub scores of all vertices, ordered by their id.
+SELECT * FROM hits_out ORDER BY id;
 
--- View the authority of all vertices, sorted by their scores.
-SELECT authority FROM hits_out ORDER BY authority DESC;
--- View the hub of all vertices, sorted by their scores.
-SELECT hub FROM hits_out ORDER BY hub DESC;
+-- Compute the HITS score of nodes associated with each user:
+DROP TABLE IF EXISTS hits_out, hits_out_summary;
+SELECT {schema_madlib}.hits(
+             'vertex',             -- Vertex table
+             'id',                 -- Vertix id column
+             'edge',               -- Edge table
+             'src=src, dest=dest', -- Comma delimted string of edge arguments
+             'hits_out',           -- Output table of HITS
+             NULL,                 -- Default max_iter
+             NULL,                 -- Threshold
+             'user_id');           -- Grouping column
+
+-- View the authority and hub scores of all vertices, ordered by the grouping column.
+SELECT * FROM hits_out ORDER BY user_id, id;
+
 -- View the summary table to find the number of iterations required for
 -- convergence.
 SELECT * FROM hits_out_summary;
+
 """
         else:
             help_string = """
