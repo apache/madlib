@@ -142,11 +142,11 @@ class ChangeHandler(UpgradeBase):
         """
 
         # _mad_dbrev = 1.9.1
-        if self._mad_dbrev.split('.') < '1.10.0'.split('.'):
+        if map(int,self._mad_dbrev.split('.')) < map(int,'1.10.0'.split('.')):
             filename = os.path.join(self._maddir, 'madpack',
                                     'changelist_1.9.1_1.12.yaml')
         # _mad_dbrev = 1.10.0
-        elif self._mad_dbrev.split('.') < '1.11'.split('.'):
+        elif map(int,self._mad_dbrev.split('.')) < map(int,'1.11'.split('.')):
             filename = os.path.join(self._maddir, 'madpack',
                                     'changelist_1.10.0_1.12.yaml')
         # _mad_dbrev = 1.11
