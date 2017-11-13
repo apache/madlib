@@ -2425,87 +2425,42 @@ def _tree_train_grps_using_bins(
 # ------------------------------------------------------------
 
 
-def _tree_rmse(schema_madlib, source_table, dependent_varname, prediction_table,
-               pred_dep_name, id_col_name, grouping_cols, output_table,
-               use_existing_tables=False, k=0, **kwargs):
-    old_messages = plpy.execute("SELECT setting FROM pg_settings "
-                                "WHERE name = 'client_min_messages'")[0]['setting']
-    plpy.execute('SET client_min_messages TO warning')
-
-    fold = ", " + str(k) + " as k"
-    if use_existing_tables and table_exists(output_table):
-        # plpy.execute("truncate " + output_table)
-        header = "INSERT INTO " + output_table + " "
-    else:
-        header = "CREATE TABLE " + output_table + " AS "
-
-    grouping_str = '' if not grouping_cols else "GROUP BY " + grouping_cols
-    grouping_col_str = "" if not grouping_cols else grouping_cols + ','
-
-    sql = header + """
-        SELECT
-            {grouping_col_str}
-            sqrt(avg(
-                    ({prediction_table}.{pred_dep_name} -
-                     {source_table}.{dependent_varname})^2
+def _tree_error(schema_madlib, source_table, dependent_varname,
+                prediction_table, pred_dep_name, id_col_name, grouping_cols,
+                output_table, is_classification,
+                use_existing_tables=False, k=0, **kwargs):
+    with MinWarning("warning"):
+        if use_existing_tables and table_exists(output_table):
+            # plpy.execute("truncate " + output_table)
+            header = "INSERT INTO " + output_table + " "
+        else:
+            header = "CREATE TABLE " + output_table + " AS "
+        if is_classification:
+            error_func = """
+                1.0 * sum(CASE WHEN ({prediction_table}.{pred_dep_name} =
+                                     {source_table}.{dependent_varname})
+                               THEN 0
+                               ELSE 1
+                          END) / count(*)
+                """.format(**locals())
+        else:
+            error_func = """
+                sqrt(avg(({prediction_table}.{pred_dep_name} -
+                          {source_table}.{dependent_varname})^2
+                        )
                     )
-                ) as cv_error
-            {fold}
-        FROM {prediction_table}, {source_table}
-        WHERE {prediction_table}.{id_col_name} = {source_table}.{id_col_name}
-        {grouping_str}
-        """.format(output_table=output_table,
-                   prediction_table=prediction_table,
-                   pred_dep_name=pred_dep_name,
-                   source_table=source_table,
-                   dependent_varname=dependent_varname,
-                   grouping_col_str=grouping_col_str,
-                   grouping_str=grouping_str,
-                   id_col_name=id_col_name,
-                   fold=fold)
-    plpy.execute(sql)
-    plpy.execute('SET client_min_messages TO ' + old_messages)
+                """.format(**locals())
+        grouping_str = '' if not grouping_cols else "GROUP BY " + grouping_cols
+        grouping_col_str = '' if not grouping_cols else grouping_cols + ','
+
+        sql = header + """
+            SELECT
+                {grouping_col_str}
+                {error_func} as cv_error,
+                {k} as k
+            FROM {prediction_table}, {source_table}
+            WHERE {prediction_table}.{id_col_name} = {source_table}.{id_col_name}
+            {grouping_str}
+            """.format(**locals())
+        plpy.execute(sql)
 # ------------------------------------------------------------
-
-
-def _tree_misclassified(schema_madlib, source_table, dependent_varname,
-                        prediction_table, pred_dep_name, id_col_name,
-                        grouping_cols, output_table, use_existing_tables=False,
-                        k=0, **kwargs):
-    old_messages = plpy.execute(
-        "SELECT setting FROM pg_settings WHERE name = 'client_min_messages'")[0]['setting']
-    plpy.execute('SET client_min_messages TO warning')
-
-    fold = ", " + str(k) + " as k"
-    if use_existing_tables and table_exists(output_table):
-        # plpy.execute("truncate " + output_table)
-        header = "INSERT INTO " + output_table + " "
-    else:
-        header = "CREATE TABLE " + output_table + " AS "
-
-    grouping_str = '' if not grouping_cols else "GROUP BY " + grouping_cols
-    grouping_col_str = "" if not grouping_cols else grouping_cols + ','
-
-    sql = header + """
-        SELECT
-            {grouping_col_str}
-            1.0 * sum(CASE WHEN ({prediction_table}.{pred_dep_name} =
-                           {source_table}.{dependent_varname})
-                THEN 0 ELSE 1 END) / count(*) as cv_error
-            {fold}
-        FROM
-            {prediction_table}, {source_table}
-        WHERE
-          {prediction_table}.{id_col_name} = {source_table}.{id_col_name}
-        {grouping_str}
-        """.format(output_table=output_table,
-                   prediction_table=prediction_table,
-                   pred_dep_name=pred_dep_name,
-                   source_table=source_table,
-                   dependent_varname=dependent_varname,
-                   grouping_col_str=grouping_col_str,
-                   grouping_str=grouping_str,
-                   id_col_name=id_col_name,
-                   fold=fold)
-    plpy.execute(sql)
-    plpy.execute('SET client_min_messages TO ' + old_messages)
