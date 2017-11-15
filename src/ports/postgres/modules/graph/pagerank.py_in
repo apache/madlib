@@ -38,8 +38,8 @@ from graph_utils import validate_params_for_centrality_measures
 from utilities.control import MinWarning
 from utilities.utilities import _assert
 from utilities.utilities import _check_groups
-from utilities.utilities import get_ignore_groups
-from utilities.utilities import _grp_from_table
+from utilities.utilities import get_filtered_cols_subquery_str
+from utilities.utilities import get_table_qualified_col_str
 from utilities.utilities import add_postfix
 from utilities.utilities import extract_keyvalue_params
 from utilities.utilities import unique_string, split_quoted_delimited_str
@@ -207,7 +207,7 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
             rand_damp = 1 - damping_factor
             grouping_where_clause = _check_groups(
                 distinct_grp_table, subq, grouping_cols_list)
-            group_by_clause = _grp_from_table(
+            group_by_clause = get_table_qualified_col_str(
                 distinct_grp_table, grouping_cols_list)
             # Find number of vertices in each group, this is the normalizing factor
             # for computing the random_prob
@@ -229,7 +229,7 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
 
             grouping_where_clause = _check_groups(
                 vertices_per_group, subq, grouping_cols_list)
-            group_by_clause = _grp_from_table(
+            group_by_clause = get_table_qualified_col_str(
                 vertices_per_group, grouping_cols_list)
 
             plpy.execute("""
@@ -274,9 +274,9 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
 
             # join clause specific to populating random_prob for nodes without any
             # incoming edges.
-            edge_grouping_cols_select = _grp_from_table(
+            edge_grouping_cols_select = get_table_qualified_col_str(
                 edge_temp_table, grouping_cols_list)
-            cur_grouping_cols_select = _grp_from_table(cur, grouping_cols_list)
+            cur_grouping_cols_select = get_table_qualified_col_str(cur, grouping_cols_list)
 
             # Create output summary table:
             cols_names_types = get_cols_and_types(edge_table)
@@ -314,11 +314,10 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
             vertices_per_group_inner_join_pr = """
                 INNER JOIN {vertices_per_group}
                 AS {vpg} ON {vpg_join_clause}""".format(**locals())
-            ignore_group_clause_pr = ' WHERE ' + get_ignore_groups(
-                summary_table, edge_temp_table, grouping_cols_list)
-            ignore_group_clause_ins_noincoming = ' WHERE ' + get_ignore_groups(
-                summary_table, nodes_with_no_incoming_edges,
-                grouping_cols_list)
+            ignore_group_clause_pr = ' WHERE ' + get_filtered_cols_subquery_str(
+                edge_temp_table, summary_table, grouping_cols_list)
+            ignore_group_clause_ins_noincoming = ' WHERE ' + get_filtered_cols_subquery_str(
+                nodes_with_no_incoming_edges, summary_table, grouping_cols_list)
             # Strings required for updating PageRank scores of vertices that have
             # no incoming edges
             grouping_cols_select_ins = cur_grouping_cols_select + ','
@@ -327,15 +326,15 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
             vpg_where_clause_ins = ' AND {vpg_t1_join_clause} '.format(
                 **locals())
             message_grp_where_ins = 'WHERE {message_grp}'.format(**locals())
-            ignore_group_clause_ins = ' AND ' + get_ignore_groups(
-                summary_table, cur, grouping_cols_list)
+            ignore_group_clause_ins = ' AND ' + get_filtered_cols_subquery_str(
+                cur, summary_table, grouping_cols_list)
             # Strings required for convergence test query
             grouping_cols_select_conv = cur_grouping_cols_select
             group_by_grouping_cols_conv = ' GROUP BY {0}'.format(
                 cur_grouping_cols_select)
             message_grp_clause_conv = '{0} AND '.format(message_grp)
-            ignore_group_clause_conv = ' AND ' + get_ignore_groups(
-                summary_table, cur, grouping_cols_list)
+            ignore_group_clause_conv = ' AND ' + get_filtered_cols_subquery_str(
+                cur, summary_table, grouping_cols_list)
             limit = ''
 
             # Find all nodes, in each group, that have no incoming edges. The PageRank
@@ -355,7 +354,7 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
                     ) {vpg_where_clause_ins}
                 """.format(
                     select_group_cols =
-                        _grp_from_table('__t1__', grouping_cols_list),
+                        get_table_qualified_col_str('__t1__', grouping_cols_list),
                     where_group_clause=
                         _check_groups('__t1__', '__t2__', grouping_cols_list),
                     **locals()))
