@@ -89,20 +89,20 @@ def knn_validate_src(schema_madlib, point_source, point_column_name, point_id,
                    " column '{1}' in table '{2}'.".
                    format(col_type_test, test_id, test_source))
 
-    fn_dist = fn_dist.lower().strip()
-    dist_functions = {
-        schema_madlib + '.dist_norm1',
-        schema_madlib + '.dist_norm2',
-        schema_madlib + '.squared_dist_norm2',
-        schema_madlib + '.dist_angle',
-        schema_madlib + '.dist_tanimoto'}
+    if fn_dist and fn_dist is not None:
+        fn_dist = fn_dist.lower().strip()
+        dist_functions = set([schema_madlib + dist for dist in
+                              ('.dist_norm1', '.dist_norm2', '.squared_dist_norm2', '.dist_angle', '.dist_tanimoto')])
 
-    if plpy.execute("""select prorettype != 'DOUBLE PRECISION'::regtype
-            OR proisagg = TRUE AS OUTPUT from pg_proc where
-            oid='{fn_dist}(DOUBLE PRECISION[], DOUBLE PRECISION[])'::regprocedure;"""
-                    .format(**locals()))[0]['output'] or fn_dist not in dist_functions:
-        plpy.error(
-            "KNN error: Distance function has wrong signature or is not a simple function.")
+        is_invalid_func = plpy.execute(
+            """select prorettype != 'DOUBLE PRECISION'::regtype
+                OR proisagg = TRUE AS OUTPUT from pg_proc where
+                oid='{fn_dist}(DOUBLE PRECISION[], DOUBLE PRECISION[])'::regprocedure;
+                """.format(**locals()))[0]['output']
+
+        if is_invalid_func or fn_dist not in dist_functions:
+            plpy.error(
+                "KNN error: Distance function has wrong signature or is not a simple function.")
 
     return k
 # ------------------------------------------------------------------------------
@@ -154,6 +154,9 @@ def knn(schema_madlib, point_source, point_column_name, point_id, label_column_n
 
         if output_neighbors is None:
             output_neighbors = True
+
+        if not fn_dist or fn_dist is None:
+            fn_dist = schema_madlib + '.squared_dist_norm2'
 
         fn_dist = fn_dist.lower().strip()
         interim_table = unique_string(desp='interim_table')
