@@ -180,31 +180,29 @@ def _populate_output_table(schema_madlib, source_table, output_table,
             function_name = "Correlation"
             agg_str = "{0}.correlation_agg(x, mean)".format(schema_madlib)
 
+        cols = ','.join(["coalesce(" + col + ", avg_"+col+") "
+                            for col in col_names])
+        avgs = ','.join(["avg(" + col + ") AS avg_" + col + ""
+                            for col in col_names])
+        avg_array = ','.join(["avg_" + col + " " for col in col_names])
         # actual computation
         plpy.execute("""
             CREATE TEMP TABLE {temp_table} AS
             SELECT
-                tot_cnt,
-                count(*) AS non_null_cnt,
+                count(*) AS tot_cnt,
                 mean,
                 {agg_str} as cor_mat
             FROM
             (
-                SELECT {col_names_as_float_array} AS x
-                FROM {source_table}
-            ) src1,
-            (
-                SELECT
-                    count(*) AS tot_cnt,
-                    {schema_madlib}.avg(x) AS mean
-                FROM
+                SELECT ARRAY[ {cols} ] AS x,
+                        ARRAY [ {avg_array} ] AS mean
+                FROM {source_table},
                 (
-                    SELECT {col_names_as_float_array} AS x
+                    SELECT {avgs}
                     FROM {source_table}
-                ) src2
-            ) subq
-            WHERE NOT {schema_madlib}.array_contains_null(x)
-            GROUP BY tot_cnt, mean
+                )sub1
+            ) sub2
+            GROUP BY mean
             """.format(**locals()))
 
         # create summary table
@@ -217,8 +215,7 @@ def _populate_output_table(schema_madlib, source_table, output_table,
                 '{output_table}'::varchar   AS output_table,
                 {col_names_as_text_array}   AS column_names,
                 mean                        AS mean_vector,
-                non_null_cnt                AS total_rows_processed,
-                tot_cnt - non_null_cnt      AS total_rows_skipped
+                tot_cnt                     AS total_rows_processed
             FROM {temp_table}
             """.format(**locals())
 
