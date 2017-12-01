@@ -165,8 +165,8 @@ def _populate_output_table(schema_madlib, source_table, output_table,
     with MinWarning("info" if verbose else "error"):
         start = time()
         col_len = len(col_names)
-        col_names_as_float_array = py_list_to_sql_string(col_names, "float8")
         col_names_as_text_array = py_list_to_sql_string(col_names, "varchar")
+        col_names_as_float_array = py_list_to_sql_string(col_names, "float8")
         temp_table = unique_string()
         if get_cov:
             function_name = "Covariance"
@@ -180,13 +180,12 @@ def _populate_output_table(schema_madlib, source_table, output_table,
             function_name = "Correlation"
             agg_str = "{0}.correlation_agg(x, mean)".format(schema_madlib)
 
-        cols = ','.join(["coalesce(" + col + ", avg_"+col+") "
-                            for col in col_names])
-        avgs = ','.join(["avg(" + col + ") AS avg_" + col + ""
-                            for col in col_names])
-        avg_array = ','.join(["avg_" + col + " " for col in col_names])
+        cols = ','.join(["coalesce({0}, avg_{0})".format(col) for col in col_names])
+        avgs = ','.join(["avg({0}) AS avg_{0}".format(col) for col in col_names])
+        avg_array = ','.join(["avg_{0}".format(col) for col in col_names])
         # actual computation
-        plpy.execute("""
+        sql1 = """
+
             CREATE TEMP TABLE {temp_table} AS
             SELECT
                 count(*) AS tot_cnt,
@@ -203,7 +202,9 @@ def _populate_output_table(schema_madlib, source_table, output_table,
                 )sub1
             ) sub2
             GROUP BY mean
-            """.format(**locals()))
+            """.format(**locals())
+
+        plpy.execute(sql1)
 
         # create summary table
         summary_table = add_postfix(output_table, "_summary")
