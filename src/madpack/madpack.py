@@ -572,10 +572,10 @@ def _db_upgrade(schema, dbrev):
         _info("Current MADlib version already up to date.", True)
         return
 
-    if is_rev_gte(get_rev_num('1.9'), get_rev_num(dbrev)):
+    if is_rev_gte(get_rev_num('1.9.1'), get_rev_num(dbrev)):
         _error("""
-            MADlib versions prior to v1.9.1 are not supported for upgrade.
-            Please try upgrading to v1.9.1 and then upgrade to this version.
+            MADlib versions prior to v1.10 are not supported for upgrade.
+            Please try upgrading to v1.10 and then upgrade to this version.
             """, True)
         return
 

@@ -33,33 +33,25 @@ class UpgradeBase:
     """
     @brief Base class for handling the upgrade
     """
-    def __init__(self, schema, portid, con_args, upgrade_to=None):
+
+    def __init__(self, schema, portid, con_args):
         self._schema = schema.lower()
         self._portid = portid
         self._con_args = con_args
         self._schema_oid = None
         self._get_schema_oid()
-        self._curr_rev = self._get_current_version() if not upgrade_to else upgrade_to
-
-    def _get_current_version(self):
-        """ Get current version of MADlib
-
-        This currently assumes that version is available in
-        '$MADLIB_HOME/src/config/Version.yml'
-        """
-        with open('../config/Version.yml') as ver_file:
-            version_str = str(yaml.load(ver_file)['version'])
-            return get_rev_num(version_str)
 
     """
     @brief Wrapper function for run_sql
     """
+
     def _run_sql(self, sql):
         return run_sql(sql, self._portid, self._con_args)
 
     """
     @brief Get the oids of some objects from the catalog in the current version
     """
+
     def _get_schema_oid(self):
         res = self._run_sql("SELECT oid FROM pg_namespace WHERE nspname = '{0}'".
                             format(self._schema))[0]
@@ -112,14 +104,19 @@ class ChangeHandler(UpgradeBase):
     @brief This class reads changes from the configuration file and handles
     the dropping of objects
     """
+
     def __init__(self, schema, portid, con_args, maddir, mad_dbrev,
                  is_hawq2, upgrade_to=None):
-        UpgradeBase.__init__(self, schema, portid, con_args, upgrade_to)
+        UpgradeBase.__init__(self, schema, portid, con_args)
 
+        # FIXME: maddir includes the '/src' folder. It's supposed to be the
+        # parent of that directory.
         self._maddir = maddir
         self._mad_dbrev = mad_dbrev
         self._is_hawq2 = is_hawq2
         self._newmodule = {}
+        self._curr_rev = self._get_current_version() if not upgrade_to else upgrade_to
+
         self._udt = {}
         self._udf = {}
         self._uda = {}
@@ -127,6 +124,18 @@ class ChangeHandler(UpgradeBase):
         self._udo = {}
         self._udoc = {}
         self._load()
+
+    def _get_current_version(self):
+        """ Get current version of MADlib
+
+        This currently assumes that version is available in
+        '$MADLIB_HOME/src/config/Version.yml'
+        """
+        version_filepath = os.path.abspath(
+            os.path.join(self._maddir, 'config', 'Version.yml'))
+        with open(version_filepath) as ver_file:
+            version_str = str(yaml.load(ver_file)['version'])
+            return get_rev_num(version_str)
 
     def _load_config_param(self, config_iterable, output_config_dict=None):
         """
@@ -136,16 +145,16 @@ class ChangeHandler(UpgradeBase):
         Args:
             @param config_iterable is an iterable of dictionaries, each with
                         key = object name (eg. function name) and value = details
-                        for the object. The details for the object are assumed to
-                        be in a dictionary with following keys:
+                        for the object. The details for the object are assumed
+                        to be in a dictionary with following keys:
                             rettype: Return type
                             argument: List of arguments
 
         Returns:
             A dictionary that lists all specific objects (functions, aggregates, etc)
             with object name as key and a list as value, where the list
-            contains all the items present in another dictionary with objects details
-            as the value.
+            contains all the items present in another dictionary with objects
+            details as the value.
         """
         _return_obj = defaultdict(list) if not output_config_dict else output_config_dict
         if config_iterable is not None:
@@ -202,7 +211,8 @@ class ChangeHandler(UpgradeBase):
             steps. This function globs for such files and filters in changelists
             that lie between the desired versions.
 
-            Additional verification: The function also ensures that a valid upgrade path exists. Each version in the changelist files needs to
+            Additional verification: The function also ensures that a valid
+            upgrade path exists. Each version in the changelist files needs to
             be seen twice (except upgrade_from and upgrade_to) for a valid path.
             This is verified by performing an xor-like operation by
             adding/deleting from a list.
@@ -213,28 +223,31 @@ class ChangeHandler(UpgradeBase):
         verify_list = [upgrade_from, upgrade_to]
 
         # assuming that changelists are in the same directory as this file
-        all_changelists = glob.glob('changelist*.yaml')
+        glob_filter = os.path.abspath(
+            os.path.join(self._maddir, 'madpack', 'changelist*.yaml'))
+        all_changelists = glob.glob(glob_filter)
         for each_ch in all_changelists:
             # split file names to get dest versions
             # Assumption: changelist format is
             #   changelist_<src>_<dest>.yaml
-            ch_basename = os.path.splitext(each_ch)[0]  # remove extension
+            ch_basename = os.path.splitext(os.path.basename(each_ch))[0]  # remove extension
             ch_splits = ch_basename.split('_')  # underscore delineates sections
-            src_version, dest_version = [get_rev_num(i) for i in ch_splits[1:3]]
+            if len(ch_splits) >= 3:
+                src_version, dest_version = [get_rev_num(i) for i in ch_splits[1:3]]
 
-            # file is part of upgrade if
-            #     upgrade_to >= dest >= src >= upgrade_from
-            is_part_of_upgrade = (
-                is_rev_gte(src_version, upgrade_from) and
-                is_rev_gte(upgrade_to, dest_version))
-            if is_part_of_upgrade:
-                for ver in (src_version, dest_version):
-                    if ver in verify_list:
-                        verify_list.remove(ver)
-                    else:
-                        verify_list.append(ver)
-                abs_path = os.path.join(self._maddir, 'src', 'madpack', each_ch)
-                output_filenames.append(abs_path)
+                # file is part of upgrade if
+                #     upgrade_to >= dest >= src >= upgrade_from
+                is_part_of_upgrade = (
+                    is_rev_gte(src_version, upgrade_from) and
+                    is_rev_gte(upgrade_to, dest_version))
+                if is_part_of_upgrade:
+                    for ver in (src_version, dest_version):
+                        if ver in verify_list:
+                            verify_list.remove(ver)
+                        else:
+                            verify_list.append(ver)
+                    abs_path = os.path.join(self._maddir, 'src', 'madpack', each_ch)
+                    output_filenames.append(abs_path)
 
         if verify_list:
             # any version remaining in verify_list implies upgrade path is broken
@@ -422,8 +435,8 @@ class ChangeHandler(UpgradeBase):
         """
         for op in self._udo:
             for value in self._udo[op]:
-                leftarg=value['leftarg'].replace('schema_madlib', self._schema)
-                rightarg=value['rightarg'].replace('schema_madlib', self._schema)
+                leftarg = value['leftarg'].replace('schema_madlib', self._schema)
+                rightarg = value['rightarg'].replace('schema_madlib', self._schema)
                 self._run_sql("""
                     DROP OPERATOR IF EXISTS {schema}.{op} ({leftarg}, {rightarg})
                     """.format(schema=self._schema, **locals()))
@@ -445,6 +458,7 @@ class ViewDependency(UpgradeBase):
     @brief This class detects the direct/recursive view dependencies on MADLib
     UDFs/UDAs/UDOs defined in the current version
     """
+
     def __init__(self, schema, portid, con_args):
         UpgradeBase.__init__(self, schema, portid, con_args)
         self._view2proc = None
@@ -536,6 +550,7 @@ class ViewDependency(UpgradeBase):
     """
     @brief  Detect recursive view dependencies (view on view)
     """
+
     def _detect_recursive_view_dependency(self):
         rows = self._run_sql("""
             SELECT
@@ -583,6 +598,7 @@ class ViewDependency(UpgradeBase):
     @brief  Filter out recursive view dependencies which are independent of
     MADLib UDFs/UDAs
     """
+
     def _filter_recursive_view_dependency(self):
         # Get initial list
         checklist = []
@@ -613,6 +629,7 @@ class ViewDependency(UpgradeBase):
     """
     @brief  Build the dependency graph (depender-to-dependee adjacency list)
     """
+
     def _build_dependency_graph(self, hasProcDependency=False):
         der2dee = self._view2view.copy()
         for view in self._view2proc:
@@ -637,12 +654,14 @@ class ViewDependency(UpgradeBase):
     """
     @brief Check dependencies
     """
+
     def has_dependency(self):
         return (len(self._view2proc) > 0) or (len(self._view2op) > 0)
 
     """
     @brief Get the ordered views for creation
     """
+
     def get_create_order_views(self):
         graph = self._build_dependency_graph()
         ordered_views = []
@@ -664,6 +683,7 @@ class ViewDependency(UpgradeBase):
     """
     @brief Get the ordered views for dropping
     """
+
     def get_drop_order_views(self):
         ordered_views = self.get_create_order_views()
         ordered_views.reverse()
@@ -798,6 +818,7 @@ class TableDependency(UpgradeBase):
     @brief This class detects the table dependencies on MADLib UDTs defined in the
     current version
     """
+
     def __init__(self, schema, portid, con_args):
         UpgradeBase.__init__(self, schema, portid, con_args)
         self._table2type = None
@@ -917,6 +938,7 @@ class ScriptCleaner(UpgradeBase):
     @brief This class removes sql statements from a sql script which should not be
     executed during the upgrade
     """
+
     def __init__(self, schema, portid, con_args, change_handler):
         UpgradeBase.__init__(self, schema, portid, con_args)
         self._ch = change_handler
@@ -968,8 +990,8 @@ class ScriptCleaner(UpgradeBase):
         self._existing_udo = defaultdict(list)
         for row in rows:
             self._existing_udo[row['oprname']].append(
-                    {'leftarg': row['oprleft'],
-                     'rightarg': row['oprright']})
+                {'leftarg': row['oprleft'],
+                 'rightarg': row['oprright']})
 
     def _get_existing_uda(self):
         """
@@ -1009,8 +1031,8 @@ class ScriptCleaner(UpgradeBase):
         for row in rows:
             # Consider about the overloaded aggregates
             self._existing_uda[row['proname']].append(
-                                    {'rettype': row['rettype'],
-                                     'argument': row['argument']})
+                {'rettype': row['rettype'],
+                 'argument': row['argument']})
 
     def _get_unchanged_operator_patterns(self):
         """
@@ -1019,7 +1041,7 @@ class ScriptCleaner(UpgradeBase):
 
         @return unchanged = existing - changed
         """
-        self._get_existing_udo() # from the old version
+        self._get_existing_udo()  # from the old version
         operator_patterns = []
         # for all, pass the changed ones, add others to ret
         for each_udo, udo_details in self._existing_udo.items():
@@ -1046,7 +1068,7 @@ class ScriptCleaner(UpgradeBase):
 
         @return unchanged = existing - changed
         """
-        self._get_existing_udoc() # from the old version
+        self._get_existing_udoc()  # from the old version
         opclass_patterns = []
         # for all, pass the changed ones, add others to ret
         for each_udoc, udoc_details in self._existing_udoc.items():
@@ -1136,6 +1158,7 @@ class ScriptCleaner(UpgradeBase):
     """
     @breif Remove "drop/create type" statements in the sql script
     """
+
     def _clean_type(self):
         # remove 'drop type'
         pattern = re.compile('DROP(\s+)TYPE(.*?);', re.DOTALL | re.IGNORECASE)
@@ -1157,6 +1180,7 @@ class ScriptCleaner(UpgradeBase):
     """
     @brief Remove "drop/create cast" statements in the sql script
     """
+
     def _clean_cast(self):
         # remove 'drop cast'
         pattern = re.compile('DROP(\s+)CAST(.*?);', re.DOTALL | re.IGNORECASE)
@@ -1183,6 +1207,7 @@ class ScriptCleaner(UpgradeBase):
     """
     @brief Remove "drop/create operator" statements in the sql script
     """
+
     def _clean_operator(self):
         # remove 'drop operator'
         pattern = re.compile('DROP\s+OPERATOR.*?PROCEDURE\s+=.*?;', re.DOTALL | re.IGNORECASE)
@@ -1198,6 +1223,7 @@ class ScriptCleaner(UpgradeBase):
     """
     @brief Remove "drop/create operator class" statements in the sql script
     """
+
     def _clean_opclass(self):
         # remove 'drop operator class'
         pattern = re.compile(r'DROP\s+OPERATOR\s*CLASS.*?;', re.DOTALL | re.IGNORECASE)
@@ -1213,6 +1239,7 @@ class ScriptCleaner(UpgradeBase):
     """
     @brief Rewrite the type
     """
+
     def _rewrite_type_in(self, arg):
         type_mapper = {
             'smallint': '(int2|smallint)',
@@ -1275,13 +1302,12 @@ class TestChangeHandler(unittest.TestCase):
         self._dummy_schema = 'madlib'
         self._dummy_portid = 1
         self._dummy_con_args = 'x'
-        # maddir is the directory two levels above current file
+        # maddir is the directory one level above current file
         #   dirname gives the directory of current file (madpack)
-        #   join with pardir adds .. twice (e.g .../madpack/../..)
+        #   join with pardir adds .. (e.g .../madpack/..)
         #   abspath concatenates by traversing the ..
         self.maddir = os.path.abspath(
             os.path.join(os.path.dirname(os.path.realpath(__file__)),
-                         os.pardir,
                          os.pardir))
         self._dummy_hawq2 = False
 
@@ -1306,11 +1332,18 @@ class TestChangeHandler(unittest.TestCase):
                           'train_test_split', 'wcc'])
         self.assertEqual(ch.udt, {'kmeans_result': None, 'kmeans_state': None})
         self.assertEqual(ch.udf['forest_train'],
-                         [{'argument': 'text, text, text, text, text, text, text, integer, integer, boolean, integer, integer, integer, integer, integer, text, boolean, double precision',
+                         [{'argument': 'text, text, text, text, text, text, text, '
+                                       'integer, integer, boolean, integer, integer, '
+                                       'integer, integer, integer, text, boolean, '
+                                       'double precision',
                            'rettype': 'void'},
-                          {'argument': 'text, text, text, text, text, text, text, integer, integer, boolean, integer, integer, integer, integer, integer, text, boolean',
+                          {'argument': 'text, text, text, text, text, text, text, '
+                                       'integer, integer, boolean, integer, integer, '
+                                       'integer, integer, integer, text, boolean',
                            'rettype': 'void'},
-                          {'argument': 'text, text, text, text, text, text, text, integer, integer, boolean, integer, integer, integer, integer, integer, text',
+                          {'argument': 'text, text, text, text, text, text, text, '
+                                       'integer, integer, boolean, integer, integer, '
+                                       'integer, integer, integer, text',
                            'rettype': 'void'}])
 
 
