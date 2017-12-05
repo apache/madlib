@@ -1,17 +1,22 @@
+from collections import defaultdict, Iterable
+import glob
+import os
 import re
 import yaml
-from collections import defaultdict
-import os
 
 from utilities import is_rev_gte
 from utilities import get_rev_num
 
-def run_sql(sql, portid, con_args):
-    """
-    @brief Wrapper function for run_query
-    """
-    from madpack import run_query
-    return run_query(sql, True, con_args)
+if not __name__ == "__main__":
+    def run_sql(sql, portid, con_args):
+        """
+        @brief Wrapper function for run_query
+        """
+        from madpack import run_query
+        return run_query(sql, True, con_args)
+else:
+    def run_sql(sql, portid, con_args):
+        return [{'dummy': 0}]
 
 
 def get_signature_for_compare(schema, proname, rettype, argument):
@@ -28,12 +33,23 @@ class UpgradeBase:
     """
     @brief Base class for handling the upgrade
     """
-    def __init__(self, schema, portid, con_args):
+    def __init__(self, schema, portid, con_args, upgrade_to=None):
         self._schema = schema.lower()
         self._portid = portid
         self._con_args = con_args
         self._schema_oid = None
         self._get_schema_oid()
+        self._curr_rev = self._get_current_version() if not upgrade_to else upgrade_to
+
+    def _get_current_version(self):
+        """ Get current version of MADlib
+
+        This currently assumes that version is available in
+        '$MADLIB_HOME/src/config/Version.yml'
+        """
+        with open('../config/Version.yml') as ver_file:
+            version_str = str(yaml.load(ver_file)['version'])
+            return get_rev_num(version_str)
 
     """
     @brief Wrapper function for run_sql
@@ -45,9 +61,13 @@ class UpgradeBase:
     @brief Get the oids of some objects from the catalog in the current version
     """
     def _get_schema_oid(self):
-        self._schema_oid = self._run_sql("""
-            SELECT oid FROM pg_namespace WHERE nspname = '{schema}'
-            """.format(schema=self._schema))[0]['oid']
+        res = self._run_sql("SELECT oid FROM pg_namespace WHERE nspname = '{0}'".
+                            format(self._schema))[0]
+        if 'oid' in res:
+            self._schema_oid = res['oid']
+        else:
+            self._schema_oid = None
+        return self._schema_oid
 
     def _get_function_info(self, oid):
         """
@@ -92,8 +112,10 @@ class ChangeHandler(UpgradeBase):
     @brief This class reads changes from the configuration file and handles
     the dropping of objects
     """
-    def __init__(self, schema, portid, con_args, maddir, mad_dbrev, is_hawq2):
-        UpgradeBase.__init__(self, schema, portid, con_args)
+    def __init__(self, schema, portid, con_args, maddir, mad_dbrev,
+                 is_hawq2, upgrade_to=None):
+        UpgradeBase.__init__(self, schema, portid, con_args, upgrade_to)
+
         self._maddir = maddir
         self._mad_dbrev = mad_dbrev
         self._is_hawq2 = is_hawq2
@@ -106,7 +128,7 @@ class ChangeHandler(UpgradeBase):
         self._udoc = {}
         self._load()
 
-    def _load_config_param(self, config_iterable):
+    def _load_config_param(self, config_iterable, output_config_dict=None):
         """
         Replace schema_madlib with the appropriate schema name and
         make all function names lower case to ensure ease of comparison.
@@ -122,12 +144,10 @@ class ChangeHandler(UpgradeBase):
         Returns:
             A dictionary that lists all specific objects (functions, aggregates, etc)
             with object name as key and a list as value, where the list
-            contains all the items present in
-
-            another dictionary with objects details
+            contains all the items present in another dictionary with objects details
             as the value.
         """
-        _return_obj = defaultdict(list)
+        _return_obj = defaultdict(list) if not output_config_dict else output_config_dict
         if config_iterable is not None:
             for each_config in config_iterable:
                 for obj_name, obj_details in each_config.iteritems():
@@ -138,38 +158,101 @@ class ChangeHandler(UpgradeBase):
                     _return_obj[obj_name].append(formatted_obj)
         return _return_obj
 
+    @classmethod
+    def _add_to_dict(cls, src_dict, dest_dict):
+        """ Update dictionary with contents of another dictionary
+
+        This function performs the same function as dict.update except it adds
+        to an existing value (instead of replacing it) if the value is an
+        Iterable.
+        """
+        if src_dict:
+            for k, v in src_dict.items():
+                if k in dest_dict:
+                    if (isinstance(dest_dict[k], Iterable) and isinstance(v, Iterable)):
+                        dest_dict[k] += v
+                    elif isinstance(dest_dict[k], Iterable):
+                        dest_dict[k].append(v)
+                    else:
+                        dest_dict[k] = v
+                else:
+                    dest_dict[k] = v
+            return dest_dict
+
+    def _update_objects(self, config):
+        """ Update each upgrade object """
+        self._add_to_dict(config['new module'], self._newmodule)
+        self._add_to_dict(config['udt'], self._udt)
+        self._add_to_dict(config['udc'], self._udc)
+        self._add_to_dict(self._load_config_param(config['udf']), self._udf)
+        self._add_to_dict(self._load_config_param(config['uda']), self._uda)
+
+    def _get_relevant_filenames(self, upgrade_from):
+        """ Get all changelist files that together describe the upgrade process
+
+        Args:
+            @param upgrade_from: List. Version to upgrade from - the format is
+                expected to be per the output of get_rev_num
+
+        Details:
+            Changelist files are named in the format changelist_<src>_<dest>.yaml
+
+            When upgrading from 'upgrade_from_rev' to 'self._curr_rev', all
+            intermediate changelist files need to be followed to get all upgrade
+            steps. This function globs for such files and filters in changelists
+            that lie between the desired versions.
+
+            Additional verification: The function also ensures that a valid upgrade path exists. Each version in the changelist files needs to
+            be seen twice (except upgrade_from and upgrade_to) for a valid path.
+            This is verified by performing an xor-like operation by
+            adding/deleting from a list.
+        """
+        output_filenames = []
+        upgrade_to = self._curr_rev
+
+        verify_list = [upgrade_from, upgrade_to]
+
+        # assuming that changelists are in the same directory as this file
+        all_changelists = glob.glob('changelist*.yaml')
+        for each_ch in all_changelists:
+            # split file names to get dest versions
+            # Assumption: changelist format is
+            #   changelist_<src>_<dest>.yaml
+            ch_basename = os.path.splitext(each_ch)[0]  # remove extension
+            ch_splits = ch_basename.split('_')  # underscore delineates sections
+            src_version, dest_version = [get_rev_num(i) for i in ch_splits[1:3]]
+
+            # file is part of upgrade if
+            #     upgrade_to >= dest >= src >= upgrade_from
+            is_part_of_upgrade = (
+                is_rev_gte(src_version, upgrade_from) and
+                is_rev_gte(upgrade_to, dest_version))
+            if is_part_of_upgrade:
+                for ver in (src_version, dest_version):
+                    if ver in verify_list:
+                        verify_list.remove(ver)
+                    else:
+                        verify_list.append(ver)
+                abs_path = os.path.join(self._maddir, 'src', 'madpack', each_ch)
+                output_filenames.append(abs_path)
+
+        if verify_list:
+            # any version remaining in verify_list implies upgrade path is broken
+            raise RuntimeError("Upgrade from {0} to {1} broken due to missing "
+                               "changelist files ({2}). ".
+                               format(upgrade_from, upgrade_to, verify_list))
+        return output_filenames
+
     def _load(self):
         """
         @brief Load the configuration file
         """
-
         rev = get_rev_num(self._mad_dbrev)
-
-        # _mad_dbrev = 1.9.1
-        if is_rev_gte([1,9,1],rev):
-            filename = os.path.join(self._maddir, 'madpack',
-                                    'changelist_1.9.1_1.12.yaml')
-        # _mad_dbrev = 1.10.0
-        elif is_rev_gte([1,10],rev):
-            filename = os.path.join(self._maddir, 'madpack',
-                                    'changelist_1.10.0_1.12.yaml')
-        # _mad_dbrev = 1.11
-        else:
-            filename = os.path.join(self._maddir, 'madpack',
-                                    'changelist.yaml')
-
-        config = yaml.load(open(filename))
-
-        self._newmodule = config['new module'] if config['new module'] else {}
-        self._udt = config['udt'] if config['udt'] else {}
-        self._udc = config['udc'] if config['udc'] else {}
-        self._udf = self._load_config_param(config['udf'])
-        self._uda = self._load_config_param(config['uda'])
-        # FIXME remove the following  special handling for HAWQ after svec is
-        # removed from catalog
-        if self._portid != 'hawq' and not self._is_hawq2:
-            self._udo = self._load_config_param(config['udo'])
-            self._udoc = self._load_config_param(config['udoc'])
+        upgrade_filenames = self._get_relevant_filenames(rev)
+        for f in upgrade_filenames:
+            with open(f) as handle:
+                config = yaml.load(handle)
+                self._update_objects(config)
 
     @property
     def newmodule(self):
@@ -356,6 +439,7 @@ class ChangeHandler(UpgradeBase):
                     DROP OPERATOR CLASS IF EXISTS {schema}.{op_cls} USING {index}
                     """.format(schema=self._schema, **locals()))
 
+
 class ViewDependency(UpgradeBase):
     """
     @brief This class detects the direct/recursive view dependencies on MADLib
@@ -501,7 +585,6 @@ class ViewDependency(UpgradeBase):
     """
     def _filter_recursive_view_dependency(self):
         # Get initial list
-        import sys
         checklist = []
         checklist.extend(self._view2proc.keys())
         checklist.extend(self._view2op.keys())
@@ -678,10 +761,8 @@ class ViewDependency(UpgradeBase):
                 SET ROLE {owner};
                 CREATE OR REPLACE VIEW {schema}.{view} AS {definition};
                 RESET ROLE
-                """.format(
-                    schema=schema, view=view,
-                    definition=definition,
-                    owner=owner))
+                """.format(schema=schema, view=view,
+                           definition=definition, owner=owner))
 
     def _node_to_str(self, node):
         if len(node) == 2:
@@ -1184,7 +1265,54 @@ class ScriptCleaner(UpgradeBase):
         self._clean_function()
         return self._sql
 
+
+import unittest
+
+
+class TestChangeHandler(unittest.TestCase):
+
+    def setUp(self):
+        self._dummy_schema = 'madlib'
+        self._dummy_portid = 1
+        self._dummy_con_args = 'x'
+        # maddir is the directory two levels above current file
+        #   dirname gives the directory of current file (madpack)
+        #   join with pardir adds .. twice (e.g .../madpack/../..)
+        #   abspath concatenates by traversing the ..
+        self.maddir = os.path.abspath(
+            os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                         os.pardir,
+                         os.pardir))
+        self._dummy_hawq2 = False
+
+    def tearDown(self):
+        pass
+
+    def test_invalid_path(self):
+        with self.assertRaises(RuntimeError):
+            ChangeHandler(self._dummy_schema, self._dummy_portid,
+                          self._dummy_con_args, self.maddir,
+                          '1.9', self._dummy_hawq2,
+                          upgrade_to=get_rev_num('1.12'))
+
+    def test_valid_path(self):
+        ch = ChangeHandler(self._dummy_schema, self._dummy_portid,
+                           self._dummy_con_args, self.maddir,
+                           '1.9.1', self._dummy_hawq2,
+                           upgrade_to=get_rev_num('1.12'))
+        self.assertEqual(ch.newmodule.keys(),
+                         ['knn', 'sssp', 'apsp', 'measures', 'stratified_sample',
+                          'encode_categorical', 'bfs', 'mlp', 'pagerank',
+                          'train_test_split', 'wcc'])
+        self.assertEqual(ch.udt, {'kmeans_result': None, 'kmeans_state': None})
+        self.assertEqual(ch.udf['forest_train'],
+                         [{'argument': 'text, text, text, text, text, text, text, integer, integer, boolean, integer, integer, integer, integer, integer, text, boolean, double precision',
+                           'rettype': 'void'},
+                          {'argument': 'text, text, text, text, text, text, text, integer, integer, boolean, integer, integer, integer, integer, integer, text, boolean',
+                           'rettype': 'void'},
+                          {'argument': 'text, text, text, text, text, text, text, integer, integer, boolean, integer, integer, integer, integer, integer, text',
+                           'rettype': 'void'}])
+
+
 if __name__ == '__main__':
-    config = yaml.load(open('changelist.yaml'))
-    for obj in ('new module', 'udt', 'udc', 'udf', 'uda', 'udo', 'udoc'):
-        print config[obj]
+    unittest.main()

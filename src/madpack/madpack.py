@@ -385,6 +385,7 @@ def _check_db_port(portid):
     return False
 # ------------------------------------------------------------------------------
 
+
 def _print_revs(rev, dbrev, con_args, schema):
     """
     Print version information
@@ -403,6 +404,7 @@ def _print_revs(rev, dbrev, con_args, schema):
                   % (dbrev, con_args['host'], con_args['database'], schema), True)
     return
 # ------------------------------------------------------------------------------
+
 
 def _plpy_check(py_min_ver):
     """
@@ -570,7 +572,7 @@ def _db_upgrade(schema, dbrev):
         _info("Current MADlib version already up to date.", True)
         return
 
-    if is_rev_gte([1,9],get_rev_num(dbrev)):
+    if is_rev_gte(get_rev_num('1.9'), get_rev_num(dbrev)):
         _error("""
             MADlib versions prior to v1.9.1 are not supported for upgrade.
             Please try upgrading to v1.9.1 and then upgrade to this version.
