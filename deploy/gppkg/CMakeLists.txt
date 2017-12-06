@@ -2,8 +2,11 @@
 # Packaging for Greenplum's gppkg
 # ------------------------------------------------------------------------------
 
-set(MADLIB_GPPKG_VERSION "1.9.9")
-set(MADLIB_GPPKG_RELEASE_NUMBER 1)
+# not used now
+# set(MADLIB_GPPKG_VERSION "1.9.9")
+
+  set(MADLIB_GPPKG_RELEASE_NUMBER 1)
+
 set(MADLIB_GPPKG_RPM_SOURCE_DIR
     "${CMAKE_BINARY_DIR}/_CPack_Packages/Linux/RPM/${CPACK_PACKAGE_FILE_NAME}"
 )

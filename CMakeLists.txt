@@ -275,4 +275,3 @@ install(CODE "
            ${CMAKE_MADLIB_ROOT}/doc
            )
 ")
-

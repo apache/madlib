@@ -9,3 +9,14 @@ macro(rh_version OUT_VERSION)
         set(${OUT_VERSION} "${OUT_VERSION}-NOTFOUND")
     endif(EXISTS "/etc/redhat-release")
 endmacro(rh_version)
+
+macro(rh_major_version OUT_VERSION)
+    if(EXISTS "/etc/redhat-release")
+        file(READ "/etc/redhat-release" _REDHAT_RELEASE_CONTENT)
+        string(REGEX MATCH "([0-9])" ${OUT_VERSION}
+            "${_REDHAT_RELEASE_CONTENT}"
+        )
+    else(EXISTS "/etc/redhat-release")
+        set(${OUT_VERSION} "${OUT_VERSION}-NOTFOUND")
+    endif(EXISTS "/etc/redhat-release")
+endmacro(rh_major_version)
