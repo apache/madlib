@@ -11,8 +11,10 @@ Installation and Contribution
 ==============================
 See the project website  [`MADlib Home`](http://madlib.apache.org/) for links to the
 latest binary and source packages. For installation and contribution guides,
-and other useful information
+and other useful information such as compiling from source
 please refer to the [`MADlib Wiki`](https://cwiki.apache.org/confluence/display/MADLIB/)
+
+
 
 Development with Docker
 =======================
