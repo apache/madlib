@@ -18,7 +18,8 @@ function(add_gppkg GPDB_VERSION GPDB_VARIANT GPDB_VARIANT_SHORT UPGRADE_SUPPORT)
     string(REPLACE "." "_" VERSION_ "${GPDB_VERSION}")
 
     # Get information about the rhel version
-    rh_major_version(RH_VERSION)
+    rh_version(RH_VERSION)
+    string(REGEX MATCH "([0-9])" RH_MAJOR_VERSION "${RH_VERSION}")
 
     file(WRITE "${CMAKE_BINARY_DIR}/deploy/gppkg/${GPDB_VARIANT}_${VERSION_}_gppkg.cmake" "
     file(MAKE_DIRECTORY
@@ -33,7 +34,7 @@ function(add_gppkg GPDB_VERSION GPDB_VARIANT GPDB_VARIANT_SHORT UPGRADE_SUPPORT)
     set(GPDB_VARIANT \"${GPDB_VARIANT}\")
     set(GPDB_VARIANT_SHORT \"${GPDB_VARIANT_SHORT}\")
     set(UPGRADE_SUPPORT \"${UPGRADE_SUPPORT}\")
-    set(RH_VERSION \"${RH_VERSION}\")
+    set(RH_MAJOR_VERSION \"${RH_MAJOR_VERSION}\")
     string(TOLOWER \"${GPDB_VARIANT}\" PORT_NAME)
 
     configure_file(
