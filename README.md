@@ -121,7 +121,7 @@ MADlib incorporates software from the following third-party components.  Bundled
 Downloaded at build time (or supplied as build dependencies):
 
 6. [`Boost 1.61.0 (or newer)`](http://www.boost.org/) "provides peer-reviewed portable C++ source libraries"
-7. [`PyXB 1.2.4`](http://pyxb.sourceforge.net/) "Python library for XML Schema Bindings"
+7. [`PyXB 1.2.6`](http://pyxb.sourceforge.net/) "Python library for XML Schema Bindings"
 8. [`Eigen 3.2.2`](http://eigen.tuxfamily.org/index.php?title=Main_Page) "C++ template library for linear algebra"
 
 Licensing
