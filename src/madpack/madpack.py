@@ -1110,7 +1110,7 @@ def main(argv):
                     dbver = '4.3ORCA'
                 else:
                     # only need the first two digits for <= 4.3.4
-                    dbver = '.'.join(dbver_split[:2])
+                    dbver = '.'.join(map(str, dbver_split[:2]))
             elif portid == 'postgres':
                 if is_rev_gte(dbver_split, get_rev_num('10.0')):
                     # Postgres starting 10.0 uses semantic versioning. Hence,
