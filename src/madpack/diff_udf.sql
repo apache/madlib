@@ -74,6 +74,7 @@ $$
             ORDER BY 1, 2, 4
         ) q
         """.format(schema_name=schema_name))
+
     plpy.execute("""
         CREATE TABLE functions_madlib_old_version AS
         SELECT
