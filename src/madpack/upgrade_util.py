@@ -6,14 +6,15 @@ import yaml
 
 from utilities import is_rev_gte
 from utilities import get_rev_num
+from utilities import run_query
+from utilities import get_dbver
 
 if not __name__ == "__main__":
     def run_sql(sql, portid, con_args):
         """
         @brief Wrapper function for run_query
         """
-        from madpack import run_query
-        return run_query(sql, True, con_args)
+        return run_query(sql, con_args, True)
 else:
     def run_sql(sql, portid, con_args):
         return [{'dummy': 0}]
@@ -40,6 +41,7 @@ class UpgradeBase:
         self._con_args = con_args
         self._schema_oid = None
         self._get_schema_oid()
+        self._dbver = get_dbver(self._con_args, self._portid)
 
     """
     @brief Wrapper function for run_sql
@@ -355,8 +357,9 @@ class ChangeHandler(UpgradeBase):
         for opc, li in self._udoc.items():
             for e in li:
                 changed_opcs.add((opc, e['index']))
-
-        if self._portid == 'postgres':
+        gte_gpdb5 = (self._portid == 'greenplum' and
+                     is_rev_gte(get_rev_num(self._dbver), get_rev_num('5.0')))
+        if (self._portid == 'postgres' or gte_gpdb5):
             method_col = 'opcmethod'
         else:
             method_col = 'opcamid'
@@ -956,7 +959,9 @@ class ScriptCleaner(UpgradeBase):
         """
         @brief Get the existing UDOCs in the current version
         """
-        if self._portid == 'postgres':
+        gte_gpdb5 = (self._portid == 'greenplum' and
+                     is_rev_gte(get_rev_num(self._dbver), get_rev_num('5.0')))
+        if (self._portid == 'postgres' or gte_gpdb5):
             method_col = 'opcmethod'
         else:
             method_col = 'opcamid'
