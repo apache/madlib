@@ -1,0 +1,322 @@
+# coding=utf-8
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+import plpy
+from utilities.control import MinWarning
+from utilities.utilities import _assert
+from utilities.utilities import unique_string
+from utilities.validate_args import table_exists
+from utilities.validate_args import columns_exist_in_table
+from utilities.validate_args import table_is_empty
+from utilities.validate_args import get_cols
+from utilities.utilities import py_list_to_sql_string
+
+m4_changequote(`<!', `!>')
+
+def balance_sample(schema_madlib, source_table, output_table, class_col,
+    class_sizes, output_table_size, grouping_cols, with_replacement, **kwargs):
+
+    """
+    Balance sampling function
+    Args:
+        @param source_table     Input table name.
+        @param output_table     Output table name.
+        @param class_col        Name of the column containing the class to be 
+                                balanced.
+        @param with_replacement (Default: FALSE) The sampling method.
+
+    """
+    with MinWarning("warning"):
+
+        class_counts = unique_string(desp='class_counts')
+        
+        _validate_strs(source_table, output_table, class_col, class_sizes, 
+            output_table_size, grouping_cols)
+        source_table_columns = ','.join(get_cols(source_table))
+        grp_by = "GROUP BY {0}".format(class_col)
+        """
+            Frequency table for classes
+        """
+        plpy.execute(""" CREATE VIEW {class_counts} AS (
+                         SELECT 
+                            {class_col} AS classes, 
+                            count(*) AS class_count
+                         FROM {source_table} 
+                            {grp_by})
+                     """.format(**locals())) 
+
+        if class_sizes.lower() == 'undersample':
+
+            if not with_replacement:               
+                """
+                    Random undersample without replacement
+                """
+                output_sql = """ 
+                    CREATE TABLE {output_table} AS (
+                        SELECT 
+                            {source_table_columns} 
+                        FROM
+                            (SELECT 
+                                *,
+                                row_number() OVER(PARTITION BY 
+                                    {class_col} ORDER BY random()) 
+                                    AS __row_no
+                            FROM {source_table}) AS foo 
+                        WHERE __row_no <= 
+                            (SELECT 
+                                MIN(class_count) 
+                             FROM {class_counts}))
+                    """.format(**locals())
+                plpy.execute(output_sql)
+            else:
+                """
+                    Random undersample with replacement
+                """
+                """
+                    Create row identifiers for each row wrt the class
+                """
+                classwise_row_numbering_sql = """
+                    SELECT 
+                        *,
+                        row_number() OVER(PARTITION BY {class_col})
+                        AS __row_no
+                    FROM
+                        {source_table}
+                    """.format(**locals())
+                """
+                    Create independent random values 
+                    for each class that has more than the min number of rows
+                """
+                random_minorityclass_size_sample_number_gen_sql = """
+                    SELECT 
+                        classes, 
+                        generate_series(1,minority_class_size) AS _i, 
+                        ((random()*({class_counts}.class_count-1)+1)::int) 
+                        AS __row_no
+                    FROM 
+                        (SELECT 
+                            min(class_count) AS minority_class_size 
+                        FROM {class_counts}) 
+                            AS foo, 
+                            {class_counts} 
+                        WHERE {class_counts}.class_count != minority_class_size
+                    """.format(**locals())
+                """
+                    Match random values with the row identifiers 
+                """
+                undersample_otherclass_set = """
+                    SELECT 
+                         {source_table_columns}
+                    FROM 
+                        ({classwise_row_numbering_sql}) AS f1 
+                    RIGHT JOIN
+                        ({random_minorityclass_size_sample_number_gen_sql}) AS 
+                            f2
+                    ON (f1.__row_no = f2.__row_no) AND
+                    (f1.{class_col} = f2.classes)
+                    """.format(**locals())
+                """
+                    Find classes with minimum number of rows
+                """
+                minorityclass_set = """
+                    SELECT 
+                        {source_table_columns} 
+                    FROM {source_table} 
+                    WHERE {class_col} IN 
+                        (SELECT 
+                            classes AS minority_class 
+                         FROM {class_counts} 
+                         WHERE class_count in 
+                            (SELECT min(class_count) FROM {class_counts}))
+                    """.format(**locals())
+                """
+                    Combine minority and other undersampled classes 
+                """
+                output_sql = """ 
+                    CREATE TABLE {output_table} AS (
+                        SELECT {source_table_columns}
+                        FROM 
+                            ({minorityclass_set}) AS a
+                        UNION ALL 
+                            ({undersample_otherclass_set}))
+                    """.format(**locals())
+                plpy.execute(output_sql)
+
+            plpy.execute("DROP VIEW IF EXISTS {0}".format(class_counts))
+    return
+
+def _validate_strs (source_table, output_table, class_col, class_sizes, 
+            output_table_size, grouping_cols):
+
+    _assert(source_table and source_table.strip().lower() not in ('null', ''),
+        "Sample: Invalid Source table name!".format(**locals()))
+    _assert(table_exists(source_table),
+        "Sample: Source table ({source_table}) is missing!".format(**locals()))
+    _assert(not table_is_empty(source_table),
+        "Sample: Source table ({source_table}) is empty!".format(**locals()))
+
+    _assert(output_table and output_table.strip().lower() not in ('null', ''),
+        "Sample: Invalid output table name {output_table}!".format(**locals()))
+    _assert(not table_exists(output_table),
+        "Sample: Output table already exists!".format(**locals()))
+
+    _assert(columns_exist_in_table(source_table, [class_col]),
+        ("""Sample: Column {class_col} does not exist in"""+
+            """ table ({source_table}).""").format(**locals()))
+
+    # Future options to be implemented
+    _assert(class_sizes in ('undersample'),
+        "Sample: Only undersampling is supported at the moment."
+        .format(**locals()))
+
+    _assert(output_table_size is None,
+        "output_table_size is not supported at the moment."
+        .format(**locals()))
+
+    _assert(grouping_cols is None,
+        "grouping_cols is not supported at the moment."
+        .format(**locals()))
+
+    return
+
+
+def balance_sample_help(schema_madlib, message, **kwargs):
+    """
+    Help function for balance_sample
+
+    Args:
+        @param schema_madlib
+        @param message: string, Help message string
+        @param kwargs
+
+    Returns:
+        String. Help/usage information
+    """
+    if not message:
+        help_string = """
+-----------------------------------------------------------------------
+                            SUMMARY
+-----------------------------------------------------------------------
+Given a table with varying set of records for each class label, 
+this function will create an output table with a varying types (by 
+default: uniform) of sampling distributions of each class label. It is 
+possible to use with or without replacement sampling methods, specify 
+different proportions of each class, multiple grouping columns and/or
+output table size.
+
+For more details on function usage:
+    SELECT {schema_madlib}.balance_sample('usage');
+    SELECT {schema_madlib}.balance_sample('example');
+            """
+    elif message.lower() in ['usage', 'help', '?']:
+        help_string = """
+
+Given a table, stratified sampling returns a proportion of records for
+each group (strata). It is possible to use with or without replacement
+sampling methods, specify a set of target columns, and assume the
+whole table is a single strata.
+
+----------------------------------------------------------------------------
+                            USAGE
+----------------------------------------------------------------------------
+
+ SELECT {schema_madlib}.balance_sample(
+    source_table      TEXT,     -- Input table name.
+    output_table      TEXT,     -- Output table name.
+    class_col         TEXT,     -- Name of column containing the class to be
+                                -- balanced.
+    class_size        TEXT,     -- (Default: NULL) The columns to include in
+                                -- the output.
+    output_table_size INTEGER,  -- (Default: NULL) Desired size of the output 
+                                -- data set.
+    grouping_cols     TEXT,     -- (Default: NULL) The columns columns that 
+                                -- defines the grouping.
+    with_replacement  BOOLEAN   -- (Default: FALSE) The sampling method.
+
+If class_size is NULL, the source table is uniformly sampled.
+
+If output_table_size is NULL, the resulting output table size will depend on 
+the settings for the ‘class_size’ parameter. It is ignored if ‘class_size’ 
+parameter is set to either ‘oversample’ or ‘undersample’.
+
+If grouping_cols is NULL, the whole table is treated as a single group and
+sampled accordingly.
+
+If with_replacement is TRUE, each sample is independent (the same row may
+be selected in the sample set more than once). Else (if with_replacement
+is FALSE), a row can be selected at most once.
+);
+"""
+    elif message.lower() in ("example", "examples"):
+        help_string = """
+----------------------------------------------------------------------------
+                                EXAMPLES
+----------------------------------------------------------------------------
+
+-- Create an input table
+DROP TABLE IF EXISTS test;
+
+CREATE TABLE test(
+    id1 INTEGER,
+    id2 INTEGER,
+    gr1 INTEGER,
+    gr2 INTEGER
+);
+
+INSERT INTO test VALUES
+(1,0,1,1),
+(2,0,1,1),
+(3,0,1,1),
+(4,0,1,1),
+(5,0,1,1),
+(6,0,1,1),
+(7,0,1,1),
+(8,0,1,1),
+(9,0,1,1),
+(9,0,1,1),
+(9,0,1,1),
+(9,0,1,1),
+(0,1,1,2),
+(0,2,1,2),
+(0,3,1,2),
+(0,4,1,2),
+(0,5,1,2),
+(0,6,1,2),
+(10,10,2,2),
+(20,20,2,2),
+(30,30,2,2),
+(40,40,2,2),
+(50,50,2,2),
+(60,60,2,2),
+(70,70,2,2)
+;
+
+-- Sample without replacement
+DROP TABLE IF EXISTS out;
+SELECT balance_sample('test', 'out', 'gr1', 'undersample', NULL, NULL, FALSE);
+SELECT * FROM out;
+
+--- Sample with replacement
+DROP TABLE IF EXISTS out_sr2;
+SELECT balance_sample('test', 'out', 'gr1', 'undersample', NULL, NULL, TRUE);
+SELECT * FROM out;
+"""
+    else:
+        help_string = "No such option. Use {schema_madlib}.graph_sssp()"
+
+    return help_string.format(schema_madlib=schema_madlib)
