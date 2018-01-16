@@ -79,7 +79,8 @@ knn( point_source,
      output_table,
      k,
      output_neighbors,
-     fn_dist
+     fn_dist,
+     weighted_avg
    )
 </pre>
 
@@ -144,6 +145,10 @@ The following distance functions can be used:
 <li><b>\ref dist_angle</b>: angle</li>
 <li><b>\ref dist_tanimoto</b>: tanimoto</li>
 <li><b>user defined function</b> with signature <tt>DOUBLE PRECISION[] x, DOUBLE PRECISION[] y -> DOUBLE PRECISION</tt></li></ul></dd>
+
+<dt>weighted_avg (optional)</dt>
+<dd>BOOLEAN, default: FALSE. Calculates the Regression or classication 
+of k-NN using the weighted average method.
 
 </dl>
 
@@ -326,6 +331,39 @@ Result, with neighbors sorted from closest to furthest:
 (6 rows)
 </pre>
 
+
+-#   Run KNN for classification using the 
+weighted average:
+<pre class="example">
+DROP TABLE IF EXISTS knn_result_classification;
+SELECT * FROM madlib.knn(
+                'knn_train_data',      -- Table of training data
+                'data',                -- Col name of training data
+                'id',                  -- Col name of id in train data
+                'label',               -- Training labels
+                'knn_test_data',       -- Table of test data
+                'data',                -- Col name of test data
+                'id',                  -- Col name of id in test data
+                'knn_result_classification',  -- Output table
+                 3,                    -- Number of nearest neighbors
+                 True,                 -- True to list nearest-neighbors by id
+                 'madlib.squared_dist_norm2', -- Distance function
+                 True                 -- For weighted average
+                );
+SELECT * FROM knn_result_classification ORDER BY id;
+</pre>
+<pre class="result">
+ id |  data   |     prediction      | k_nearest_neighbours 
+----+---------+---------------------+----------------------
+  1 | {2,1}   |                 1   | {2,1,3}
+  2 | {2,6}   |                 1   | {5,4,3}
+  3 | {15,40} |                 0   | {7,6,5}
+  4 | {12,1}  |                 1   | {4,5,3}
+  5 | {2,90}  |                 0   | {9,6,7}
+  6 | {50,45} |                 0   | {6,7,8}
+(6 rows)
+</pre>
+
 @anchor background
 @par Technical Background
 
@@ -397,7 +435,8 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.knn(
     output_table VARCHAR,
     k INTEGER,
     output_neighbors BOOLEAN,
-    fn_dist TEXT
+    fn_dist TEXT, 
+    weighted_avg BOOLEAN
 ) RETURNS VARCHAR AS $$
     PythonFunctionBodyOnly(`knn', `knn')
     return knn.knn(
@@ -412,9 +451,33 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.knn(
         output_table,
         k,
         output_neighbors,
-        fn_dist
+        fn_dist,
+        weighted_avg
     )
 $$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.knn(
+    point_source VARCHAR,
+    point_column_name VARCHAR,
+    point_id VARCHAR,
+    label_column_name VARCHAR,
+    test_source VARCHAR,
+    test_column_name VARCHAR,
+    test_id VARCHAR,
+    output_table VARCHAR,
+    k INTEGER,
+    output_neighbors BOOLEAN,
+    fn_dist TEXT
+) RETURNS VARCHAR AS $$
+    DECLARE
+    returnstring VARCHAR;
+BEGIN
+    returnstring = MADLIB_SCHEMA.knn($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, FALSE);
+    RETURN returnstring;
+END;
+$$ LANGUAGE plpgsql VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
 
@@ -434,7 +497,7 @@ DECLARE
     returnstring VARCHAR;
 BEGIN
     returnstring = MADLIB_SCHEMA.knn($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
-                                     'MADLIB_SCHEMA.squared_dist_norm2');
+                                     'MADLIB_SCHEMA.squared_dist_norm2', FALSE);
     RETURN returnstring;
 END;
 $$ LANGUAGE plpgsql VOLATILE
@@ -455,7 +518,7 @@ DECLARE
     returnstring VARCHAR;
 BEGIN
     returnstring = MADLIB_SCHEMA.knn($1,$2,$3,$4,$5,$6,$7,$8,$9,TRUE,
-                                     'MADLIB_SCHEMA.squared_dist_norm2');
+                                     'MADLIB_SCHEMA.squared_dist_norm2', FALSE);
     RETURN returnstring;
 END;
 $$ LANGUAGE plpgsql VOLATILE
@@ -475,7 +538,7 @@ DECLARE
     returnstring VARCHAR;
 BEGIN
     returnstring = MADLIB_SCHEMA.knn($1,$2,$3,$4,$5,$6,$7,$8,1,TRUE,
-                                     'MADLIB_SCHEMA.squared_dist_norm2');
+                                     'MADLIB_SCHEMA.squared_dist_norm2',FALSE);
     RETURN returnstring;
 END;
 $$ LANGUAGE plpgsql VOLATILE

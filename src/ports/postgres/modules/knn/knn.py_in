@@ -111,7 +111,7 @@ def knn_validate_src(schema_madlib, point_source, point_column_name, point_id,
 
 def knn(schema_madlib, point_source, point_column_name, point_id,
         label_column_name, test_source, test_column_name, test_id, output_table,
-        k, output_neighbors, fn_dist):
+        k, output_neighbors, fn_dist, weighted_avg):
     """
         KNN function to find the K Nearest neighbours
         Args:
@@ -142,6 +142,8 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
                                         dist_angle , dist_tanimoto
                                         Or user defined function with signature
                                         DOUBLE PRECISION[] x, DOUBLE PRECISION[] y -> DOUBLE PRECISION
+            @param weighted_avg         Calculates the Regression or classication of k-NN using
+                                        the weighted average method.
     """
     with MinWarning('warning'):
         k_val = knn_validate_src(schema_madlib, point_source,
@@ -167,6 +169,9 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
         knn_neighbors = ""
         label_out = ""
         cast_to_int = ""
+        view_def = ""
+        view_join = ""
+        view_grp_by = ""
 
         if output_neighbors:
             knn_neighbors = (", array_agg(knn_temp.train_id ORDER BY "
@@ -178,11 +183,42 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
             if label_column_type in ['boolean', 'integer', 'text']:
                 is_classification = True
                 cast_to_int = '::INTEGER'
+            if weighted_avg:
+                pred_out = ",sum( {label_col_temp} * 1/dist)/sum(1/dist)".format(
+                    label_col_temp=label_col_temp)
+            else:
+                pred_out = ", avg({label_col_temp})".format(
+                    label_col_temp=label_col_temp)
 
-            pred_out = ", avg({label_col_temp})".format(**locals())
             if is_classification:
-                pred_out = (", {schema_madlib}.mode({label_col_temp})"
-                            ).format(**locals())
+                if weighted_avg:
+                    # This view is to calculate the max value of sum of the 1/distance grouped by label and Id.
+                    # And this max value will be the prediction for the
+                    # classification model.
+                    view_def = (""" WITH vw
+                                    AS (SELECT distinct on ({test_id_temp}) {test_id_temp},
+                                    max(data_sum) data_dist,
+                                    {label_col_temp}
+                                    FROM   (SELECT {test_id_temp},
+                                    {label_col_temp},
+                                    sum(1 / dist) data_sum
+                                    FROM   pg_temp.{interim_table}
+                                    GROUP  BY {test_id_temp},
+                                    {label_col_temp}) a
+                                    GROUP  BY {test_id_temp} , {label_col_temp})""").format(**locals())
+                    # This join is needed to get the max value of predicion
+                    # calculated above
+                    view_join = (" JOIN vw AS knn_vw "
+                                 "ON knn_temp.{test_id_temp} = knn_vw.{test_id_temp}").format(
+                        test_id_temp=test_id_temp)
+                    view_grp_by = ", knn_vw.{label_col_temp}".format(
+                        label_col_temp=label_col_temp)
+                    pred_out = ", knn_vw.{label_col_temp}".format(
+                        label_col_temp=label_col_temp)
+                else:
+                    pred_out = (", {schema_madlib}.mode({label_col_temp})"
+                                ).format(**locals())
+
             pred_out += " AS prediction"
             label_out = (", train.{label_column_name}{cast_to_int}"
                          " AS {label_col_temp}").format(**locals())
@@ -212,21 +248,26 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
             WHERE {y_temp_table}.r <= {k_val}
             """.format(**locals()))
 
-        plpy.execute(
-            """
+        plpy.execute("""
             CREATE TABLE {output_table} AS
-                SELECT {test_id_temp} AS id, {test_column_name}
+                {view_def}
+                SELECT knn_temp.{test_id_temp} AS id ,
+                    knn_test.data
                     {pred_out}
                     {knn_neighbors}
-                FROM pg_temp.{interim_table} AS knn_temp
-                    JOIN
-                    {test_source} AS knn_test ON
-                    knn_temp.{test_id_temp} = knn_test.{test_id}
-                GROUP BY {test_id_temp} , {test_column_name}
+                FROM   {interim_table}  AS knn_temp
+                JOIN {test_source} AS knn_test
+                ON knn_temp.{test_id_temp} = knn_test.id
+                {view_join}
+                GROUP  BY knn_temp.{test_id_temp},
+                        knn_test.{test_column_name}
+                        {view_grp_by}
+                    ORDER  BY knn_temp.{test_id_temp}
             """.format(**locals()))
 
         plpy.execute("DROP TABLE IF EXISTS {0}".format(interim_table))
         return
+
 
 def knn_help(schema_madlib, message, **kwargs):
     """
@@ -258,6 +299,7 @@ SELECT {schema_madlib}.knn(
     k,                  -- value of k. Default will go as 1
     output_neighbors    -- Outputs the list of k-nearest neighbors that were used in the voting/averaging.
     fn_dist             -- The name of the function to use to calculate the distance from a data point to a centroid.
+    weighted_avg         Calculates the Regression or classication of k-NN using the weighted average method.
     );
 
 -----------------------------------------------------------------------
@@ -340,7 +382,8 @@ SELECT * FROM {schema_madlib}.knn(
                 'knn_result_classification',  -- Output table
                  3,                    -- Number of nearest neighbors
                  True,                 -- True to list nearest-neighbors by id
-                 'madlib.squared_dist_norm2' -- Distance function
+                 'madlib.squared_dist_norm2', -- Distance function
+                 False                        -- False for not using weighted average
                 );
 SELECT * from knn_result_classification ORDER BY id;
 
@@ -360,7 +403,8 @@ SELECT * FROM {schema_madlib}.knn(
                 'knn_result_regression',  -- Output table
                  3,                    -- Number of nearest neighbors
                 True,                  -- True to list nearest-neighbors by id
-                'madlib.dist_norm2'    -- Distance function
+                'madlib.dist_norm2',   -- Distance function
+                False                  -- False for not using weighted average
                 );
 SELECT * FROM knn_result_regression ORDER BY id;
 
@@ -379,6 +423,25 @@ SELECT * FROM {schema_madlib}.knn(
                 3                      -- Number of nearest neighbors
                 );
 SELECT * FROM knn_result_list_neighbors ORDER BY id;
+
+--  Run KNN for classification using weighted average:
+DROP TABLE IF EXISTS knn_result_classification;
+SELECT * FROM {schema_madlib}.knn(
+                'knn_train_data',      -- Table of training data
+                'data',                -- Col name of training data
+                'id',                  -- Col name of id in train data
+                'label',               -- Training labels
+                'knn_test_data',       -- Table of test data
+                'data',                -- Col name of test data
+                'id',                  -- Col name of id in test data
+                'knn_result_classification',  -- Output table
+                 3,                    -- Number of nearest neighbors
+                 True,                 -- True to list nearest-neighbors by id
+                 'madlib.squared_dist_norm2', -- Distance function
+                 True                         -- Calculation using weighted average
+                );
+SELECT * from knn_result_classification ORDER BY id;
+
 """
         else:
             help_string = """
@@ -405,4 +468,3 @@ SELECT {schema_madlib}.knn('example')
 
     return help_string.format(schema_madlib=schema_madlib)
 # ------------------------------------------------------------------------------
-
