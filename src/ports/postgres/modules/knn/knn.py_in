@@ -169,14 +169,13 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
         knn_neighbors = ""
         label_out = ""
         cast_to_int = ""
-        k_neighbours = ""
-        k_neighbours_unnest = ""
+        view_def = ""
+        view_join = ""
+        view_grp_by = ""
 
         if output_neighbors:
             knn_neighbors = (", array_agg(knn_temp.train_id ORDER BY "
                              "knn_temp.dist ASC) AS k_nearest_neighbours ")
-            k_neighbours = ", array_agg(distinct k_neighbours) AS k_nearest_neighbours"
-            k_neighbours_unnest = ", unnest(k_nearest_neighbours) as k_neighbours"
         if label_column_name:
             is_classification = False
             label_column_type = get_expr_type(
@@ -185,15 +184,37 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
                 is_classification = True
                 cast_to_int = '::INTEGER'
             if weighted_avg:
-                pred_out = ",sum( {label_col_temp} * 1/dist)/sum(1/dist)".format(**locals())
+                pred_out = ",sum( {label_col_temp} * 1/dist)/sum(1/dist)".format(
+                    label_col_temp=label_col_temp)
             else:
-                pred_out = ", avg({label_col_temp})".format(**locals())
+                pred_out = ", avg({label_col_temp})".format(
+                    label_col_temp=label_col_temp)
+
             if is_classification:
                 if weighted_avg:
-                    pred_out = ",sum(1/dist)".format(**locals())
+                    # This view is to calculate the max value of sum of the 1/distance grouped by label and Id.
+                    # And this max value will be the prediction for the
+                    # classification model.
+                    view_def = ("   WITH vw "
+                                "   AS (SELECT {test_id_temp}  ,"
+                                "   max(data_sum) data_dist "
+                                "   FROM   (SELECT {test_id_temp}, "
+                                "   sum(1 / dist) data_sum"
+                                "   FROM   pg_temp.{interim_table} "
+                                "   GROUP  BY {test_id_temp}, "
+                                "   {label_col_temp}) a "
+                                "   GROUP  BY {test_id_temp} )").format(**locals())
+                    # This join is needed to get the max value of predicion
+                    # calculated above
+                    view_join = (" JOIN vw AS knn_vw "
+                                 "ON knn_temp.{test_id_temp} = knn_vw.{test_id_temp}").format(
+                        test_id_temp=test_id_temp)
+                    view_grp_by = ", knn_vw.data_dist "
+                    pred_out = ", knn_vw.data_dist"
                 else:
                     pred_out = (", {schema_madlib}.mode({label_col_temp})"
                                 ).format(**locals())
+
             pred_out += " AS prediction"
             label_out = (", train.{label_column_name}{cast_to_int}"
                          " AS {label_col_temp}").format(**locals())
@@ -222,40 +243,25 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
                     ) {y_temp_table}
             WHERE {y_temp_table}.r <= {k_val}
             """.format(**locals()))
-        if weighted_avg and is_classification:
-            plpy.execute(
-                """
-                CREATE TABLE {output_table} AS
-                    SELECT id, {test_column_name} ,max(prediction) as prediction
-                        {k_neighbours}
-                    FROM
-                        ( SELECT {test_id_temp} AS id, {test_column_name}
-                                {pred_out}
-                                {knn_neighbors}
-                            FROM pg_temp.{interim_table} AS knn_temp
-                                JOIN
-                                {test_source} AS knn_test ON
-                                knn_temp.{test_id_temp} = knn_test.{test_id}
-                            GROUP BY {test_id_temp} ,
-                                {test_column_name}, {label_col_temp})
-                            a {k_neighbours_unnest}
-                    GROUP BY id, {test_column_name}
-                """.format(**locals()))
-        else:
-            plpy.execute(
-                """
-                CREATE TABLE {output_table} AS
-                    SELECT {test_id_temp} AS id, {test_column_name}
-                        {pred_out}
-                        {knn_neighbors}
-                    FROM pg_temp.{interim_table} AS knn_temp
-                        JOIN
-                        {test_source} AS knn_test ON
-                        knn_temp.{test_id_temp} = knn_test.{test_id}
-                    GROUP BY {test_id_temp} , {test_column_name}
-                """.format(**locals()))
 
-            plpy.execute("DROP TABLE IF EXISTS {0}".format(interim_table))
+        plpy.execute("""
+            CREATE TABLE {output_table} AS
+                {view_def}
+                SELECT knn_temp.{test_id_temp} AS id ,
+                    knn_test.data
+                    {pred_out}
+                    {knn_neighbors}
+                FROM   {interim_table}  AS knn_temp
+                JOIN {test_source} AS knn_test
+                ON knn_temp.{test_id_temp} = knn_test.id
+                {view_join}
+                GROUP  BY knn_temp.{test_id_temp},
+                        knn_test.{test_column_name}
+                        {view_grp_by}
+                    ORDER  BY knn_temp.{test_id_temp}
+            """.format(**locals()))
+
+        plpy.execute("DROP TABLE IF EXISTS {0}".format(interim_table))
         return
 
 
