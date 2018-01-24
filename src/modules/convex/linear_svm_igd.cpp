@@ -212,8 +212,6 @@ linear_svm_igd_minibatch_transition::run(AnyType &args) {
     L1<GLMModel>::clipping(state.task.model, state.task.stepsize);
 
     state.algo.numRows += x.cols();
-    state.algo.numBuffers ++;
-
     return state;
 }
 
@@ -263,7 +261,6 @@ linear_svm_igd_minibatch_merge::run(AnyType &args) {
     // averaging depends on their original values
     stateLeft.algo.numRows += stateRight.algo.numRows;
     stateLeft.algo.loss += stateRight.algo.loss;
-    stateLeft.algo.numBuffers += stateRight.algo.numBuffers;
 
     return stateLeft;
 }
@@ -304,7 +301,7 @@ linear_svm_igd_minibatch_final::run(AnyType &args) {
     SVMMinibatchState<MutableArrayHandle<double> > state = args[0];
     // Aggregates that haven't seen any data just return Null.
     if (state.algo.numRows == 0) { return Null(); }
-    state.algo.loss = state.algo.loss/state.algo.numBuffers;
+    state.algo.loss = state.algo.loss / state.algo.numRows;
     return state;
 }
 

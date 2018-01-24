@@ -35,7 +35,6 @@ public:
 
     static void transition(state_type &state, const tuple_type &tuple);
     static void transitionInMiniBatch(state_type &state, const tuple_type &tuple);
-    static void transitionInMiniBatch2(state_type &state, const tuple_type &tuple);
     static void merge(state_type &state, const_state_type &otherState);
     static void mergeInPlace(state_type &state, const_state_type &otherState);
     static void final(state_type &state);
@@ -107,8 +106,8 @@ IGD<State, ConstState, Task>::transition(state_type &state,
                state.task.model, X_batch, y_batch, state.task.stepsize);
         }
 
-        // The first epoch will most likely have the most loss.
-        // So being pessimistic, we return average loss only for the first epoch.
+        // The first epoch will most likely have the highest loss.
+        // Being pessimistic, use the total loss only from the first epoch.
         if (curr_epoch==0) state.algo.loss += loss;
     }
     return;
@@ -156,8 +155,8 @@ IGD<State, ConstState, Task>::mergeInPlace(state_type &state,
     }
 
     // model averaging, weighted by rows seen
-    double leftRows = static_cast<double>(state.algo.numRows + state.algo.numBuffers);
-    double rightRows = static_cast<double>(otherState.algo.numRows + otherState.algo.numBuffers);
+    double leftRows = static_cast<double>(state.algo.numRows + state.algo.numRows);
+    double rightRows = static_cast<double>(otherState.algo.numRows + otherState.algo.numRows);
     double totalNumRows = leftRows + rightRows;
     state.task.model *= leftRows / rightRows;
     state.task.model += otherState.task.model;

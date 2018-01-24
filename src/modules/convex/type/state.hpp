@@ -352,7 +352,6 @@ protected:
         task.reg.rebind(&mStorage[4]);
         algo.batchSize.rebind(&mStorage[5]);
         algo.nEpochs.rebind(&mStorage[6]);
-        algo.numBuffers.rebind(&mStorage[7]);
         task.model.rebind(&mStorage[8], task.nFeatures);
     }
 
@@ -368,7 +367,6 @@ public:
 
     struct AlgoState {
         typename HandleTraits<Handle>::ReferenceToUInt64 numRows;
-        typename HandleTraits<Handle>::ReferenceToUInt64 numBuffers;
         typename HandleTraits<Handle>::ReferenceToDouble loss;
         typename HandleTraits<Handle>::ReferenceToUInt32 batchSize;
         typename HandleTraits<Handle>::ReferenceToUInt32 nEpochs;

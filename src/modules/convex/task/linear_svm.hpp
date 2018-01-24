@@ -119,7 +119,7 @@ LinearSVM<Model, Tuple>::gradientInPlace(
 * @param x Batch of independent variables
 * @param y Batch of dependent variables
 * @param stepsize Learning rate for model update
-* @return Average loss in the batch
+* @return Total loss in the batch
 */
 template <class Model, class Tuple>
 double
@@ -133,33 +133,32 @@ LinearSVM<Model, Tuple>::getLossAndUpdateModel(
     // the model for each batch. x and y in the function signature are defined
     // as generic variables to ensure a consistent interface across all modules.
 
-    // Assumption: 'gradient' will always be of the same type as the coefficients
-    // With SVM, the model is just the coefficients, but can be more complex with
-    // other modules like MLP.
+    // ASSUMPTION: 'gradient' will always be of the same type as the
+    // coefficients. In SVM, the model is just the coefficients, but can be
+    // more complex with other modules like MLP.
     coefficient_type gradient = model;
     gradient.setZero();
     coefficient_type w_transpose_x = x * model;
     double loss = 0.0;
     int batch_size = x.rows();
-    double dist_from_hyperplane = 0.;
-    double c = 0.;
-    int n_points_with_positive_dist=0;
-    for (int i=0; i<batch_size; i++) {
+    double dist_from_hyperplane = 0.0;
+    double c = 0.0;
+    int n_points_with_positive_dist = 0;
+    for (int i = 0; i < batch_size; i++) {
         if (is_svc) {
             c = -y(i);   // minus for "-loglik"
-            dist_from_hyperplane = 1. - w_transpose_x(i) * y(i);
+            dist_from_hyperplane = 1.0 - w_transpose_x(i) * y(i);
         } else {
             double wx_y = w_transpose_x(i) - y(i);
-            c = wx_y > 0 ? 1. : -1.;
+            c = wx_y > 0 ? 1.0 : -1.0;
             dist_from_hyperplane = c * wx_y - epsilon;
         }
-        if ( dist_from_hyperplane > 0.) {
+        if (dist_from_hyperplane > 0.) {
             gradient += c * x.row(i);
             loss += dist_from_hyperplane;
             n_points_with_positive_dist++;
         }
     }
-    loss /= n_points_with_positive_dist;
     gradient.array() /= n_points_with_positive_dist;
     model -= stepsize * gradient;
     return loss;
