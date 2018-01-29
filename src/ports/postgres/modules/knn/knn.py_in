@@ -195,22 +195,26 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
                     # This view is to calculate the max value of sum of the 1/distance grouped by label and Id.
                     # And this max value will be the prediction for the
                     # classification model.
-                    view_def = ("   WITH vw "
-                                "   AS (SELECT {test_id_temp}  ,"
-                                "   max(data_sum) data_dist "
-                                "   FROM   (SELECT {test_id_temp}, "
-                                "   sum(1 / dist) data_sum"
-                                "   FROM   pg_temp.{interim_table} "
-                                "   GROUP  BY {test_id_temp}, "
-                                "   {label_col_temp}) a "
-                                "   GROUP  BY {test_id_temp} )").format(**locals())
+                    view_def = (""" WITH vw
+                                    AS (SELECT distinct on ({test_id_temp}) {test_id_temp},
+                                    max(data_sum) data_dist,
+                                    {label_col_temp}
+                                    FROM   (SELECT {test_id_temp},
+                                    {label_col_temp},
+                                    sum(1 / dist) data_sum
+                                    FROM   pg_temp.{interim_table}
+                                    GROUP  BY {test_id_temp},
+                                    {label_col_temp}) a
+                                    GROUP  BY {test_id_temp} , {label_col_temp})""").format(**locals())
                     # This join is needed to get the max value of predicion
                     # calculated above
                     view_join = (" JOIN vw AS knn_vw "
                                  "ON knn_temp.{test_id_temp} = knn_vw.{test_id_temp}").format(
                         test_id_temp=test_id_temp)
-                    view_grp_by = ", knn_vw.data_dist "
-                    pred_out = ", knn_vw.data_dist"
+                    view_grp_by = ", knn_vw.{label_col_temp}".format(
+                        label_col_temp=label_col_temp)
+                    pred_out = ", knn_vw.{label_col_temp}".format(
+                        label_col_temp=label_col_temp)
                 else:
                     pred_out = (", {schema_madlib}.mode({label_col_temp})"
                                 ).format(**locals())
