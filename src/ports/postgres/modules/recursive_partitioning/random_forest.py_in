@@ -471,8 +471,8 @@ def forest_train(
                             1 AS gid,
                             {dep} AS dep,
                             {dep} AS oob_prediction,
-                            ARRAY[1.0]::float8[] AS cat_imp_score,
-                            ARRAY[1.0]::float8[] AS con_imp_score
+                            ARRAY[1.0]::float8[] AS cat_permuted_imp_score,
+                            ARRAY[1.0]::float8[] AS con_permuted_imp_score
                         FROM {training_table_name}
                         LIMIT 0
                         """.format(**locals())
@@ -953,11 +953,11 @@ def _calculate_oob_prediction(
                 {schema_madlib}.vectorized_distribution_agg(
                     {schema_madlib}.array_scalar_add(
                         {cat_features_str}::integer[],
-                        1 -- -1 shift to 0 for nulls
+                        1 -- -1 shifted to 0 for null values
                     ),
                     {schema_madlib}.array_scalar_add(
                         cat_n_levels,
-                        1 -- -1 shift to 0 for nulls
+                        1 -- -1 shifted to 0 for null values
                     )
                 ) AS cat_feature_distributions,
                 {schema_madlib}.vectorized_distribution_agg(
@@ -1021,7 +1021,7 @@ def _calculate_oob_prediction(
                     {dep},
                     {is_classification},
                     cat_feature_distributions -- if distribution is NULL, returns NULL
-                ) AS cat_imp_score,
+                ) AS cat_permuted_imp_score,
                 {schema_madlib}._rf_con_imp_score(
                     tree,
                     {cat_features_str}::integer[],
@@ -1031,7 +1031,7 @@ def _calculate_oob_prediction(
                     {dep},
                     {is_classification},
                     con_index_distributions -- if distribution is NULL, returns NULL
-                ) AS con_imp_score
+                ) AS con_permuted_imp_score
             FROM
                 {oob_view}
             {join_str}
@@ -1122,8 +1122,8 @@ def _calculate_variable_importance(
                 gid,
                 count(*) as size,
                 sum({score_expression}) as score,
-                {schema_madlib}.sum(cat_imp_score::FLOAT8[]) AS cat_imp_score,
-                {schema_madlib}.sum(con_imp_score::FLOAT8[]) AS con_imp_score
+                {schema_madlib}.sum(cat_permuted_imp_score::FLOAT8[]) AS cat_permuted_imp_score,
+                {schema_madlib}.sum(con_permuted_imp_score::FLOAT8[]) AS con_permuted_imp_score
             FROM
                 {oob_prediction_table}
             GROUP BY sample_id, gid
@@ -1134,30 +1134,54 @@ def _calculate_variable_importance(
     sql_create_importance_table = """
             INSERT INTO {importance_table}
             SELECT
+                -- Shift all values if an importance value is negative.
+                -- This is performed by subtracting the minimum importance value
+                -- (only if the minimum is negative)
                 gid,
-                {schema_madlib}.array_avg(
-                    {schema_madlib}.array_scalar_mult(
-                        {schema_madlib}.array_scalar_add(
-                            cat_imp_score,
-                            -score::float8
+                {schema_madlib}.array_scalar_add(
+                    cat_var_imp,
+                    -{schema_madlib}.array_min(
+                        array_append(array_cat(cat_var_imp, con_var_imp),
+                                     0.0::double precision))
+               ),
+               {schema_madlib}.array_scalar_add(
+                    con_var_imp,
+                    -{schema_madlib}.array_min(
+                        array_append(array_cat(cat_var_imp, con_var_imp),
+                                     0.0::double precision))
+               )
+            FROM (
+                -- Compute the average importance over the OOB data where,
+                -- importance = difference of original score and permuted score.
+                -- Since permuted score is a vector and original score is a scalar,
+                -- the signs are inverted and then fixed by dividing with
+                -- negative of size.
+                SELECT
+                    gid,
+                    {schema_madlib}.array_avg(
+                        {schema_madlib}.array_scalar_mult(
+                            {schema_madlib}.array_scalar_add(
+                                cat_permuted_imp_score,
+                                -score::float8
+                            ),
+                            (-1. / size)::float8
                         ),
-                        (-1. / size)::float8
-                    ),
-                    FALSE -- not use absolute values
-                ),
-                {schema_madlib}.array_avg(
-                    {schema_madlib}.array_scalar_mult(
-                        {schema_madlib}.array_scalar_add(
-                            con_imp_score,
-                            -score::float8
+                        FALSE -- not use absolute values
+                    ) AS cat_var_imp,
+                    {schema_madlib}.array_avg(
+                        {schema_madlib}.array_scalar_mult(
+                            {schema_madlib}.array_scalar_add(
+                                con_permuted_imp_score,
+                                -score::float8
+                            ),
+                            (-1. / size)::float8
                         ),
-                        (-1. / size)::float8
-                    ),
-                    FALSE -- not use absolute values
-                )
-            FROM
-                {sample_score_view}
-            GROUP BY gid
+                        FALSE -- not use absolute values
+                    ) AS con_var_imp
+                FROM
+                    {sample_score_view}
+                GROUP BY gid
+            ) q
             """.format(**locals())
     plpy.notice("sql_create_importance_table:\n" + sql_create_importance_table)
     plpy.execute(sql_create_importance_table)
