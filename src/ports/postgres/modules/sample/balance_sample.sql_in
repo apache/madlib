@@ -24,7 +24,7 @@
  * @date 12/14/2017
  *
  * @sa Given a table, balanced sampling returns a sampled data set
- * with specified balancing for each class (defaults to uniform sampleing).
+ * with specified proportions for each class (defaults to uniform sampling).
  *
  *//* ----------------------------------------------------------------------- */
 
@@ -36,15 +36,28 @@ m4_include(`SQLCommon.m4')
 
 <div class="toc"><b>Contents</b>
 <ul>
-<li><a href="#strs">Balanced Data Sets Sampling</a></li>
+<li><a href="#strs">Balanced Sampling</a></li>
 <li><a href="#examples">Examples</a></li>
+<li><a href="#literature">Literature</a></li>
+<li><a href="#related">Related Topics</a></li>
 </ul>
 </div>
 
-@brief A method for independently sampling classes to receive a
+@brief A method to independently sample classes to produce a
 balanced data set.
-It is commonly used to where classes have greater imbalanced ratio.
-It ensures the subclasses are adequately represented in the sample.
+This is commonly used when classes are imbalanced,
+to ensure that subclasses are adequately represented in the sample.
+
+Some classification algorithms only perform optimally 
+when the number of samples in each class is roughly the same. 
+Highly skewed datasets are common in many domains (e.g., fraud
+detection), so resampling to offset this imbalance can 
+produce a better decision boundary.
+
+This module offers a number of resampling techniques 
+including undersampling majority classes,
+oversampling minority classes, and
+combinations of the two.
 
 @anchor strs
 @par Balanced Sampling
@@ -53,9 +66,9 @@ It ensures the subclasses are adequately represented in the sample.
 balance_sample( source_table,
                 output_table,
                 class_col,
-                class_sizes,
-                output_table_size,
-                grouping_cols,
+                class_sizes,        
+                output_table_size,  
+                grouping_cols,      
                 with_replacement,
                 keep_null
               )
@@ -69,199 +82,478 @@ balance_sample( source_table,
 <dt>output_table</dt>
 <dd>TEXT. Name of output table that contains the sampled data.
 The output table contains all columns present in the source
-table.</dd>
+table, plus a new generated id called "__madlib_id__" added as 
+the first column. </dd>
 
 <dt>class_col</dt>
 <dd>TEXT,  Name of the column containing the class to be balanced.
 </dd>
 
 <dt>class_sizes (optional)</dt>
-<dd>VARCHAR, default ‘uniform’.
-
-@note
-Current implementation only supports 'undersample'.
-
-Parameter to define the size of the different class values.
+<dd>VARCHAR, default ‘uniform’.  Parameter to define the size 
+of the different class values.
 (Class values are sometimes also called levels).
-
-Can take the following forms:
+Can be set to the following:
 
 <ul>
 <li><b>‘uniform’</b>:
 All class values will be resampled to have the same number of rows.
 </li>
 <li><b>'undersample'</b>:
-Under-sample such that all class values end up with the same number of
+Undersample such that all class values end up with the same number of
 observations as the minority class.  Done without replacement by default
 unless the parameter ‘with_replacement’ is set to TRUE.
 </li>
 <li><b>'oversample'</b>:
-Over-sample with replacement such that all class values end up with the
+Oversample with replacement such that all class values end up with the
 same number of observations as the majority class.  Not affected by the
-parameter ‘with_replacement’ since over-sampling is always done with
+parameter ‘with_replacement’ since oversampling is always done with
 replacement.
+</li>
+Short forms of the above will work too, e.g., 'uni' works the same
+as 'uniform'.
+</ul>
+
+Alternatively, you can also explicitly set class size in a string containing a
+comma-delimited list. Order does not matter and all class values do not
+need to be specified.  Use the format “class_value_1=x, class_value_2=y, …”
+where 'class_value' in the list must exist in the column 'class_col'. 
+Set to an integer representing the desired number of observations.
+E.g.,  ‘red=3000, blue=4000’ means you want to resample the dataset
+to result in exactly 3000 red and 4000 blue rows in the ‘output_table’.
 </li>
 </ul>
 
-You can also explicitly set class size in a string containing a
-comma-delimited list. Order does not matter and all class values do not
-need to be specified.  Use the format “class_value_1=x, class_value_2=y, ...”
-where the class value in the list must exist in the column ‘class_col’.
-
-E.g.,  ‘male=3000, female=7000’ means you want to resample the dataset
-to result in 3000 male and 7000 female rows in the ‘output_table’.
-
 @note
 The allowed names for class values follows object naming rules in
-PostgreSQL [6].  Quoted identifiers are allowed and should be enclosed
-in double quotes “ in the usual way.  If for some reason the class values
-in the examples above were “MaLe” and “FeMaLe” then the comma delimited
-list for ‘class_size’ would be:  ‘“MaLe”=3000, “FeMaLe”=7000’.
+PostgreSQL [1].  Quoted identifiers are allowed and should be enclosed
+in double quotes in the usual way.  If for some reason the class values
+in the examples above were “ReD” and “BluE” then the comma delimited
+list for ‘class_size’ would be:  ‘“ReD”=3000, “BluE”=4000’.
 </dd>
 
 <dt>output_table_size (optional)</dt>
 <dd>INTEGER, default NULL.  Desired size of the output data set.
-
 This parameter is ignored if ‘class_size’ parameter is set to either
-‘oversample’ or ‘undersample’ since output table size is already determined.
-If NULL, the resulting output table size will depend on the settings for the
-‘class_size’ parameter.
-
-Example: ‘3000’ will result in 3000 rows in the ‘ouput_table’.
+‘oversample’ or ‘undersample’ since output table size is already
+determined.
+If NULL, the resulting output table size will depend on the settings
+for the ‘class_size’ parameter (see table below for more details).
 </dd>
 
 <dt>grouping_cols (optional)</dt>
-<dd>
-TEXT, default: NULL. A single column or a list of comma-separated columns that
-defines the strata.  When this parameter is NULL, no grouping is used so the
-sampling is non-stratified, that is, the whole table is treated as a single
-group.
+<dd>TEXT, default: NULL. A single column or a list of
+comma-separated columns that defines the strata.  When this
+parameter is NULL, no grouping is used so the sampling is
+non-stratified, that is, the whole table is treated as a
+single group.
 
-@note Current implementation does not support grouping_cols
+@note
+Current implementation does not support grouping_cols.  It
+will be added in an upcoming release.
 </dd>
 
 <dt>with_replacement  (optional)</dt>
-<dd>
-BOOLEAN, default FALSE.  Determines whether to sample with replacement or
-without replacement (default). With replacement means that it is possible that
-the same row may appear in the sample set more than once. Without replacement
-means a given row can be selected only once. This parameter affects
-under-sampling only since over-sampling is always performed with replacement.
-</dd>
+<dd>BOOLEAN, default FALSE.  Determines whether to sample
+with replacement or without replacement (default).
+With replacement means that it is possible that the
+same row may appear in the sample set more than once.
+Without replacement means a given row can be selected
+only once. This parameter affects undersampling only since
+oversampling is always done with replacement.</dd>
 
-<dt>keep_null  (optional)</dt>
-<dd>
-BOOLEAN, default FALSE.  Determines whether to sample rows whose class values
-are NULL. By default, all rows with NULL class values are ignored. If this is
-set to TRUE, then NULL is treated as another class value.
-</dd>
-
+<dt>keep_null (optional)</dt>
+<dd>BOOLEAN, default FALSE. Determines whether to 
+sample rows whose class values are NULL. By default, 
+all rows with NULL class values are ignored. If this 
+is set to TRUE, then NULL is treated as another class 
+value.</dd>
 </dl>
+
+<b>How Output Table Size is Determined</b>
+
+The rule of thumb is that if you specify a value for
+'output_table_size', then you will generally
+get an output table of that size, with some minor
+rounding variations.  If you set 'output_table_size' to NULL,
+then the size of the output table will be calculated 
+depending on what you put for the 'class_size' parameter.
+The following table shows how the parameters 'class_size' 
+and 'output_table_size' work together:  
+
+| Case | 'class_size' | 'output_table_size' | Result | 
+| :---- | :---- | :---- | :---- |
+| 1 | 'uniform' | NULL | Resample for uniform class size with output size = input size (i.e., balanced). |
+| 2 | 'uniform' | 10000 | Resample for uniform class size with output size = 10K (i.e., balanced). | 
+| 3 | NULL | NULL | Resample for uniform class size with output size = input size (i.e., balanced). Class_size=NULL has same behavior as ‘uniform’. |
+| 4 | NULL | 10000 | Resample for uniform class size with output size = 10K (i.e., balanced). Class_size=NULL has same behavior as ‘uniform’. |
+| 5 | 'undersample' | n/a | Undersample such that all class values end up with the same number of observations as the minority.|
+| 6 | 'oversample' | n/a | Oversample with replacement (always) such that all class values end up with the same number of observations as the majority. |
+| 7 | 'red=3000' | NULL | Resample red to 3K, leave rest of the class values (blue, green, etc.) as is. |
+| 8 | 'red=3000, blue=4000' | 10000 | Resample red to 3K and blue to 4K, divide remaining class values evenly 3K/(n-2) each, where n=number of class values.   Note that if red and blue are the only class values, then output table size will be 7K not 10K.  (This is the only case where specifying a value for 'output_table_size' may not actually result in an output table of that size.) |
 
 @anchor examples
 @par Examples
 
-Please note that due to the random nature of sampling, your
+Note that due to the random nature of sampling, your
 results may look different from those below.
 
--# Create an input table:
+-# Create an input table using part of the flags 
+data set from https://archive.ics.uci.edu/ml/datasets/Flags :
 <pre class="syntax">
-DROP TABLE IF EXISTS test;
-CREATE TABLE test(
-    id1 INTEGER,
-    id2 INTEGER,
-    gr1 INTEGER,
-    gr2 INTEGER
+DROP TABLE IF EXISTS flags;
+CREATE TABLE flags (
+    id INTEGER,
+    name TEXT,
+    landmass INTEGER,
+    zone INTEGER,
+    area INTEGER,
+    population INTEGER,
+    language INTEGER,
+    colours INTEGER,
+    mainhue TEXT
 );
-INSERT INTO test VALUES
-(1,0,1,1),
-(2,0,1,1),
-(3,0,1,1),
-(4,0,1,1),
-(5,0,1,1),
-(6,0,1,1),
-(7,0,1,1),
-(8,0,1,1),
-(9,0,1,1),
-(9,0,1,1),
-(9,0,1,1),
-(9,0,1,1),
-(0,1,1,2),
-(0,2,1,2),
-(0,3,1,2),
-(0,4,1,2),
-(0,5,1,2),
-(0,6,1,2),
-(10,10,2,2),
-(20,20,2,2),
-(30,30,2,2),
-(40,40,2,2),
-(50,50,2,2),
-(60,60,2,2),
-(70,70,2,2);
+INSERT INTO flags VALUES
+(1, 'Argentina', 2, 3, 2777, 28, 2, 2, 'blue'),
+(2, 'Australia', 6, 2, 7690, 15, 1, 3, 'blue'),
+(3, 'Austria', 3, 1, 84, 8, 4, 2, 'red'),
+(4, 'Brazil', 2, 3, 8512, 119, 6, 4, 'green'),
+(5, 'Canada', 1, 4, 9976, 24, 1, 2, 'red'),
+(6, 'China', 5, 1, 9561, 1008, 7, 2, 'red'),
+(7, 'Denmark', 3, 1, 43, 5, 6, 2, 'red'),
+(8, 'Greece', 3, 1, 132, 10, 6, 2, 'blue'),
+(9, 'Guatemala', 1, 4, 109, 8, 2, 2, 'blue'),
+(10, 'Ireland', 3, 4, 70, 3, 1, 3, 'white'),
+(11, 'Jamaica', 1, 4, 11, 2, 1, 3, 'green'),
+(12, 'Luxembourg', 3, 1, 3, 0, 4, 3, 'red'),
+(13, 'Mexico', 1, 4, 1973, 77, 2, 4, 'green'),
+(14, 'Norway', 3, 1, 324, 4, 6, 3, 'red'),
+(15, 'Portugal', 3, 4, 92, 10, 6, 5, 'red'),
+(16, 'Spain', 3, 4, 505, 38, 2, 2, 'red'),
+(17, 'Sweden', 3, 1, 450, 8, 6, 2, 'blue'),
+(18, 'Switzerland', 3, 1, 41, 6, 4, 2, 'red'),
+(19, 'UK', 3, 4, 245, 56, 1, 3, 'red'),
+(20, 'USA', 1, 4, 9363, 231, 1, 3, 'white'),
+(21, 'xElba', 3, 1, 1, 1, 6, NULL, NULL),
+(22, 'xPrussia', 3, 1, 249, 61, 4, NULL, NULL);
 </pre>
 
--# Sample without replacement:
+-# Uniform sampling.  All class values will be resampled 
+so that they have the same number of rows. The output data 
+size will be the same as the input data size, ignoring 
+NULL values.  Uniform sampling 
+is the default for the 'class_size' parameter so we do not 
+need to explicitly set it:
 <pre class="syntax">
-DROP TABLE IF EXISTS out;
+DROP TABLE IF EXISTS output_table;
 SELECT madlib.balance_sample(
-                              'test',     -- Source table
-                              'out',      -- Output table
-                              'gr1');     -- Class column
-SELECT * FROM out ORDER BY gr1, gr2, id1, id2;
+                              'flags',             -- Source table
+                              'output_table',      -- Output table
+                              'mainhue');          -- Class column
+SELECT * FROM output_table ORDER BY mainhue, name;
 </pre>
 <pre class="result">
- id1 | id2 | gr1 | gr2
------+-----+-----+-----
-   1 |   0 |   1 |   1
-   2 |   0 |   1 |   1
-   3 |   0 |   1 |   1
-   9 |   0 |   1 |   1
-   0 |   1 |   1 |   2
-   0 |   2 |   1 |   2
-   0 |   3 |   1 |   2
-  10 |  10 |   2 |   2
-  20 |  20 |   2 |   2
-  30 |  30 |   2 |   2
-  40 |  40 |   2 |   2
-  50 |  50 |   2 |   2
-  60 |  60 |   2 |   2
-  70 |  70 |   2 |   2
-(14 rows)
+ __madlib_id__ | id |    name     | landmass | zone | area | population | language | colours | mainhue 
+---------------+----+-------------+----------+------+------+------------+----------+---------+---------
+             5 |  1 | Argentina   |        2 |    3 | 2777 |         28 |        2 |       2 | blue
+             2 |  2 | Australia   |        6 |    2 | 7690 |         15 |        1 |       3 | blue
+             3 |  8 | Greece      |        3 |    1 |  132 |         10 |        6 |       2 | blue
+             4 |  9 | Guatemala   |        1 |    4 |  109 |          8 |        2 |       2 | blue
+             1 | 17 | Sweden      |        3 |    1 |  450 |          8 |        6 |       2 | blue
+            11 |  4 | Brazil      |        2 |    3 | 8512 |        119 |        6 |       4 | green
+            12 |  4 | Brazil      |        2 |    3 | 8512 |        119 |        6 |       4 | green
+            14 | 13 | Mexico      |        1 |    4 | 1973 |         77 |        2 |       4 | green
+            15 | 13 | Mexico      |        1 |    4 | 1973 |         77 |        2 |       4 | green
+            13 | 13 | Mexico      |        1 |    4 | 1973 |         77 |        2 |       4 | green
+             8 |  3 | Austria     |        3 |    1 |   84 |          8 |        4 |       2 | red
+            10 |  5 | Canada      |        1 |    4 | 9976 |         24 |        1 |       2 | red
+             9 |  7 | Denmark     |        3 |    1 |   43 |          5 |        6 |       2 | red
+             6 | 15 | Portugal    |        3 |    4 |   92 |         10 |        6 |       5 | red
+             7 | 18 | Switzerland |        3 |    1 |   41 |          6 |        4 |       2 | red
+            19 | 10 | Ireland     |        3 |    4 |   70 |          3 |        1 |       3 | white
+            20 | 10 | Ireland     |        3 |    4 |   70 |          3 |        1 |       3 | white
+            18 | 10 | Ireland     |        3 |    4 |   70 |          3 |        1 |       3 | white
+            16 | 20 | USA         |        1 |    4 | 9363 |        231 |        1 |       3 | white
+            17 | 20 | USA         |        1 |    4 | 9363 |        231 |        1 |       3 | white
+(20 rows)
+</pre>
+Next we do uniform sampling again, but this time we specify a 
+size for the output table:
+<pre class="syntax">
+DROP TABLE IF EXISTS output_table;
+SELECT madlib.balance_sample(
+                              'flags',             -- Source table
+                              'output_table',      -- Output table
+                              'mainhue',           -- Class column
+                              'uniform',           -- Uniform sample
+                               12);                -- Desired output table size
+SELECT * FROM output_table ORDER BY mainhue, name;
+</pre>
+<pre class="result">
+ __madlib_id__ | id |   name    | landmass | zone | area | population | language | colours | mainhue 
+---------------+----+-----------+----------+------+------+------------+----------+---------+---------
+            10 |  1 | Argentina |        2 |    3 | 2777 |         28 |        2 |       2 | blue
+            12 |  2 | Australia |        6 |    2 | 7690 |         15 |        1 |       3 | blue
+            11 |  8 | Greece    |        3 |    1 |  132 |         10 |        6 |       2 | blue
+             2 |  4 | Brazil    |        2 |    3 | 8512 |        119 |        6 |       4 | green
+             3 | 11 | Jamaica   |        1 |    4 |   11 |          2 |        1 |       3 | green
+             1 | 13 | Mexico    |        1 |    4 | 1973 |         77 |        2 |       4 | green
+             5 |  7 | Denmark   |        3 |    1 |   43 |          5 |        6 |       2 | red
+             6 | 14 | Norway    |        3 |    1 |  324 |          4 |        6 |       3 | red
+             4 | 15 | Portugal  |        3 |    4 |   92 |         10 |        6 |       5 | red
+             9 | 10 | Ireland   |        3 |    4 |   70 |          3 |        1 |       3 | white
+             7 | 20 | USA       |        1 |    4 | 9363 |        231 |        1 |       3 | white
+             8 | 20 | USA       |        1 |    4 | 9363 |        231 |        1 |       3 | white
+(12 rows)
 </pre>
 
--# Sample with replacement:
+-# Oversampling.  Oversample with replacement such that all 
+class values except NULLs end up with the same number of observations as 
+the majority class. Countries with red flags is the majority 
+class with 10 observations, so other class values will be 
+oversampled to 10 observations:
 <pre class="syntax">
-DROP TABLE IF EXISTS out;
+DROP TABLE IF EXISTS output_table;
 SELECT madlib.balance_sample(
-                              'test',     -- Source table
-                              'out',      -- Output table
-                              'gr1',      -- Class column
-                              'undersample', -- Class size
-                              NULL,       -- Output table size
-                              NULL,       -- Grouping columns
-                              TRUE);      -- With replacement
-SELECT * FROM out ORDER BY gr1, gr2, id1, id2;
+                              'flags',             -- Source table
+                              'output_table',      -- Output table
+                              'mainhue',           -- Class column
+                              'oversample');       -- Oversample
+SELECT * FROM output_table ORDER BY mainhue, name;
 </pre>
 <pre class="result">
- id1 | id2 | gr1 | gr2
-\-\-\-\--+\-\-\---+\-\-\---+\-\-\---
-  10 |  10 |   2 |   2
-  20 |  20 |   2 |   2
-  30 |  30 |   2 |   2
-  40 |  40 |   2 |   2
-  50 |  50 |   2 |   2
-  60 |  60 |   2 |   2
-  70 |  70 |   2 |   2
-   4 |   0 |   1 |   1
-   6 |   0 |   1 |   1
-   6 |   0 |   1 |   1
-   7 |   0 |   1 |   1
-   7 |   0 |   1 |   1
-   8 |   0 |   1 |   1
-   0 |   5 |   1 |   2
-(14 rows)
+ __madlib_id__ | id |    name     | landmass | zone | area | population | language | colours | mainhue 
+---------------+----+-------------+----------+------+------+------------+----------+---------+---------
+            35 |  1 | Argentina   |        2 |    3 | 2777 |         28 |        2 |       2 | blue
+            33 |  1 | Argentina   |        2 |    3 | 2777 |         28 |        2 |       2 | blue
+            37 |  1 | Argentina   |        2 |    3 | 2777 |         28 |        2 |       2 | blue
+            34 |  1 | Argentina   |        2 |    3 | 2777 |         28 |        2 |       2 | blue
+            36 |  1 | Argentina   |        2 |    3 | 2777 |         28 |        2 |       2 | blue
+            32 |  1 | Argentina   |        2 |    3 | 2777 |         28 |        2 |       2 | blue
+            31 |  2 | Australia   |        6 |    2 | 7690 |         15 |        1 |       3 | blue
+            39 |  9 | Guatemala   |        1 |    4 |  109 |          8 |        2 |       2 | blue
+            38 |  9 | Guatemala   |        1 |    4 |  109 |          8 |        2 |       2 | blue
+            40 | 17 | Sweden      |        3 |    1 |  450 |          8 |        6 |       2 | blue
+            19 |  4 | Brazil      |        2 |    3 | 8512 |        119 |        6 |       4 | green
+            20 |  4 | Brazil      |        2 |    3 | 8512 |        119 |        6 |       4 | green
+            12 | 11 | Jamaica     |        1 |    4 |   11 |          2 |        1 |       3 | green
+            11 | 11 | Jamaica     |        1 |    4 |   11 |          2 |        1 |       3 | green
+            13 | 11 | Jamaica     |        1 |    4 |   11 |          2 |        1 |       3 | green
+            17 | 13 | Mexico      |        1 |    4 | 1973 |         77 |        2 |       4 | green
+            15 | 13 | Mexico      |        1 |    4 | 1973 |         77 |        2 |       4 | green
+            16 | 13 | Mexico      |        1 |    4 | 1973 |         77 |        2 |       4 | green
+            18 | 13 | Mexico      |        1 |    4 | 1973 |         77 |        2 |       4 | green
+            14 | 13 | Mexico      |        1 |    4 | 1973 |         77 |        2 |       4 | green
+             9 |  3 | Austria     |        3 |    1 |   84 |          8 |        4 |       2 | red
+             8 |  5 | Canada      |        1 |    4 | 9976 |         24 |        1 |       2 | red
+             1 |  6 | China       |        5 |    1 | 9561 |       1008 |        7 |       2 | red
+            10 |  7 | Denmark     |        3 |    1 |   43 |          5 |        6 |       2 | red
+             2 | 12 | Luxembourg  |        3 |    1 |    3 |          0 |        4 |       3 | red
+             4 | 14 | Norway      |        3 |    1 |  324 |          4 |        6 |       3 | red
+             6 | 15 | Portugal    |        3 |    4 |   92 |         10 |        6 |       5 | red
+             3 | 16 | Spain       |        3 |    4 |  505 |         38 |        2 |       2 | red
+             5 | 18 | Switzerland |        3 |    1 |   41 |          6 |        4 |       2 | red
+             7 | 19 | UK          |        3 |    4 |  245 |         56 |        1 |       3 | red
+            22 | 10 | Ireland     |        3 |    4 |   70 |          3 |        1 |       3 | white
+            26 | 10 | Ireland     |        3 |    4 |   70 |          3 |        1 |       3 | white
+            24 | 10 | Ireland     |        3 |    4 |   70 |          3 |        1 |       3 | white
+            21 | 10 | Ireland     |        3 |    4 |   70 |          3 |        1 |       3 | white
+            27 | 10 | Ireland     |        3 |    4 |   70 |          3 |        1 |       3 | white
+            25 | 10 | Ireland     |        3 |    4 |   70 |          3 |        1 |       3 | white
+            23 | 10 | Ireland     |        3 |    4 |   70 |          3 |        1 |       3 | white
+            29 | 20 | USA         |        1 |    4 | 9363 |        231 |        1 |       3 | white
+            30 | 20 | USA         |        1 |    4 | 9363 |        231 |        1 |       3 | white
+            28 | 20 | USA         |        1 |    4 | 9363 |        231 |        1 |       3 | white
+(40 rows)
 </pre>
+
+-# Undersampling.  Undersample such that all class values except NULLs end 
+up with the same number of observations as the minority class. 
+Countries with white flags is the minority class with 2 observations, 
+so other class values will be undersampled to 2 observations:
+<pre class="syntax">
+DROP TABLE IF EXISTS output_table;
+SELECT madlib.balance_sample(
+                              'flags',             -- Source table
+                              'output_table',      -- Output table
+                              'mainhue',           -- Class column
+                              'undersample');      -- Undersample
+SELECT * FROM output_table ORDER BY mainhue, name;
+</pre>
+<pre class="result">
+ __madlib_id__ | id |    name     | landmass | zone | area | population | language | colours | mainhue 
+---------------+----+-------------+----------+------+------+------------+----------+---------+---------
+             1 |  1 | Argentina   |        2 |    3 | 2777 |         28 |        2 |       2 | blue
+             2 |  2 | Australia   |        6 |    2 | 7690 |         15 |        1 |       3 | blue
+             4 |  4 | Brazil      |        2 |    3 | 8512 |        119 |        6 |       4 | green
+             3 | 13 | Mexico      |        1 |    4 | 1973 |         77 |        2 |       4 | green
+             5 | 16 | Spain       |        3 |    4 |  505 |         38 |        2 |       2 | red
+             6 | 18 | Switzerland |        3 |    1 |   41 |          6 |        4 |       2 | red
+             8 | 10 | Ireland     |        3 |    4 |   70 |          3 |        1 |       3 | white
+             7 | 20 | USA         |        1 |    4 | 9363 |        231 |        1 |       3 | white
+(8 rows)
+</pre>
+In the case of bootstrapping, we may want to undersample with replacement, 
+so we set the 'with_replacement' parameter to TRUE:
+<pre class="syntax">
+DROP TABLE IF EXISTS output_table;
+SELECT madlib.balance_sample(
+                              'flags',             -- Source table
+                              'output_table',      -- Output table
+                              'mainhue',           -- Class column
+                              'undersample',       -- Undersample
+                               NULL,               -- Output table size will be calculated
+                               NULL,               -- No grouping
+                              'TRUE');             -- Sample with replacement
+SELECT * FROM output_table ORDER BY mainhue, name;
+</pre>
+<pre class="result">
+ __madlib_id__ | id |   name    | landmass | zone | area | population | language | colours | mainhue 
+---------------+----+-----------+----------+------+------+------------+----------+---------+---------
+             2 |  9 | Guatemala |        1 |    4 |  109 |          8 |        2 |       2 | blue
+             1 |  9 | Guatemala |        1 |    4 |  109 |          8 |        2 |       2 | blue
+             3 |  4 | Brazil    |        2 |    3 | 8512 |        119 |        6 |       4 | green
+             4 | 13 | Mexico    |        1 |    4 | 1973 |         77 |        2 |       4 | green
+             6 |  5 | Canada    |        1 |    4 | 9976 |         24 |        1 |       2 | red
+             5 | 19 | UK        |        3 |    4 |  245 |         56 |        1 |       3 | red
+             7 | 20 | USA       |        1 |    4 | 9363 |        231 |        1 |       3 | white
+             8 | 20 | USA       |        1 |    4 | 9363 |        231 |        1 |       3 | white
+(8 rows)
+</pre>
+Note above that some rows may appear multiple times above since we sampled with replacement.
+
+-# Setting class size by count.  Here we set the number of rows for 
+red and blue flags, and leave green and white flags unchanged:
+<pre class="syntax">
+DROP TABLE IF EXISTS output_table;
+SELECT madlib.balance_sample(
+                              'flags',             -- Source table
+                              'output_table',      -- Output table
+                              'mainhue',           -- Class column
+                              'red=7, blue=7');    -- Want 7 reds and 7 blues
+SELECT * FROM output_table ORDER BY mainhue, name;
+</pre>
+<pre class="result">
+ __madlib_id__ | id |    name    | landmass | zone | area | population | language | colours | mainhue 
+---------------+----+------------+----------+------+------+------------+----------+---------+---------
+             5 |  2 | Australia  |        6 |    2 | 7690 |         15 |        1 |       3 | blue
+             7 |  8 | Greece     |        3 |    1 |  132 |         10 |        6 |       2 | blue
+             6 |  8 | Greece     |        3 |    1 |  132 |         10 |        6 |       2 | blue
+             1 |  9 | Guatemala  |        1 |    4 |  109 |          8 |        2 |       2 | blue
+             3 | 17 | Sweden     |        3 |    1 |  450 |          8 |        6 |       2 | blue
+             2 | 17 | Sweden     |        3 |    1 |  450 |          8 |        6 |       2 | blue
+             4 | 17 | Sweden     |        3 |    1 |  450 |          8 |        6 |       2 | blue
+             8 |  4 | Brazil     |        2 |    3 | 8512 |        119 |        6 |       4 | green
+            18 | 11 | Jamaica    |        1 |    4 |   11 |          2 |        1 |       3 | green
+            19 | 13 | Mexico     |        1 |    4 | 1973 |         77 |        2 |       4 | green
+            13 |  3 | Austria    |        3 |    1 |   84 |          8 |        4 |       2 | red
+            14 |  5 | Canada     |        1 |    4 | 9976 |         24 |        1 |       2 | red
+            17 |  6 | China      |        5 |    1 | 9561 |       1008 |        7 |       2 | red
+            15 | 12 | Luxembourg |        3 |    1 |    3 |          0 |        4 |       3 | red
+            16 | 14 | Norway     |        3 |    1 |  324 |          4 |        6 |       3 | red
+            11 | 15 | Portugal   |        3 |    4 |   92 |         10 |        6 |       5 | red
+            12 | 16 | Spain      |        3 |    4 |  505 |         38 |        2 |       2 | red
+             9 | 10 | Ireland    |        3 |    4 |   70 |          3 |        1 |       3 | white
+            10 | 20 | USA        |        1 |    4 | 9363 |        231 |        1 |       3 | white
+(19 rows)
+</pre>
+Next we set the number of rows for red and blue flags, and also set an 
+output table size.  This means that green and white flags will be 
+uniformly sampled to get to the desired output table size:
+<pre class="syntax">
+DROP TABLE IF EXISTS output_table;
+SELECT madlib.balance_sample(
+                              'flags',             -- Source table
+                              'output_table',      -- Output table
+                              'mainhue',           -- Class column
+                              'red=7, blue=7',     -- Want 7 reds and 7 blues
+                               22);                -- Desired output table size
+SELECT * FROM output_table ORDER BY mainhue, name;
+</pre>
+<pre class="result">
+ __madlib_id__ | id |    name     | landmass | zone | area | population | language | colours | mainhue 
+---------------+----+-------------+----------+------+------+------------+----------+---------+---------
+            16 |  1 | Argentina   |        2 |    3 | 2777 |         28 |        2 |       2 | blue
+            20 |  2 | Australia   |        6 |    2 | 7690 |         15 |        1 |       3 | blue
+            21 |  2 | Australia   |        6 |    2 | 7690 |         15 |        1 |       3 | blue
+            22 |  8 | Greece      |        3 |    1 |  132 |         10 |        6 |       2 | blue
+            18 | 17 | Sweden      |        3 |    1 |  450 |          8 |        6 |       2 | blue
+            19 | 17 | Sweden      |        3 |    1 |  450 |          8 |        6 |       2 | blue
+            17 | 17 | Sweden      |        3 |    1 |  450 |          8 |        6 |       2 | blue
+             9 |  4 | Brazil      |        2 |    3 | 8512 |        119 |        6 |       4 | green
+            10 |  4 | Brazil      |        2 |    3 | 8512 |        119 |        6 |       4 | green
+             8 | 11 | Jamaica     |        1 |    4 |   11 |          2 |        1 |       3 | green
+            11 | 13 | Mexico      |        1 |    4 | 1973 |         77 |        2 |       4 | green
+             6 |  3 | Austria     |        3 |    1 |   84 |          8 |        4 |       2 | red
+             7 |  5 | Canada      |        1 |    4 | 9976 |         24 |        1 |       2 | red
+             2 |  7 | Denmark     |        3 |    1 |   43 |          5 |        6 |       2 | red
+             1 | 12 | Luxembourg  |        3 |    1 |    3 |          0 |        4 |       3 | red
+             3 | 15 | Portugal    |        3 |    4 |   92 |         10 |        6 |       5 | red
+             5 | 16 | Spain       |        3 |    4 |  505 |         38 |        2 |       2 | red
+             4 | 18 | Switzerland |        3 |    1 |   41 |          6 |        4 |       2 | red
+            14 | 10 | Ireland     |        3 |    4 |   70 |          3 |        1 |       3 | white
+            13 | 10 | Ireland     |        3 |    4 |   70 |          3 |        1 |       3 | white
+            15 | 10 | Ireland     |        3 |    4 |   70 |          3 |        1 |       3 | white
+            12 | 20 | USA         |        1 |    4 | 9363 |        231 |        1 |       3 | white
+(22 rows)
+</pre>
+
+-# To make NULL a valid class value, set the parameter to keep NULLs:
+<pre class="syntax">
+DROP TABLE IF EXISTS output_table;
+SELECT madlib.balance_sample(
+                              'flags',             -- Source table
+                              'output_table',      -- Output table
+                              'mainhue',           -- Class column
+                               NULL,               -- Uniform
+                               NULL,               -- Output table size
+                               NULL,               -- No grouping
+                               NULL,               -- Sample without replacement
+                              'TRUE');             -- Make NULLs a valid class value
+SELECT * FROM output_table ORDER BY mainhue, name;
+</pre>
+<pre class="result">
+ __madlib_id__ | id |    name     | landmass | zone | area | population | language | colours | mainhue 
+---------------+----+-------------+----------+------+------+------------+----------+---------+---------
+            25 |  1 | Argentina   |        2 |    3 | 2777 |         28 |        2 |       2 | blue
+            22 |  2 | Australia   |        6 |    2 | 7690 |         15 |        1 |       3 | blue
+            24 |  8 | Greece      |        3 |    1 |  132 |         10 |        6 |       2 | blue
+            21 |  9 | Guatemala   |        1 |    4 |  109 |          8 |        2 |       2 | blue
+            23 | 17 | Sweden      |        3 |    1 |  450 |          8 |        6 |       2 | blue
+             7 |  4 | Brazil      |        2 |    3 | 8512 |        119 |        6 |       4 | green
+             6 |  4 | Brazil      |        2 |    3 | 8512 |        119 |        6 |       4 | green
+            10 | 11 | Jamaica     |        1 |    4 |   11 |          2 |        1 |       3 | green
+             8 | 13 | Mexico      |        1 |    4 | 1973 |         77 |        2 |       4 | green
+             9 | 13 | Mexico      |        1 |    4 | 1973 |         77 |        2 |       4 | green
+             3 |  3 | Austria     |        3 |    1 |   84 |          8 |        4 |       2 | red
+             1 |  5 | Canada      |        1 |    4 | 9976 |         24 |        1 |       2 | red
+             2 | 16 | Spain       |        3 |    4 |  505 |         38 |        2 |       2 | red
+             4 | 18 | Switzerland |        3 |    1 |   41 |          6 |        4 |       2 | red
+             5 | 19 | UK          |        3 |    4 |  245 |         56 |        1 |       3 | red
+            13 | 10 | Ireland     |        3 |    4 |   70 |          3 |        1 |       3 | white
+            11 | 10 | Ireland     |        3 |    4 |   70 |          3 |        1 |       3 | white
+            14 | 10 | Ireland     |        3 |    4 |   70 |          3 |        1 |       3 | white
+            12 | 10 | Ireland     |        3 |    4 |   70 |          3 |        1 |       3 | white
+            15 | 20 | USA         |        1 |    4 | 9363 |        231 |        1 |       3 | white
+            17 | 21 | xElba       |        3 |    1 |    1 |          1 |        6 |         | 
+            18 | 21 | xElba       |        3 |    1 |    1 |          1 |        6 |         | 
+            16 | 21 | xElba       |        3 |    1 |    1 |          1 |        6 |         | 
+            20 | 22 | xPrussia    |        3 |    1 |  249 |         61 |        4 |         | 
+            19 | 22 | xPrussia    |        3 |    1 |  249 |         61 |        4 |         | 
+(25 rows)
+</pre>
+
+@anchor literature
+@par Literature
+
+[1] Object naming in PostgreSQL
+https://www.postgresql.org/docs/current/static/sql-syntax-lexical.html#SQL-SYNTAX-IDENTIFIERS
+
+@anchor related
+@par Related Topics
+
+File balance_sample.sql_in for list of functions and usage.
+
 */
 
 CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.balance_sample(
