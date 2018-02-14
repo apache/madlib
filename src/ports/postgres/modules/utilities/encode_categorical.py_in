@@ -79,7 +79,7 @@ class CategoricalEncoder(object):
         self.output_dictionary = output_dictionary
         self.distributed_by = distributed_by if not is_platform_pg() else None
 
-        self._name_others_col = "_MISC__"
+        self._name_others_col = "_misc__"
         self._array_out_name = "__encoded_variables__"
 
         # create new parameters after validating and parsing inputs
@@ -307,30 +307,34 @@ class CategoricalEncoder(object):
                 else:
                     return ''
                 v_type = list
+                cast_str = ''
             elif v is None:
                 value_str = "IS NULL"
                 v_type = None
+                cast_str = ''
             else:
                 # assume v is a string if not list/tuple and not None
                 value_str = "= '{v}'".format(v=str(v))
                 v_type = str
+                cast_str = '::TEXT'
 
             if self.output_type not in ('array', 'svec'):
                 if not self._output_dictionary:
-                    value_names = {None: 'NULL',
+                    value_names = {None: 'null',
                                    list: self._name_others_col,
                                    str: strip_end_quotes(v)}
-                    alias = 'AS "{0}_{1}"'.format(col_no_quotes, value_names[v_type])
+                    alias_val = value_names[v_type]
                 else:
-                    alias = 'AS "{0}_{1}"'.format(col_no_quotes, seq)
+                    alias_val = str(seq)
+                alias = 'AS ' + quote_ident('{0}_{1}'.format(col_no_quotes, alias_val))
             else:
                 # if output_type is array-like then each case does not
                 # require an alias
                 alias = ""
-            return ("(CASE WHEN ({col} {value_str}) "
+            return ("(CASE WHEN (({col}){cast_str} {value_str}) "
                     "THEN 1 ELSE 0 END)::INTEGER {alias}".
-                    format(col=col, value_str=value_str, alias=alias))
-
+                    format(col=col, cast_str=cast_str,
+                           value_str=value_str, alias=alias))
         self._output_dictionary = (self._output_dictionary or
                                    self._is_col_name_long(col_to_values))
         col_switch_list = []
@@ -451,7 +455,7 @@ class CategoricalEncoder(object):
         top_val_sql_list = []
         for col in self._output_cols:
             if not self.encode_null:
-                filter_str = 'WHERE {col} IS NOT NULL'.format(col=col)
+                filter_str = 'WHERE ({col}) IS NOT NULL'.format(col=col)
             else:
                 filter_str = ''
             # get value distribution for each column independently
@@ -461,7 +465,7 @@ class CategoricalEncoder(object):
                     array_agg(f order by c desc) as value,
                     array_agg(c order by c desc) as freq
                 FROM (
-                    SELECT {col}::text as f, count(*)::integer as c
+                    SELECT ({col})::text as f, count(*)::integer as c
                     FROM {tbl}
                     {filter_str}
                     GROUP BY {col}
@@ -514,7 +518,13 @@ class CategoricalEncoder(object):
     def _get_distinct_values(self):
         """ Find distinct values of each categorical column
         """
-        array_agg_str = ',\n'.join('array_agg(DISTINCT {c}) AS {c_quoted}'.
+        # Boolean variables when passed to Python will refer to the values as
+        # 'True', 'False' with the first letter as capital, which will cause the
+        # generated column name as <boolean column name>_True/False that needs
+        # double quoting. To ensure the boolean values remain lower case, cast
+        # the column to text format before copying to Python so that boolean The
+        # same logic is applied generated column name with _null and _misc
+        array_agg_str = ',\n'.join('array_agg(DISTINCT ({c})::TEXT) AS {c_quoted}'.
                                    format(c=c, c_quoted=quote_ident(c))
                                    for c in self._output_cols)
 
