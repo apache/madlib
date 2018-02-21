@@ -45,10 +45,10 @@ def _tree_validate_args(
     """
     if not split_criterion:
         split_criterion = 'gini'
-    if (split_criterion.lower().strip() not in
-            ['mse', 'gini', 'cross-entropy', 'entropy',
-             'misclass', 'misclassification']):
-        plpy.error("Decision tree error: Invalid split_criterion.")
+    _assert(split_criterion.lower().strip() in ['mse', 'gini', 'cross-entropy',
+                                                'entropy', 'misclass',
+                                                'misclassification'],
+            "Decision tree error: Invalid split_criterion.")
 
     _assert(training_table_name and
             training_table_name.strip().lower() not in ('null', ''),
@@ -265,6 +265,8 @@ def _get_tree_states(schema_madlib, is_classification, split_criterion,
                          dep_n_levels, filter_dep, null_proxy)
         # some features may be dropped if they have only one value
         cat_features = bins['cat_features']
+        if not cat_features and not con_features:
+            plpy.error("Decision tree: None of the input features are valid")
 
         # 4) Run tree train till the training is finished
         #  finished: 0 = running, 1 = finished training, 2 = terminated prematurely
@@ -291,6 +293,9 @@ def _get_tree_states(schema_madlib, is_classification, split_criterion,
                                       is_classification, dep_n_levels,
                                       filter_dep, null_proxy)
                 cat_features = bins['cat_features']
+                if not cat_features and not con_features:
+                    plpy.error("Decision tree: None of the input features "
+                               "are valid for some groups")
 
                 # 3b) Load each group's tree state in memory and set to the initial tree
                 tree_states = _tree_train_grps_using_bins(**locals())
@@ -350,7 +355,7 @@ def _build_tree(schema_madlib, is_classification, split_criterion,
                 cat_features, ordered_cat_features,
                 boolean_cats, con_features, grouping_cols,
                 weights, max_depth, min_split, min_bucket, n_bins,
-                cp_table, max_n_surr=0, null_as_category=False,
+                cp_table, max_n_surr=0, null_proxy=None,
                 msg_level="warning", n_folds=0, **kwargs):
 
     compute_cp_list = False
@@ -721,11 +726,11 @@ def _get_bins(schema_madlib, training_table_name,
         all_levels = plpy.execute(sql_all_cats)
 
         if len(all_levels) != len(cat_features):
-            plpy.warning("Decision tree warning: Categorical columns with only "
-                         "one value are dropped from the tree model.")
             use_cat_features = [row['colname'] for row in all_levels]
             cat_features = [feature for feature in cat_features
                             if feature in use_cat_features]
+            plpy.warning("Decision tree warning: Categorical columns with only "
+                         "one value are dropped from the tree model.")
 
         col_to_row = dict((row['colname'], i) for i, row in enumerate(all_levels))
 
@@ -1463,7 +1468,6 @@ def _create_summary_table(
         cp_str = py_list_to_sql_string(cp, 'double precision')
     else:
         cp_str = str(cp) + "::double precision"
-    # n_folds_str = n_folds if running_cv else "NULL"
 
     if use_existing_tables:
         header = "INSERT INTO {0} ".format(
@@ -1863,7 +1867,7 @@ def _xvalidate(schema_madlib, tree_states, training_table_name, output_table_nam
                split_criterion, grouping_cols, weights, max_depth,
                min_split, min_bucket, n_bins, is_classification,
                dep_is_bool, dep_n_levels, n_folds, n_rows,
-               max_n_surr, msg_level='warning', **kwargs):
+               max_n_surr, null_proxy, msg_level='warning', **kwargs):
     """
     Run cross validation for decision tree over multiple cp values
 
@@ -2078,12 +2082,12 @@ def _get_xvalidate_params(**kwargs):
                        quoted_args['n_bins'],
                        "%explore%",
                        quoted_args['max_n_surr'],
-                       quoted_args['msg_level']
-                       # quoted_args['n_folds']
+                       quoted_args['msg_level'],
+                       quoted_args['null_proxy']
                        ]
     modeling_param_types = (["BOOLEAN"] + ["TEXT"] * 5 + ["BOOLEAN"] + ["TEXT"] +
                             ["VARCHAR[]"] * 4 + ["TEXT"] * 2 + ["INTEGER"] * 4 +
-                            ["TEXT", "SMALLINT", "TEXT"])
+                            ["TEXT", "SMALLINT", "TEXT", "TEXT"])
     predict_params = ["%model%", "%data%", "%prediction%", "'response'", "True"]
     predict_param_types = (["VARCHAR"] * 4 + ["BOOLEAN"])
     metric_params = ["%data%",
