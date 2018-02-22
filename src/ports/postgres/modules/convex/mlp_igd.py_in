@@ -749,8 +749,18 @@ def mlp_predict(schema_madlib,
         summary['layer_sizes'], array_type="DOUBLE PRECISION")
     is_classification = int(summary["is_classification"])
     is_response = int(pred_type == 'response')
-    grouping_col = '' if summary['grouping_col']=='NULL' \
-                    else summary['grouping_col']
+    if 'grouping_col' in summary:
+        # This model was created in MADlib 1.13 or greater version
+        is_v112_model = False
+        grouping_col = '' if summary['grouping_col']=='NULL' \
+                        else summary['grouping_col']
+    else:
+        # This model was created in MADlib 1.12. Grouping was not
+        # supported in 1.12, but was added later in 1.13.
+        is_v112_model = True
+        grouping_col = ''
+        # Validate the summary table created with the 1.12 MLP model table.
+        cols_in_tbl_valid(summary_table, ['x_means', 'x_stds'], 'MLP')
 
     pred_name = ('"prob_{0}"' if pred_type == "prob" else
                 '"estimated_{0}"').format(
@@ -775,7 +785,8 @@ def mlp_predict(schema_madlib,
     grouping_col_comma = ""
     join_str = ''
     grouping_col_list = split_quoted_delimited_str(grouping_col)
-    _validate_standardization_table(standardization_table, grouping_col_list)
+    if not is_v112_model:
+        _validate_standardization_table(standardization_table, grouping_col_list)
     if grouping_col:
         join_str = """JOIN {model_table}
             USING ({grouping_col})
@@ -796,14 +807,34 @@ def mlp_predict(schema_madlib,
     else:
         # if not grouping, then directly read out the coeff, mean
         # and std values from the model and standardization tables.
-        standardization = plpy.execute(
-            "SELECT * FROM {0}".format(standardization_table))[0]
+
+        # Fix to ensure that 1.12 models run on 1.13 or higher.
+        # As a result of adding grouping support in 1.13, the following change
+        # was also made wrt standardization. The x_mean and x_std
+        # values were stored in the summary table itself in MADlib 1.12, and
+        # they were named as: x_means and x_stds.
+        # From MADlib 1.13 onwards, these parameters were moved to the
+        # _standardization table, and were renamed to mean and std.
+        if is_v112_model:
+            # Get mean and std from the summary table
+            mean_str = "x_means"
+            std_str = "x_stds"
+            mean_std_table = summary_table
+        else:
+            # Get mean and std from the standardization table
+            mean_str = "mean"
+            std_str = "std"
+            mean_std_table = standardization_table
+        standardization = plpy.execute("""
+                SELECT {0}, {1}
+                FROM {2}
+            """.format(mean_str, std_str, mean_std_table))[0]
         coeff = py_list_to_sql_string(plpy.execute(
             "SELECT * FROM {0}".format(model_table))[0]["coeff"])
         x_means = py_list_to_sql_string(
-            standardization["mean"], array_type="DOUBLE PRECISION")
+            standardization[mean_str], array_type="DOUBLE PRECISION")
         x_stds = py_list_to_sql_string(
-            standardization["std"], array_type="DOUBLE PRECISION")
+            standardization[std_str], array_type="DOUBLE PRECISION")
 
         coeff_column = "{coeff}".format(**locals())
         mean_col = "{x_means}".format(**locals())
@@ -824,7 +855,7 @@ def mlp_predict(schema_madlib,
         dependent_type = get_expr_type(dependent_varname, source_table)
         unnest_if_not_array = ""
         # Return the same type as the user provided.  Internally we always
-        # use an array, but if they provided a scaler, unnest it for
+        # use an array, but if they provided a scalar, unnest it for
         # the user
         if "[]" not in dependent_type:
             unnest_if_not_array = "UNNEST"
