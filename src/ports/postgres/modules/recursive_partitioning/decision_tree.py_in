@@ -45,10 +45,10 @@ def _tree_validate_args(
     """
     if not split_criterion:
         split_criterion = 'gini'
-    if (split_criterion.lower().strip() not in
-            ['mse', 'gini', 'cross-entropy', 'entropy',
-             'misclass', 'misclassification']):
-        plpy.error("Decision tree error: Invalid split_criterion.")
+    _assert(split_criterion.lower().strip() in ['mse', 'gini', 'cross-entropy',
+                                                'entropy', 'misclass',
+                                                'misclassification'],
+            "Decision tree error: Invalid split_criterion.")
 
     _assert(training_table_name and
             training_table_name.strip().lower() not in ('null', ''),
@@ -265,6 +265,8 @@ def _get_tree_states(schema_madlib, is_classification, split_criterion,
                          dep_n_levels, filter_dep, null_proxy)
         # some features may be dropped if they have only one value
         cat_features = bins['cat_features']
+        if not cat_features and not con_features:
+            plpy.error("Decision tree: None of the input features are valid")
 
         # 4) Run tree train till the training is finished
         #  finished: 0 = running, 1 = finished training, 2 = terminated prematurely
@@ -291,6 +293,9 @@ def _get_tree_states(schema_madlib, is_classification, split_criterion,
                                       is_classification, dep_n_levels,
                                       filter_dep, null_proxy)
                 cat_features = bins['cat_features']
+                if not cat_features and not con_features:
+                    plpy.error("Decision tree: None of the input features "
+                               "are valid for some groups")
 
                 # 3b) Load each group's tree state in memory and set to the initial tree
                 tree_states = _tree_train_grps_using_bins(**locals())
@@ -350,8 +355,8 @@ def _build_tree(schema_madlib, is_classification, split_criterion,
                 cat_features, ordered_cat_features,
                 boolean_cats, con_features, grouping_cols,
                 weights, max_depth, min_split, min_bucket, n_bins,
-                cp_table, max_n_surr=0, null_as_category=False,
-                msg_level="warning", k=0, **kwargs):
+                cp_table, max_n_surr=0, null_proxy=None,
+                msg_level="warning", n_folds=0, **kwargs):
 
     compute_cp_list = False
     if grouping_cols:
@@ -502,18 +507,18 @@ def _create_output_tables(schema_madlib, training_table_name, output_table_name,
                           id_col_name, dependent_variable, list_of_features,
                           is_classification, n_all_rows, n_rows, dep_list, cp,
                           all_cols_types, grouping_cols=None,
-                          use_existing_tables=False, running_cv=False, k=0,
-                          null_proxy=None, **kwargs):
+                          use_existing_tables=False, running_cv=False,
+                          n_folds=0, null_proxy=None, **kwargs):
     if not grouping_cols:
         _create_result_table(schema_madlib, tree_states[0],
                              bins['cat_origin'], bins['cat_n'], cat_features,
                              con_features, output_table_name,
-                             use_existing_tables, running_cv, k)
+                             use_existing_tables, running_cv, n_folds)
     else:
         _create_grp_result_table(
             schema_madlib, tree_states, bins, cat_features,
             con_features, output_table_name, grouping_cols, training_table_name,
-            use_existing_tables, running_cv, k)
+            use_existing_tables, running_cv, n_folds)
 
     failed_groups = sum(row['finished'] != 1 for row in tree_states)
     _create_summary_table(
@@ -522,7 +527,7 @@ def _create_output_tables(schema_madlib, training_table_name, output_table_name,
         dependent_variable, list_of_features,
         failed_groups, is_classification, n_all_rows,
         n_rows, dep_list, all_cols_types, cp, grouping_cols, 1,
-        use_existing_tables, running_cv, k, null_proxy)
+        use_existing_tables, n_folds, null_proxy)
 # -------------------------------------------------------------------------
 
 
@@ -721,11 +726,11 @@ def _get_bins(schema_madlib, training_table_name,
         all_levels = plpy.execute(sql_all_cats)
 
         if len(all_levels) != len(cat_features):
-            plpy.warning("Decision tree warning: Categorical columns with only "
-                         "one value are dropped from the tree model.")
             use_cat_features = [row['colname'] for row in all_levels]
             cat_features = [feature for feature in cat_features
                             if feature in use_cat_features]
+            plpy.warning("Decision tree warning: Categorical columns with only "
+                         "one value are dropped from the tree model.")
 
         col_to_row = dict((row['colname'], i) for i, row in enumerate(all_levels))
 
@@ -1440,7 +1445,7 @@ def _create_summary_table(
         cat_features, con_features, dependent_variable, list_of_features,
         num_failed_groups, is_classification, n_all_rows, n_rows,
         dep_list, all_cols_types, cp, grouping_cols=None, n_groups=1,
-        use_existing_tables=False, running_cv=False, k=0, null_proxy=None):
+        use_existing_tables=False, n_folds=0, null_proxy=None):
 
     # dependent variables
     if dep_list:
@@ -1463,7 +1468,6 @@ def _create_summary_table(
         cp_str = py_list_to_sql_string(cp, 'double precision')
     else:
         cp_str = str(cp) + "::double precision"
-    fold = k if running_cv else "NULL"
 
     if use_existing_tables:
         header = "INSERT INTO {0} ".format(
@@ -1471,7 +1475,7 @@ def _create_summary_table(
     else:
         header = "CREATE TABLE {0} AS ".format(
             add_postfix(output_table_name, "_summary"))
-    null_proxy_str="NULL" if null_proxy is None else null_proxy
+    null_proxy_str="NULL" if null_proxy is None else "'{0}'".format(null_proxy)
     sql = header + """
             SELECT
                 'tree_train'::text             AS method,
@@ -1492,10 +1496,9 @@ def _create_summary_table(
                 '{dep_type}'::text             AS dependent_var_type,
                 {cp_str}                       AS input_cp,
                 '{indep_type}'::text           AS independent_var_types,
-                {fold}::integer                AS k,
-                '{null_proxy_str}'::text       AS null_proxy
-
-        """.format(**locals())
+                {n_folds}::integer             AS n_folds,
+                {null_proxy_str}::text         AS null_proxy
+            """.format(**locals())
     plpy.execute(sql)
 # ------------------------------------------------------------
 
@@ -1864,7 +1867,7 @@ def _xvalidate(schema_madlib, tree_states, training_table_name, output_table_nam
                split_criterion, grouping_cols, weights, max_depth,
                min_split, min_bucket, n_bins, is_classification,
                dep_is_bool, dep_n_levels, n_folds, n_rows,
-               max_n_surr, msg_level='warning', **kwargs):
+               max_n_surr, null_proxy, msg_level='warning', **kwargs):
     """
     Run cross validation for decision tree over multiple cp values
 
@@ -2079,11 +2082,12 @@ def _get_xvalidate_params(**kwargs):
                        quoted_args['n_bins'],
                        "%explore%",
                        quoted_args['max_n_surr'],
-                       quoted_args['msg_level']
+                       quoted_args['msg_level'],
+                       quoted_args['null_proxy']
                        ]
     modeling_param_types = (["BOOLEAN"] + ["TEXT"] * 5 + ["BOOLEAN"] + ["TEXT"] +
                             ["VARCHAR[]"] * 4 + ["TEXT"] * 2 + ["INTEGER"] * 4 +
-                            ["TEXT", "SMALLINT", "TEXT"])
+                            ["TEXT", "SMALLINT", "TEXT", "TEXT"])
     predict_params = ["%model%", "%data%", "%prediction%", "'response'", "True"]
     predict_param_types = (["VARCHAR"] * 4 + ["BOOLEAN"])
     metric_params = ["%data%",
