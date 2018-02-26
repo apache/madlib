@@ -27,6 +27,7 @@ if __name__ != "__main__":
     from utilities.utilities import _assert
     from utilities.utilities import extract_keyvalue_params
     from utilities.utilities import unique_string
+    from utilities.utilities import collate_plpy_result
     from utilities.validate_args import columns_exist_in_table
     from utilities.validate_args import get_cols
     from utilities.validate_args import table_exists
@@ -65,7 +66,7 @@ def _get_level_frequency_distribution(source_table, class_col):
         None is a valid key in this dict, capturing NULL value in the database.
     """
     query_result = plpy.execute("""
-                    SELECT ({class_col})::text AS classes,
+                    SELECT ({class_col})::TEXT AS classes,
                            count(*) AS class_count
                     FROM {source_table}
                     GROUP BY ({class_col})
@@ -457,8 +458,6 @@ def balance_sample(schema_madlib, source_table, output_table, class_col,
                         SELECT * FROM {source_table}
                         WHERE {class_col} IS NOT NULL
                     """.format(**locals()))
-        actual_level_counts = _get_level_frequency_distribution(new_source_table,
-                                                                class_col)
         # class_sizes can be of two forms:
         #   1. A string describing sampling strategy (as described in
         #       _validate_and_get_sampling_strategy).
@@ -475,17 +474,19 @@ def balance_sample(schema_madlib, source_table, output_table, class_col,
                 class_sizes, output_table_size)
         else:
             sampling_strategy_str = None
+            distinct_levels = collate_plpy_result(
+                plpy.execute("SELECT DISTINCT ({0})::TEXT as levels FROM {1} ".
+                             format(class_col, source_table)))['levels']
             try:
                 for each_level, each_class_size in parsed_class_sizes.items():
-                    _assert(each_level in actual_level_counts,
+                    _assert(each_level in distinct_levels,
                             "Sample: Invalid class value specified ({0})".
                             format(each_level))
                     each_class_size = int(each_class_size)
                     _assert(each_class_size >= 1,
                             "Sample: Class size has to be greater than zero")
                     parsed_class_sizes[each_level] = each_class_size
-
-            except TypeError:
+            except ValueError:
                 plpy.error("Sample: Invalid value for class_sizes ({0})".
                            format(class_sizes))
 
@@ -493,6 +494,8 @@ def balance_sample(schema_madlib, source_table, output_table, class_col,
         # the input table, class_sizes, and output_table_size params. This also
         # includes info about the resulting sampling strategy, i.e., one of
         # UNDERSAMPLE, OVERSAMPLE, or NOSAMPLE for each level.
+        actual_level_counts = _get_level_frequency_distribution(new_source_table,
+                                                                class_col)
         target_class_sizes = _get_target_level_counts(sampling_strategy_str,
                                                       parsed_class_sizes,
                                                       actual_level_counts,
