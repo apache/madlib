@@ -87,7 +87,7 @@ def _get_level_frequency_distribution(source_table, class_col,
             array_agg(classes) as classes,
             array_agg(class_count) as class_count
         FROM(
-            -- for each group, class combination present in source table
+            -- for each group and class combination present in source table
             -- get the count of rows for that combination
             SELECT
                 {array_grp_by_cols_comma}
@@ -106,6 +106,8 @@ def _get_level_frequency_distribution(source_table, class_col,
 
     actual_level_counts = {}
     for each_row in query_result:
+        # group_values is a list for each row; convert it to a tuple to use as
+        # key in a dictionary
         grp = tuple(each_row['group_values']) if is_grouping else None
         grp_levels, grp_counts = each_row['classes'], each_row['class_count']
         actual_level_counts[grp] = dict(zip(grp_levels, grp_counts))
@@ -186,43 +188,52 @@ def _choose_strategy(actual_count, desired_count):
 
 
 def _get_desired_target_level_counts(desired_level_counts, actual_level_counts,
-                                     output_table_size, grp_values=None):
+                                     output_table_size, n_grp_values=1):
     """ Returns the target level counts for each class, based on the user
         defined class_size string. The strategy of (under)oversampling for each
         class level is chosen based on the desired number of counts for a level,
         and the actual number of counts already present in the input table.
 
     """
-    if not grp_values:
-        grp_values = [True]
     target_level_counts = {}
     try:
         for each_level, desired_count in desired_level_counts.items():
+            # actual_level_counts are already group specific, whereas
+            # desired_level_counts are for all groups
+            per_grp_desired_count = math.ceil(float(desired_count) / n_grp_values)
             sample_strategy = _choose_strategy(actual_level_counts[each_level],
-                                               desired_count)
-            target_level_counts[each_level] = (desired_count, sample_strategy)
+                                               per_grp_desired_count)
+            target_level_counts[each_level] = (per_grp_desired_count,
+                                               sample_strategy)
     except KeyError:
+        grp_error = "for each group " if n_grp_values > 1 else ""
         plpy.error("Balance sample: Desired class level ({0}) not present in the "
-                   " data".format(each_level))
+                   "data {1}".format(each_level, grp_error))
+
+    # desired levels can only have a subset of all levels. For the remaining
+    # levels in actual_level_counts, compute the desired counts
     remaining_levels = (set(actual_level_counts.keys()) -
                         set(desired_level_counts.keys()))
-    #   if 'output_table_size' = NULL, unspecified level counts remain as is
-    #   if 'output_table_size' = <Integer>, divide remaining row count
-    #                             uniformly among unspecified level counts
+    #   if 'output_table_size' = NULL, remaining level counts remain as is
+    #   if 'output_table_size' = <Integer>, divide remaining count
+    #                             uniformly among reamining levels
     if output_table_size:
-        # Uniformly distribute across the remaining class levels
-        remaining_rows = output_table_size - sum(desired_level_counts.values())
+        # output_table_size is for the whole table and should be split evenly
+        # between the groups
+        remaining_rows = math.ceil(float(output_table_size -
+                                         sum(desired_level_counts.values())) /
+                                   n_grp_values)
         if remaining_rows > 0:
+            # Uniformly distribute the remaining class levels
             rows_per_level = math.ceil(float(remaining_rows) /
                                        len(remaining_levels))
             for each_level in remaining_levels:
                 sample_strategy = _choose_strategy(
                     actual_level_counts[each_level], rows_per_level)
-                target_level_counts[each_level] = (rows_per_level,
-                                                   sample_strategy)
+                target_level_counts[each_level] = (rows_per_level, sample_strategy)
     else:
         # When output_table_size is unspecified, rows from the input table
-        # are sampled as is for remaining class levels. This is same as the
+        # are sampled as is for remaining class levels. This is called as the
         # NOSAMPLE strategy.
         for each_level in remaining_levels:
             target_level_counts[each_level] = (actual_level_counts[each_level],
@@ -233,7 +244,8 @@ def _get_desired_target_level_counts(desired_level_counts, actual_level_counts,
 
 def _get_supported_target_level_counts(sampling_strategy_str,
                                        actual_level_counts,
-                                       output_table_size):
+                                       output_table_size,
+                                       n_grp_values=1):
     """ Returns the target level counts for all levels when the class_size param
         is one of [uniform, undersample, oversample]. The strategy of
         (under)oversampling for a specific class level is chosen based on the
@@ -241,34 +253,37 @@ def _get_supported_target_level_counts(sampling_strategy_str,
         already present in the input table.
 
     """
-    def ceil_of_mean(numbers):
-        return math.ceil(float(sum(numbers)) / max(len(numbers), 1))
-
     target_level_counts = {}
-    # UNIFORM: Ensure all level counts are same (size determined by output_table_size)
-    # UNDERSAMPLE: Ensure all level counts are same as the minimum count
-    # OVERSAMPLE: Ensure all level counts are same as the maximum count
-    size_function = {UNDERSAMPLE: min,
-                     OVERSAMPLE: max,
-                     UNIFORM: ceil_of_mean
-                     }[sampling_strategy_str]
-    if sampling_strategy_str == UNIFORM and output_table_size:
-        # Ignore actual counts for computing target sizes
-        # if output_table_size is specified
-        target_size_per_level = math.ceil(float(output_table_size) /
-                                          len(actual_level_counts))
+    if sampling_strategy_str == UNIFORM:
+        # UNIFORM: Ensure all level counts are same
+        #  (size determined by output_table_size or by existing total count)
+        if output_table_size:
+            # Ignore actual counts for computing target sizes
+            # if output_table_size is specified
+            total_ = float(output_table_size) / n_grp_values
+            size_ = len(actual_level_counts)
+        else:
+            total_ = sum(actual_level_counts.values())
+            size_ = len(actual_level_counts)
+        target_size_per_level = math.ceil(float(total_) / size_)
     else:
+        # UNDERSAMPLE: Ensure all level counts are same as the minimum count
+        # OVERSAMPLE: Ensure all level counts are same as the maximum count
+        size_function = {UNDERSAMPLE: min,
+                         OVERSAMPLE: max
+                         }[sampling_strategy_str]
         target_size_per_level = size_function(actual_level_counts.values())
+
     for each_level, actual_count in actual_level_counts.items():
         sample_strategy = _choose_strategy(actual_count, target_size_per_level)
-        target_level_counts[each_level] = (target_size_per_level,
-                                           sample_strategy)
+        target_level_counts[each_level] = (target_size_per_level, sample_strategy)
     return target_level_counts
 # -------------------------------------------------------------------------
 
 
 def _get_target_level_counts(sampling_strategy_str, desired_level_counts,
-                             actual_level_counts, output_table_size):
+                             actual_level_counts, output_table_size,
+                             n_grp_values=1):
     """
     @param sampling_strategy_str: one of [UNIFORM, UNDERSAMPLE, OVERSAMPLE, None].
                                This is 'None' only if this is user-defined, i.e.,
@@ -291,17 +306,16 @@ def _get_target_level_counts(sampling_strategy_str, desired_level_counts,
     if not sampling_strategy_str:
         # This case implies user has provided a desired count for one or more
         # levels. Counts for the rest of the levels depend on 'output_table_size'.
-        target_level_counts = _get_desired_target_level_counts(desired_level_counts,
-                                                               actual_level_counts,
-                                                               output_table_size)
+        target_level_counts = _get_desired_target_level_counts(
+            desired_level_counts, actual_level_counts,
+            output_table_size, n_grp_values)
     else:
-        # This case imples the user has chosen one of [uniform, undersample,
-        # oversample] for the class_size param.
-        target_level_counts = _get_supported_target_level_counts(sampling_strategy_str,
-                                                                 actual_level_counts,
-                                                                 output_table_size)
+        # This case imples the user has chosen one of
+        # [uniform, undersample, oversample] for the class_size param.
+        target_level_counts = _get_supported_target_level_counts(
+            sampling_strategy_str, actual_level_counts,
+            output_table_size, n_grp_values)
     return target_level_counts
-
 # -------------------------------------------------------------------------
 
 
@@ -324,7 +338,8 @@ def _get_sampling_strategy_counts(target_class_sizes):
 # ------------------------------------------------------------------------------
 
 
-def _get_nosample_subquery(source_table, class_col, nosample_levels):
+def _get_nosample_subquery(source_table, class_col, nosample_levels,
+                           grp_dict=None):
     """ Return the subquery for fetching all rows as is from the input table
         for specific class levels.
     """
@@ -332,17 +347,24 @@ def _get_nosample_subquery(source_table, class_col, nosample_levels):
         return ''
     nosample_level_str = ','.join(["'{0}'".format(level)
                                    for level in nosample_levels if level])
+    if grp_dict:
+        grp_filter = ' AND ' + ' AND '.join("{0} = '{1}'".format(k, v)
+                                            for k, v in grp_dict.items())
+    else:
+        grp_filter = ''
     return """
         SELECT *
         FROM {source_table}
-        WHERE {class_col} in ({nosample_level_str}) OR
-              {class_col} IS NULL
+        WHERE ({class_col} in ({nosample_level_str}) OR
+               {class_col} IS NULL)
+              {grp_filter}
         """.format(**locals())
 # ------------------------------------------------------------------------------
 
 
 def _get_without_replacement_subquery(schema_madlib, source_table, class_col,
-                                      actual_level_counts, desired_level_counts):
+                                      actual_level_counts, desired_level_counts,
+                                      grp_dict=None):
     """ Return the subquery for sampling without replacement for specific
         class levels.
     """
@@ -364,6 +386,11 @@ def _get_without_replacement_subquery(schema_madlib, source_table, class_col,
     #    The FROM clause contains information that can be used to figure out the
     #    number of rows to generate for a class level. The tuple basically
     #    contains: (class_level, the_desired_number_of_rows)
+    if grp_dict:
+        grp_filter = ' AND ' + ' AND '.join("{0} = '{1}'".format(k, v)
+                                            for k, v in grp_dict.items())
+    else:
+        grp_filter = ''
     subquery = """
             SELECT {source_table_columns}
             FROM (
@@ -378,6 +405,7 @@ def _get_without_replacement_subquery(schema_madlib, source_table, class_col,
                             ({desired_level_counts_str})
                                 q1({class_col_tmp}, {desired_count_col})
                         WHERE {class_col_tmp} = coalesce({class_col}::text, '{null_identifier}')
+                              {grp_filter}
                     ) q2
                 ) q3
             WHERE {row_number_col} <= {desired_count_col}
@@ -387,7 +415,8 @@ def _get_without_replacement_subquery(schema_madlib, source_table, class_col,
 
 
 def _get_with_replacement_subquery(schema_madlib, source_table, class_col,
-                                   actual_level_counts, desired_level_counts):
+                                   actual_level_counts, desired_level_counts,
+                                   grp_dict=None):
     """ Return the query for sampling with replacement for specific class
         levels. Always used for oversampling since oversampling will always need
         to use replacement. Used for under sampling only if with_replacement
@@ -424,6 +453,11 @@ def _get_with_replacement_subquery(schema_madlib, source_table, class_col,
     #   actual_rows_for_level_in_input_table.
     #
     # The WHERE clause is used to join the two subqueries to obtain the result.
+    if grp_dict:
+        grp_filter = 'WHERE ' + ' AND '.join("{0} = '{1}'".format(k, v)
+                                             for k, v in grp_dict.items())
+    else:
+        grp_filter = ''
     subquery = """
             SELECT {source_table_columns}
             FROM
@@ -442,6 +476,7 @@ def _get_with_replacement_subquery(schema_madlib, source_table, class_col,
                         row_number() OVER(PARTITION BY {class_col}) AS {q2_row_no}
                     FROM
                          {source_table}
+                    {grp_filter}
                 ) q2
             WHERE {class_col_tmp} = coalesce({class_col}::text, '{null_level_val}') AND
                   q1.{q1_row_no} = q2.{q2_row_no}
@@ -535,45 +570,51 @@ def balance_sample(schema_madlib, source_table, output_table, class_col,
         # includes info about the resulting sampling strategy, i.e., one of
         # UNDERSAMPLE, OVERSAMPLE, or NOSAMPLE for each level.
         grp_col_str, grp_cols = get_grouping_col_str(
-            schema_madlib, 'Balance sample', [NEW_ID_COLUMN],
+            schema_madlib, 'Balance sample', [NEW_ID_COLUMN, class_col],
             source_table, grouping_cols)
         actual_grp_level_counts = _get_level_frequency_distribution(
             new_source_table, class_col, grp_col_str)
-        plpy.info(actual_grp_level_counts)
 
         is_output_created = False
+        n_grp_values = len(actual_grp_level_counts)
+        grp_cols_list = grp_col_str.split(',') if grp_cols else []
+
         # for each group
         for grp_vals, actual_level_counts in actual_grp_level_counts.items():
-            target_class_sizes = _get_target_level_counts(sampling_strategy_str,
-                                                          parsed_class_sizes,
-                                                          actual_level_counts,
-                                                          output_table_size)
+            target_class_sizes = _get_target_level_counts(
+                sampling_strategy_str, parsed_class_sizes,
+                actual_level_counts, output_table_size, n_grp_values)
 
             (undersample_level_counts,
              oversample_level_counts,
              nosample_level_counts) = _get_sampling_strategy_counts(target_class_sizes)
 
-            # Get subqueries for each sampling strategy and union together in one
-            # big query.
+            # grp_dict represents each grouping column and its value
+            # for current iteration
+            grp_dict = dict(zip(grp_cols_list, grp_vals)) if grp_cols else None
 
-            # NOSAMPLE are levels that are to retained in output without any sampling
+            # Get subqueries for each sampling strategy and union together in
+            # one big query.
+
+            # NOSAMPLE are levels that are to be retained in output without sampling
             nosample_subquery = _get_nosample_subquery(
-                new_source_table, class_col, nosample_level_counts.keys())
-            # OVERSAMPLE are levels that
+                new_source_table, class_col, nosample_level_counts.keys(), grp_dict)
+            # OVERSAMPLE are levels that to be sampled more than existing count
+            # (always with replacement)
             oversample_subquery = _get_with_replacement_subquery(
                 schema_madlib, new_source_table, class_col,
-                actual_level_counts, oversample_level_counts)
-            # Subquery that will be used to sample those class levels that
-            # have to be undersampled. Undersampling supports both with and without
-            # replacement, so fetch the appropriate subquery.
+                actual_level_counts, oversample_level_counts, grp_dict)
+            # UNDERSAMPLE are levels that are to be sampled to less than
+            # existing count. Undersampling supports both with and without
+            # replacement.
             if with_replacement:
                 undersample_subquery = _get_with_replacement_subquery(
                     schema_madlib, new_source_table, class_col,
-                    actual_level_counts, undersample_level_counts)
+                    actual_level_counts, undersample_level_counts, grp_dict)
             else:
                 undersample_subquery = _get_without_replacement_subquery(
                     schema_madlib, new_source_table, class_col,
-                    actual_level_counts, undersample_level_counts)
+                    actual_level_counts, undersample_level_counts, grp_dict)
 
             # Merge the three subqueries using a UNION ALL clause.
             sampling_queries = (undersample_subquery, oversample_subquery, nosample_subquery)
