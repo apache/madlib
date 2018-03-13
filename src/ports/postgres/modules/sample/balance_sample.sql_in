@@ -149,8 +149,11 @@ non-stratified, that is, the whole table is treated as a
 single group.
 
 @note
-Current implementation does not support grouping_cols.  It
-will be added in an upcoming release.
+The 'output_table_size' and the 'class_sizes' are defined for the whole table.
+When grouping is used, these parameters are split evenly for each group.
+Further, if a specific class value is specified in the 'class_sizes' parameter,
+that particular class value should be present in each group. If not, an error
+will be thrown.
 </dd>
 
 <dt>with_replacement  (optional)</dt>
@@ -393,8 +396,7 @@ SELECT * FROM output_table ORDER BY mainhue, name;
              7 | 20 | USA         |        1 |    4 | 9363 |        231 |        1 |       3 | white
 (8 rows)
 </pre>
-In the case of bootstrapping, we may want to undersample with replacement,
-so we set the 'with_replacement' parameter to TRUE:
+We may also want to undersample with replacement, so we set the 'with_replacement' parameter to TRUE:
 <pre class="syntax">
 DROP TABLE IF EXISTS output_table;
 SELECT madlib.balance_sample(
@@ -541,6 +543,95 @@ SELECT * FROM output_table ORDER BY mainhue, name;
             20 | 22 | xPrussia    |        3 |    1 |  249 |         61 |        4 |         |
             19 | 22 | xPrussia    |        3 |    1 |  249 |         61 |        4 |         |
 (25 rows)
+</pre>
+
+-# To perform the balance sampling for independent groups, use the 'grouping_cols'
+parameter. Note below that each group (zone) has a different count of the
+classes (mainhue), with some groups not containing some class values.
+<pre class="syntax">
+DROP TABLE IF EXISTS output_table;
+SELECT madlib.balance_sample(
+    'flags',          -- Source table
+    'output_table',   -- Output table
+    'mainhue',        -- Class column
+    NULL,             -- Uniform
+    NULL,             -- Output table size
+    'zone'            -- Grouping by zone
+);
+SELECT * FROM output_table ORDER BY zone, mainhue;
+</pre>
+<pre class="result">
+ __madlib_id__ | id |    name     | landmass | zone | area | population | language | colours | mainhue
+---------------+----+-------------+----------+------+------+------------+----------+---------+---------
+             6 |  8 | Greece      |        3 |    1 |  132 |         10 |        6 |       2 | blue
+             5 |  8 | Greece      |        3 |    1 |  132 |         10 |        6 |       2 | blue
+             8 | 17 | Sweden      |        3 |    1 |  450 |          8 |        6 |       2 | blue
+             7 |  8 | Greece      |        3 |    1 |  132 |         10 |        6 |       2 | blue
+             2 |  7 | Denmark     |        3 |    1 |   43 |          5 |        6 |       2 | red
+             1 |  6 | China       |        5 |    1 | 9561 |       1008 |        7 |       2 | red
+             4 | 12 | Luxembourg  |        3 |    1 |    3 |          0 |        4 |       3 | red
+             3 | 18 | Switzerland |        3 |    1 |   41 |          6 |        4 |       2 | red
+             1 |  2 | Australia   |        6 |    2 | 7690 |         15 |        1 |       3 | blue
+             1 |  1 | Argentina   |        2 |    3 | 2777 |         28 |        2 |       2 | blue
+             2 |  4 | Brazil      |        2 |    3 | 8512 |        119 |        6 |       4 | green
+             6 |  9 | Guatemala   |        1 |    4 |  109 |          8 |        2 |       2 | blue
+             5 |  9 | Guatemala   |        1 |    4 |  109 |          8 |        2 |       2 | blue
+             4 |  9 | Guatemala   |        1 |    4 |  109 |          8 |        2 |       2 | blue
+            12 | 13 | Mexico      |        1 |    4 | 1973 |         77 |        2 |       4 | green
+            10 | 13 | Mexico      |        1 |    4 | 1973 |         77 |        2 |       4 | green
+            11 | 13 | Mexico      |        1 |    4 | 1973 |         77 |        2 |       4 | green
+             1 | 19 | UK          |        3 |    4 |  245 |         56 |        1 |       3 | red
+             3 |  5 | Canada      |        1 |    4 | 9976 |         24 |        1 |       2 | red
+             2 | 15 | Portugal    |        3 |    4 |   92 |         10 |        6 |       5 | red
+             8 | 20 | USA         |        1 |    4 | 9363 |        231 |        1 |       3 | white
+             7 | 20 | USA         |        1 |    4 | 9363 |        231 |        1 |       3 | white
+             9 | 10 | Ireland     |        3 |    4 |   70 |          3 |        1 |       3 | white
+(23 rows)
+</pre>
+
+-# Grouping can be used with class size specification as well. Note below that
+'blue=<Integer>' is the only valid class value since 'blue' is the only class
+value that is present in each group. Further, 'blue=8' will be split between the
+four groups, resulting in two blue rows for each group.
+<pre class="syntax">
+DROP TABLE IF EXISTS output_table;
+SELECT madlib.balance_sample(
+    'flags',          -- Source table
+    'output_table',   -- Output table
+    'mainhue',        -- Class column
+    'blue=8',         -- Specified class value size. Rest of the values are outputed as is.
+    NULL,             -- Output table size
+    'zone'            -- Group by zone
+);
+SELECT * FROM output_table ORDER BY zone, mainhue;
+</pre>
+<pre class="result">
+ __madlib_id__ | id |    name     | landmass | zone | area | population | language | colours | mainhue
+---------------+----+-------------+----------+------+------+------------+----------+---------+---------
+             2 | 17 | Sweden      |        3 |    1 |  450 |          8 |        6 |       2 | blue
+             1 |  8 | Greece      |        3 |    1 |  132 |         10 |        6 |       2 | blue
+             3 |  3 | Austria     |        3 |    1 |   84 |          8 |        4 |       2 | red
+             5 |  7 | Denmark     |        3 |    1 |   43 |          5 |        6 |       2 | red
+             4 |  6 | China       |        5 |    1 | 9561 |       1008 |        7 |       2 | red
+             8 | 18 | Switzerland |        3 |    1 |   41 |          6 |        4 |       2 | red
+             7 | 14 | Norway      |        3 |    1 |  324 |          4 |        6 |       3 | red
+             6 | 12 | Luxembourg  |        3 |    1 |    3 |          0 |        4 |       3 | red
+             1 |  2 | Australia   |        6 |    2 | 7690 |         15 |        1 |       3 | blue
+             2 |  2 | Australia   |        6 |    2 | 7690 |         15 |        1 |       3 | blue
+             1 |  1 | Argentina   |        2 |    3 | 2777 |         28 |        2 |       2 | blue
+             2 |  1 | Argentina   |        2 |    3 | 2777 |         28 |        2 |       2 | blue
+             3 |  4 | Brazil      |        2 |    3 | 8512 |        119 |        6 |       4 | green
+             2 |  9 | Guatemala   |        1 |    4 |  109 |          8 |        2 |       2 | blue
+             1 |  9 | Guatemala   |        1 |    4 |  109 |          8 |        2 |       2 | blue
+             5 | 11 | Jamaica     |        1 |    4 |   11 |          2 |        1 |       3 | green
+             6 | 13 | Mexico      |        1 |    4 | 1973 |         77 |        2 |       4 | green
+             3 |  5 | Canada      |        1 |    4 | 9976 |         24 |        1 |       2 | red
+             7 | 15 | Portugal    |        3 |    4 |   92 |         10 |        6 |       5 | red
+             8 | 16 | Spain       |        3 |    4 |  505 |         38 |        2 |       2 | red
+             9 | 19 | UK          |        3 |    4 |  245 |         56 |        1 |       3 | red
+            10 | 20 | USA         |        1 |    4 | 9363 |        231 |        1 |       3 | white
+             4 | 10 | Ireland     |        3 |    4 |   70 |          3 |        1 |       3 | white
+(23 rows)
 </pre>
 
 @anchor literature

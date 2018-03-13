@@ -3,6 +3,7 @@
 function(define_postgresql_features IN_VERSION OUT_FEATURES)
     if(NOT ${IN_VERSION} VERSION_LESS "9.0")
         list(APPEND ${OUT_FEATURES} __HAS_ORDERED_AGGREGATES__)
+        list(APPEND ${OUT_FEATURES} __HAS_BOOL_TO_TEXT_CAST__)
     endif()
 
     # Pass values to caller
