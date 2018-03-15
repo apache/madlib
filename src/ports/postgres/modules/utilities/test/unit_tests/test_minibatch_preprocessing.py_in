@@ -1,0 +1,304 @@
+# coding=utf-8
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+import sys
+from os import path
+# Add utilites module to the pythonpath.
+sys.path.append(path.dirname(path.dirname(path.dirname(path.abspath(__file__)))))
+
+import unittest
+from mock import *
+import plpy_mock as plpy
+
+m4_changequote(`<!', `!>')
+
+class MiniBatchPreProcessingTestCase(unittest.TestCase):
+    def setUp(self):
+        self.plpy_mock = Mock(spec='error')
+        patches = {
+            'plpy': plpy,
+            'mean_std_dev_calculator': Mock()
+        }
+
+        # we need to use MagicMock() instead of Mock() for the plpy.execute mock
+        # to be able to iterate on the return value
+        self.plpy_mock_execute = MagicMock()
+        plpy.execute = self.plpy_mock_execute
+
+        self.module_patcher = patch.dict('sys.modules', patches)
+        self.module_patcher.start()
+
+
+        self.default_schema_madlib = "madlib"
+        self.default_source_table = "source"
+        self.default_output_table = "output"
+        self.default_dep_var = "depvar"
+        self.default_ind_var = "indvar"
+        self.default_buffer_size = 5
+
+        import minibatch_preprocessing
+        self.module = minibatch_preprocessing
+        self.module.validate_module_input_params = Mock()
+        self.output_tbl_valid_mock = Mock()
+        self.module.output_tbl_valid = self.output_tbl_valid_mock
+
+        self.minibatch_query_formatter = self.module.MiniBatchQueryFormatter
+        self.minibatch_query_formatter.get_dep_var_array_and_classes = Mock(
+                                        return_value=("anything1", "anything2"))
+        self.minibatch_query_formatter.get_indep_var_array_str = Mock(
+                                        return_value="anything3")
+
+        self.module.MiniBatchStandardizer = Mock()
+        self.module.MiniBatchSummarizer = Mock()
+        self.module.get_expr_type = MagicMock(return_value="anytype")
+
+    def tearDown(self):
+        self.module_patcher.stop()
+
+    def test_minibatch_preprocessor_executes_query(self):
+        preprocessor_obj = self.module.MiniBatchPreProcessor(self.default_schema_madlib,
+                                                         "input",
+                                                         "out",
+                                                         self.default_dep_var,
+                                                         self.default_ind_var,
+                                                         self.default_buffer_size)
+        self.plpy_mock_execute.side_effect = [[{"source_table_row_count":5 ,
+                                                "num_rows_processed":3}], ""]
+        preprocessor_obj.minibatch_preprocessor()
+        self.assertEqual(2, self.plpy_mock_execute.call_count)
+        self.assertEqual(self.default_buffer_size, preprocessor_obj.buffer_size)
+
+    def test_minibatch_preprocessor_null_buffer_size_executes_query(self):
+        preprocessor_obj = self.module.MiniBatchPreProcessor(self.default_schema_madlib,
+                                                         "input",
+                                                         "out",
+                                                         self.default_dep_var,
+                                                         self.default_ind_var,
+                                                         None)
+        self.plpy_mock_execute.side_effect = [[{"source_table_row_count":5 ,
+        "num_rows_processed":3}], ""]
+        self.module.MiniBatchBufferSizeCalculator.calculate_default_buffer_size = Mock()
+        preprocessor_obj.minibatch_preprocessor()
+        self.assertEqual(2, self.plpy_mock_execute.call_count)
+
+    def test_minibatch_preprocessor_multiple_dep_var_raises_exception(self):
+            with self.assertRaises(Exception):
+                self.module.MiniBatchPreProcessor(self.default_schema_madlib,
+                                                                     self.default_source_table,
+                                                                     self.default_output_table,
+                                                                     "y1,y2",
+                                                                     self.default_ind_var,
+                                                                     self.default_buffer_size)
+
+    def test_minibatch_preprocessor_buffer_size_zero_fails(self):
+        with self.assertRaises(Exception):
+            self.module.MiniBatchPreProcessor(self.default_schema_madlib,
+                                                             self.default_source_table,
+                                                             self.default_output_table,
+                                                             self.default_dep_var,
+                                                             self.default_ind_var,
+                                                             0)
+
+    def test_minibatch_preprocessor_buffer_size_one_passes(self):
+        #not sure how to assert that an exception has not been raised
+        preprocessor_obj = self.module.MiniBatchPreProcessor(self.default_schema_madlib,
+                                                             self.default_source_table,
+                                                             self.default_output_table,
+                                                             self.default_dep_var,
+                                                             self.default_ind_var,
+                                                             1)
+        preprocessor_obj.minibatch_preprocessor()
+        self.assert_(True)
+
+class MiniBatchQueryFormatterTestCase(unittest.TestCase):
+    def setUp(self):
+        self.default_source_table = "source"
+        self.default_dep_var = "depvar"
+        self.default_ind_var = "indvar"
+        patches = {
+            'plpy': plpy,
+            'mean_std_dev_calculator': Mock()
+        }
+
+        # we need to use MagicMock() instead of Mock() for the plpy.execute mock
+        # to be able to iterate on the return value
+        self.plpy_mock_execute = MagicMock()
+        plpy.execute = self.plpy_mock_execute
+
+        self.module_patcher = patch.dict('sys.modules', patches)
+        self.module_patcher.start()
+
+        import minibatch_preprocessing
+        self.module = minibatch_preprocessing
+        self.subject = self.module.MiniBatchQueryFormatter(self.default_source_table)
+
+    def tearDown(self):
+        self.module_patcher.stop()
+
+    def test_get_dep_var_array_str_text_type(self):
+        self.plpy_mock_execute.return_value = [{"class":100},{"class":0},{"class":22}]
+
+        dep_var_array_str, _ = self.subject.get_dep_var_array_and_classes\
+                                                (self.default_dep_var, 'text')
+
+        # get_dep_var_array_str does a string sorting on the class levels. Hence the order
+        # 0,100,22 and not 0,22,100
+        self.assertEqual("ARRAY[({0}) = '0',({0}) = '100',({0}) = '22']::integer[]".
+                         format(self.default_dep_var), dep_var_array_str)
+
+    def test_get_dep_var_array_str_boolean_type(self):
+        self.plpy_mock_execute.return_value = [{"class":3}]
+
+        dep_var_array_str, _ = self.subject.\
+                            get_dep_var_array_and_classes(self.default_dep_var, 'boolean')
+        self.assertEqual("ARRAY[({0}) = '3']::integer[]".
+                         format(self.default_dep_var), dep_var_array_str)
+
+    def test_get_dep_var_array_str_array_type(self):
+        dep_var_array_str, _ = self.subject.\
+                        get_dep_var_array_and_classes(self.default_dep_var, 'some_array[]')
+
+        self.assertEqual(self.default_dep_var, dep_var_array_str)
+
+    def test_get_dep_var_array_str_numeric_type(self):
+        dep_var_array_str, _ = self.subject. \
+            get_dep_var_array_and_classes(self.default_dep_var, 'integer')
+
+        self.assertEqual("ARRAY[{0}]".format(self.default_dep_var), dep_var_array_str)
+
+    def test_get_dep_var_array_str_other_type(self):
+        with self.assertRaises(Exception):
+            self.subject.get_dep_var_array_and_classes(self.default_dep_var, 'other')
+
+    def test_get_indep_var_array_str_passes(self):
+        ind_var_array_str = self.subject.get_indep_var_array_str('ARRAY[x1,x2,x3]')
+        self.assertEqual("ARRAY[x1,x2,x3]::double precision[]", ind_var_array_str)
+
+class MiniBatchQueryStandardizerTestCase(unittest.TestCase):
+    def setUp(self):
+        self.default_source_table = "source"
+        self.default_dep_var = "depvar"
+        self.default_ind_var = "indvar"
+        self.default_schema = "schema"
+        self.mean_std_calculator_mock = Mock()
+        patches = {
+            'plpy': plpy,
+            'mean_std_dev_calculator': self.mean_std_calculator_mock
+        }
+        self.x_mean = "5678"
+        self.x_std_dev = "4.789"
+        self.mean_std_calculator_mock.MeanStdDevCalculator.return_value.get_mean_and_std_dev_for_ind_var = Mock(return_value=(self.x_mean, self.x_std_dev))
+
+        # we need to use MagicMock() instead of Mock() for the plpy.execute mock
+        # to be able to iterate on the return value
+        self.plpy_mock_execute = MagicMock()
+        plpy.execute = self.plpy_mock_execute
+
+        self.module_patcher = patch.dict('sys.modules', patches)
+        self.module_patcher.start()
+
+        import minibatch_preprocessing
+        self.module = minibatch_preprocessing
+        self.subject = self.module.MiniBatchStandardizer(self.default_schema,
+                                                         self.default_source_table,
+                                                         self.default_dep_var,
+                                                         self.default_ind_var,
+                                                         "out_standardization")
+
+    def tearDown(self):
+        self.module_patcher.stop()
+
+    def test_get_query_for_standardizing_no_exception(self):
+        self.subject.get_query_for_standardizing()
+
+    def test_get_query_for_standardizing_null_mean_raises_exception(self):
+        self.mean_std_calculator_mock.MeanStdDevCalculator.return_value.get_mean_and_std_dev_for_ind_var = Mock(return_value=(None, self.x_std_dev))
+        with self.assertRaises(Exception):
+            self.module.MiniBatchStandardizer(self.default_schema,
+                                              self.default_source_table,
+                                              self.default_dep_var,
+                                              self.default_ind_var,
+                                              "does_not_matter")
+
+    def test_get_query_for_standardizing_null_stddev_raises_exception(self):
+        self.mean_std_calculator_mock.MeanStdDevCalculator.return_value.get_mean_and_std_dev_for_ind_var = Mock(return_value=(self.x_mean, None))
+        with self.assertRaises(Exception):
+            self.module.MiniBatchStandardizer(self.default_schema,
+                                              self.default_source_table,
+                                              self.default_dep_var,
+                                              self.default_ind_var,
+                                              "does_not_matter")
+
+    def test_get_calculated_mean_and_std_dev_returns_values(self):
+        self.subject.get_query_for_standardizing()
+        mean, std_dev = self.subject.x_mean_str, self.subject.x_std_dev_str
+        self.assertEqual(self.x_mean, mean)
+        self.assertEqual(self.x_std_dev, std_dev)
+
+    def test_create_standardization_output_table_executes_query(self):
+        self.subject.create_output_standardization_table()
+        expected_query_substr_create_table = "CREATE TABLE out_standardization AS"
+        self.plpy_mock_execute.assert_called_with(AnyStringWith(expected_query_substr_create_table))
+        self.plpy_mock_execute.assert_called_with(AnyStringWith(self.x_mean))
+        self.plpy_mock_execute.assert_called_with(AnyStringWith(self.x_std_dev))
+
+class MiniBatchBufferSizeCalculatorTestCase(unittest.TestCase):
+    def setUp(self):
+        patches = {
+            'plpy': plpy,
+            'mean_std_dev_calculator': Mock()
+        }
+        self.a = 'a'
+        self.module_patcher = patch.dict('sys.modules', patches)
+        self.module_patcher.start()
+        import minibatch_preprocessing
+        self.module = minibatch_preprocessing
+        self.subject = self.module.MiniBatchBufferSizeCalculator
+
+    def tearDown(self):
+        self.module_patcher.stop()
+
+    def test_calculate_default_buffer_size_non_none_buffer_size(self):
+        buffer_size = self.subject.calculate_default_buffer_size(1, 3, 100)
+        self.assertTrue(isinstance(buffer_size, int))
+        self.assertEqual(1, buffer_size)
+
+    def test_calculate_default_buffer_size_none_buffer_size(self):
+        self.module.get_seg_number = Mock(return_value = 4)
+        buffer_size = self.subject.calculate_default_buffer_size(None, 100, 1000)
+        self.assertTrue(isinstance(buffer_size, int))
+        self.assertEqual(25, buffer_size)
+
+    def test_calculate_default_buffer_size_none_buffer_size_rounds_to_int(self):
+        self.module.get_seg_number = Mock(return_value = 5)
+        buffer_size = self.subject.calculate_default_buffer_size(None, 3, 1000)
+        self.assertTrue(isinstance(buffer_size, int))
+        self.assertEqual(1, buffer_size)
+
+    #TODO add more tests after finalizing the buffer size calculation
+
+class AnyStringWith(str):
+    def __eq__(self, other):
+        return self in other
+
+
+if __name__ == '__main__':
+    unittest.main()
+
+# ---------------------------------------------------------------------

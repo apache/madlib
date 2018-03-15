@@ -1,0 +1,221 @@
+/* ----------------------------------------------------------------------- */
+/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ *
+ * @file minibatch_preprocessing.sql_in
+ * @brief TODO
+ * @date Mar 2018
+ *
+ */
+/* ----------------------------------------------------------------------- */
+
+m4_include(`SQLCommon.m4')
+
+/**
+@addtogroup grp_minibatch_preprocessing
+
+<div class="toc"><b>Contents</b><ul>
+<li class="level1"><a href="#todo">todo</a></li>
+</ul></div>
+
+MiniBatch Preprocessor is a utility function to pre process the input
+data for use with models that support mini-batching as an optimization
+
+@brief
+@anchor minibatch_preprocessor
+@par MiniBatch Preprocessor
+<pre class="syntax">
+minibatch_preprocessor(
+    source_table
+    output_table
+    dependent_varname
+    independent_varname
+    buffer_size
+    )
+</pre>
+
+\b Arguments
+<dl class="arglist">
+  <dt>source_table</dt>
+  <dd>TEXT. Name of the table containing input data.  Can also be a view.
+  </dd>
+
+  <dt>output_table</dt>
+  <dd>TEXT.  Name of the output table from the preprocessor which will be used
+    as input to algorithms that support mini-batching.
+  </dd>
+
+  <dt>dependent_varname</dt>
+  <dd>TEXT. Name of the dependent variable column.
+  </dd>
+
+  <dt>independent_varname</dt>
+  <dd>TEXT. Column name or expression list to evaluate for the independent
+  variable.  Will be cast to double when packing.
+  @note
+  Supported expressions for independent variable
+  ‘ARRAY[x1,x2,x3]’ , where x1,x2,x3 are columns in source table with scalar values
+  ‘x1’, where x1 is a single column in source table, with value as an array, like ARRAY[1,2,3] or {1,2,3}
+  We might already support expressions that evaluate to array but haven't tested it.
+
+  Not supported
+  ‘x1,x2,x3’, where x1,x2,x3 are columns in source table with scalar values
+  ARRAY[x1,x2] where x1 is scalar and x2 is array
+  ARRAY[x1,x2] where both x1 and x2 are arrays
+  ARRAY[x1] where x1 is array
+  </dd>
+
+  <dt>buffer_size</dt>
+  <dd>INTEGER. default: ???. Number of source input rows to pack into batch
+  </dd>
+
+  <dt>grouping_col (optional)</dt>
+  <dd>TEXT, default: NULL.
+   An expression list used to group the input dataset into discrete groups,
+   running one preprocessing step per group. Similar to the SQL GROUP BY clause.
+   When this value is NULL, no grouping is used and a single preprocessing step
+   is performed for the whole data set.
+  </dd>
+</dl>
+
+<b>Output tables</b>
+<br>
+    The output table produced by MLP contains the following columns:
+    <table class="output">
+      <tr>
+        <th>id</th>
+        <td>INTEGER. Unique id for packed table.
+        </td>
+      </tr>
+      <tr>
+        <th>dependent_varname</th>
+        <td>FLOAT8[]. Packed array of dependent variables.
+        </td>
+      </tr>
+      <tr>
+        <th>independent_varname</th>
+        <td>FLOAT8[]. Packed array of independent variables.
+        </td>
+      </tr>
+      <tr>
+        <th>grouping_cols</th>
+        <td>TEXT. Name of grouping columns
+        </td>
+      </tr>
+    </table>
+
+A summary table named \<output_table\>_summary is also created, which has the following columns:
+    <table class="output">
+    <tr>
+        <th>source_table</th>
+        <td>The source table.</td>
+    </tr>
+    <tr>
+        <th>output_table</th>
+        <td>Output table name from preprocessor.</td>
+    </tr>
+    <tr>
+        <th>dependent_varname</th>
+        <td>Dependent variable from the input table.</td>
+    </tr>
+    <tr>
+        <th>independent_varname</th>
+        <td>Independent variable from the source table.</td>
+    </tr>
+    <tr>
+        <th>buffer_size</th>
+        <td>Buffer size used in preprocessing step.</td>
+    </tr>
+    <tr>
+        <th>class_values</th>
+        <td>Class values of the dependent variable (‘NULL’(as TEXT type) for non categorical vars, i,e., if dependent_vartype=”Categorical”)./td>
+    </tr>
+    <tr>
+        <th>num_rows_processed</th>
+        <td>The total number of rows that were used in the computation.</td>
+    </tr>
+    <tr>
+        <th>num_missing_rows_skipped</th>
+        <td>The total number of rows that were skipped because of NULL values in them.</td>
+    </tr>
+    <tr>
+        <th>grouping_col</th>
+        <td>NULL if no grouping_col was specified , and a comma separated
+        list of grouping column names if not.</td>
+    </tr>
+   </table>
+
+A standardization table named \<output_table\>_standardization is also created, that has the
+following columns:
+  <table class="output">
+    <tr>
+        <th>grouping columns</th>
+        <td>If grouping_col is specified during training, a column for each grouping column
+        is created.</td>
+    </tr>
+    <tr>
+        <th>mean</th>
+        <td>Mean of independent vars by group</td>
+    </tr>
+    <tr>
+        <th>std</th>
+        <td>Standard deviation of independent vars by group</td>
+    </tr>
+  </table>
+
+@anchor example
+@par Examples
+ */
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.minibatch_preprocessor(
+    source_table            VARCHAR,
+    output_table            VARCHAR,
+    dependent_varname       VARCHAR,
+    independent_varname     VARCHAR,
+    buffer_size             INTEGER
+) RETURNS VOID AS $$
+    PythonFunctionBodyOnly(utilities, minibatch_preprocessing)
+    minibatch_preprocessor_obj = minibatch_preprocessing.MiniBatchPreProcessor(**globals())
+    minibatch_preprocessor_obj.minibatch_preprocessor()
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.minibatch_preprocessor(
+    source_table            VARCHAR,
+    output_table            VARCHAR,
+    dependent_varname       VARCHAR,
+    independent_varname     VARCHAR
+) RETURNS VOID AS $$
+  SELECT MADLIB_SCHEMA.minibatch_preprocessor($1, $2, $3, $4, NULL);
+$$ LANGUAGE sql VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.minibatch_preprocessor(
+    message VARCHAR
+) RETURNS VARCHAR AS $$
+    PythonFunctionBodyOnly(utilities, minibatch_preprocessing)
+    return minibatch_preprocessing.MiniBatchDocumentation.minibatch_preprocessor_help(schema_madlib, message)
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.minibatch_preprocessor()
+RETURNS VARCHAR AS $$
+    PythonFunctionBodyOnly(utilities, minibatch_preprocessing)
+    return minibatch_preprocessing.MiniBatchDocumentation.minibatch_preprocessor_help(schema_madlib, '')
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
