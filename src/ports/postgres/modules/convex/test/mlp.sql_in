@@ -215,7 +215,6 @@ CREATE TABLE iris_data_batch_summary(
 );
 INSERT INTO iris_data_batch_summary VALUES
 ('iris_data','iris_data_batch','class::TEXT','attributes',30,ARRAY[1,2,3],141,0,'grp');
-
 -- Create the corresponding standardization table for preprocessed data
 CREATE TABLE iris_data_batch_standardization(
     grp text,
@@ -227,7 +226,6 @@ INSERT INTO iris_data_batch_standardization VALUES
 ('1',ARRAY[5.74893617021,3.02482269504,3.6865248227,1.18014184397],ARRAY[0.785472439601,0.396287027644,1.68671151195,0.750245336531]),
 ('2',ARRAY[5.74893617021,3.02482269504,3.6865248227,1.18014184397],ARRAY[0.785472439601,0.396287027644,1.68671151195,0.750245336531]);
 
--- without minibatch without grouping and without warm start
 DROP TABLE IF EXISTS mlp_class, mlp_class_summary, mlp_class_standardization;
 SELECT mlp_classification(
     'iris_data',    -- Source table
@@ -246,7 +244,7 @@ SELECT mlp_classification(
     False,
     'grp'
 );
-DROP TABLE IF EXISTS mlp_prediction_output, mlp_prediction_output_summary, mlp_prediction_output_standardization;;
+DROP TABLE IF EXISTS mlp_prediction_output;
 SELECT mlp_predict(
     'mlp_class',
     'iris_data',
@@ -301,7 +299,9 @@ SELECT mlp_classification(
     False,
     'grp'
 );
-DROP TABLE IF EXISTS mlp_prediction_batch_output, mlp_prediction_batch_output_summary, mlp_prediction_batch_output_standardization;
+
+DROP TABLE IF EXISTS mlp_prediction_batch_output, mlp_prediction_output;
+-- See prediction accuracy for training data
 SELECT mlp_predict(
     'mlp_class_batch',
     'iris_data',
@@ -336,6 +336,46 @@ SELECT mlp_predict(
     'response');
 
 ------------------------------------------------ Regression ------------------------------------------------------------
+DROP TABLE IF EXISTS mlp_class_batch, mlp_class_batch_summary, mlp_class_batch_standardization;
+
+-- Set class_values column value to NULL so that encoding info is not captured, to test
+-- case where dependent variable is an array for classification.
+UPDATE iris_data_batch_summary SET class_values = NULL WHERE source_table='iris_data';
+SELECT mlp_classification(
+    'iris_data_batch',    -- Source table
+    'mlp_class_batch',    -- Desination table
+    'independent_varname',   -- Input features
+    'dependent_varname',        -- Label
+    ARRAY[5],   -- Number of units per layer
+    'learning_rate_init=0.1,
+    learning_rate_policy=constant,
+    n_iterations=5,
+    tolerance=0,
+    n_epochs=20',
+    'sigmoid',
+    '',
+    False,
+    False
+);
+DROP TABLE IF EXISTS mlp_prediction_batch_output, mlp_prediction_output;
+SELECT mlp_predict(
+    'mlp_class_batch',
+    'iris_data',
+    'id',
+    'mlp_prediction_batch_output',
+    'response');
+SELECT * FROM mlp_prediction_batch_output;
+DROP TABLE IF EXISTS mlp_prediction_batch_output;
+SELECT mlp_predict(
+    'mlp_class_batch',
+    'iris_data',
+    'id',
+    'mlp_prediction_batch_output',
+    'prob');
+SELECT * FROM mlp_prediction_batch_output;
+DROP TABLE IF EXISTS mlp_prediction_batch_output;
+DROP TABLE IF EXISTS mlp_class_batch, mlp_class_batch_summary, mlp_class_batch_standardization;
+
 
 DROP TABLE IF EXISTS lin_housing_wi CASCADE;
 CREATE TABLE lin_housing_wi (id serial, x float8[], grp int, y float8);

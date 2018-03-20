@@ -66,7 +66,8 @@ public:
     static ColumnVector predict(
             const model_type                    &model,
             const independent_variables_type    &x,
-            const bool                          get_class);
+            const bool                          is_classification_response,
+            const bool                          is_dep_var_array_for_classification);
 
     const static int RELU = 0;
     const static int SIGMOID = 1;
@@ -219,17 +220,26 @@ ColumnVector
 MLP<Model, Tuple>::predict(
         const model_type                    &model,
         const independent_variables_type    &x,
-        const bool                          get_class) {
+        const bool                          is_classification_response,
+        const bool                          is_dep_var_array_for_classification) {
     std::vector<ColumnVector> net, o;
 
     feedForward(model, x, net, o);
     ColumnVector output = o.back();
 
-    if(get_class){ // Return a length 1 array with the predicted index
+    if(is_classification_response){
         int max_idx;
         output.maxCoeff(&max_idx);
-        output.resize(1);
-        output[0] = (double) max_idx;
+        if(is_dep_var_array_for_classification) {
+            // Return the entire array, but with 1 for the class level with
+            // largest probability and 0s for the rest.
+            output.setZero();
+            output[max_idx] = 1;
+        } else {
+            // Return a length 1 array with the predicted index
+            output.resize(1);
+            output[0] = (double) max_idx;
+        }
     }
     return output;
 }

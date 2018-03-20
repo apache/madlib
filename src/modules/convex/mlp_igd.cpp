@@ -384,7 +384,8 @@ internal_predict_mlp::run(AnyType &args) {
     size_t numberOfStages = layerSizes.size()-1;
     double is_classification = args[2].getAs<double>();
     double activation = args[3].getAs<double>();
-    bool get_class = is_classification && is_response;
+    int is_dep_var_array_for_classification = args[8].getAs<int>();
+    bool is_classification_response = is_classification && is_response;
 
     model.rebind(&is_classification, &activation, &coeff.data()[0],
                  numberOfStages, &layerSizes.data()[0]);
@@ -393,7 +394,8 @@ internal_predict_mlp::run(AnyType &args) {
     } catch (const ArrayWithNullException &e) {
         return args[0];
     }
-    ColumnVector prediction = MLPTask::predict(model, indVar, get_class);
+    ColumnVector prediction = MLPTask::predict(model, indVar, is_classification_response,
+                                               is_dep_var_array_for_classification);
     return prediction;
 }
 
