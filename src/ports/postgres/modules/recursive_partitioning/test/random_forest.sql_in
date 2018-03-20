@@ -29,23 +29,24 @@ INSERT INTO dt_golf (id,"OUTLOOK",temperature,humidity,"Cont_features",cat_featu
 (14, 'rain', 71, 80, ARRAY[71, 80], ARRAY['c', 'b'], true, 'Don''t Play');
 
 -------------------------------------------------------------------------
+-- classification without grouping
 DROP TABLE IF EXISTS train_output, train_output_summary, train_output_group;
 SELECT forest_train(
-                  'dt_golf'::TEXT,         -- source table
-                  'train_output'::TEXT,    -- output model table
-                  'id'::TEXT,              -- id column
-                  'class'::TEXT,           -- response
-                  'windy, "Cont_features"[1]'::TEXT,   -- features
-                  NULL::TEXT,        -- exclude columns
-                  NULL::TEXT,        -- no grouping
+                  'dt_golf',         -- source table
+                  'train_output',    -- output model table
+                  'id'  ,            -- id column
+                  'class',           -- response
+                  'windy, "Cont_features"[1]',   -- features
+                  NULL,        -- exclude columns
+                  NULL,        -- no grouping
                   5,                -- num of trees
                   NULL,                 -- num of random features
-                  TRUE::BOOLEAN,    -- importance
-                  1::INTEGER,       -- num_permutations
-                  10::INTEGER,       -- max depth
-                  1::INTEGER,        -- min split
-                  1::INTEGER,        -- min bucket
-                  8::INTEGER,        -- number of bins per continuous variable
+                  TRUE,    -- importance
+                  1,       -- num_permutations
+                  10,       -- max depth
+                  1,        -- min split
+                  1,        -- min bucket
+                  8,        -- number of bins per continuous variable
                   'max_surrogates=0',
                   FALSE
                   );
@@ -54,52 +55,90 @@ SELECT forest_train(
 SELECT * from train_output_summary;
 SELECT * from train_output_group;
 
+-- classification with grouping
 -------------------------------------------------------------------------
 DROP TABLE IF EXISTS train_output, train_output_summary, train_output_group, train_output_poisson_count;
 SELECT forest_train(
-                  'dt_golf'::TEXT,         -- source table
-                  'train_output'::TEXT,    -- output model table
-                  'id'::TEXT,              -- id column
-                  'temperature::double precision'::TEXT,           -- response
-                  'humidity, cat_features, windy, "Cont_features"'::TEXT,   -- features
-                  NULL::TEXT,        -- exclude columns
+                  'dt_golf',         -- source table
+                  'train_output',    -- output model table
+                  'id',              -- id column
+                  'temperature::double precision',           -- response
+                  'humidity, cat_features, windy, "Cont_features"',   -- features
+                  NULL,        -- exclude columns
                   'class',          -- grouping
                   5,                -- num of trees
                   NULL,                 -- num of random features
-                  TRUE::BOOLEAN,     -- importance
-                  20::INTEGER,         -- num_permutations
-                  10::INTEGER,       -- max depth
-                  1::INTEGER,        -- min split
-                  1::INTEGER,        -- min bucket
-                  3::INTEGER,        -- number of bins per continuous variable
+                  TRUE,     -- importance
+                  20,         -- num_permutations
+                  10,       -- max depth
+                  1,        -- min split
+                  1,        -- min bucket
+                  3,        -- number of bins per continuous variable
                   'max_surrogates = 2 ',
                   FALSE
                   );
+\x on
+SELECT * from train_output_summary;
+SELECT * from train_output_group;
+
+-- regression with grouping
+-------------------------------------------------------------------------
+DROP TABLE IF EXISTS train_output, train_output_summary, train_output_group, train_output_poisson_count;
+SELECT forest_train(
+                  'dt_golf',         -- source table
+                  'train_output',    -- output model table
+                  'id',              -- id column
+                  'temperature::double precision',           -- response
+                  'humidity',   -- features
+                  NULL,        -- exclude columns
+                  'class',          -- grouping
+                  5,                -- num of trees
+                  1,                 -- num of random features
+                  TRUE,     -- importance
+                  1,         -- num_permutations
+                  10,       -- max depth
+                  1,        -- min split
+                  1,        -- min bucket
+                  2,        -- number of bins per continuous variable
+                  'max_surrogates=0',
+                  FALSE
+                  );
+
 
 \x on
 SELECT * from train_output_summary;
 SELECT * from train_output_group;
 SELECT assert(count(distinct(gid)) = 2, 'gid is not correctly generated!') FROM train_output;
 
+DROP TABLE IF EXISTS predict_output;
+SELECT forest_predict(
+    'train_output',
+    'dt_golf',
+    'predict_output',
+    'response'
+);
+
+SELECT * from predict_output;
+
 -------------------------------------------------------------------------
--- using y to predict y for the sake of testing variable importance
+-- classification - using y to predict y for the sake of testing variable importance
 DROP TABLE IF EXISTS train_output, train_output_summary, train_output_group;
 SELECT forest_train(
-                  'dt_golf'::TEXT,         -- source table
-                  'train_output'::TEXT,    -- output model table
-                  'id'::TEXT,              -- id column
-                  'class::TEXT'::TEXT,           -- response
-                  'class, windy, temperature'::TEXT,   -- features
-                  NULL::TEXT,        -- exclude columns
-                  NULL::TEXT,        -- no grouping
-                  100,                -- num of trees
+                  'dt_golf',         -- source table
+                  'train_output',    -- output model table
+                  'id',              -- id column
+                  'class::TEXT',           -- response
+                  'class, windy, temperature',   -- features
+                  NULL,        -- exclude columns
+                  NULL,        -- no grouping
+                  10,                -- num of trees
                   1,                 -- num of random features
-                  TRUE::BOOLEAN,     -- importance
-                  1::INTEGER,         -- num_permutations
-                  10::integer,       -- max depth
-                  1::integer,        -- min split
-                  1::integer,        -- min bucket
-                  8::integer,        -- number of bins per continuous variable
+                  TRUE,     -- importance
+                  1,         -- num_permutations
+                  10,       -- max depth
+                  1,        -- min split
+                  1,        -- min bucket
+                  8,        -- number of bins per continuous variable
                   'max_surrogates=0',
                   FALSE
                   );
@@ -113,24 +152,24 @@ SELECT
 FROM train_output_group;
 
 -------------------------------------------------------------------------
--- using y to predict y for the sake of testing variable importance
+-- regression - using y to predict y for the sake of testing variable importance
 DROP TABLE IF EXISTS train_output, train_output_summary, train_output_group;
 SELECT forest_train(
-                  'dt_golf'::TEXT,         -- source table
-                  'train_output'::TEXT,    -- output model table
-                  'id'::TEXT,              -- id column
-                  'temperature::double precision'::TEXT,   -- response
-                  'class, temperature, windy'::TEXT,   -- features
-                  NULL::TEXT,        -- exclude columns
-                  NULL::TEXT,        -- no grouping
-                  100,                -- num of trees
+                  'dt_golf',         -- source table
+                  'train_output',    -- output model table
+                  'id',              -- id column
+                  'temperature::double precision',   -- response
+                  'class, temperature, windy',   -- features
+                  NULL,        -- exclude columns
+                  NULL,        -- no grouping
+                  10,                -- num of trees
                   1,                 -- num of random features
-                  TRUE::BOOLEAN,     -- importance
-                  1::INTEGER,         -- num_permutations
-                  10::integer,       -- max depth
-                  1::integer,        -- min split
-                  1::integer,        -- min bucket
-                  8::integer,        -- number of bins per continuous variable
+                  TRUE,     -- importance
+                  1,         -- num_permutations
+                  10,       -- max depth
+                  1,        -- min split
+                  1,        -- min bucket
+                  8,        -- number of bins per continuous variable
                   'max_surrogates=0',
                   FALSE
                   );
@@ -144,61 +183,25 @@ SELECT
     assert(con_var_importance[1] > cat_var_importance[2], 'temperature should be important!')
 FROM train_output_group;
 
--------------------------------------------------------------------------
-DROP TABLE IF EXISTS train_output, train_output_summary, train_output_group, train_output_poisson_count;
-SELECT forest_train(
-                  'dt_golf'::TEXT,         -- source table
-                  'train_output'::TEXT,    -- output model table
-                  'id'::TEXT,              -- id column
-                  'temperature::double precision'::TEXT,           -- response
-                  'humidity'::TEXT,   -- features
-                  NULL::TEXT,        -- exclude columns
-                  'class',          -- grouping
-                  5,                -- num of trees
-                  1,                 -- num of random features
-                  TRUE::BOOLEAN,     -- importance
-                  1::INTEGER,         -- num_permutations
-                  10::integer,       -- max depth
-                  1::integer,        -- min split
-                  1::integer,        -- min bucket
-                  2::integer,        -- number of bins per continuous variable
-                  'max_surrogates=0',
-                  FALSE
-                  );
-
-\x on
-SELECT * from train_output_summary;
-SELECT * from train_output_group;
-
 ----------------------------------------------------------------------------
-DROP TABLE IF EXISTS predict_output;
-SELECT forest_predict(
-    'train_output',
-    'dt_golf',
-    'predict_output',
-    'response'
-);
-
-SELECT * from predict_output;
-
-----------------------------------------------------------------------------
+-- classification without grouping and set importance as FALSE
 DROP TABLE IF EXISTS train_output, train_output_summary, train_output_group;
 SELECT forest_train(
-                  'dt_golf'::TEXT,         -- source table
-                  'train_output'::TEXT,    -- output model table
-                  'id'::TEXT,              -- id column
-                  'class'::TEXT,           -- response
-                  'humidity, temperature'::TEXT,   -- features
-                  NULL::TEXT,        -- exclude columns
-                  NULL::TEXT,        -- no grouping
+                  'dt_golf',         -- source table
+                  'train_output',    -- output model table
+                  'id',              -- id column
+                  'class',           -- response
+                  'humidity, temperature',   -- features
+                  NULL,        -- exclude columns
+                  NULL,        -- no grouping
                   5,                -- num of trees
                   1,                 -- num of random features
-                  FALSE::BOOLEAN,     -- importance
-                  1::INTEGER,         -- num_permutations
-                  10::integer,       -- max depth
-                  1::integer,        -- min split
-                  1::integer,        -- min bucket
-                  8::integer,        -- number of bins per continuous variable
+                  FALSE,     -- importance
+                  1,         -- num_permutations
+                  10,       -- max depth
+                  1,        -- min split
+                  1,        -- min bucket
+                  8,        -- number of bins per continuous variable
                   'max_surrogates=0',
                   FALSE
                   );
@@ -222,21 +225,21 @@ FROM predict_output;
 -- smaller bootstrap sample size
 DROP TABLE IF EXISTS train_output, train_output_summary, train_output_group;
 SELECT forest_train(
-                  'dt_golf'::TEXT,         -- source table
-                  'train_output'::TEXT,    -- output model table
-                  'id'::TEXT,              -- id column
-                  'class'::TEXT,           -- response
-                  '"Cont_features", humidity, temperature'::TEXT,   -- features
-                  NULL::TEXT,        -- exclude columns
-                  NULL::TEXT,        -- no grouping
+                  'dt_golf',         -- source table
+                  'train_output',    -- output model table
+                  'id',              -- id column
+                  'class',           -- response
+                  '"Cont_features", humidity, temperature',   -- features
+                  NULL,        -- exclude columns
+                  NULL,        -- no grouping
                   5,                -- num of trees
                   1,                 -- num of random features
-                  TRUE::BOOLEAN,    -- importance
-                  1::INTEGER,       -- num_permutations
-                  10::INTEGER,       -- max depth
-                  1::INTEGER,        -- min split
-                  1::INTEGER,        -- min bucket
-                  3::INTEGER,        -- number of bins per continuous variable
+                  TRUE,    -- importance
+                  1,       -- num_permutations
+                  10,       -- max depth
+                  1,        -- min split
+                  1,        -- min bucket
+                  3,        -- number of bins per continuous variable
                   'max_surrogates=0',
                   FALSE,
                   .5
@@ -282,21 +285,21 @@ INSERT INTO rf_gr_test (id,gr,f1,f2,f3,cl) VALUES
 
 DROP TABLE IF EXISTS train_output, train_output_summary, train_output_group;
 SELECT forest_train(
-                  'rf_gr_test'::TEXT,         -- source table
-                  'train_output'::TEXT,    -- output model table
-                  'id'::TEXT,              -- id column
-                  'cl'::TEXT,           -- response
-                  'f1, f2, f3'::TEXT,   -- features
-                  NULL::TEXT,        -- exclude columns
-                  'gr'::TEXT,        -- no grouping
+                  'rf_gr_test',         -- source table
+                  'train_output',    -- output model table
+                  'id',              -- id column
+                  'cl',           -- response
+                  'f1, f2, f3',   -- features
+                  NULL,        -- exclude columns
+                  'gr',        -- grouping
                   2,                -- num of trees
                   1,                 -- num of random features
-                  TRUE::BOOLEAN,    -- importance
-                  1::INTEGER,       -- num_permutations
-                  10::INTEGER,       -- max depth
-                  1::INTEGER,        -- min split
-                  1::INTEGER,        -- min bucket
-                  2::INTEGER,        -- number of bins per continuous variable
+                  TRUE,    -- importance
+                  1,       -- num_permutations
+                  10,       -- max depth
+                  1,        -- min split
+                  1,        -- min bucket
+                  2,        -- number of bins per continuous variable
                   'max_surrogates=0',
                   FALSE
                   );
