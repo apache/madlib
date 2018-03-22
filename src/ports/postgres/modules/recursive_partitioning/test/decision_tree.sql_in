@@ -236,6 +236,7 @@ FROM (
 DROP TABLE IF EXISTS dt_golf CASCADE;
 CREATE TABLE dt_golf (
     id integer NOT NULL,
+    id_2 integer,
     "OUTLOOK" text,
     temperature double precision,
     humidity double precision,
@@ -263,8 +264,11 @@ INSERT INTO dt_golf (id,"OUTLOOK",temperature,humidity,"Cont_features",cat_featu
 (16, 'overcast', NULL, 75, ARRAY[81, 75], ARRAY['a', 'd'], false, 'Play'),
 (14, 'rain', 71, 80, ARRAY[71, 80], ARRAY['c', 'b'], true, 'Don''t Play');
 
--- no grouping
-DROP TABLE IF EXISTS train_output, train_output_summary;
+update dt_golf set id_2 = id % 2;
+-------------------------------------------------------------------------
+
+-- no grouping, with cross_validation
+DROP TABLE IF EXISTS train_output, train_output_summary, train_output_cv;
 SELECT tree_train('dt_golf'::text,         -- source table
                          'train_output'::text,    -- output model table
                          'id'::text,              -- id column
@@ -277,12 +281,13 @@ SELECT tree_train('dt_golf'::text,         -- source table
                          10::integer,       -- max depth
                          6::integer,        -- min split
                          2::integer,        -- min bucket
-                         8::integer,        -- number of bins per continuous variable
-                         'cp=0.01'          -- cost-complexity pruning parameter
+                         3::integer,        -- number of bins per continuous variable
+                         'cp=0.01, n_folds=2'          -- cost-complexity pruning parameter
                          );
 
 SELECT _print_decision_tree(tree) from train_output;
 SELECT tree_display('train_output', False);
+SELECT * FROM train_output_cv;
 -------------------------------------------------------------------------
 
 -- grouping
@@ -311,7 +316,7 @@ SELECT tree_display('train_output', False);
 CREATE TABLE dt_golf2 as
 SELECT * FROM dt_golf
 UNION
-SELECT 15 as id, 'humid' as "OUTLOOK", 71 as temperature, 80 as humidity,
+SELECT 15 as id, 1 as id_2, 'humid' as "OUTLOOK", 71 as temperature, 80 as humidity,
        ARRAY[90, 90] as "Cont_features", ARRAY['b', 'c'] as cat_features,
        true as windy, 'Don''t Play' as class;
 \x off
@@ -328,24 +333,24 @@ select * from train_output;
 select * from train_output_summary;
 -------------------------------------------------------------------------
 
--- no grouping, cross-validation
-DROP TABLE IF EXISTS train_output, train_output_summary, train_output_cv, predict_output;
+-- grouping and null_as_category=True
+DROP TABLE IF EXISTS train_output, train_output_summary, predict_output;
 SELECT tree_train('dt_golf'::text,         -- source table
-                         'train_output'::text,    -- output model table
-                         'id'::text,              -- id column
-                         'temperature::double precision'::text,           -- response
-                         '"OUTLOOK", cat_features, "Cont_features"'::text,   -- features
-                         NULL::text,        -- exclude columns
-                         'mse'::text,      -- split criterion
-                         NULL::text,        -- no grouping
-                         NULL::text,        -- no weights
-                         NULL::integer,     -- max depth
-                         6::integer,        -- min split
-                         2::integer,        -- min bucket
-                         8::integer,        -- number of bins per continuous variable
-                         'cp=0.01, n_folds=3',
-                         'max_surrogates=2, null_as_category=True'
-                         );
+                  'train_output'::text,    -- output model table
+                  'id'::text,              -- id column
+                  'temperature::double precision'::text,           -- response
+                  '"OUTLOOK", humidity'::text,   -- features
+                  NULL::text,        -- exclude columns
+                  'mse'::text,       -- split criterion
+                  'id_2'::text,      -- grouping col
+                  NULL::text,        -- no weights
+                  NULL::integer,     -- max depth
+                  6::integer,        -- min split
+                  2::integer,        -- min bucket
+                  3::integer,        -- number of bins per continuous variable
+                  'cp=0.01',
+                  'max_surrogates=2, null_as_category=True'
+                  );
 
 SELECT _print_decision_tree(tree) from train_output;
 SELECT tree_display('train_output', False);
@@ -360,7 +365,6 @@ USING (id);
 \x on
 select * from train_output;
 select * from train_output_summary;
-select * from train_output_cv;
 -------------------------------------------------------------------------
 
 drop table if exists group_cp;
