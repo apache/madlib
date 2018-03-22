@@ -68,6 +68,7 @@ typedef ExampleTuple<Matrix, ColumnVector> SVMMiniBatchTuple;
 typedef ExampleTuple<MatrixIndex, double> LMFTuple;
 
 typedef ExampleTuple<ColumnVector, MappedColumnVector> MLPTuple;
+typedef ExampleTuple<Matrix, Matrix> MiniBatchTuple;
 
 } // namespace convex
 

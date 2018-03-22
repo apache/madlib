@@ -316,7 +316,9 @@ the parameter is ignored.
    n_iterations = &lt;value>,
    n_tries = &lt;value>,
    lambda = &lt;value>,
-   tolerance = &lt;value>'
+   tolerance = &lt;value>,
+   batch_size = &lt;value>,
+   n_epochs = &lt;value>'
 </pre>
 \b Optimizer \b Parameters
 <DL class="arglist">
@@ -376,6 +378,22 @@ If you want to run the full number of iterations specified in \e n_interations,
 set tolerance=0.0
 </DD>
 
+<DT>tolerance</dt>
+<DD>Default: 1 for IGD, 20 for Minibatch
+If the source_table is detected to contain data
+that is supported by minibatch, then the solver
+uses mini-batch gradient descent, with the specified
+batch_size.
+</DD>
+
+<DT>tolerance</dt>
+<DD>Default: 1 for IGD, 20 for Minibatch
+If the source_table is detected to contain data
+that is supported by minibatch, then the solver
+uses mini-batch gradient descent. During gradient
+descent, n_epochs represents the number of times
+all batches in a buffer are iterated over.
+</DD>
 </DL>
 
 @anchor predict
@@ -1241,11 +1259,6 @@ File mlp.sql_in documenting the training function
 
 */
 
-CREATE TYPE MADLIB_SCHEMA.mlp_step_result AS (
-        state    DOUBLE PRECISION[],
-        loss     DOUBLE PRECISION
-);
-
 CREATE TYPE MADLIB_SCHEMA.mlp_result AS (
         coeff    DOUBLE PRECISION[],
         loss     DOUBLE PRECISION
@@ -1272,6 +1285,26 @@ RETURNS DOUBLE PRECISION[]
 AS 'MODULE_PATHNAME'
 LANGUAGE C IMMUTABLE;
 
+CREATE FUNCTION MADLIB_SCHEMA.mlp_minibatch_transition(
+        state              DOUBLE PRECISION[],
+        ind_var            DOUBLE PRECISION[],
+        dep_var            DOUBLE PRECISION[],
+        previous_state     DOUBLE PRECISION[],
+        layer_sizes        DOUBLE PRECISION[],
+        learning_rate_init DOUBLE PRECISION,
+        activation         INTEGER,
+        is_classification  INTEGER,
+        weight             DOUBLE PRECISION,
+        warm_start         BOOLEAN,
+        warm_start_coeff   DOUBLE PRECISION[],
+        lambda             DOUBLE PRECISION,
+        batch_size         INTEGER,
+        n_epochs           INTEGER
+    )
+RETURNS DOUBLE PRECISION[]
+AS 'MODULE_PATHNAME'
+LANGUAGE C IMMUTABLE;
+
 CREATE FUNCTION MADLIB_SCHEMA.mlp_igd_merge(
         state1 DOUBLE PRECISION[],
         state2 DOUBLE PRECISION[])
@@ -1280,6 +1313,19 @@ AS 'MODULE_PATHNAME'
 LANGUAGE C IMMUTABLE STRICT;
 
 CREATE FUNCTION MADLIB_SCHEMA.mlp_igd_final(
+        state DOUBLE PRECISION[])
+RETURNS DOUBLE PRECISION[]
+AS 'MODULE_PATHNAME'
+LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION MADLIB_SCHEMA.mlp_minibatch_merge(
+        state1 DOUBLE PRECISION[],
+        state2 DOUBLE PRECISION[])
+RETURNS DOUBLE PRECISION[]
+AS 'MODULE_PATHNAME'
+LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION MADLIB_SCHEMA.mlp_minibatch_final(
         state DOUBLE PRECISION[])
 RETURNS DOUBLE PRECISION[]
 AS 'MODULE_PATHNAME'
@@ -1310,6 +1356,33 @@ CREATE AGGREGATE MADLIB_SCHEMA.mlp_igd_step(
 );
 -------------------------------------------------------------------------
 
+/**
+ * @internal
+ * @brief Perform one iteration of backprop
+ */
+CREATE AGGREGATE MADLIB_SCHEMA.mlp_minibatch_step(
+        /* ind_var */             DOUBLE PRECISION[],
+        /* dep_var */             DOUBLE PRECISION[],
+        /* previous_state */      DOUBLE PRECISION[],
+        /* layer_sizes */         DOUBLE PRECISION[],
+        /* learning_rate_init */  DOUBLE PRECISION,
+        /* activation */          INTEGER,
+        /* is_classification */   INTEGER,
+        /* weight */              DOUBLE PRECISION,
+        /* warm_start */          BOOLEAN,
+        /* warm_start_coeff */    DOUBLE PRECISION[],
+        /* lambda */              DOUBLE PRECISION,
+        /* batch_size */          INTEGER,
+        /* n_epochs */            INTEGER
+        )(
+    STYPE=DOUBLE PRECISION[],
+    SFUNC=MADLIB_SCHEMA.mlp_minibatch_transition,
+    m4_ifdef(`__POSTGRESQL__', `', `prefunc=MADLIB_SCHEMA.mlp_minibatch_merge,')
+    FINALFUNC=MADLIB_SCHEMA.mlp_minibatch_final,
+    INITCOND='{0,0,0,0,0,0,0,0,0,0,0,0}'
+);
+-------------------------------------------------------------------------
+
 CREATE FUNCTION MADLIB_SCHEMA.internal_mlp_igd_distance(
     /*+ state1 */ DOUBLE PRECISION[],
     /*+ state2 */ DOUBLE PRECISION[])
@@ -1318,6 +1391,12 @@ RETURNS DOUBLE PRECISION AS
 LANGUAGE c IMMUTABLE STRICT;
 
 CREATE FUNCTION MADLIB_SCHEMA.internal_mlp_igd_result(
+    /*+ state */ DOUBLE PRECISION[])
+RETURNS MADLIB_SCHEMA.mlp_result AS
+'MODULE_PATHNAME'
+LANGUAGE c IMMUTABLE STRICT;
+
+CREATE FUNCTION MADLIB_SCHEMA.internal_mlp_minibatch_result(
     /*+ state */ DOUBLE PRECISION[])
 RETURNS MADLIB_SCHEMA.mlp_result AS
 'MODULE_PATHNAME'

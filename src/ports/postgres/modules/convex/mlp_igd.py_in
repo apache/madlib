@@ -25,6 +25,7 @@
 """
 import math
 import plpy
+from random import random
 
 from convex.utils_regularization import utils_ind_var_scales
 from convex.utils_regularization import utils_ind_var_scales_grouping
@@ -38,21 +39,19 @@ from utilities.utilities import _assert_equal
 from utilities.utilities import _string_to_array_with_quotes
 from utilities.utilities import add_postfix
 from utilities.utilities import extract_keyvalue_params
-from utilities.utilities import py_list_to_sql_string
+from utilities.utilities import get_grouping_col_str
+from utilities.utilities import is_psql_numeric_type
+from utilities.utilities import py_list_to_sql_string as PY2SQL
 from utilities.utilities import strip_end_quotes, split_quoted_delimited_str
 from utilities.utilities import unique_string
-from utilities.utilities import get_grouping_col_str
-from utilities.validate_args import _tbl_dimension_rownum
-from utilities.validate_args import array_col_dimension
 from utilities.validate_args import array_col_has_same_dimension
 from utilities.validate_args import cols_in_tbl_valid
+from utilities.validate_args import get_col_dimension
 from utilities.validate_args import get_expr_type
 from utilities.validate_args import input_tbl_valid
 from utilities.validate_args import is_var_valid
 from utilities.validate_args import output_tbl_valid
 from utilities.validate_args import table_exists
-
-from utilities.validate_args import get_cols_and_types
 
 def mlp(schema_madlib, source_table, output_table, independent_varname,
         dependent_varname, hidden_layer_sizes, optimizer_param_str, activation,
@@ -72,30 +71,7 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
     """
     warm_start = bool(warm_start)
     optimizer_params = _get_optimizer_params(optimizer_param_str or "")
-    summary_table = add_postfix(output_table, "_summary")
-    standardization_table = add_postfix(output_table, "_standardization")
-    weights = '1' if not weights or not weights.strip() else weights.strip()
-    hidden_layer_sizes = hidden_layer_sizes or []
 
-    grouping_col = grouping_col or ""
-    activation = _get_activation_function_name(activation)
-    learning_rate_policy = _get_learning_rate_policy_name(
-        optimizer_params["learning_rate_policy"])
-    activation_index = _get_activation_index(activation)
-
-    _validate_args(source_table, output_table, summary_table,
-                   standardization_table, independent_varname,
-                   dependent_varname, hidden_layer_sizes, optimizer_params,
-                   is_classification, weights, warm_start, activation,
-                   grouping_col)
-
-    reserved_cols = ['coeff', 'loss', 'n_iterations']
-    grouping_str, grouping_col = get_grouping_col_str(schema_madlib, 'MLP',
-                                                      reserved_cols,
-                                                      source_table,
-                                                      grouping_col)
-    current_iteration = 1
-    prev_state = None
     tolerance = optimizer_params["tolerance"]
     n_iterations = optimizer_params["n_iterations"]
     step_size_init = optimizer_params["learning_rate_init"]
@@ -106,73 +82,119 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
     n_tries = optimizer_params["n_tries"]
     # lambda is a reserved word in python
     lmbda = optimizer_params["lambda"]
-    iterations_per_step = optimizer_params["iterations_per_step"]
-    num_input_nodes = array_col_dimension(source_table,
-                                          independent_varname)
-    num_output_nodes = 0
+    batch_size = optimizer_params['batch_size']
+    n_epochs = optimizer_params['n_epochs']
+
+    summary_table = add_postfix(output_table, "_summary")
+    standardization_table = add_postfix(output_table, "_standardization")
+    hidden_layer_sizes = hidden_layer_sizes or []
+
+    # Note that we don't support weights with mini batching yet, so validate
+    # this based on is_minibatch_enabled.
+    weights = '1' if not weights or not weights.strip() else weights.strip()
+    _validate_args(source_table, output_table, summary_table,
+                   standardization_table, independent_varname,
+                   dependent_varname, hidden_layer_sizes, optimizer_params,
+                   warm_start, activation, grouping_col)
+    is_minibatch_enabled = check_if_minibatch_enabled(source_table, independent_varname)
+    _validate_params_based_on_minibatch(source_table, independent_varname,
+                                        dependent_varname, weights,
+                                        is_classification,
+                                        is_minibatch_enabled)
+    activation = _get_activation_function_name(activation)
+    learning_rate_policy = _get_learning_rate_policy_name(
+                                optimizer_params["learning_rate_policy"])
+    activation_index = _get_activation_index(activation)
+
+    reserved_cols = ['coeff', 'loss', 'n_iterations']
+    grouping_col = grouping_col or ""
+    grouping_str, grouping_col = get_grouping_col_str(schema_madlib, 'MLP',
+                                                      reserved_cols,
+                                                      source_table,
+                                                      grouping_col)
+    # The original dependent_varname is required later if warm start is
+    # used, and while creating the model summary table. Keep a copy of it
+    # since dependent_varname is overwritten if one hot encoding is used.
+    dependent_varname_backup = dependent_varname
     classes = []
-    dependent_type = get_expr_type(dependent_varname, source_table)
-    original_dependent_varname = dependent_varname
 
-    x_mean_table = unique_string(desp='x_mean_table')
-    dimension, n_tuples = _tbl_dimension_rownum(schema_madlib, source_table,
-                                                independent_varname)
-
-    tbl_data_scaled = unique_string(desp="tbl_data_scaled")
-    col_ind_var_norm_new = unique_string(desp="ind_var_norm")
-    col_dep_var_norm_new = unique_string(desp="dep_var_norm")
-    # Standardize the data, and create a standardized version of the
-    # source_table in tbl_data_scaled. Use this standardized table for IGD.
-    normalize_data(locals())
-    if is_classification:
-        dependent_variable_sql = """
-            SELECT DISTINCT {dependent_varname}
-            FROM {source_table}
-        """.format(dependent_varname=dependent_varname,
-                   source_table=source_table)
-        labels = plpy.execute(dependent_variable_sql)
-        one_hot_dependent_varname = 'ARRAY['
-        num_output_nodes = len(labels)
-        for label_obj in labels:
-            label = _format_label(label_obj[dependent_varname])
-            classes.append(label)
-        classes.sort()
-        for c in classes:
-            one_hot_dependent_varname += col_dep_var_norm_new + \
-                "=" + str(c) + ","
-        # Remove the last comma
-        one_hot_dependent_varname = one_hot_dependent_varname[:-1]
-        one_hot_dependent_varname += ']::integer[]'
-        dependent_varname = one_hot_dependent_varname
+    if is_minibatch_enabled:
+        mlp_preprocessor = MLPMinibatchPreProcessor(source_table)
+        pp_summary_dict = mlp_preprocessor.preprocessed_summary_dict
+        batch_size = min(200, pp_summary_dict['buffer_size'])\
+                         if batch_size == 1 else batch_size
+        tbl_data_scaled = source_table
+        col_ind_var_norm_new = MLPMinibatchPreProcessor.INDEPENDENT_VARNAME
+        col_dep_var_norm_new = MLPMinibatchPreProcessor.DEPENDENT_VARNAME
+        x_mean_table = mlp_preprocessor.std_table
+        num_input_nodes = get_col_dimension(source_table, independent_varname,
+                                            dim=2)
+        if is_classification:
+            _assert(pp_summary_dict["class_values"],
+                    "MLP Error: The pre-processed table created using"
+                    " madlib.minibatch_preprocessor was probably run"
+                    " without casting depedent variable to ::TEXT.")
+            classes = pp_summary_dict["class_values"]
+            num_output_nodes = len(classes)
+        else:
+            num_output_nodes = get_col_dimension(source_table,
+                                                 dependent_varname, dim=2)
+        # Get the type of the original source table's dependent variable column.
+        dependent_type = get_expr_type(pp_summary_dict['dependent_varname'],
+                                       pp_summary_dict['source_table'])
     else:
-        if "[]" not in dependent_type:
-            dependent_varname = "ARRAY[" + col_dep_var_norm_new + "]"
-        num_output_nodes = array_col_dimension(tbl_data_scaled,
-                                               dependent_varname)
+        x_mean_table = unique_string(desp='x_mean_table')
+        tbl_data_scaled = unique_string(desp="tbl_data_scaled")
+        col_ind_var_norm_new = unique_string(desp="ind_var_norm")
+        col_dep_var_norm_new = unique_string(desp="dep_var_norm")
+        # Standardize the data, and create a standardized version of the
+        # source_table in tbl_data_scaled. Use this standardized table for IGD.
+        num_input_nodes = get_col_dimension(source_table, independent_varname,
+                                            dim=1)
+        dimension = num_input_nodes  # dimension is used for normalize
+        normalize_data(locals())
+        dependent_type = get_expr_type(dependent_varname, source_table)
+
+        if is_classification:
+            labels = plpy.execute("SELECT DISTINCT {0} FROM {1}".
+                                  format(dependent_varname, source_table))
+            num_output_nodes = len(labels)
+            for label_obj in labels:
+                label = _format_label(label_obj[dependent_varname])
+                classes.append(label)
+            classes.sort()
+            level_vals_str = ','.join(["{0}={1}".format(
+                                       col_dep_var_norm_new, str(c))
+                                       for c in classes])
+            # dependent_varname should be replaced with one-hot encoded varname
+            dependent_varname = "ARRAY[{0}]::integer[]".format(level_vals_str)
+        else:
+            if "[]" not in dependent_type:
+                dependent_varname = "ARRAY[" + col_dep_var_norm_new + "]"
+            num_output_nodes = get_col_dimension(tbl_data_scaled,
+                                                 dependent_varname, dim=1)
     # Need layers sizes before validating for warm_start
-    layer_sizes = [num_input_nodes] + \
-        hidden_layer_sizes + [num_output_nodes]
+    layer_sizes = [num_input_nodes] + hidden_layer_sizes + [num_output_nodes]
     col_grp_key = unique_string(desp='col_grp_key')
     if warm_start:
         coeff = _validate_warm_start(output_table, summary_table,
                                      standardization_table, independent_varname,
-                                     original_dependent_varname, layer_sizes,
+                                     dependent_varname_backup, layer_sizes,
                                      optimizer_params, is_classification,
                                      weights, warm_start, activation)
         if grouping_col:
+            # get an independent warm start coefficient for each group
             grouping_col_list = split_quoted_delimited_str(grouping_col)
-            join_condition = ' AND '.join(
-                ['p.{col}={col}'.format(**locals())
-                    for col in grouping_col_list])
-            join_condition += ' AND '
-            join_condition += "array_to_string(ARRAY[{0}], ',')={1}".format(
-                                                    grouping_str, col_grp_key)
-            start_coeff = """SELECT coeff FROM {output_table} as p
-                WHERE {join_condition}
-            """.format(**locals())
+            join_condition = ' AND '.join(['p.{0} = {0}'.format(col)
+                                          for col in grouping_col_list])
+            start_coeff = """
+                SELECT coeff
+                FROM {output_table} as p
+                WHERE {join_condition} AND
+                      array_to_string(ARRAY[{grouping_str}], ',') = {col_grp_key}
+                """.format(**locals())
         else:
-            start_coeff = py_list_to_sql_string(coeff,
-                                                array_type="DOUBLE PRECISION")
+            start_coeff = PY2SQL(coeff, array_type="DOUBLE PRECISION")
 
     if grouping_col:
         group_by_clause = "GROUP BY {0}, {1}".format(grouping_col, col_grp_key)
@@ -187,8 +209,7 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
         "independent_varname": independent_varname,
         "dependent_varname": dependent_varname,
         "prev_state": None,
-        "layer_sizes": py_list_to_sql_string(
-            layer_sizes, array_type="DOUBLE PRECISION"),
+        "layer_sizes": PY2SQL(layer_sizes, array_type="DOUBLE PRECISION"),
         "step_size": step_size,
         "source_table": source_table,
         "output_table": output_table,
@@ -196,13 +217,14 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
         "is_classification": int(is_classification),
         "weights": weights,
         "warm_start": warm_start,
-        "n_tuples": n_tuples,
         "n_iterations": n_iterations,
         "tolerance": tolerance,
         "lmbda": lmbda,
         "grouping_col": grouping_col,
         "grouping_str": grouping_str,
-        "x_mean_table": x_mean_table
+        "x_mean_table": x_mean_table,
+        "batch_size": batch_size,
+        "n_epochs": n_epochs
     }
     # variables to be used by GroupIterationController
     it_args.update({
@@ -222,28 +244,24 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
     it_args.update({
         'group_by_clause': group_by_clause,
         'using_clause': using_clause,
-        'grouping_str_comma': grouping_str_comma
+        'grouping_str_comma': grouping_str_comma,
     })
 
     first_try = True
     temp_output_table = unique_string(desp='temp_output_table')
+
     for _ in range(n_tries):
+        prev_state = None
         if not warm_start:
             coeff = []
-            for i in range(len(layer_sizes) - 1):
-                fan_in = layer_sizes[i]
-                fan_out = layer_sizes[i + 1]
+            for fan_in, fan_out in zip(layer_sizes, layer_sizes[1:]):
                 # Initalize according to Glorot and Bengio (2010)
                 # See design doc for more info
                 span = math.sqrt(6.0 / (fan_in + fan_out))
-                dim = (layer_sizes[i] + 1) * layer_sizes[i + 1]
-                rand = plpy.execute("""SELECT array_agg({span}*2*(random()-0.5))
-                                       AS random
-                                       FROM generate_series(0,{dim})
-                        """.format(span=span, dim=dim))[0]["random"]
+                dim = (fan_in + 1) * fan_out
+                rand = [span * (random() - 0.5) for _ in range(dim)]
                 coeff += rand
-            start_coeff = py_list_to_sql_string(
-                coeff, "double precision")
+            start_coeff = PY2SQL(coeff, "double precision")
         it_args['start_coeff'] = start_coeff
         iterationCtrl = GroupIterationController(it_args)
         with iterationCtrl as it:
@@ -257,31 +275,50 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
                     step_size = step_size_init * gamma**(
                         math.floor(it.iteration / iterations_per_step))
                 it.kwargs['step_size'] = step_size
-
-                it.update("""
-                {schema_madlib}.mlp_igd_step(
-                    ({col_ind_var})::DOUBLE PRECISION[],
-                    ({dependent_varname})::DOUBLE PRECISION[],
-                    {rel_state}.{col_grp_state},
-                    {layer_sizes},
-                    ({step_size})::FLOAT8,
-                    {activation},
-                    {is_classification},
-                    ({weights})::DOUBLE PRECISION,
-                    {warm_start},
-                    ({start_coeff})::DOUBLE PRECISION[],
-                    {lmbda}
-                )
-                """)
+                if is_minibatch_enabled:
+                    train_sql = """
+                        {schema_madlib}.mlp_minibatch_step(
+                            ({independent_varname})::DOUBLE PRECISION[],
+                            ({dependent_varname})::DOUBLE PRECISION[],
+                            {rel_state}.{col_grp_state},
+                            {layer_sizes},
+                            ({step_size})::FLOAT8,
+                            {activation},
+                            {is_classification},
+                            ({weights})::DOUBLE PRECISION,
+                            {warm_start},
+                            ({start_coeff})::DOUBLE PRECISION[],
+                            {lmbda},
+                            {batch_size}::integer,
+                            {n_epochs}::integer
+                        )
+                        """
+                else:
+                    train_sql = """
+                        {schema_madlib}.mlp_igd_step(
+                            ({col_ind_var})::DOUBLE PRECISION[],
+                            ({dependent_varname})::DOUBLE PRECISION[],
+                            {rel_state}.{col_grp_state},
+                            {layer_sizes},
+                            ({step_size})::FLOAT8,
+                            {activation},
+                            {is_classification},
+                            ({weights})::DOUBLE PRECISION,
+                            {warm_start},
+                            ({start_coeff})::DOUBLE PRECISION[],
+                            {lmbda}
+                        )
+                        """
+                it.update(train_sql)
                 if it_args['state_size'] == -1:
                     it_args['state_size'] = it.get_state_size()
 
                 if it.test("""
-                    {iteration} >= {n_iterations}
-                        OR
-                        abs(_state_previous[{state_size}]
-                        - _state_current[{state_size}]) < {tolerance}
-                    """):
+                        {iteration} >= {n_iterations}
+                            OR
+                        abs(_state_previous[{state_size}] -
+                            _state_current[{state_size}]) < {tolerance}
+                        """):
                     break
                 if verbose and 1 < it.iteration <= n_iterations:
                     # Get loss value from the state.
@@ -291,26 +328,34 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
                     # used, it will be an empty list if there was not grouping.
                     groups = [t[col_grp_key] for t in res if t[col_grp_key]]
                     losses = [t['loss'] for t in res]
-                    loss = zip(groups, losses) if len(groups)==len(losses) \
-                                               else losses
-                    plpy.info("Iteration: " + str(it.iteration) + ", Loss: <" + \
-                              ', '.join([str(l) for l in loss]) + ">")
+                    loss = zip(groups, losses) if groups else losses
+                    plpy.info("Iteration: {0}, Loss: <{1}>".
+                              format(it.iteration, ', '.join(map(str, loss))))
             it.final()
         _update_temp_model_table(it_args, it.iteration, temp_output_table,
-                                 first_try)
+                                 is_minibatch_enabled, first_try)
         first_try = False
-    layer_sizes_str = py_list_to_sql_string(
-        layer_sizes, array_type="integer")
-    classes_str = py_list_to_sql_string(
-        [strip_end_quotes(cl, "'") for cl in classes],
-        array_type=dependent_type)
+    layer_sizes_str = PY2SQL(layer_sizes, array_type="integer")
+
     _create_summary_table(locals())
-    _create_standardization_table(standardization_table, x_mean_table,
-                                  warm_start)
+    if is_minibatch_enabled:
+        # We already have the mean and std in the input standardization table
+        input_std_table = add_postfix(source_table, '_standardization')
+        _create_standardization_table(standardization_table, input_std_table,
+                                      warm_start)
+        # The original input table is the tab_data_scaled for mini batch.
+        # Do NOT drop tbl_data_scaled and x_mean_table with minibatch,
+        # it will end up dropping the original data table.
+    else:
+        _create_standardization_table(standardization_table, x_mean_table,
+                                      warm_start)
+        # Drop the following tables only for IGD.
+        plpy.execute("DROP TABLE IF EXISTS {0}".format(tbl_data_scaled))
+        plpy.execute("DROP TABLE IF EXISTS {0}".format(x_mean_table))
+
     _create_output_table(output_table, temp_output_table, grouping_col,
                          warm_start)
-    plpy.execute("DROP TABLE IF EXISTS {0},{1}".format(temp_output_table,
-                                                        tbl_data_scaled))
+    plpy.execute("DROP TABLE IF EXISTS {0}".format(temp_output_table))
     return None
 
 
@@ -338,16 +383,16 @@ def normalize_data(args):
                                         args["x_mean_table"],
                                         set_zero_std_to_one)
         __utils_normalize_data_grouping(y_decenter,
-                                       tbl_data=args["source_table"],
-                                       col_ind_var=args["independent_varname"],
-                                       col_dep_var=args["dependent_varname"],
-                                       tbl_data_scaled=args["tbl_data_scaled"],
-                                       col_ind_var_norm_new=args["col_ind_var_norm_new"],
-                                       col_dep_var_norm_new=args["col_dep_var_norm_new"],
-                                       schema_madlib=args["schema_madlib"],
-                                       x_mean_table=args["x_mean_table"],
-                                       y_mean_table='',
-                                       grouping_col=args["grouping_col"])
+                                        tbl_data=args["source_table"],
+                                        col_ind_var=args["independent_varname"],
+                                        col_dep_var=args["dependent_varname"],
+                                        tbl_data_scaled=args["tbl_data_scaled"],
+                                        col_ind_var_norm_new=args["col_ind_var_norm_new"],
+                                        col_dep_var_norm_new=args["col_dep_var_norm_new"],
+                                        schema_madlib=args["schema_madlib"],
+                                        x_mean_table=args["x_mean_table"],
+                                        y_mean_table='',
+                                        grouping_col=args["grouping_col"])
     else:
         # When no grouping_col is defined, the mean and std for 'x'
         # can be defined using strings, stored in x_mean_str, x_std_str.
@@ -377,6 +422,7 @@ def normalize_data(args):
     return None
 # ------------------------------------------------------------------------
 
+
 def _create_standardization_table(standardization_table, x_mean_table, warm_start):
     if warm_start:
         plpy.execute("DROP TABLE IF EXISTS {0}".format(standardization_table))
@@ -386,7 +432,6 @@ def _create_standardization_table(standardization_table, x_mean_table, warm_star
         )
     """.format(**locals())
     plpy.execute(standarization_table_creation_query)
-    plpy.execute("DROP TABLE IF EXISTS {0}".format(x_mean_table))
 
 
 def _create_summary_table(args):
@@ -395,11 +440,38 @@ def _create_summary_table(args):
     if args['warm_start']:
         plpy.execute("DROP TABLE IF EXISTS {0}".format(args['summary_table']))
 
+    classes_str = PY2SQL([strip_end_quotes(cl, "'") for cl in args['classes']],
+                         array_type=args['dependent_type'])
+    minibatch_summary_col_names = ''
+    minibatch_summary_col_vals = ''
+    if args['is_minibatch_enabled']:
+        # Add a few more columns in the summary table
+        minibatch_summary_col_names = """
+                original_source_table TEXT,
+                original_independent_varname TEXT,
+                original_dependent_varname TEXT,
+                batch_size  INTEGER,
+                n_epochs    INTEGER,
+            """
+        mlp_pre_dict = args['pp_summary_dict']
+        source_table = mlp_pre_dict['source_table']
+        independent_varname = mlp_pre_dict['independent_varname']
+        dependent_varname = mlp_pre_dict['dependent_varname']
+        batch_size = args['batch_size']
+        n_epochs = args['n_epochs']
+        minibatch_summary_col_vals = """
+                '{source_table}',
+                '{independent_varname}',
+                '{dependent_varname}',
+                {batch_size},
+                {n_epochs},
+            """.format(**locals())
     summary_table_creation_query = """
         CREATE TABLE {summary_table}(
             source_table TEXT,
             independent_varname TEXT,
             dependent_varname TEXT,
+            {minibatch_summary_col_names}
             tolerance FLOAT,
             learning_rate_init FLOAT,
             learning_rate_policy TEXT,
@@ -411,12 +483,14 @@ def _create_summary_table(args):
             classes {dependent_type}[],
             weights VARCHAR,
             grouping_col VARCHAR
-        )""".format(**args)
+        )""".format(minibatch_summary_col_names=minibatch_summary_col_names,
+                    **args)
     summary_table_update_query = """
         INSERT INTO {summary_table} VALUES(
             '{source_table}',
             '{independent_varname}',
-            '{original_dependent_varname}',
+            '{dependent_varname_backup}',
+            {minibatch_summary_col_vals}
             {tolerance},
             {step_size_init},
             '{learning_rate_policy}',
@@ -428,7 +502,9 @@ def _create_summary_table(args):
             {classes_str},
             '{weights}',
             '{grouping_text}'
-        )""".format(**args)
+        )""".format(classes_str=classes_str,
+                    minibatch_summary_col_vals=minibatch_summary_col_vals,
+                    **args)
     plpy.execute(summary_table_creation_query)
     plpy.execute(summary_table_update_query)
 
@@ -451,7 +527,9 @@ def _create_output_table(output_table, temp_output_table,
     """.format(**locals())
     plpy.execute(build_output_query)
 
-def _update_temp_model_table(args, iteration, temp_output_table, first_try):
+
+def _update_temp_model_table(args, iteration, temp_output_table,
+                             is_minibatch_enabled, first_try):
     insert_or_create_str = "INSERT INTO {0}"
     if first_try:
         insert_or_create_str = "CREATE TEMP TABLE {0} as"
@@ -471,6 +549,10 @@ def _update_temp_model_table(args, iteration, temp_output_table, first_try):
                 ) grouping_q
                 {using_clause}
             """.format(**args)
+    if is_minibatch_enabled:
+        internal_result_udf = "internal_mlp_minibatch_result"
+    else:
+        internal_result_udf = "internal_mlp_igd_result"
     model_table_query = """
     {insert_or_create_str}
         SELECT
@@ -480,7 +562,7 @@ def _update_temp_model_table(args, iteration, temp_output_table, first_try):
             {iteration} as num_iterations
         FROM (
             SELECT
-                {schema_madlib}.internal_mlp_igd_result(
+                {schema_madlib}.{internal_result_udf}(
                     {col_grp_state}
                 ) AS result,
                 {col_grp_key}
@@ -489,9 +571,9 @@ def _update_temp_model_table(args, iteration, temp_output_table, first_try):
         ) rel_state_subq
         {join_clause}
     """.format(insert_or_create_str=insert_or_create_str,
-               iteration=iteration, join_clause=join_clause, **args)
+               iteration=iteration, join_clause=join_clause,
+               internal_result_udf=internal_result_udf, **args)
     plpy.execute(model_table_query)
-
 
 def _get_optimizer_params(param_str):
     params_defaults = {
@@ -503,7 +585,9 @@ def _get_optimizer_params(param_str):
         "gamma": (0.1, float),
         "iterations_per_step": (100, int),
         "power": (0.5, float),
-        "lambda": (0, float)
+        "lambda": (0, float),
+        "n_epochs": (1, int),
+        "batch_size": (1, int)
     }
     param_defaults = dict([(k, v[0]) for k, v in params_defaults.items()])
     param_types = dict([(k, v[1]) for k, v in params_defaults.items()])
@@ -514,31 +598,6 @@ def _get_optimizer_params(param_str):
     name_value = extract_keyvalue_params(
         param_str, param_types, param_defaults, ignore_invalid=False)
     return name_value
-
-
-def _validate_args_classification(source_table, dependent_varname):
-    expr_type = get_expr_type(dependent_varname, source_table)
-    int_types = ['integer', 'smallint', 'bigint']
-    text_types = ['text', 'varchar', 'character varying', 'char', 'character']
-    boolean_types = ['boolean']
-    _assert("[]" in expr_type
-            or expr_type in int_types + text_types + boolean_types,
-            "Dependent variable column should refer to an "
-            "integer, boolean, text, varchar, or character type.")
-
-
-def _validate_args_regression(source_table, dependent_varname):
-    expr_type = get_expr_type(dependent_varname, source_table)
-    int_types = ['integer', 'smallint', 'bigint']
-    float_types = ['double precision', 'real']
-    _assert(
-        "[]" in expr_type or expr_type in int_types + float_types,
-        "Dependent variable column should refer to an array or numeric type")
-    if "[]" in expr_type:
-        _assert(
-            array_col_has_same_dimension(source_table, dependent_varname),
-            "Dependent variable column should refer to arrays of the same length"
-        )
 
 def _validate_standardization_table(standardization_table, glist=[]):
     input_tbl_valid(standardization_table, 'MLP')
@@ -551,7 +610,6 @@ def _validate_summary_table(summary_table):
         'tolerance', 'learning_rate_init', 'n_iterations', 'n_tries',
         'classes', 'layer_sizes', 'source_table'
     ], 'MLP')
-
 
 def _validate_warm_start(output_table, summary_table, standardization_table,
                          independent_varname, dependent_varname, layer_sizes,
@@ -588,51 +646,98 @@ def _validate_warm_start(output_table, summary_table, standardization_table,
                       output_table + ". Invalid number of coefficients in model.")
     return coeff
 
+def _validate_dependent_var(source_table, dependent_varname,
+                            is_classification, is_minibatch_enabled):
+    expr_type = get_expr_type(dependent_varname, source_table)
+    int_types = ['integer', 'smallint', 'bigint']
+    text_types = ['text', 'varchar', 'character varying', 'char', 'character']
+    boolean_types = ['boolean']
+    classification_types = int_types + boolean_types + text_types
+
+    if is_minibatch_enabled:
+        # With pre-processed data, dep type is always an array
+        _assert("[]" in expr_type,
+                "Dependent variable column should refer to an array.")
+        # The dependent variable is always a double precision array in
+        # preprocessed data (so check for numeric types)
+        # strip out '[]' from expr_type
+        _assert(is_psql_numeric_type(expr_type[:-2]),
+                "Dependent variable column should be of numeric type.")
+    else:
+        if is_classification:
+            # Currently, classification doesn't accept an
+            # array for dep type in IGD
+            _assert("[]" not in expr_type and expr_type in classification_types,
+                    "Dependent variable column should be of type: "
+                    "{0}".format(classification_types))
+        else:
+            _assert("[]" in expr_type or is_psql_numeric_type(expr_type),
+                    "Dependent variable column should be of numeric type.")
+
+def _validate_params_based_on_minibatch(source_table, independent_varname,
+                                        dependent_varname, weights,
+                                        is_classification,
+                                        is_minibatch_enabled):
+    """
+        Some params have to be validated after knowing if the solver is
+        minibatch or not.
+    """
+    if is_minibatch_enabled:
+        _assert(weights == '1',
+                "MLP Error: The input weights param is not supported with"
+                " mini-batch version of MLP.")
+    else:
+        int_types = ['integer', 'smallint', 'bigint']
+        float_types = ['double precision', 'real']
+        _assert(get_expr_type(weights, source_table) in int_types + float_types,
+                "MLP error: Weights should be a numeric type")
+        # Validate independent variable
+        _assert("[]" in get_expr_type(independent_varname, source_table),
+                "Independent variable column should refer to an array")
+        _assert(array_col_has_same_dimension(source_table, independent_varname),
+                "Independent variable column should refer to arrays of the same length")
+
+    _validate_dependent_var(source_table, dependent_varname,
+                            is_classification, is_minibatch_enabled)
 
 def _validate_args(source_table, output_table, summary_table,
                    standardization_table, independent_varname,
                    dependent_varname, hidden_layer_sizes, optimizer_params,
-                   is_classification, weights, warm_start, activation,
-                   grouping_col):
+                   warm_start, activation, grouping_col):
+
     input_tbl_valid(source_table, "MLP")
     if not warm_start:
         output_tbl_valid(output_table, "MLP")
         output_tbl_valid(summary_table, "MLP")
         output_tbl_valid(standardization_table, "MLP")
 
-    _assert(
-        is_var_valid(source_table, independent_varname),
-        "MLP error: invalid independent_varname "
-        "('{independent_varname}') for source_table "
-        "({source_table})!".format(
-            independent_varname=independent_varname,
-            source_table=source_table))
+    _assert(is_var_valid(source_table, independent_varname),
+            "MLP error: invalid independent_varname "
+            "('{independent_varname}') for source_table "
+            "({source_table})!".format(
+                independent_varname=independent_varname,
+                source_table=source_table))
 
-    _assert(
-        is_var_valid(source_table, dependent_varname),
-        "MLP error: invalid dependent_varname "
-        "('{dependent_varname}') for source_table "
-        "({source_table})!".format(
-            dependent_varname=dependent_varname, source_table=source_table))
-    _assert(
-        isinstance(hidden_layer_sizes, list),
-        "hidden_layer_sizes must be an array of integers")
-    # TODO put this check earlier
-    _assert(
-        all(isinstance(value, int) for value in hidden_layer_sizes),
-        "MLP error: Hidden layers sizes must be integers")
-    _assert(
-        all(value >= 0 for value in hidden_layer_sizes),
-        "MLP error: Hidden layers sizes must be greater than 0.")
+    _assert(is_var_valid(source_table, dependent_varname),
+            "MLP error: invalid dependent_varname "
+            "('{dependent_varname}') for source_table "
+            "({source_table})!".format(
+                dependent_varname=dependent_varname, source_table=source_table))
+
+    _assert(isinstance(hidden_layer_sizes, list),
+            "hidden_layer_sizes must be an array of integers")
+    _assert(all(isinstance(value, int) for value in hidden_layer_sizes),
+            "MLP error: Hidden layers sizes must be integers")
+    _assert(all(value >= 0 for value in hidden_layer_sizes),
+            "MLP error: Hidden layers sizes must be greater than 0.")
     _assert(optimizer_params["lambda"] >= 0,
             "MLP error: lambda should be greater than or equal to 0.")
     _assert(optimizer_params["tolerance"] >= 0,
             "MLP error: tolerance should be greater than or equal to 0.")
     _assert(optimizer_params["n_tries"] >= 1,
             "MLP error: n_tries should be greater than or equal to 1")
-    _assert(
-        optimizer_params["n_iterations"] >= 1,
-        "MLP error: n_iterations should be greater than or equal to 1")
+    _assert(optimizer_params["n_iterations"] >= 1,
+            "MLP error: n_iterations should be greater than or equal to 1")
     _assert(optimizer_params["power"] > 0,
             "MLP error: power should be greater than 0.")
     _assert(0 < optimizer_params["gamma"] <= 1,
@@ -641,28 +746,15 @@ def _validate_args(source_table, output_table, summary_table,
             "MLP error: iterations_per_step should be greater than 0.")
     _assert(optimizer_params["learning_rate_init"] > 0,
             "MLP error: learning_rate_init should be greater than 0.")
-    _assert("[]" in get_expr_type(independent_varname, source_table),
-            "Independent variable column should refer to an array")
-    _assert(
-        array_col_has_same_dimension(source_table, independent_varname),
-        "Independent variable column should refer to arrays of the same length"
-    )
-
-    int_types = ['integer', 'smallint', 'bigint']
-    float_types = ['double precision', 'real']
-    _assert(
-        get_expr_type(weights, source_table) in int_types + float_types,
-        "MLP error: Weights should be a numeric type")
+    _assert(optimizer_params["batch_size"] > 0,
+            "MLP error: batch_size should be greater than 0.")
+    _assert(optimizer_params["n_epochs"] > 0,
+            "MLP error: n_epochs should be greater than 0.")
 
     if grouping_col:
         cols_in_tbl_valid(source_table,
                           _string_to_array_with_quotes(grouping_col),
                           'MLP')
-    if is_classification:
-        _validate_args_classification(source_table, dependent_varname)
-    else:
-        _validate_args_regression(source_table, dependent_varname)
-
 
 def _get_learning_rate_policy_name(learning_rate_policy):
     if not learning_rate_policy:
@@ -676,9 +768,9 @@ def _get_learning_rate_policy_name(learning_rate_policy):
         except StopIteration:
             plpy.error(
                 "MLP Error: Invalid learning rate policy: "
-                "{0}. Supported learning rate policies are ({1})".format(
-                    learning_rate_policy,
-                    ','.join(sorted(supported_learning_rate_policies))))
+                "{0}. Supported learning rate policies are ({1}).".
+                format(learning_rate_policy,
+                       ', '.join(supported_learning_rate_policies)))
     return learning_rate_policy
 
 
@@ -686,16 +778,16 @@ def _get_activation_function_name(activation):
     if not activation:
         activation = 'sigmoid'
     else:
-        supported_activation_function = ['sigmoid', 'tanh', 'relu']
+        supported_activation_function = ['relu', 'sigmoid', 'tanh']
         try:
             activation = next(
                 x for x in supported_activation_function
                 if x.startswith(activation))
         except StopIteration:
             plpy.error("MLP Error: Invalid activation function: "
-                       "{0}. Supported activation functions are ({1})".format(
-                           activation,
-                           ','.join(sorted(supported_activation_function))))
+                       "{0}. Supported activation functions are ({1}).".
+                       format(activation,
+                              ', '.join(supported_activation_function)))
     return activation
 
 
@@ -706,17 +798,32 @@ def _get_activation_index(activation_name):
 
 def _format_label(label):
     if isinstance(label, str):
-        return "'" + label + "'"
+        return "'{0}'".format(label)
     return label
 
+def _get_minibatch_param_from_mlp_model_summary(summary_dict, param,
+                                                minibatch_param):
+    """
+        Return the value of specific columns from the model summary table.
+        This is to be used only for three params:
+            source_table
+            independent_varname
+            dependent_varname
+        If the model was trained with minibatch, there would be three new
+        columns introduced, that correspond to the above columns:
+            original_source_table
+            original_independent_varname
+            original_dependent_varname
+        This is because, when minibatch is used, the column names without
+        prefix 'original_' will have the values from the minibatch preprocessed
+        input table, and the column names with the prefix correspond to the
+        original table that was input to the minibatch preprocessing step.
+    """
+    return summary_dict[minibatch_param] \
+                if minibatch_param in summary_dict else summary_dict[param]
 
-def mlp_predict(schema_madlib,
-                model_table,
-                data_table,
-                id_col_name,
-                output_table,
-                pred_type='response',
-                **kwargs):
+def mlp_predict(schema_madlib, model_table, data_table, id_col_name,
+                output_table, pred_type='response', **kwargs):
     """ Score new observations using a trained neural network
 
     @param schema_madlib Name of the schema where MADlib is installed
@@ -738,11 +845,16 @@ def mlp_predict(schema_madlib,
     _validate_summary_table(summary_table)
 
     summary = plpy.execute("SELECT * FROM {0}".format(summary_table))[0]
-    dependent_varname = summary['dependent_varname']
-    independent_varname = summary['independent_varname']
-    source_table = summary['source_table']
+    coeff = PY2SQL(plpy.execute(
+        "SELECT * FROM {0}".format(model_table))[0]["coeff"])
+    dependent_varname = _get_minibatch_param_from_mlp_model_summary(summary,
+                            'dependent_varname', 'original_dependent_varname')
+    independent_varname = _get_minibatch_param_from_mlp_model_summary(summary,
+                              'independent_varname', 'original_independent_varname')
+    source_table = _get_minibatch_param_from_mlp_model_summary(summary,
+                        'source_table', 'original_source_table')
     activation = _get_activation_index(summary['activation'])
-    layer_sizes = py_list_to_sql_string(
+    layer_sizes = PY2SQL(
         summary['layer_sizes'], array_type="DOUBLE PRECISION")
     is_classification = int(summary["is_classification"])
     is_response = int(pred_type == 'response')
@@ -766,9 +878,8 @@ def mlp_predict(schema_madlib,
         # Validate the summary table created with the 1.12 MLP model table.
         cols_in_tbl_valid(summary_table, ['x_means', 'x_stds'], 'MLP')
 
-    pred_name = ('"prob_{0}"' if pred_type == "prob" else
-                '"estimated_{0}"').format(
-                    dependent_varname.replace('"', '').strip())
+    pred_name = (('"prob_{0}"' if pred_type == "prob" else '"estimated_{0}"').
+                 format(dependent_varname.replace('"', '').strip()))
 
     input_tbl_valid(data_table, 'MLP')
 
@@ -799,8 +910,8 @@ def mlp_predict(schema_madlib,
         """.format(**locals())
         group_by = ', '.join(['{0}.{1}'.format(data_table, col)
                               for col in grouping_col_list])
-        group_by_predict_str = "ORDER BY {0}, {1}.{2}".format(
-                                group_by, data_table, id_col_name)
+        group_by_predict_str = ("ORDER BY {0}, {1}.{2}".
+                                format(group_by, data_table, id_col_name))
         select_grouping_col = ','.join(['q.{0}'.format(col)
                                         for col in grouping_col_list]) + ','
         grouping_col_comma = grouping_col+","
@@ -824,12 +935,10 @@ def mlp_predict(schema_madlib,
                     SELECT mean, std
                     FROM {0}
                 """.format(standardization_table))[0]
-        coeff = py_list_to_sql_string(plpy.execute(
-            "SELECT * FROM {0}".format(model_table))[0]["coeff"])
-        x_means = py_list_to_sql_string(
-            standardization['mean'], array_type="DOUBLE PRECISION")
-        x_stds = py_list_to_sql_string(
-            standardization['std'], array_type="DOUBLE PRECISION")
+        coeff = PY2SQL(plpy.execute(
+            "SELECT coeff FROM {0}".format(model_table))[0]["coeff"])
+        x_means = PY2SQL(standardization['mean'], array_type="DOUBLE PRECISION")
+        x_stds = PY2SQL(standardization['std'], array_type="DOUBLE PRECISION")
 
         coeff_column = "{coeff}".format(**locals())
         mean_col = "{x_means}".format(**locals())
@@ -916,9 +1025,10 @@ def mlp_help(schema_madlib, message, is_classification):
         " " * 33 + ", ".join(int_types + boolean_types)
     label_description_classification = "Name of a column which specifies label.\n" +\
         " " * 33 + "Supported types are:\n" + supported_types
-    label_description_regression = "Dependent variable. May be an array for multiple\n" +\
-        " " * 33 + "regression or the name of a column which is any\n" + " " * 33 +\
-        "numeric type for single regression"
+    label_description_regression = (
+        "Dependent variable. May be an array for \n" + " " * 33 +
+        "multiple regression or the name of a column which is any\n" + " " * 33 +
+        "numeric type for single regression")
     label_description = label_description_classification if is_classification\
         else label_description_regression
     args = dict(schema_madlib=schema_madlib, method=method,
@@ -1154,6 +1264,38 @@ def mlp_help(schema_madlib, message, is_classification):
     -- n_tries and warm_start can be used with grouping too, similar to as
     -- shown above without grouping.
 
+    -- Pre-process source table so that the solver uses mini-batch gradient descent.
+    DROP TABLE IF EXISTS lin_housing_batch, lin_housing_batch_summary;
+    DROP TABLE IF EXISTS lin_housing_batch_standardization;
+    SELECT {schema_madlib}.minibatch_preprocessor(
+        'lin_housing',          -- Source table
+        'lin_housing_batch',    -- Destination table of preprocessor
+        'y',                    -- Dependent variable
+        'x',                    -- Independent variable
+        10                      -- Buffer size (optional)
+    );
+
+    -- Train MLP with lin_housing_batch, the solver automatically uses mini-batch
+    -- gradient descent.
+    DROP TABLE IF EXISTS mlp_regress_group, mlp_regress_group_summary;
+    DROP TABLE IF EXISTS mlp_regress_group_standardization;
+    SELECT {schema_madlib}.{method}(
+        'lin_housing_batch',  -- Source table
+        'mlp_regress_batch',  -- Desination table
+        'independent_varname', -- Input features
+        'dependent_varname',   -- Dependent variable
+        ARRAY[25,25],     -- Number of units per layer
+        'learning_rate_init=0.001,
+        n_iterations=50,
+        lambda=0.001,
+        tolerance=0',
+        n_epochs=20,      -- Optimizer params, with n_tries
+        'relu',           -- Activation function
+        NULL,             -- Default weight (1)
+        FALSE,            -- No warm start
+        FALSE            -- Not verbose
+    );
+    SELECT * FROM mlp_regress_batch;
     """
 
     classification_example = """
@@ -1274,6 +1416,35 @@ def mlp_help(schema_madlib, message, is_classification):
     -- n_tries and warm_start can be used with grouping too, similar to as
     -- shown above without grouping.
 
+    -- Pre-process source table so that the solver uses mini-batch gradient descent.
+    DROP TABLE IF EXISTS iris_data_batch, iris_data_batch_summary;
+    DROP TABLE IF EXISTS iris_data_batch_standardization;
+    SELECT {schema_madlib}.minibatch_preprocessor(
+        'iris_data',          -- Source table
+        'iris_data_batch',    -- Destination table of preprocessor
+        'y',                  -- Dependent variable
+        'x'                   -- Independent variable
+    );
+
+    -- Train MLP with lin_housing_batch, the solver automatically uses mini-batch
+    -- gradient descent.
+    DROP TABLE IF EXISTS mlp_model_batch, mlp_model_batch_summary;
+    DROP TABLE IF EXISTS mlp_model_batch_standardization;
+    SELECT madlib.mlp_classification(
+        'iris_data_batch',  -- Source table
+        'mlp_model_batch',  -- Destination table
+        'attributes',       -- Input features
+        'class_text',       -- Label
+        ARRAY[5],           -- Number of units per layer
+        'learning_rate_init=0.003,
+        n_iterations=500,
+        tolerance=0',       -- Optimizer params
+        'tanh',             -- Activation function
+        NULL,               -- Default weight (1)
+        FALSE,              -- No warm start
+        FALSE               -- Not verbose
+    );
+
     """.format(**args)
     example = classification_example if is_classification else regression_example
     optimizer_params = """
@@ -1313,6 +1484,17 @@ def mlp_help(schema_madlib, message, is_classification):
                                             two iterations is less than the
                                             tolerance training will stop, even if
                                             n_iterations has not been reached.
+    batch_size,                          -- Default: 1 for IGD, 20 for Minibatch
+                                            If the source_table is detected to contain data
+                                            that is supported by minibatch, then the solver
+                                            uses mini-batch gradient descent, with the specified
+                                            batch_size.
+    n_epochs                             -- Default: 1 for IGD, 10 for Minibatch
+                                            If the source_table is detected to contain data
+                                            that is supported by minibatch, then the solver
+                                            uses mini-batch gradient descent. During gradient
+                                            descent, n_epochs represents the number of times
+                                            all batches in a buffer are iterated over.
     """.format(**args)
 
     if not message:
@@ -1455,3 +1637,81 @@ def mlp_predict_help(schema_madlib, message):
     return """
         No such option. Use "SELECT {schema_madlib}.mlp_predict()" for help.
     """.format(**args)
+
+
+def check_if_minibatch_enabled(source_table, independent_varname):
+    """
+        Function to validate if the source_table is converted to a format that
+        can be used for mini-batching. It checks for the dimensionalities of
+        the independent variable to determine the same.
+    """
+    query = """
+        SELECT array_upper({0}, 1) AS n_x,
+               array_upper({0}, 2) AS n_y,
+               array_upper({0}, 3) AS n_z
+        FROM {1}
+        LIMIT 1
+    """.format(independent_varname, source_table)
+    result = plpy.execute(query)
+
+    if not result:
+        plpy.error("MLP: Input table could be empty.")
+
+    has_x_dim, has_y_dim, has_z_dim = [bool(result[0][i])
+                                       for i in ('n_x', 'n_y', 'n_z')]
+    if not has_x_dim:
+        plpy.error("MLP: {0} is empty.".format(independent_varname))
+
+    # error out if >2d matrix
+    if has_z_dim:
+        plpy.error("MLP: Input table is not in the right format.")
+    return has_y_dim
+
+
+class MLPMinibatchPreProcessor:
+    """
+    This class consumes and validates the pre-processed source table used for
+    MLP mini-batch. This also populates values from the pre-processed summary
+    table which is used by MLP mini-batch
+
+    """
+    # summary table columns names
+    DEPENDENT_VARNAME = "dependent_varname"
+    INDEPENDENT_VARNAME = "independent_varname"
+    GROUPING_COL = "grouping_cols"
+    CLASS_VALUES = "class_values"
+    MODEL_TYPE_CLASSIFICATION = "classification"
+    MODEL_TYPE_REGRESSION = "regression"
+
+    def __init__(self, source_table):
+        self.source_table = source_table
+        self.preprocessed_summary_dict = None
+        self.summary_table = add_postfix(self.source_table, "_summary")
+        self.std_table = add_postfix(self.source_table, "_standardization")
+
+        self._validate_and_set_preprocessed_summary()
+
+    def _validate_and_set_preprocessed_summary(self):
+        if not table_exists(self.summary_table) or not table_exists(self.std_table):
+            plpy.error("Tables {0} and/or {1} do not exist. These tables are"
+                       " needed for using minibatch during training.".format(
+                                                             self.summary_table,
+                                                             self.std_table))
+
+        query = "SELECT * FROM {0}".format(self.summary_table)
+        summary_table_columns = plpy.execute(query)
+        if not summary_table_columns or len(summary_table_columns) == 0:
+            plpy.error("No columns in table {0}.".format(self.summary_table))
+        else:
+            summary_table_columns = summary_table_columns[0]
+
+        required_columns = (self.DEPENDENT_VARNAME, self.INDEPENDENT_VARNAME,
+                            self.CLASS_VALUES)
+        if set(required_columns) <= set(summary_table_columns):
+            self.preprocessed_summary_dict = summary_table_columns
+        else:
+            plpy.error("One or more expected columns {0} not present in"
+                       " summary table {1}. These columns are"
+                       " needed for using minibatch during training.".format(
+                                                    required_columns,
+                                                    self.summary_table))
