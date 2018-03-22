@@ -57,12 +57,12 @@ def pca_sparse(schema_madlib, source_table, pc_table, row_id,
 
     """
     pca_wrap(schema_madlib, source_table, pc_table, row_id,
-        k, grouping_cols, lanczos_iter, use_correlation,
-        result_summary_table, variance, True, col_id,
-        val_id, row_dim, col_dim)
+             k, grouping_cols, lanczos_iter, use_correlation,
+             result_summary_table, variance, True, col_id,
+             val_id, row_dim, col_dim)
 # ------------------------------------------------------------------------
 
-# ========================================================================
+
 def pca(schema_madlib, source_table, pc_table, row_id,
         k, grouping_cols, lanczos_iter, use_correlation,
         result_summary_table, variance, **kwargs):
@@ -84,15 +84,15 @@ def pca(schema_madlib, source_table, pc_table, row_id,
 
     """
     pca_wrap(schema_madlib, source_table, pc_table, row_id,
-        k, grouping_cols, lanczos_iter, use_correlation,
-        result_summary_table, variance)
+             k, grouping_cols, lanczos_iter, use_correlation,
+             result_summary_table, variance)
 # ------------------------------------------------------------------------
 
 
 def pca_wrap(schema_madlib, source_table, pc_table, row_id,
-        k, grouping_cols, lanczos_iter, use_correlation,
-        result_summary_table, variance, is_sparse=False, col_id=None,
-        val_id=None, row_dim=None, col_dim=None, **kwargs):
+             k, grouping_cols, lanczos_iter, use_correlation,
+             result_summary_table, variance, is_sparse=False, col_id=None,
+             val_id=None, row_dim=None, col_dim=None, **kwargs):
     """
     This wrapper was added to support grouping columns. This
     function does the necessary pre-processing for handling
@@ -101,149 +101,156 @@ def pca_wrap(schema_madlib, source_table, pc_table, row_id,
     group.
     """
     # Reset the message level to avoid random messages
-    old_msg_level = plpy.execute("""
-                                  SELECT setting
-                                  FROM pg_settings
-                                  WHERE name='client_min_messages'
-                                  """)[0]['setting']
-    plpy.execute('SET client_min_messages TO warning')
-    grouping_cols_list = []
-    if is_sparse:
-        _validate_args(schema_madlib, source_table, pc_table, k, row_id, col_id,
-                   val_id, row_dim, col_dim, lanczos_iter,
-                   use_correlation, result_summary_table, variance)
-    else:
-        _validate_args(schema_madlib, source_table, pc_table, k,
-                   row_id, None, None, None, None,
-                   lanczos_iter, use_correlation,
-                   result_summary_table,variance)
-    if(grouping_cols):
-        # validate the grouping columns. We currently only support grouping_cols
-        # to be column names in the source_table, and not expressions!
-        grouping_cols_list = split_quoted_delimited_str(grouping_cols)
-        _assert(columns_exist_in_table(source_table, grouping_cols_list, schema_madlib),
-                "PCA error: One or more grouping columns in {0} do not exist!".format(grouping_cols))
-        distinct_grouping_values = plpy.execute("""
-                SELECT DISTINCT {grouping_cols} FROM {source_table}
-            """.format(grouping_cols=grouping_cols, source_table=source_table))
-    else:
-        grouping_cols = ''
-    other_columns_in_table = [col for col in get_cols(source_table) if col not in grouping_cols_list]
-    grouping_cols_clause = ''
-    if grouping_cols_list:
-        cols_names_types = get_cols_and_types(source_table)
-        grouping_cols_clause = ', ' + ', '.join([c_name+" "+c_type for (c_name, c_type) in cols_names_types if c_name in grouping_cols_list])
-    ## Create all output tables
-    plpy.execute("""
-        CREATE TABLE {pc_table} (
-            row_id               INTEGER,
-            principal_components double precision[],
-            std_dev              double precision,
-            proportion           double precision
-            {grouping_cols_clause}
-        )
-        """.format(pc_table=pc_table, grouping_cols_clause=grouping_cols_clause))
-    pc_table_mean = add_postfix(pc_table, "_mean")
-    plpy.execute("DROP TABLE IF EXISTS {0}".format(pc_table_mean))
-    plpy.execute("""
-        CREATE TABLE {pc_table_mean} (
-            column_mean     double precision[]
-            {grouping_cols_clause}
-        )
-        """.format(pc_table_mean=pc_table_mean, grouping_cols_clause=grouping_cols_clause))
-    if result_summary_table:
-        plpy.execute("DROP TABLE IF EXISTS {0}".format(result_summary_table))
-        plpy.execute("""
-                CREATE TABLE {0} (
-                rows_used               INTEGER,
-                "exec_time (ms)"        numeric,
-                iter                    INTEGER,
-                recon_error             double precision,
-                relative_recon_error    double precision,
-                use_correlation         boolean
-                {1}
-                )
-            """.format(result_summary_table, grouping_cols_clause))
-    else:
-        result_summary_table = ''
-
-    # declare variables whose values will be different for each group, if
-    # grouping_cols is specified
-    grouping_where_clause = ''
-    sparse_where_condition = ''
-    select_grouping_cols = ''
-    temp_table_columns = ''
-    result_summary_table_temp = ''
-    # For Dense matrix format only:
-    # We can now ignore the original row_id for all computations since we will
-    # create a new table with a row_id column that has not duplicates and ranges
-    # from 1 to number of rows in the group/table. This is to mainly support the
-    # grouping scneario where the row_id values might not range between 1 and
-    # number of rows in the group, for each group. Doing this also just extends
-    # this behavior for non-grouping scenarios too. If creating a new temp table
-    # that corrects the row_id column is not of much importance in non-grouping
-    # cases, we can avoid creating the temp table and save some computation time.
-    # But, at the moment, the code creates the temp table even for the non-grouping
-    # scenario.
-    # We don't need to do this for sparse representation because of the nature
-    # of its definition.
-    other_columns_in_table.remove(row_id)
-    temp_table_columns = """ ROW_NUMBER() OVER() AS row_id, """ + ','.join(other_columns_in_table)
-
-    pca_union_call_list = []
-    grp_id = 0
-    if not is_sparse:
-        col_id = 'NULL'
-        val_id = 'NULL'
-        row_dim = 0
-        col_dim = 0
-    while True:
-        if result_summary_table:
-            result_summary_table_temp = "pg_temp." + unique_string() + "_" + str(grp_id)
+    with MinWarning('warning'):
+        grouping_cols_list = []
+        if is_sparse:
+            _validate_args(schema_madlib, source_table, pc_table, k, row_id, col_id,
+                           val_id, row_dim, col_dim, lanczos_iter,
+                           use_correlation, result_summary_table, variance)
+        else:
+            _validate_args(schema_madlib, source_table, pc_table, k,
+                           row_id, None, None, None, None,
+                           lanczos_iter, use_correlation,
+                           result_summary_table, variance)
         if grouping_cols:
-            grp_value_dict = distinct_grouping_values[grp_id]
-            where_conditions = ' AND '.join([str(key)+"="+str(value) for (key, value) in grp_value_dict.items()])
-            sparse_where_condition = ' AND ' + where_conditions
-            grouping_where_clause = ' WHERE ' + where_conditions
-            select_grouping_cols = ', ' + ', '.join([str(value)+" AS "+key for (key, value) in grp_value_dict.items()])
+            # validate the grouping columns. We currently only support grouping_cols
+            # to be column names in the source_table, and not expressions!
+            grouping_cols_list = split_quoted_delimited_str(grouping_cols)
+            _assert(columns_exist_in_table(source_table, grouping_cols_list, schema_madlib),
+                    "PCA error: One or more grouping columns in {0} do not exist!".
+                    format(grouping_cols))
+            distinct_grouping_values = plpy.execute(
+                "SELECT DISTINCT {grouping_cols} FROM {source_table}".
+                format(grouping_cols=grouping_cols, source_table=source_table))
+        else:
+            grouping_cols = ''
+        other_columns_in_table = [col for col in get_cols(source_table) if col not in grouping_cols_list]
+        grouping_cols_clause = ''
+        if grouping_cols_list:
+            cols_names_types = get_cols_and_types(source_table)
+            grouping_cols_clause = ', ' + ', '.join([c_name + " " + c_type for (c_name, c_type) in cols_names_types if c_name in grouping_cols_list])
+        # Create all output tables
+        plpy.execute("""
+            CREATE TABLE {pc_table} (
+                row_id               INTEGER,
+                principal_components double precision[],
+                std_dev              double precision,
+                proportion           double precision
+                {grouping_cols_clause}
+            )
+            """.format(pc_table=pc_table,
+                       grouping_cols_clause=grouping_cols_clause))
+        pc_table_mean = add_postfix(pc_table, "_mean")
+        plpy.execute("DROP TABLE IF EXISTS {0}".format(pc_table_mean))
+        plpy.execute("""
+            CREATE TABLE {pc_table_mean} (
+                column_mean     double precision[]
+                {grouping_cols_clause}
+            )
+            """.format(pc_table_mean=pc_table_mean, grouping_cols_clause=grouping_cols_clause))
+        if result_summary_table:
+            plpy.execute("DROP TABLE IF EXISTS {0}".format(result_summary_table))
+            plpy.execute("""
+                CREATE TABLE {0} (
+                    rows_used               INTEGER,
+                    "exec_time (ms)"        numeric,
+                    iter                    INTEGER,
+                    recon_error             double precision,
+                    relative_recon_error    double precision,
+                    use_correlation         boolean
+                    {1}
+                )
+                """.format(result_summary_table, grouping_cols_clause))
+        else:
+            result_summary_table = ''
 
-        pca_union_call_list.append("""
-            {schema_madlib}._pca_union('{source_table}', '{pc_table}', '{pc_table_mean}', '{row_id}',
-                {k}, '{grouping_cols}', {lanczos_iter}, {use_correlation},
-                '{result_summary_table}', '{result_summary_table_temp}', {variance},
-                {grp_id}, '{grouping_where_clause}', '{sparse_where_condition}',
-                '{select_grouping_cols}', '{temp_table_columns}', {is_sparse},
-                '{col_id}', '{val_id}', {row_dim}, {col_dim})
-            """.format(schema_madlib=schema_madlib,
-                source_table=source_table, pc_table=pc_table,
-                pc_table_mean=pc_table_mean, row_id=row_id,
-                k='NULL' if k is None else k, grouping_cols=grouping_cols,
-                lanczos_iter=lanczos_iter, use_correlation=use_correlation,
-                result_summary_table=result_summary_table,
-                result_summary_table_temp=result_summary_table_temp,
-                variance='NULL' if variance==None else variance,
-                grp_id=grp_id, grouping_where_clause=grouping_where_clause,
-                sparse_where_condition=sparse_where_condition,
-                select_grouping_cols=select_grouping_cols,
-                temp_table_columns=temp_table_columns, is_sparse=is_sparse,
-                col_id=col_id, val_id=val_id, row_dim=row_dim, col_dim=col_dim))
-        grp_id += 1
-        if not grouping_cols_list or len(distinct_grouping_values) == grp_id:
-            break
-    # "SELECT <query_1>, <query_2>, <query_3>, ..." is expected to run each
-    # <query_i> in parallel.
-    pca_union_call = 'SELECT ' + ', '.join(pca_union_call_list)
-    plpy.execute(pca_union_call)
+        # declare variables whose values will be different for each group, if
+        # grouping_cols is specified
+        grouping_where_clause = ''
+        sparse_where_condition = ''
+        select_grouping_cols = ''
+        temp_table_columns = ''
+        result_summary_table_temp = ''
+        # For Dense matrix format only:
+        # We can now ignore the original row_id for all computations since we will
+        # create a new table with a row_id column that has not duplicates and ranges
+        # from 1 to number of rows in the group/table. This is to mainly support the
+        # grouping scneario where the row_id values might not range between 1 and
+        # number of rows in the group, for each group. Doing this also just extends
+        # this behavior for non-grouping scenarios too. If creating a new temp table
+        # that corrects the row_id column is not of much importance in non-grouping
+        # cases, we can avoid creating the temp table and save some computation time.
+        # But, at the moment, the code creates the temp table even for the non-grouping
+        # scenario.
+        # We don't need to do this for sparse representation because of the nature
+        # of its definition.
+        other_columns_in_table.remove(row_id)
+        temp_table_columns = (" ROW_NUMBER() OVER() AS row_id, " +
+                              ','.join(other_columns_in_table))
 
-    plpy.execute("SET client_min_messages TO %s" % old_msg_level)
+        pca_union_call_list = []
+        grp_id = 0
+        if not is_sparse:
+            col_id = 'NULL'
+            val_id = 'NULL'
+            row_dim = 0
+            col_dim = 0
+        while True:
+            if result_summary_table:
+                result_summary_table_temp = ("pg_temp.{0}_{1}".
+                                             format(unique_string(), grp_id))
+            if grouping_cols:
+                grp_value_dict = distinct_grouping_values[grp_id]
+                where_conditions = ' AND '.join(
+                    ["{0} = '{1}'".format(key, value)
+                     for key, value in grp_value_dict.items()])
+                sparse_where_condition = ' AND ' + where_conditions
+                grouping_where_clause = ' WHERE ' + where_conditions
+                select_grouping_cols = (
+                    ', ' + ', '.join(["'{1}' AS {0}".format(key, value)
+                                      for key, value in grp_value_dict.items()]))
+
+            pca_union_call_list.append("""
+                {schema_madlib}._pca_union(
+                    '{source_table}',
+                    '{pc_table}',
+                    '{pc_table_mean}',
+                    '{row_id}',
+                    {k_null},
+                    '{grouping_cols}',
+                    {lanczos_iter},
+                    {use_correlation},
+                    '{result_summary_table}',
+                    '{result_summary_table_temp}',
+                    {variance_null},
+                    {grp_id},
+                    $${grouping_where_clause}$$,
+                    $${sparse_where_condition}$$,
+                    $${select_grouping_cols}$$,
+                    '{temp_table_columns}',
+                    {is_sparse},
+                    '{col_id}',
+                    '{val_id}',
+                    {row_dim},
+                    {col_dim})
+                """.format(k_null='NULL' if k is None else k,
+                           variance_null='NULL' if variance is None else variance,
+                           **locals()))
+            grp_id += 1
+            if not grouping_cols_list or len(distinct_grouping_values) == grp_id:
+                break
+        # "SELECT <query_1>, <query_2>, <query_3>, ..." is expected to run each
+        # <query_i> in parallel.
+        pca_union_call = 'SELECT ' + ', '.join(pca_union_call_list)
+        plpy.execute(pca_union_call)
 
 
 def _pca_union(schema_madlib, source_table, pc_table, pc_table_mean,
-        row_id, k, grouping_cols, lanczos_iter, use_correlation,
-        result_summary_table, result_summary_table_temp, variance,
-        grp_id, grouping_where_clause, sparse_where_condition,
-        select_grouping_cols, temp_table_columns, is_sparse, col_id,
-        val_id, row_dim, col_dim, **kwargs):
+               row_id, k, grouping_cols, lanczos_iter, use_correlation,
+               result_summary_table, result_summary_table_temp, variance,
+               grp_id, grouping_where_clause, sparse_where_condition,
+               select_grouping_cols, temp_table_columns, is_sparse, col_id,
+               val_id, row_dim, col_dim, **kwargs):
     """
     This function does all the heavy lifting of PCA, for both pca and pca_sparse.
     Compute the PCA of the matrix in source_table. This function is the specific
@@ -298,8 +305,8 @@ def _pca_union(schema_madlib, source_table, pc_table, pc_table_mean,
                 'row={row_id}, col={col_id}, val={val_id}',
                 '{x_dense}', 'row=row_id, val=row_vec')
             """.format(schema_madlib=schema_madlib,
-                sparse_temp=sparse_temp, row_id=row_id,
-                col_id=col_id, val_id=val_id, x_dense=x_dense))
+                       sparse_temp=sparse_temp, row_id=row_id,
+                       col_id=col_id, val_id=val_id, x_dense=x_dense))
         plpy.execute("""
             DROP TABLE IF EXISTS {0};
             """.format(sparse_temp))
@@ -316,8 +323,9 @@ def _pca_union(schema_madlib, source_table, pc_table, pc_table_mean,
                     FROM {source_table}
                     {grouping_where_clause}
                 """.format(source_table_grouped=source_table_grouped,
-                    source_table=source_table, grouping_where_clause=grouping_where_clause,
-                    temp_table_columns=temp_table_columns))
+                           source_table=source_table,
+                           grouping_where_clause=grouping_where_clause,
+                           temp_table_columns=temp_table_columns))
     row_id = 'row_id'
     # Make sure that the table has row_id and row_vec
     source_table_copy = "pg_temp." + unique_string() + "_reformated_names"
@@ -339,7 +347,7 @@ def _pca_union(schema_madlib, source_table, pc_table, pc_table_mean,
                 "PCA error: k cannot be larger than min(row_dim, col_dim)!")
         curK = k
     else:
-        curK = min(row_dim,col_dim)
+        curK = min(row_dim, col_dim)
     # If using the default number of lanczos iterations, set to the default
     if lanczos_iter == 0:
         if k:
@@ -347,7 +355,7 @@ def _pca_union(schema_madlib, source_table, pc_table, pc_table_mean,
         else:
             lanczos_iter = min(col_dim, row_dim)
     else:
-        if variance: #lanczos_iter overrides the proportion default for k
+        if variance:  # lanczos_iter overrides the proportion default for k
             curK = lanczos_iter
     # Note: we currently don't support grouping columns or correlation matrices
     if not use_correlation:
@@ -361,7 +369,7 @@ def _pca_union(schema_madlib, source_table, pc_table, pc_table_mean,
                                          'row_vec',
                                          dimension)
         # Step 3: Create temporary output & result summary table
-        svd_output_temp_table = "pg_temp."+ unique_string()+ "_svd_out_tbl"
+        svd_output_temp_table = "pg_temp." + unique_string() + "_svd_out_tbl"
 
         if result_summary_table_temp is None:
             result_summary_table_string = ''
@@ -372,13 +380,13 @@ def _pca_union(schema_madlib, source_table, pc_table, pc_table_mean,
         if result_summary_table_temp:
             t0 = time.time()
 
-        (source_table_svd,bd_pref) = _svd_upper_wrap(schema_madlib,
-            scaled_source_table, svd_output_temp_table,
+        (source_table_svd, bd_pref) = _svd_upper_wrap(
+            schema_madlib, scaled_source_table, svd_output_temp_table,
             row_id, curK, lanczos_iter, result_summary_table_temp)
 
         # Calculate the sum of values for proportion
         svd_var_s = add_postfix(svd_output_temp_table, "_s")
-        eigen_sum=plpy.execute(
+        eigen_sum = plpy.execute(
             """
             SELECT {schema_madlib}.array_sum(
                 {schema_madlib}.sum(
@@ -389,32 +397,36 @@ def _pca_union(schema_madlib, source_table, pc_table, pc_table_mean,
             """.format(**locals()))[0]['array_sum']
         # Step 4.2: Adjust the k value
         if variance:
-            variance_tmp_table = "pg_temp."+ unique_string()+ "_var_tmp"
+            variance_tmp_table = "pg_temp." + unique_string() + "_var_tmp"
             plpy.execute(
                 """
-                CREATE TABLE {variance_tmp_table} AS
-                (SELECT row_id, col_id, sum(value*value)
-                    OVER(ORDER BY value DESC)
+                CREATE TABLE {variance_tmp_table} AS (
+                    SELECT row_id,
+                           col_id,
+                           sum(value*value) OVER(ORDER BY value DESC)
+                            AS sum_value_square
                     FROM {svd_var_s})
                 """.format(variance_tmp_table=variance_tmp_table,
-                    svd_var_s=svd_var_s))
+                           svd_var_s=svd_var_s))
             ecount = plpy.execute("""
-                SELECT count(sum) FROM {variance_tmp_table}
-                    WHERE sum/{eigen_sum} < {variance}
+                SELECT count(sum_value_square)
+                FROM {variance_tmp_table}
+                WHERE sum_value_square / {eigen_sum} < {variance}
                 """.format(variance_tmp_table=variance_tmp_table,
-                    eigen_sum=eigen_sum, variance=variance))
+                           eigen_sum=eigen_sum,
+                           variance=variance))
             curK = ecount[0]['count']
             # The next value is the first that is over the treshold
             if (lanczos_iter > curK):
-                curK = curK+1
+                curK = curK + 1
             plpy.execute("""
                 DROP TABLE IF EXISTS {variance_tmp_table}
                 """.format(variance_tmp_table=variance_tmp_table))
         # Step 4.3: Perform the lower part of SVD
-        tmp_matrix_table = "temp_"+ unique_string()+ "_matrix"
+        tmp_matrix_table = "temp_" + unique_string() + "_matrix"
         tmp_matrix_s_table = add_postfix(tmp_matrix_table, "_s")
 
-        if variance: #remove elements after the variance threshold
+        if variance:  # remove elements after the variance threshold
             plpy.execute(
                 """
                 m4_ifdef(`__HAWQ__',
@@ -431,17 +443,17 @@ def _pca_union(schema_madlib, source_table, pc_table, pc_table_mean,
                     """.format(**locals())
             )
             _svd_lower_wrap(schema_madlib, source_table_svd,
-                svd_output_temp_table, row_id, curK, lanczos_iter, bd_pref,
-                tmp_matrix_s_table)
+                            svd_output_temp_table, row_id, curK, lanczos_iter, bd_pref,
+                            tmp_matrix_s_table)
         else:
             tmp_matrix_table = svd_output_temp_table
             _svd_lower_wrap(schema_madlib, source_table_svd,
-                svd_output_temp_table, row_id, curK, lanczos_iter, bd_pref)
+                            svd_output_temp_table, row_id, curK, lanczos_iter, bd_pref)
         # Step 4.4: Create the SVD result table
         if result_summary_table_temp:
             t1 = time.time()
             [row_dim, col_dim] = get_dims(source_table_grouped,
-                {'row': 'row_id', 'col': 'col_id', 'val': 'row_vec'})
+                                          {'row': 'row_id', 'col': 'col_id', 'val': 'row_vec'})
             arguments = {'schema_madlib': schema_madlib,
                          'source_table': scaled_source_table,
                          'matrix_u': add_postfix(svd_output_temp_table, "_u"),
@@ -549,6 +561,8 @@ def _pca_union(schema_madlib, source_table, pc_table, pc_table_mean,
 # ------------------------------------------------------------------------
 # Validate arguments: Same as pca
 # ------------------------------------------------------------------------
+
+
 def _validate_args(schema_madlib,
                    source_table,
                    pc_table,
@@ -596,7 +610,7 @@ def _validate_args(schema_madlib,
             plpy.error("""PCA error: components_param must be either
                 a positive integer or a float in the range (0.0,1.0]!""")
     if variance:
-        if (variance <= 0) or (variance >1):
+        if (variance <= 0) or (variance > 1):
             plpy.error("""PCA error: components_param must be either
                 a positive integer or a float in the range (0.0,1.0]!""")
     # confirm output tables are valid
@@ -709,6 +723,8 @@ def _recenter_data(schema_madlib, source_table, output_table, row_id,
 # ------------------------------------------------------------------------
 
 # Sparse PCA train help function
+
+
 def pca_sparse_help_message(schema_madlib, message=None, **kwargs):
     """
     Given a help string, provide usage information
