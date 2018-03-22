@@ -90,20 +90,34 @@ IGD<State, ConstState, Task>::transition(state_type &state,
 
     for (int curr_epoch=0; curr_epoch < n_epochs; curr_epoch++) {
         double loss = 0.0;
-        for (int curr_batch=0, curr_batch_row_index=0; curr_batch < n_batches;
-             curr_batch++, curr_batch_row_index += batch_size) {
-           Matrix X_batch;
-           ColumnVector y_batch;
-           if (curr_batch == n_batches-1) {
-              // last batch
-              X_batch = tuple.indVar.bottomRows(n_rows-curr_batch_row_index);
-              y_batch = tuple.depVar.tail(n_rows-curr_batch_row_index);
-           } else {
-               X_batch = tuple.indVar.block(curr_batch_row_index, 0, batch_size, n_ind_cols);
-               y_batch = tuple.depVar.segment(curr_batch_row_index, batch_size);
-           }
-           loss += Task::getLossAndUpdateModel(
-               state.task.model, X_batch, y_batch, state.task.stepsize);
+        /*
+            Randomizing the input data before every iteration is good for
+            minibatch gradient descent convergence. Since we don't do that,
+            we are randomizing the order in which every batch is visited in
+            a buffer. Note that this still does not randomize rows within
+            a batch.
+        */
+        int random_curr_batch[n_batches];
+        for(int i=0; i<n_batches; i++) {
+            random_curr_batch[i] = i;
+        }
+        int curr_batch_row_index = 0;
+        std::random_shuffle(&random_curr_batch[0], &random_curr_batch[n_batches]);
+        for (int i=0; i < n_batches; i++) {
+            int curr_batch = random_curr_batch[i];
+            int curr_batch_row_index = curr_batch * batch_size;
+            Matrix X_batch;
+            Matrix Y_batch;
+            if (curr_batch == n_batches-1) {
+               // last batch
+               X_batch = tuple.indVar.bottomRows(n_rows-curr_batch_row_index);
+               Y_batch = tuple.depVar.bottomRows(n_rows-curr_batch_row_index);
+            } else {
+                X_batch = tuple.indVar.block(curr_batch_row_index, 0, batch_size, n_ind_cols);
+                Y_batch = tuple.depVar.block(curr_batch_row_index, 0, batch_size, tuple.depVar.cols());
+            }
+            loss += Task::getLossAndUpdateModel(
+                state.task.model, X_batch, Y_batch, state.task.stepsize);
         }
 
         // The first epoch will most likely have the highest loss.

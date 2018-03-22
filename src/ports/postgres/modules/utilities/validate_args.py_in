@@ -152,7 +152,7 @@ def table_exists(tbl, only_first_schema=False):
                 FROM pg_class, pg_namespace
                 WHERE relnamespace = pg_namespace.oid
                   AND nspname {schema_expr}
-                  AND relname = '{table}'
+                  AND (relname = '{table}')
                   AND relkind IN ('r', 'v', 'm', 't', 'f')
             ) AS table_exists
             """.format(**locals()))[0]['table_exists']
@@ -468,7 +468,7 @@ def scalar_col_has_no_null(tbl, col):
 # -------------------------------------------------------------------------
 
 
-def array_col_dimension(tbl, col):
+def array_col_dimension(tbl, col, dim=1):
     """
     What is the dimension of this array column
     """
@@ -477,9 +477,9 @@ def array_col_dimension(tbl, col):
     if col is None:
         plpy.error('Input error: Column name is invalid')
     dim = plpy.execute("""
-        SELECT max(array_upper({col}, 1)) AS dim
+        SELECT max(array_upper({col}, {dim})) AS dim
         FROM {tbl}
-        """.format(col=col, tbl=tbl))[0]["dim"]
+        """.format(col=col, tbl=tbl, dim=dim))[0]["dim"]
     return dim
 # ------------------------------------------------------------------------
 
@@ -544,19 +544,31 @@ def array_col_has_no_null(tbl, col):
     return True
 # -------------------------------------------------------------------------
 
-def _tbl_dimension_rownum(schema_madlib, tbl_source, col_ind_var, skip_row_count=False):
+def get_col_dimension(tbl, col_name, dim=1):
+    """
+    Returns upper bound of the requested array dimension
+    Example:
+        col_name : ARRAY[[1,2,3],[4,5,6]]
+            dim=1, return value = 2
+            dim=2, return value = 3
+        col_name : ARRAY[1,2,3,4,5,6]
+            dim=1, return value = 6
+    """
+    col_dim = plpy.execute("""
+            SELECT array_upper({col_name}, {dim}) AS dimension
+            FROM {tbl} LIMIT 1
+        """.format(col_name=col_name, dim=dim, tbl=tbl))[0]["dimension"]
+    return col_dim
+
+def _tbl_dimension_rownum(schema_madlib, tbl, col_name, skip_row_count=False):
     """
     Measure the dimension and row number of source data table
     Please note that calculating the row count will incur a pass over the
     entire dataset. Hence the flag skip_row_count to optionally skip the row
     count calculation.
     """
-    # independent variable array length
-    dimension = plpy.execute("""
-                     SELECT array_upper({col_ind_var},1) AS dimension
-                     FROM {tbl_source} LIMIT 1
-                 """.format(tbl_source=tbl_source,
-                            col_ind_var=col_ind_var))[0]["dimension"]
+    dimension = get_col_dimension(tbl, col_name)
+
     # total row number of data source table
     # The WHERE clause here ignores rows in the table that contain one or more
     # NULLs in the independent variable (x). There is no NULL check made for
@@ -566,11 +578,11 @@ def _tbl_dimension_rownum(schema_madlib, tbl_source, col_ind_var, skip_row_count
         return dimension, None
 
     row_num = plpy.execute("""
-                   SELECT COUNT(*) FROM {tbl_source}
-                   WHERE NOT {schema_madlib}.array_contains_null({col_ind_var})
-               """.format(tbl_source=tbl_source,
+                   SELECT COUNT(*) FROM {tbl}
+                   WHERE NOT {schema_madlib}.array_contains_null({col_name})
+               """.format(tbl=tbl,
                           schema_madlib=schema_madlib,
-                          col_ind_var=col_ind_var))[0]["count"]
+                          col_name=col_name))[0]["count"]
 
     return (dimension, row_num)
 # ------------------------------------------------------------------------
