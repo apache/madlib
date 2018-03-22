@@ -18,28 +18,34 @@ m4_include(`SQLCommon.m4')
 <div class="toc"><b>Contents</b><ul>
 <li class="level1"><a href="#train">Training Function</a></li>
 <li class="level1"><a href="#predict">Prediction Function</a></li>
-<li class="level1"><a href="#get_tree">Display Function</a></li>
+<li class="level1"><a href="#get_tree">Tree Display</a></li>
 <li class="level1"><a href="#examples">Examples</a></li>
+<li class="level1"><a href="#literature">Literature</a></li>
 <li class="level1"><a href="#related">Related Topics</a></li>
 </ul></div>
 
 @brief
-Random forests are an ensemble learning method for classification and
+Random forest is an ensemble learning method for classification and
 regression that construct a multitude of decision trees at
-training time, then produce the class that is the mode of the classes of the
+training time, then produces the class that is the mean (regression)
+or mode (classification) of the prediction produced by the
 individual trees.
 
-Random forests build an ensemble of classifiers, each of which is a tree model
+Random forest builds an ensemble of classifiers, each of which is a tree model
 constructed using bootstrapped samples from the input data. The results of these
 models are then combined to yield a single prediction, which, at the
-expense of some loss in interpretation, have been found to be highly accurate.
+expense of some loss in interpretation, can be highly accurate.
+Refer to Breiman and Cutler [1][2] for details on the implementation
+used here.
 
-Please also refer to the decision tree user documentation for
-information relevant to the implementation of random forests in MADlib.
+Also refer to  
+the <a href="group__grp__decision__tree.html">decision tree</a>
+user documentation since many parameters and examples are similar to 
+random forest.
 
 @anchor train
 @par Training Function
-Random Forest training function has the following format:
+Random forest training function has the following format:
 <pre class="syntax">
 forest_train(training_table_name,
              output_table_name,
@@ -68,22 +74,183 @@ forest_train(training_table_name,
   <dd>text. Name of the table containing the training data.</dd>
 
   <dt>output_table_name</dt>
-  <dd>text. Name of the generated table containing the model.</dd>
+  <dd>TEXT. Name of the generated table containing the model.
+  If a table with the same name already exists, an
+  error will be returned. A summary table 
+  named <em>\<output_table_name\>_summary</em> and a grouping 
+  table named <em>\<output_table_name\>_group</em>
+  are also created.  These are described later on this page.
+  </DD>
 
+  <DT>id_col_name</DT>
+  <DD>TEXT. Name of the column containing id information 
+  in the training data.  This is a mandatory argument 
+  and is used for prediction and other purposes. The values 
+  are expected to be unique for each row.</DD>
+
+  <DT>dependent_variable</DT>
+  <DD>TEXT. Name of the column that contains the output (response) for
+  training. Boolean, integer and text types are considered to be classification
+  outputs, while double precision values are considered to be regression outputs.
+  The response variable for a classification tree can be multinomial, but the
+  time and space complexity of the training function increases linearly as the
+  number of response classes increases.</DD>
+
+  <DT>list_of_features</DT>
+  <DD>TEXT. Comma-separated string of column names or expressions to use as predictors.
+  Can also be a '*' implying all columns are to be used as predictors (except for the
+  ones included in the next argument that lists exclusions).
+  The types of the features can be mixed: boolean, integer, and text columns
+  are considered categorical and
+  double precision columns are considered continuous. Categorical variables
+  are not encoded and used as is in the training.
+
+  Array columns can also be included in the list, where the array is expanded
+  to treat each element of the array as a feature.
+  
+  Note that not every combination of the levels of a
+  categorical variable is checked when evaluating a split. The levels of the
+  non-integer categorical variable are ordered by the entropy of the variable in
+  predicting the response. The split at each node is evaluated between these
+  ordered levels. Integer categorical variables, however, are simply ordered
+  by their value.
+  </DD>
+
+  <DT>list_of_features_to_exclude</DT>
+  <DD>TEXT. Comma-separated string of column names to exclude from the predictors
+      list. If the <em>dependent_variable</em> is an expression (including cast of a column name),
+      then this list should include the columns present in the
+      <em>dependent_variable</em> expression,
+      otherwise those columns will be included in the 
+      features (resulting in meaningless trees).
+      The names in this parameter should be identical to the names used in the table and
+      quoted appropriately. </DD>
+
+  <DT>grouping_cols (optional)</DT>
+  <DD>TEXT, default: NULL. Comma-separated list of column names to group the
+      data by. This will produce multiple random forests, one for
+      each group.</DD>
+
+  <DT>num_trees (optional)</DT>
+  <DD>INTEGER, default: 100. Maximum number of trees to grow in the random
+      forest model. Actual number of trees grown may be different, depending
+      on the data.</DD>
+
+  <DT>num_random_features (optional)</DT>
+  <DD>INTEGER, default: sqrt(n) for classification, n/3 
+  for regression. This is the number of features to randomly 
+  select at each split.</DD>
+
+  <DT>importance (optional)</DT>
+  <DD>BOOLEAN, default: true. Whether or not to calculate variable importance.
+  If set to true, variable importance for categorical and continuous features
+  will be output in the group table <em>\<model_table\>_group</em>.
+  Note that total runtime will increase when variable 
+  importance is turned on. </DD>
+
+  <DT>num_permutations (optional)</DT>
+  <DD>INTEGER, default: 1. Number of times to permute each feature value while
+      calculating variable importance.
+
+    @note Variable importance for a feature is determined by permuting the variable
+    and computing the drop in predictive accuracy using out-of-bag samples [1].
+    Setting this greater than 1 performs an average over multiple
+    importance calculations, but increases total run time.  In most cases,
+    the default value of 1 is sufficient to compute the importance.
+    Due to nature of permutation, the importance value can end up being
+    negative if the number of levels for a categorical variable is small and is
+    unbalanced. In such a scenario, the importance values are shifted to ensure
+    that the lowest importance value is 0.
+
+  </DD>
+
+  <DT>max_tree_depth (optional)</DT>
+  <DD>INTEGER, default: 7. Maximum depth of any node of a tree,
+      with the root node counted as depth 0. A deeper tree can
+      lead to better prediction but will also result in
+      longer processing time and higher memory usage.</DD>
+
+  <DT>min_split (optional)</DT>
+  <DD>INTEGER, default: 20. Minimum number of observations that must exist
+      in a node for a split to be attempted.</DD>
+
+  <DT>min_bucket (optional)</DT>
+  <DD>INTEGER, default: min_split/3. Minimum number of observations in any terminal
+      node. If only one of min_bucket or min_split is specified, min_split is
+      set to min_bucket*3 or min_bucket to min_split/3, as appropriate.</DD>
+
+  <DT>num_splits (optional)</DT>
+  <DD>INTEGER, default: 20. Continuous-valued features are binned into
+      discrete quantiles to compute split boundaries. This global parameter
+      is used to compute the resolution of splits for continuous features.
+      Higher number of bins will lead to better prediction,
+      but will also result in longer processing time and higher memory usage.</DD>
+
+  <DT>null_handling_params (optional)</DT>
+  <DD>TEXT. Comma-separated string of key-value pairs controlling the behavior
+  of various features handling missing values.  One of the following can
+  be used if desired (not both):
+    <table class='output'>
+    <tr>
+      <th>max_surrogates</th>
+      <td>Default: 0. Number of surrogates to store for each node.</td>
+      One approach to handling NULLs is to use surrogate splits for each
+      node. A surrogate variable enables you to make better use of 
+      the data by using another predictor variable that is associated
+      (correlated) with the primary split variable.  The surrogate
+      variable comes into use when the primary predictior value is NULL.
+      Surrogate rules implemented here are based on reference [1]. 
+    </tr>
+    <tr>
+    <th>null_as_category</th>
+    <td>Default: FALSE. Whether to treat NULL as a valid level 
+    for categorical features.  FALSE means that NULL is not a
+    valid level, which is probably the most common sitation. 
+    
+    If set to TRUE, NULL values are considered a categorical value and
+    placed at the end of the ordering of categorical levels. Placing at the
+    end ensures that NULL is never used as a value to split a node on.
+    One reason to make NULL a category is that it allows you to 
+    predict on categorical levels that were not in the training 
+    data by lumping them into an "other bucket."
+
+    This parameter is ignored for continuous-valued features.
+    </td>
+    </tr>
+    </table>
+  </DD>
+
+  <DT>verbose (optional)</DT>
+  <DD>BOOLEAN, default: FALSE. Provides verbose output of the results of training.</DD>
+
+  <DT>sample_ratio (optional)</DT>
+  <DD>DOUBLE PRECISION, in the range of (0, 1], default: 1.
+    If 'sample_ratio' is less than 1, a bootstrap sample size smaller than the data
+    table is used for training each tree in the forest. A ratio that
+    is close to 0 may result in trees with only the root node.
+    This sample parameter allows users to quickly experiment with the 
+    random forest function since it reduces run time by 
+    using only some of the data.</DD>
+</DL>
+
+\b Output
+<dl class="arglist">
+<DD>
     The model table produced by the training function contains the following columns:
 
     <table class="output">
       <tr>
         <th>gid</th>
-        <td>integer. group id that uniquely identifies a set of grouping column values.</td>
+        <td>INTEGER. Group id that uniquely identifies a set of grouping column values.</td>
       </tr>
       <tr>
         <th>sample_id</th>
-        <td>integer. The id of the bootstrap sample that this tree is a part of.</td>
+        <td>INTEGER. The id of the bootstrap sample that this tree is a part of.</td>
       </tr>
       <tr>
         <th>tree</th>
-        <td>bytea8. Trained tree model stored in binary format.</td>
+        <td>BYTEA8. Trained tree model stored in binary 
+        format (not human readable).</td>
       </tr>
     </table>
 
@@ -97,327 +264,220 @@ forest_train(training_table_name,
 
     <tr>
       <th>is_classification</th>
-      <td>boolean. True if it is a classification model.</td>
+      <td>BOOLEAN. True if it is a classification model, false
+      if for regression.</td>
     </tr>
 
     <tr>
       <th>source_table</th>
-      <td>text. Data source table name.</td>
+      <td>TEXT. Data source table name.</td>
     </tr>
 
     <tr>
       <th>model_table</th>
-      <td>text. Model table name.</td>
+      <td>TEXT. Model table name.</td>
     </tr>
 
     <tr>
       <th>id_col_name</th>
-    <td>text. The ID column name.</td>
+    <td>TEXT. The ID column name.</td>
     </tr>
 
     <tr>
       <th>dependent_varname</th>
-      <td>text. Dependent variable.</td>
+      <td>TEXT. Dependent variable.</td>
     </tr>
 
     <tr>
-      <th>independent_varname</th>
-      <td>text. Independent variables</td>
+      <th>independent_varnames</th>
+      <td>TEXT. Independent variables</td>
     </tr>
 
     <tr>
       <th>cat_features</th>
-      <td>text. Categorical feature names.</td>
+      <td>TEXT. List of categorical features 
+      as a comma-separated string.</td>
     </tr>
 
     <tr>
       <th>con_features</th>
-      <td>text. Continuous feature names.</td>
+      <td>TEXT. List of continuous feature
+      as a comma-separated string.</td>
     </tr>
 
     <tr>
-      <th>grouping_col</th>
-      <td>int. Names of grouping columns.</td>
+      <th>grouping_cols</th>
+      <td>INTEGER. Names of grouping columns.</td>
     </tr>
 
     <tr>
       <th>num_trees</th>
-      <td>int. Number of trees grown by the model.</td>
+      <td>INTEGER. Number of trees grown by the model.</td>
     </tr>
 
     <tr>
       <th>num_random_features</th>
-      <td>int. Number of features randomly selected for each split.</td>
+      <td>INTEGER. Number of features randomly selected for each split.</td>
     </tr>
 
     <tr>
       <th>max_tree_depth</th>
-      <td>int. Maximum depth of any tree in the random forest model_table.</td>
+      <td>INTEGER. Maximum depth of any tree in the random forest model_table.</td>
     </tr>
 
     <tr>
       <th>min_split</th>
-      <td>int. Minimum number of observations in a node for it to be split.</td>
+      <td>INTEGER. Minimum number of observations in a node for it to be split.</td>
     </tr>
 
     <tr>
       <th>min_bucket</th>
-      <td>int. Minimum number of observations in any terminal node.</td>
+      <td>INTEGER. Minimum number of observations in any terminal node.</td>
     </tr>
 
     <tr>
       <th>num_splits</th>
-      <td>int. Number of buckets for continuous variables.</td>
+      <td>INTEGER. Number of buckets for continuous variables.</td>
     </tr>
 
     <tr>
       <th>verbose</th>
-      <td>boolean. Whether or not to display debug info.</td>
+      <td>BOOLEAN. Whether or not to display debug info.</td>
     </tr>
 
     <tr>
       <th>importance</th>
-      <td>boolean. Whether or not to calculate variable importance.</td>
+      <td>BOOLEAN. Whether or not to calculate variable importance.</td>
     </tr>
 
     <tr>
       <th>num_permutations</th>
-      <td>int. Number of times feature values are permuted while calculating
-      variable importance. The default value is 1.</td>
+      <td>INTEGER. Number of times feature values are permuted while calculating
+      variable importance.</td>
     </tr>
 
     <tr>
     <th>num_all_groups</th>
-    <td>int. Number of groups during forest training.</td>
+    <td>INTEGER. Number of groups during forest training.</td>
     </tr>
 
     <tr>
     <th>num_failed_groups</th>
-    <td>int. Number of failed groups during forest training.</td>
+    <td>INTEGER. Number of failed groups during forest training.</td>
     </tr>
 
     <tr>
       <th>total_rows_processed</th>
-      <td>bigint. Total numbers of rows processed in all groups.</td>
+      <td>BIG INTEGER. Total numbers of rows processed in all groups.</td>
     </tr>
 
     <tr>
       <th>total_rows_skipped</th>
-      <td>bigint. Total numbers of rows skipped in all groups due to missing values or failures.</td>
+      <td>BIG INTEGER. Total numbers of rows skipped in all 
+      groups due to missing values or failures.</td>
     </tr>
 
     <tr>
     <th>dependent_var_levels</th>
-    <td>text. For classification, the distinct levels of the dependent variable.</td>
+    <td>TEXT. For classification, the distinct levels of the dependent variable.</td>
     </tr>
 
     <tr>
     <th>dependent_var_type</th>
-    <td>text. The type of dependent variable.</td>
+    <td>TEXT. The type of dependent variable.</td>
     </tr>
 
     <tr>
     <th>independent_var_types</th>
-    <td>text. A comma separated string for the types of independent variables.</td>
+    <td>TEXT. A comma separated string for the types of independent variables.</td>
     </tr>
 
     <tr>
     <th>null_proxy</th>
-    <td>text. Describes how NULLs are handled.  If NULL is not 
+    <td>TEXT. Describes how NULLs are handled.  If NULL is not 
     treated as a separate categorical variable, this will be NULL.
     If NULL is treated as a separate categorical value, this will be 
     set to "__NULL__"</td>
     </tr>
     </table>
 
-    A group table named <em> \<model_table\>_group</em> is created, which has the following columns:
+     A table named <em>\<model_table\>_group</em> is also created at
+     the same time, even if no grouping is specified.
+     It contains the following columns:
      <table class="output">
 
       <tr>
         <th>gid</th>
-        <td>integer. Group id that uniquely identifies a set of grouping column values.</td>
+        <td>integer. Group id that uniquely identifies 
+        a set of grouping column values.  If grouping is not
+        used, this will always be 1.</td>
       </tr>
 
       <tr>
         <th>&lt;...&gt;</th>
-        <td>Same type as in the training data table. Grouping columns, if provided in input.
-        This could be multiple columns depending on the \c grouping_cols input.</td>
+        <td>Same type as in the training data table 'grouping_cols'.
+        This could be multiple columns depending on 
+        the 'grouping_cols' input.</td>
       </tr>
 
       <tr>
         <th>success</th>
-        <td>boolean. Indicator of the success of the group.</td>
+        <td>BOOLEAN. Indicator of the success of the group.</td>
       </tr>
 
       <tr>
         <th>cat_levels_in_text</th>
-        <td>text[]. Ordered levels of categorical variables.</td>
+        <td>TEXT[]. Ordered levels (values) of categorical variables 
+        corresponding to the categorical features in 
+        the 'list_of_features' argument above.  Used to help
+        interpret the trained tree.  For example, if the 
+        categorical features specified are <em>weather_outlook</em>
+        and <em>windy</em> in that order, then 'cat_levels_in_text' 
+        might be <em>[overcast, rain, sunny, False, True]</em>.</td>
       </tr>
 
       <tr>
         <th>cat_n_levels</th>
-        <td>integer[]. Number of levels for each categorical variable.</td>
+        <td>INTEGER[]. Number of levels for each categorical variable.
+        Used to help interpret the trained tree. In the example
+        from above, 'cat_n_levels' would 
+        be <em>[3, 2]</em> since there are 3 levels 
+        for <em>weather_outlook</em> and 2 levels 
+        <em>windy</em>.</td>
       </tr>
 
       <tr>
         <th>oob_error</th>
-        <td>double precision. Out-of-bag error for the random forest model.</td>
+        <td>DOUBLE PRECISION. Out-of-bag error for the random forest model.</td>
       </tr>
 
       <tr>
         <th>cat_var_importance</th>
-        <td>double precision[]. Variable importance for categorical features.
+        <td>DOUBLE PRECISION[]. Variable importance for categorical features.
         The order corresponds to the order of the variables as found in
-        cat_features in <em> \<model_table\>_summary</em>.</td>
+        'cat_features' in <em> \<model_table\>_summary</em>.</td>
       </tr>
 
       <tr>
         <th>con_var_importance</th>
-        <td>double precision[]. Variable importance for continuous features.
+        <td>DOUBLE PRECISION[]. Variable importance for continuous features.
         The order corresponds to the order of the variables as found in
-        con_features in  <em> \<model_table\>_summary</em>.</td>
+        'con_features' in  <em> \<model_table\>_summary</em>.</td>
       </tr>
 
    </table>
   </DD>
-
-  <DT>id_col_name</DT>
-  <DD>text. Name of the column containing id information in the training data.</DD>
-
-  <DT>dependent_variable</DT>
-  <DD>text. Name of the column that contains the output for
-  training. Boolean, integer and text are considered classification outputs,
-  while float values are considered regression outputs.</DD>
-
-  <DT>list_of_features</DT>
-  <DD>TEXT. Comma-separated string of column names or expressions to use as predictors.
-  Can also be a '*' implying all columns are to be used as predictors (except for the
-  ones included in the next argument that lists exclusions).
-  The types of the features can be mixed - boolean, integer, and text columns
-  are considered categorical and
-  double precision columns are considered continuous. Categorical variables
-  are not encoded and used as is for the training.
-
-  Array columns can also be included in the list, where the array is expanded
-  to treat each element of the array as a feature.
-
-  It is important to note that not every combination of the levels of a
-  categorical variable is checked when evaluating a split. The levels of the
-  non-integer categorical variable are ordered by the entropy of the variable in
-  predicting the response. The split at each node is evaluated between these
-  ordered levels. Integer categorical variables, however, are simply ordered
-  by their value.
-  </DD>
-
-  <DT>list_of_features_to_exclude</DT>
-  <DD>text. Comma-separated string of column names to exclude from the predictors
-      list. If the <em>dependent_variable</em> argument is an expression
-      (including cast of a column name), then this list should include the
-      columns that are included in the <em>dependent_variable</em> expression,
-      otherwise those columns will be included in the features
-      (resulting in meaningless trees).</DD>
-
-  <DT>grouping_cols (optional)</DT>
-  <DD>text, default: NULL. Comma-separated list of column names to group the
-      data by. This will lead to creating multiple random forests, one for
-      each group.</DD>
-
-  <DT>num_trees (optional)</DT>
-  <DD>integer, default: 100. Maximum number of trees to grow in the Random
-      Forest model. Actual number of trees grown may be slighlty different.</DD>
-
-  <DT>num_random_features (optional)</DT>
-  <DD>integer, default: sqrt(n) if classification tree, otherwise n/3. Number of
-      features to randomly select at each split.</DD>
-
-  <DT>importance (optional)</DT>
-  <DD>boolean, default: true. Whether or not to calculate variable importance.
-  If set to true, variable importance for categorical and continuous features
-  will be output in the group table <em>\<model_table\>_group</em> described
-  above.  Total runtime will increase when variable importance is turned on. </DD>
-
-  <DT>num_permutations (optional)</DT>
-  <DD>integer, default: 1. Number of times to permute each feature value while
-      calculating variable importance.
-
-    @note Variable importance for a feature is computed by permuting the variable
-    and computing the drop in predictive accuracy (using OOB samples).
-    Setting this greater than 1 performs an average over multiple
-    importance calculations. This increases the total run time; in most cases
-    the default value of 1 is sufficient to compute the importance.
-    Due to nature of permutation, the importance value can end up being
-    negative if the number of levels for a categorical variable is small and is
-    unbalanced. In such a scenario the importance values are shifted to ensure
-    that the lowest importance value is 0.
-
-  </DD>
-
-  <DT>max_tree_depth (optional)</DT>
-  <DD>integer, default: 7. Maximum depth of any node of a tree,
-      with the root node counted as depth 0. A deeper tree can
-      lead to better prediction but will also result in
-      longer processing time and higher memory usage.</DD>
-
-  <DT>min_split (optional)</DT>
-  <DD>integer, default: 20. Minimum number of observations that must exist
-      in a node for a split to be attempted.</DD>
-
-  <DT>min_bucket (optional)</DT>
-  <DD>integer, default: min_split/3. Minimum number of observations in any terminal
-      node. If only one of min_bucket or min_split is specified, min_split is
-      set to min_bucket*3 or min_bucket to min_split/3, as appropriate.</DD>
-
-  <DT>num_splits (optional)</DT>
-  <DD>integer, default: 20. Continuous-valued features are binned into
-      discrete quantiles to compute split boundaries. This global parameter
-      is used to compute the resolution of splits for continuous features.
-      Higher number of bins will lead to better prediction,
-      but will also result in longer processing time and higher memory usage.</DD>
-
-  <DT>null_handling_params</DT>
-  <DD>TEXT. Comma-separated string of key-value pairs controlling the behavior
-  of various features handling missing values.
-    <table class='output'>
-    <tr>
-      <th>max_surrogates</th>
-      <td>Default: 0. Number of surrogates to store for each node.</td>
-      One of the approaches of handling NULLs is to use surrogate splits for each
-      node. A surrogate variable is another predictor variable that is associated
-      (correlated) with the primary split variable. The surrogate
-      variable comes into use when the primary predictior value is NULL.
-    </tr>
-    <tr>
-    <th>null_as_category</th>
-    <td>Default: FALSE. Whether to treat NULL as a special categorical value.
-
-    If this is set to TRUE, NULL values are considered a categorical
-    value and placed at the end of the ordering of categorical levels. Placing it
-    at the end ensures that NULL is never used as a value to split a node on.
-    This parameter is ignored for continuous-valued features.
-    </td>
-    </tr>
-    </table>
-  </DD>
-
-  <DT>verbose (optional)</DT>
-  <DD>boolean, default: FALSE. Provides verbose output of the results of training.</DD>
-
-  <DT>sample_ratio (optional)</DT>
-  <DD>double precision, in the range of (0, 1], default: 1.
-    If sample_ratio is less than 1, a bootstrap sample size smaller than the data
-    table is expected to be used for training each tree in the forest. A ratio that
-    is close to 0 may result in trees with only the root node.
-    This allows users to experiment with the function in a speedy fashion.</DD>
 </DL>
-    @note The main parameters that affect memory usage are: depth of
-    tree (‘max_tree_depth’), number of features, number of values per
-    categorical feature, and number of bins for continuous features (‘num_splits’).
-    If you are hitting memory limits, consider reducing one or
-    more of these parameters.
+
+@note The main parameters that affect memory usage are: depth of
+tree (‘max_tree_depth’), number of features, number of values per
+categorical feature, and number of bins for continuous features (‘num_splits’).
+If you are hitting memory limits, consider reducing one or
+more of these parameters.
 
 @anchor predict
 @par Prediction Function
-The prediction function is provided to estimate the conditional mean given a new
+The prediction function estimates the conditional mean given a new
 predictor. It has the following syntax:
 <pre class="syntax">
 forest_predict(random_forest_model,
@@ -429,18 +489,33 @@ forest_predict(random_forest_model,
 \b Arguments
 <DL class="arglist">
   <DT>forest_model</DT>
-  <DD>text. Name of the table containing the Random Forest model.</DD>
+  <DD>text. Name of the table containing the random forest model
+  from training.</DD>
 
   <DT>new_data_table</DT>
-  <DD>text. Name of the table containing prediction data.</DD>
+  <DD>TEXT. Name of the table containing prediction data. This table is
+  expected to contain the same features that were used during training. The table
+  should also contain <em>id_col_name</em> used for identifying each row.</DD>
 
   <DT>output_table</DT>
-  <DD>text. Name of the table to output prediction results to.</DD>
+  <DD>TEXT. Name of the table to output prediction results. If this table
+  already exists, an error is returned.
+  The table contains the <em>id_col_name</em> column giving
+  the 'id' for each prediction and the prediction columns for the dependent variable.
+
+  If <em>type</em> = 'response', then the table has a single additional column
+  with the prediction value of the response. The type of this column depends on
+  the type of the response variable used during training.
+
+  If <em>type</em> = 'prob', then the table has multiple additional columns, one
+  for each possible value of the response variable. The columns are labeled as
+  'estimated_prob_<em>dep_value</em>', where <em>dep_value</em> represents each
+  value of the response variable.</DD>
 
   <DT>type</DT>
-  <DD>text, optional, default: 'response'. For regression models, the output is
+  <DD>TEXT, optional, default: 'response'. For regression trees, the output is
       always the predicted value of the dependent variable. For classification
-      models, the <em>type</em> variable can be 'response', giving the
+      trees, the <em>type</em> variable can be 'response', giving the
       classification prediction as output, or 'prob', giving the class
       probabilities as output. For each value of the dependent variable, a
       column with the probabilities is added to the output table.
@@ -448,12 +523,12 @@ forest_predict(random_forest_model,
 </DL>
 
 @anchor get_tree
-@par Display Function
-The 'get_tree' function is provided to output a graph representation of a
-single tree of the random forest. The output can either be in the popular
-'dot' format that can be visualized using various programs including those
-in the GraphViz package, or in a simple text format. The details of the
-text format is outputted with the tree.
+@par Tree Display
+The display function outputs a graph representation of a
+single tree of the random forest. The output can either be in the popular 
+'dot' format that can be visualized using various programs including those 
+in the GraphViz package, or in a simple text format. The details of the 
+text format are output with the tree.
 <pre class="syntax">
 get_tree(forest_model_table,
          gid,
@@ -463,41 +538,42 @@ get_tree(forest_model_table,
 </pre>
 
 An additional display function is provided to output the surrogate splits chosen
-for each internal node.
+for each internal node:
 <pre class="syntax">
 get_tree_surr(forest_model_table,
               gid,
               sample_id)
 </pre>
 
-The output contains the list of surrogate splits for each internal node of a
-tree. The nodes are sorted in ascending order by id. This is equivalent to
-viewing the tree in a breadth-first manner. For each surrogate, the output gives
-the surrogate split (variable and threshold) and also provides the number of
-rows that were common between the primary split and the surrogate split.
-Finally, the number of rows present in the majority branch of the primary split
-is also presented. Only surrogates that perform better than this majority branch
-are used. When the primary variable has a NULL value the surrogate variables are
-used in order to compute the split for that node. If all surrogates variables
-are NULL, then the majority branch is used to compute the split for a tuple.
+This output contains the list of surrogate splits for each internal node. The
+nodes are sorted in ascending order by id. This is equivalent to viewing the
+tree in a breadth-first manner. For each surrogate, we output the surrogate
+split (variable and threshold) and also give the number of rows that were common
+between the primary split and the surrogate split. Finally, the number of rows
+present in the majority branch of the primary split is also shown. Only
+surrogates that perform better than this majority branch are included in the
+surrogate list. When the primary variable has a NULL value the surrogate
+variables are used in order to compute the split for that node. If all
+surrogates variables are NULL, then the majority branch is used to compute the
+split for a tuple.
 
 \b Arguments
 <DL class="arglist">
     <DT>forest_model_table</DT>
-    <DD>text. Name of the table containing the Random Forest model.</DD>
+    <DD>TEXT. Name of the table containing the random forest model.</DD>
 
     <DT>gid</DT>
-    <DD>integer. Id of the group that this tree is a part of.</DD>
+    <DD>INTEGER. Id of the group that this tree is part of.</DD>
 
     <DT>sample_id</DT>
-    <DD>integer. Id of the bootstrap sample that this tree if a part of.</DD>
+    <DD>INTEGER. Id of the bootstrap sample that this tree is part of.</DD>
 
     <DT>dot_format (optional)</DT>
-    <DD>boolean, default = TRUE. Output can either be in a dot format or a text
+    <DD>BOOLEAN, default = TRUE. Output can either be in a dot format or a text
     format. If TRUE, the result is in the dot format, else output is in text format.</DD>
 
     <DT>verbose (optional)</DT>
-    <DD>boolean, default = FALSE. If true, the dot format output will contain
+    <DD>BOOLEAN, default = FALSE. If true, the dot format output will contain
     additional information (impurity, sample size, number of weighted rows for
     each response variable, classification or prediction if the tree was
     pruned at this level)</DD>
@@ -507,46 +583,83 @@ The output is always returned as a 'TEXT'. For the dot format, the output can be
 redirected to a file on the client side and then rendered using visualization
 programs.
 
+To export the dot format result to an external file,
+use the method below. Please note that you should use unaligned
+table output mode for psql with '-A' flag, or else you may get an 
+error when you try to convert the dot file to another format
+for viewing (e.g., PDF). And inside the psql client,
+both '\\t' and '\\o' should be used:
+
+<pre class="example">
+\> \# under bash
+\> psql -A my_database
+\# -- in psql now
+\# \\t
+\# \\o test.dot -- export to a file
+\# select madlib.tree_display('tree_out');
+\# \\o
+\# \\t
+</pre>
+
+After the dot file has been generated, use third-party
+plotting software to plot the trees in a nice format:
+<pre class="example">
+\> \# under bash, convert the dot file into a PDF file
+\> dot -Tpdf test.dot \> test.pdf
+\> xpdf test.pdf\&
+</pre>
+
+Please see
+the <a href="group__grp__decision__tree.html">decision tree</a>
+user documentation for more details on working with tree output formats.
+
 @anchor examples
 @examp
-\b Note: The output results may vary due the random nature of random forests.
+
+@note
+ - Not all random forest parameters are demonstrated in 
+ the examples below.  Some are shown in 
+ the <a href="group__grp__decision__tree.html">decision tree</a>
+ user documentation since usage is similar.
+ - Your results may look different than those below 
+due the random nature of random forests.
 
 <b>Random Forest Classification Example</b>
 
--# Prepare input data:
+-# Load input data set related to whether to play golf or not:
 <pre class="example">
-DROP TABLE IF EXISTS dt_golf;
-CREATE TABLE dt_golf (
+DROP TABLE IF EXISTS rf_golf CASCADE;
+CREATE TABLE rf_golf (
     id integer NOT NULL,
     "OUTLOOK" text,
     temperature double precision,
     humidity double precision,
-    windy text,
+    "Temp_Humidity" double precision[],
+    clouds_airquality text[],
+    windy boolean,
     class text
 );
-</pre>
-<pre class="example">
-INSERT INTO dt_golf (id,"OUTLOOK",temperature,humidity,windy,class) VALUES
-(1, 'sunny', 85, 85, 'false', 'Don''t Play'),
-(2, 'sunny', 80, 90, 'true', 'Don''t Play'),
-(3, 'overcast', 83, 78, 'false', 'Play'),
-(4, 'rain', 70, 96, 'false', 'Play'),
-(5, 'rain', 68, 80, 'false', 'Play'),
-(6, 'rain', 65, 70, 'true', 'Don''t Play'),
-(7, 'overcast', 64, 65, 'true', 'Play'),
-(8, 'sunny', 72, 95, 'false', 'Don''t Play'),
-(9, 'sunny', 69, 70, 'false', 'Play'),
-(10, 'rain', 75, 80, 'false', 'Play'),
-(11, 'sunny', 75, 70, 'true', 'Play'),
-(12, 'overcast', 72, 90, 'true', 'Play'),
-(13, 'overcast', 81, 75, 'false', 'Play'),
-(14, 'rain', 71, 80, 'true', 'Don''t Play');
+INSERT INTO rf_golf VALUES
+(1,'sunny', 85, 85, ARRAY[85, 85],ARRAY['none', 'unhealthy'], 'false','Don''t Play'),
+(2, 'sunny', 80, 90, ARRAY[80, 90], ARRAY['none', 'moderate'], 'true', 'Don''t Play'),
+(3, 'overcast', 83, 78, ARRAY[83, 78], ARRAY['low', 'moderate'], 'false', 'Play'),
+(4, 'rain', 70, 96, ARRAY[70, 96], ARRAY['low', 'moderate'], 'false', 'Play'),
+(5, 'rain', 68, 80, ARRAY[68, 80], ARRAY['medium', 'good'], 'false', 'Play'),
+(6, 'rain', 65, 70, ARRAY[65, 70], ARRAY['low', 'unhealthy'], 'true', 'Don''t Play'),
+(7, 'overcast', 64, 65, ARRAY[64, 65], ARRAY['medium', 'moderate'], 'true', 'Play'),
+(8, 'sunny', 72, 95, ARRAY[72, 95], ARRAY['high', 'unhealthy'], 'false', 'Don''t Play'),
+(9, 'sunny', 69, 70, ARRAY[69, 70], ARRAY['high', 'good'], 'false', 'Play'),
+(10, 'rain', 75, 80, ARRAY[75, 80], ARRAY['medium', 'good'], 'false', 'Play'),
+(11, 'sunny', 75, 70, ARRAY[75, 70], ARRAY['none', 'good'], 'true', 'Play'),
+(12, 'overcast', 72, 90, ARRAY[72, 90], ARRAY['medium', 'moderate'], 'true', 'Play'),
+(13, 'overcast', 81, 75, ARRAY[81, 75], ARRAY['medium', 'moderate'], 'false', 'Play'),
+(14, 'rain', 71, 80, ARRAY[71, 80], ARRAY['low', 'unhealthy'], 'true', 'Don''t Play');
 </pre>
 
--# Run the random forest training function and view summary output:
+-# Train random forest then view the summary table:
 <pre class="example">
 DROP TABLE IF EXISTS train_output, train_output_group, train_output_summary;
-SELECT madlib.forest_train('dt_golf',         -- source table
+SELECT madlib.forest_train('rf_golf',         -- source table
                            'train_output',    -- output model table
                            'id',              -- id column
                            'class',           -- response
@@ -565,12 +678,11 @@ SELECT madlib.forest_train('dt_golf',         -- source table
 \\x on
 SELECT * FROM train_output_summary;
 </pre>
-Result:
 <pre class="result">
--[ RECORD 1 ]---------+-----------------------------------------------
+-[ RECORD 1 ]---------+--------------------------------------------------
 method                | forest_train
 is_classification     | t
-source_table          | dt_golf
+source_table          | rf_golf
 model_table           | train_output
 id_col_name           | id
 dependent_varname     | class
@@ -593,55 +705,68 @@ total_rows_processed  | 14
 total_rows_skipped    | 0
 dependent_var_levels  | "Don't Play","Play"
 dependent_var_type    | text
-independent_var_types | text, text, double precision, double precision
+independent_var_types | text, boolean, double precision, double precision
 null_proxy            | None
 </pre>
 View the group table output:
 <pre class="example">
 SELECT * FROM train_output_group;
 </pre>
-Result:
 <pre class="result">
--[ RECORD 1 ]------+----------------------------------------
+-[ RECORD 1 ]------+---------------------------------
 gid                | 1
 success            | t
 cat_n_levels       | {3,2}
-cat_levels_in_text | {overcast,sunny,rain,false,true}
+cat_levels_in_text | {overcast,sunny,rain,False,True}
 oob_error          | 0.42857142857142857143
-cat_var_importance | {0.0305555555555556,0.0626984126984127}
-con_var_importance | {0,0.0243650793650794}
+cat_var_importance | {0.0692857142857143,0.02}
+con_var_importance | {0,5.55111512312578e-17}
 </pre>
+The 'cat_levels_in_text' array shows the ordering of the 
+levels of the categorical variables "OUTLOOK" and windy, 
+which have 3 and 2 levels respectively.  Variable importance 
+for categorical variables is shown in 'cat_var_importance'.
+Variable importance for continuous variables is 
+shown in 'con_var_importance'. 
+A higher value means higher importance for the variable.
 
--# Obtain a dot format display of a single tree
-within the forest:
+-# Predict output categories. For the purpose of this 
+example, we use the same data that was used for training:
 <pre class="example">
-\\x off
-SELECT madlib.get_tree('train_output',1,2);
+DROP TABLE IF EXISTS prediction_results;
+SELECT madlib.forest_predict('train_output',        -- tree model    
+                             'rf_golf',             -- new data table
+                             'prediction_results',  -- output table
+                             'response');           -- show response
+SELECT g.id, class, estimated_class FROM prediction_results p, 
+rf_golf g WHERE p.id = g.id ORDER BY g.id;
 </pre>
-Result:
 <pre class="result">
- digraph "Classification tree for dt_golf" {
- "0" [label="humidity <= 75", shape=ellipse];
- "0" -> "1"[label="yes"];
- "1" [label="\"Play\"",shape=box];
- "0" -> "2"[label="no"];
- "2" [label="humidity <= 80", shape=ellipse];
- "2" -> "5"[label="yes"];
- "5" [label="\"Don't Play\"",shape=box];
- "2" -> "6"[label="no"];
- "6" [label="\"OUTLOOK\" in {overcast,rain}", shape=ellipse];
- "6" -> "13"[label="yes"];
- "13" [label="\"Play\"",shape=box];
- "6" -> "14"[label="no"];
- "14" [label="\"Don't Play\"",shape=box];
- } //---end of digraph---------
+ id |   class    | estimated_prob_Don't Play | estimated_prob_Play 
+----+------------+---------------------------+---------------------
+  1 | Don't Play |                      0.85 |                0.15
+  2 | Don't Play |                      0.95 |                0.05
+  3 | Play       |                       0.2 |                 0.8
+  4 | Play       |                       0.3 |                 0.7
+  5 | Play       |                       0.1 |                 0.9
+  6 | Don't Play |                       0.7 |                 0.3
+  7 | Play       |                       0.2 |                 0.8
+  8 | Don't Play |                      0.75 |                0.25
+  9 | Play       |                      0.15 |                0.85
+ 10 | Play       |                       0.2 |                 0.8
+ 11 | Play       |                      0.25 |                0.75
+ 12 | Play       |                       0.3 |                 0.7
+ 13 | Play       |                         0 |                   1
+ 14 | Don't Play |                       0.6 |                 0.4
+(14 rows)
 </pre>
 
--# Obtain a text display of the tree:
+-# View a single tree in text format within the forest 
+identified by 'gid' and 'sample_id', out of 
+the several that were created:
 <pre class="example">
-SELECT madlib.get_tree('train_output',1,2,FALSE);
+SELECT madlib.get_tree('train_output',1,7, FALSE);
 </pre>
-Result:
 <pre class="result">
 &nbsp;-------------------------------------
 &nbsp;- Each node represented by 'id' inside ().
@@ -652,86 +777,181 @@ second indented child (2i+2) is the 'False' node.
 &nbsp;- Number of (weighted) rows for each response variable inside [].
 &nbsp;- Order of values = ['"Don\'t Play"', '"Play"']
 &nbsp;-------------------------------------
- (0)[ 4 10]  humidity <= 75
-    (1)[0 7]  * --> "Play"
-    (2)[4 3]  humidity <= 80
-       (5)[3 1]  * --> "Don't Play"
-       (6)[1 2]  "OUTLOOK" in {overcast,rain}
-          (13)[0 2]  * --> "Play"
-          (14)[1 0]  * --> "Don't Play"
+ (0)[ 5 10]  windy in {False}
+    (1)[2 8]  "OUTLOOK" in {overcast,sunny}
+       (3)[2 1]  humidity <= 75
+          (7)[0 1]  * --> "Play"
+          (8)[2 0]  * --> "Don't Play"
+       (4)[0 7]  * --> "Play"
+    (2)[3 2]  temperature <= 75
+       (5)[1 2]  humidity <= 70
+          (11)[1 1]  * --> "Don't Play"
+          (12)[0 1]  * --> "Play"
+       (6)[2 0]  * --> "Don't Play"
 &nbsp;-------------------------------------
 </pre>
+Please see the decision tree user docs for an 
+explanation on how to interpret the tree display above.
 
--# Predict output categories for the same data as was used for input:
+-# View tree in dot format.
 <pre class="example">
-DROP TABLE IF EXISTS prediction_results;
-SELECT madlib.forest_predict('train_output',
-                             'dt_golf',
-                             'prediction_results',
-                             'response');
-\\x off
-SELECT id, estimated_class, class
-FROM prediction_results JOIN dt_golf USING (id)
-ORDER BY id;
+SELECT madlib.get_tree('train_output',1,7);
 </pre>
-Result:
 <pre class="result">
-  id | estimated_class |   class
-----+-----------------+------------
-  1 | Don't Play      | Don't Play
-  2 | Don't Play      | Don't Play
-  3 | Play            | Play
-  4 | Play            | Play
-  5 | Play            | Play
-  6 | Don't Play      | Don't Play
-  7 | Play            | Play
-  8 | Don't Play      | Don't Play
-  9 | Play            | Play
- 10 | Play            | Play
- 11 | Play            | Play
- 12 | Play            | Play
- 13 | Play            | Play
- 14 | Don't Play      | Don't Play
-(14 rows)
+&nbsp;----------------------------------------------------
+ digraph "Classification tree for rf_golf" {
+ "0" [label="windy <= False", shape=ellipse];
+ "0" -> "1"[label="yes"];
+ "0" -> "2"[label="no"];
+ "1" [label="\"OUTLOOK\" <= sunny", shape=ellipse];
+ "1" -> "3"[label="yes"];
+ "1" -> "4"[label="no"];
+ "4" [label="\"Play\"",shape=box];
+ "2" [label="temperature <= 75", shape=ellipse];
+ "2" -> "5"[label="yes"];
+ "2" -> "6"[label="no"];
+ "6" [label="\"Don't Play\"",shape=box];
+ "3" [label="humidity <= 75", shape=ellipse];
+ "3" -> "7"[label="yes"];
+ "7" [label="\"Play\"",shape=box];
+ "3" -> "8"[label="no"];
+ "8" [label="\"Don't Play\"",shape=box];
+ "5" [label="humidity <= 70", shape=ellipse];
+ "5" -> "11"[label="yes"];
+ "11" [label="\"Don't Play\"",shape=box];
+ "5" -> "12"[label="no"];
+ "12" [label="\"Play\"",shape=box];
+ } //---end of digraph--------- 
 </pre>
 
--# Predict probablities of output categories for the same data:
+-# View tree in dot format with additional information:
 <pre class="example">
-DROP TABLE IF EXISTS prediction_prob;
-SELECT madlib.forest_predict('train_output',
-                             'dt_golf',
-                             'prediction_prob',
-                             'prob');
-\\x off
-SELECT id, "estimated_prob_Play", class
-FROM prediction_prob JOIN dt_golf USING (id)
-ORDER BY id;
+SELECT madlib.get_tree('train_output',1,7, TRUE, TRUE);
 </pre>
-Result:
 <pre class="result">
- id | estimated_prob_Play |   class
-----+---------------------+------------
-  1 |                0.05 | Don't Play
-  2 |                0.15 | Don't Play
-  3 |                0.95 | Play
-  4 |                0.65 | Play
-  5 |                0.75 | Play
-  6 |                 0.4 | Don't Play
-  7 |                 0.7 | Play
-  8 |                 0.1 | Don't Play
-  9 |                 0.9 | Play
- 10 |                0.85 | Play
- 11 |                 0.8 | Play
- 12 |                 0.7 | Play
- 13 |                   1 | Play
- 14 |                 0.4 | Don't Play
-(14 rows)
+&nbsp;---------------------------------------------------------------------------------------------------------------------------
+ digraph "Classification tree for rf_golf" {
+ "0" [label="windy <= False\\n impurity = 0.444444\\n samples = 15\\n value = [ 5 10]\\n class = \"Play\"", shape=ellipse];
+ "0" -> "1"[label="yes"];
+ "0" -> "2"[label="no"];
+ "1" [label="\"OUTLOOK\" <= sunny\\n impurity = 0.32\\n samples = 10\\n value = [2 8]\\n class = \"Play\"", shape=ellipse];
+ "1" -> "3"[label="yes"];
+ "1" -> "4"[label="no"];
+ "4" [label="\"Play\"\\n impurity = 0\\n samples = 7\\n value = [0 7]",shape=box];
+ "2" [label="temperature <= 75\\n impurity = 0.48\\n samples = 5\\n value = [3 2]\\n class = \"Don't Play\"", shape=ellipse];
+ "2" -> "5"[label="yes"];
+ "2" -> "6"[label="no"];
+ "6" [label="\"Don't Play\"\\n impurity = 0\\n samples = 2\\n value = [2 0]",shape=box];
+ "3" [label="humidity <= 75\\n impurity = 0.444444\\n samples = 3\\n value = [2 1]\\n class = \"Don't Play\"", shape=ellipse];
+ "3" -> "7"[label="yes"];
+ "7" [label="\"Play\"\\n impurity = 0\\n samples = 1\\n value = [0 1]",shape=box];
+ "3" -> "8"[label="no"];
+ "8" [label="\"Don't Play\"\\n impurity = 0\\n samples = 2\\n value = [2 0]",shape=box];
+ "5" [label="humidity <= 70\\n impurity = 0.444444\\n samples = 3\\n value = [1 2]\\n class = \"Play\"", shape=ellipse];
+ "5" -> "11"[label="yes"];
+ "11" [label="\"Don't Play\"\\n impurity = 0.5\\n samples = 2\\n value = [1 1]",shape=box];
+ "5" -> "12"[label="no"];
+ "12" [label="\"Play\"\\n impurity = 0\\n samples = 1\\n value = [0 1]",shape=box];
+ } //---end of digraph--------- 
 </pre>
 
+-# Arrays of features. Categorical and continuous 
+features can be array columns, in which case the 
+array is expanded to treat each element of the 
+array as a feature:
+<pre class="example">
+DROP TABLE IF EXISTS train_output, train_output_group, train_output_summary;
+SELECT madlib.forest_train('rf_golf',         -- source table
+                           'train_output',    -- output model table
+                           'id',              -- id column
+                           'class',           -- response
+                           '"Temp_Humidity", clouds_airquality',   -- features
+                           NULL,              -- exclude columns
+                           NULL,              -- grouping columns
+                           20::integer,       -- number of trees
+                           2::integer,        -- number of random features
+                           TRUE::boolean,     -- variable importance
+                           1::integer,        -- num_permutations
+                           8::integer,        -- max depth
+                           3::integer,        -- min split
+                           1::integer,        -- min bucket
+                           10::integer        -- number of splits per continuous variable
+                           );
+SELECT * FROM train_output_summary;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]---------+--------------------------------------------------------------------------------
+method                | forest_train
+is_classification     | t
+source_table          | rf_golf
+model_table           | train_output
+id_col_name           | id
+dependent_varname     | class
+independent_varnames  | clouds_airquality[1],clouds_airquality[2],"Temp_Humidity"[1],"Temp_Humidity"[2]
+cat_features          | clouds_airquality[1],clouds_airquality[2]
+con_features          | "Temp_Humidity"[1],"Temp_Humidity"[2]
+grouping_cols         | 
+num_trees             | 20
+num_random_features   | 2
+max_tree_depth        | 8
+min_split             | 3
+min_bucket            | 1
+num_splits            | 10
+verbose               | f
+importance            | t
+num_permutations      | 1
+num_all_groups        | 1
+num_failed_groups     | 0
+total_rows_processed  | 14
+total_rows_skipped    | 0
+dependent_var_levels  | "Don't Play","Play"
+dependent_var_type    | text
+independent_var_types | text, text, double precision, double precision
+null_proxy            | None
+</pre>
+
+-# Sample ratio. Use the sample ratio parameter to 
+train on a subset of the data:
+<pre class="example">
+DROP TABLE IF EXISTS train_output, train_output_group, train_output_summary;
+SELECT madlib.forest_train('rf_golf',         -- source table
+                           'train_output',    -- output model table
+                           'id',              -- id column
+                           'class',           -- response
+                           '"OUTLOOK", temperature, humidity, windy',   -- features
+                           NULL,              -- exclude columns
+                           NULL,              -- grouping columns
+                           20::integer,       -- number of trees
+                           2::integer,        -- number of random features
+                           TRUE::boolean,     -- variable importance
+                           1::integer,        -- num_permutations
+                           8::integer,        -- max depth
+                           3::integer,        -- min split
+                           1::integer,        -- min bucket
+                           10::integer,       -- number of splits per continuous variable
+                           NULL,              -- NULL handling
+                           FALSE,             -- Verbose
+                           0.5                -- Sample ratio
+                           );
+SELECT * FROM train_output_group;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]------+---------------------------------
+gid                | 1
+success            | t
+cat_n_levels       | {3,2}
+cat_levels_in_text | {overcast,sunny,rain,False,True}
+oob_error          | 0.42857142857142857143
+cat_var_importance | {0.0416666666666667,0}
+con_var_importance | {0.0291666666666667,0.025}
+</pre>
 
 <b>Random Forest Regression Example</b>
 
--# Prepare input data:
+-# Load input data related to fuel consumption and 10 
+aspects of automobile design and performance for 32 
+automobiles (1973–74 models). Data was extracted from 
+the 1974 Motor Trend US magazine.
 <pre class="example">
 DROP TABLE IF EXISTS mt_cars;
 CREATE TABLE mt_cars (
@@ -748,9 +968,7 @@ CREATE TABLE mt_cars (
     gear integer,
     carb integer
 );
-</pre>
-<pre class="example">
-INSERT INTO mt_cars (id,mpg,cyl,disp,hp,drat,wt,qsec,vs,am,gear,carb) VALUES
+INSERT INTO mt_cars VALUES
 (1,18.7,8,360,175,3.15,3.44,17.02,0,0,3,2),
 (2,21,6,160,110,3.9,2.62,16.46,0,1,4,4),
 (3,24.4,4,146.7,62,3.69,3.19,20,1,0,4,2),
@@ -759,7 +977,7 @@ INSERT INTO mt_cars (id,mpg,cyl,disp,hp,drat,wt,qsec,vs,am,gear,carb) VALUES
 (6,16.4,8,275.8,180,3.078,4.07,17.4,0,0,3,3),
 (7,22.8,4,108,93,3.85,2.32,18.61,1,1,4,1),
 (8,17.3,8,275.8,180,3.078,3.73,17.6,0,0,3,3),
-(9,21.4,6,258,110,3.08,3.215,19.44,1,0,3,1),
+(9,21.4,null,258,110,3.08,3.215,19.44,1,0,3,1),
 (10,15.2,8,275.8,180,3.078,3.78,18,0,0,3,3),
 (11,18.1,6,225,105,2.768,3.46,20.22,1,0,3,1),
 (12,32.4,4,78.7,66,4.08,2.20,19.47,1,1,4,1),
@@ -768,7 +986,7 @@ INSERT INTO mt_cars (id,mpg,cyl,disp,hp,drat,wt,qsec,vs,am,gear,carb) VALUES
 (15,30.4,4,75.7,52,4.93,1.615,18.52,1,1,4,2),
 (16,19.2,6,167.6,123,3.92,3.44,18.3,1,0,4,4),
 (17,33.9,4,71.14,65,4.22,1.835,19.9,1,1,4,1),
-(18,15.2,8,304,150,3.15,3.435,17.3,0,0,3,2),
+(18,15.2,null,304,150,3.15,3.435,17.3,0,0,3,2),
 (19,10.4,8,472,205,2.93,5.25,17.98,0,0,3,4),
 (20,27.3,4,79,66,4.08,1.935,18.9,1,1,4,1),
 (21,10.4,8,460,215,3,5.424,17.82,0,0,3,4),
@@ -785,40 +1003,83 @@ INSERT INTO mt_cars (id,mpg,cyl,disp,hp,drat,wt,qsec,vs,am,gear,carb) VALUES
 (32,21.4,4,121,109,4.11,2.78,18.6,1,1,4,2);
 </pre>
 
--# Run the random forest training function:
+-# We train a regression random forest tree with 
+grouping on transmission type (0 = automatic, 1 = manual) 
+and use surrogates for NULL handling:
 <pre class="example">
 DROP TABLE IF EXISTS mt_cars_output, mt_cars_output_group, mt_cars_output_summary;
-SELECT madlib.forest_train('mt_cars',
-                           'mt_cars_output',
-                           'id',
-                           'mpg',
-                           '*',
+SELECT madlib.forest_train('mt_cars',         -- source table
+                           'mt_cars_output',  -- output model table
+                           'id',              -- id column
+                           'mpg',             -- response
+                           '*',               -- features
                            'id, hp, drat, am, gear, carb',  -- exclude columns
-                           'am',
-                           10::integer,
-                           2::integer,
-                           TRUE::boolean,
-                           1,
-                           10,
-                           8,
-                           3,
-                           10
+                           'am',              -- grouping columns
+                           10::integer,       -- number of trees
+                           2::integer,        -- number of random features
+                           TRUE::boolean,     -- variable importance
+                           1,                 -- num_permutations
+                           10,                -- max depth
+                           8,                 -- min split
+                           3,                 -- min bucket
+                           10,                -- number of splits per continuous variable
+                           'max_surrogates=2' -- NULL handling
                            );
-\\x on
 SELECT * FROM mt_cars_output_summary;
-SELECT * FROM mt_cars_output_group;
-\\x off
 </pre>
-
--# Display a single tree of the random forest in dot format:
-<pre class="example">
-SELECT madlib.get_tree('mt_cars_output',1,1);
-</pre>
-Result:
 <pre class="result">
-digraph "Regression tree for mt_cars" {
-"0" [label="28.8444",shape=box];
-} //---end of digraph---------
+-[ RECORD 1 ]---------+-----------------------------------------------------------------------
+method                | forest_train
+is_classification     | f
+source_table          | mt_cars
+model_table           | mt_cars_output
+id_col_name           | id
+dependent_varname     | mpg
+independent_varnames  | vs,cyl,disp,qsec,wt
+cat_features          | vs,cyl
+con_features          | disp,qsec,wt
+grouping_cols         | am
+num_trees             | 10
+num_random_features   | 2
+max_tree_depth        | 10
+min_split             | 8
+min_bucket            | 3
+num_splits            | 10
+verbose               | f
+importance            | t
+num_permutations      | 1
+num_all_groups        | 2
+num_failed_groups     | 0
+total_rows_processed  | 32
+total_rows_skipped    | 0
+dependent_var_levels  | 
+dependent_var_type    | double precision
+independent_var_types | integer, integer, double precision, double precision, double precision
+null_proxy            | None
+</pre>
+Review the group table to see variable importance by group:
+<pre class="example">
+SELECT * FROM mt_cars_output_group ORDER BY gid;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]------+------------------------------------------------------
+gid                | 1
+am                 | 0
+success            | t
+cat_n_levels       | {3,3}
+cat_levels_in_text | {4,6,8,4,6,8}
+oob_error          | 9.09125627587947
+cat_var_importance | {0,2.07405156893004}
+con_var_importance | {3.98060662445534,0.352773199588477,2.75243555366591}
+-[ RECORD 2 ]------+------------------------------------------------------
+gid                | 2
+am                 | 1
+success            | t
+cat_n_levels       | {2,2}
+cat_levels_in_text | {0,1,0,1}
+oob_error          | 23.2565256468669
+cat_var_importance | {11.2229872391002,0}
+con_var_importance | {1.95019814868805,2.87270208864796,2.78544338734568}
 </pre>
 
 -# Predict regression output for the same data and compare with original:
@@ -828,47 +1089,94 @@ SELECT madlib.forest_predict('mt_cars_output',
                              'mt_cars',
                              'prediction_results',
                              'response');
-SELECT am, id, estimated_mpg, mpg
-FROM prediction_results JOIN mt_cars USING (id)
-ORDER BY am, id;
+SELECT s.am, s.id, mpg, estimated_mpg, mpg-estimated_mpg as delta 
+FROM prediction_results p, mt_cars s WHERE s.id = p.id ORDER BY s.am, s.id;
 </pre>
-Result:
 <pre class="result">
- am | id |  estimated_mpg   | mpg
-----+----+------------------+------
-  0 |  1 |  15.893525974026 | 18.7
-  0 |  3 | 21.5238492063492 | 24.4
-  0 |  5 | 20.0175396825397 | 17.8
-  0 |  6 | 14.8406818181818 | 16.4
-  0 |  8 | 14.8406818181818 | 17.3
-  0 |  9 | 20.0496825396825 | 21.4
-  0 | 10 | 14.4012272727273 | 15.2
-  0 | 11 | 20.0175396825397 | 18.1
-  0 | 13 | 15.0162878787879 | 14.3
-  0 | 14 | 21.5238492063492 | 22.8
-  0 | 16 | 20.0175396825397 | 19.2
-  0 | 18 | 15.4787532467532 | 15.2
-  0 | 19 | 14.4272987012987 | 10.4
-  0 | 21 | 14.4272987012987 | 10.4
-  0 | 23 | 14.8667532467532 | 14.7
-  0 | 25 | 21.5238492063492 | 21.5
-  0 | 27 |  15.281525974026 | 15.5
-  0 | 29 | 15.0162878787879 | 13.3
-  0 | 30 |  15.281525974026 | 19.2
-  1 |  2 | 20.6527393162393 |   21
-  1 |  4 | 20.6527393162393 |   21
-  1 |  7 | 22.7707393162393 | 22.8
-  1 | 12 | 27.0888266178266 | 32.4
-  1 | 15 | 28.2478650793651 | 30.4
-  1 | 17 | 28.2478650793651 | 33.9
-  1 | 20 | 28.2478650793651 | 27.3
-  1 | 22 | 23.8401984126984 |   26
-  1 | 24 | 26.9748650793651 | 30.4
-  1 | 26 | 20.6527393162393 | 15.8
-  1 | 28 | 20.6527393162393 |   15
-  1 | 31 | 20.6527393162393 | 19.7
-  1 | 32 | 22.7707393162393 | 21.4
+ am | id | mpg  |  estimated_mpg   |       delta        
+----+----+------+------------------+--------------------
+  0 |  1 | 18.7 | 16.1644030112045 |   2.53559698879552
+  0 |  3 | 24.4 | 20.1780892857143 |   4.22191071428571
+  0 |  5 | 17.8 | 18.3336448412698 |  -0.53364484126984
+  0 |  6 | 16.4 |  16.073216503268 |  0.326783496732023
+  0 |  8 | 17.3 |  16.073216503268 |   1.22678349673203
+  0 |  9 | 21.4 | 19.1757281746032 |   2.22427182539683
+  0 | 10 | 15.2 | 15.4498831699346 | -0.249883169934643
+  0 | 11 | 18.1 | 18.3336448412698 | -0.233644841269843
+  0 | 13 | 14.3 | 15.3339109477124 |  -1.03391094771242
+  0 | 14 | 22.8 | 20.1780892857143 |   2.62191071428571
+  0 | 16 | 19.2 | 18.3336448412698 |  0.866355158730158
+  0 | 18 | 15.2 | 16.1644030112045 | -0.964403011204485
+  0 | 19 | 10.4 | 14.8702998366013 |  -4.47029983660131
+  0 | 21 | 10.4 | 14.8702998366013 |  -4.47029983660131
+  0 | 23 | 14.7 | 15.4936331699346 |  -0.79363316993464
+  0 | 25 | 21.5 | 20.1780892857143 |   1.32191071428571
+  0 | 27 | 15.5 | 15.3339109477124 |   0.16608905228758
+  0 | 29 | 13.3 | 15.3339109477124 |  -2.03391094771242
+  0 | 30 | 19.2 | 15.3614109477124 |   3.83858905228758
+  1 |  2 |   21 | 22.2740158730159 |  -1.27401587301587
+  1 |  4 |   21 | 21.9821825396825 |  -0.98218253968254
+  1 |  7 | 22.8 | 26.1888286435786 |  -3.38882864357864
+  1 | 12 | 32.4 | 28.0211143578644 |   4.37888564213564
+  1 | 15 | 30.4 | 28.5405588023088 |    1.8594411976912
+  1 | 17 | 33.9 | 28.5405588023088 |    5.3594411976912
+  1 | 20 | 27.3 | 27.6688921356421 | -0.368892135642131
+  1 | 22 |   26 | 23.3459603174603 |   2.65403968253968
+  1 | 24 | 30.4 | 26.8774516594517 |   3.52254834054834
+  1 | 26 | 15.8 | 19.9121825396825 |  -4.11218253968254
+  1 | 28 |   15 | 19.9121825396825 |  -4.91218253968254
+  1 | 31 | 19.7 | 20.7306825396825 |  -1.03068253968254
+  1 | 32 | 21.4 | 24.6353286435786 |  -3.23532864357864
+(32 rows)
 </pre>
+
+-# Display a single tree of the random forest in dot format:
+<pre class="example">
+SELECT madlib.get_tree('mt_cars_output',1,7);
+</pre>
+<pre class="result">
+ digraph "Regression tree for mt_cars" {
+ "0" [label="disp <= 258", shape=ellipse];
+ "0" -> "1"[label="yes"];
+ "1" [label="20.35",shape=box];
+ "0" -> "2"[label="no"];
+ "2" [label="qsec <= 17.6", shape=ellipse];
+ "2" -> "5"[label="yes"];
+ "5" [label="15.8",shape=box];
+ "2" -> "6"[label="no"];
+ "6" [label="12.8",shape=box];
+ } //---end of digraph--------- 
+</pre>
+Display the surrogate variables that are 
+used to compute the split for each node when 
+the primary variable is NULL:
+<pre class="example">
+SELECT madlib.get_tree_surr('mt_cars_output',1,7);
+</pre>
+<pre class="result">
+   &nbsp;-------------------------------------
+       Surrogates for internal nodes
+   &nbsp;-------------------------------------
+ (0) disp <= 258
+      1: wt <= 3.46    [common rows = 12]
+      2: cyl in {4,6}    [common rows = 11]
+      [Majority branch = 6 ]
+ (2) qsec <= 17.6
+      1: wt <= 3.435    [common rows = 6]
+      2: disp > 275.8    [common rows = 5]
+      [Majority branch = 4 ]
+</pre>
+
+@anchor literature
+@par Literature
+[1] L. Breiman and A. Cutler. Random Forests. 
+http://www.stat.berkeley.edu/~breiman/RandomForests
+
+[2] L. Breiman, A. Cutler, A. Liaw, and M. Wiener. 
+randomForest: Breiman and Cutler's Random Forests for 
+Classification and Regression.
+http://cran.r-project.org/web/packages/randomForest/index.html
+
 
 @anchor related
 @par Related Topics
