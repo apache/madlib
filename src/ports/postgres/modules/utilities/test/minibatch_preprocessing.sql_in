@@ -18,6 +18,40 @@
  * under the License.
  *
  *//* ----------------------------------------------------------------------- */
+
+-- The following function is used to assert if the minibatch preprocessor packs the
+-- data in expected way so that dependent variable and independent variable have the
+-- correct dimension.
+
+-- column_name    : allows 'dependent_varname' or 'independent_varname' as
+--                  input to indicate which variable to test against
+-- dimension      : '1' is used to test how many rows(records) get packed into one super row,
+--                  '2' is used to test how many columns in one records get packed into an array
+-- expected_result: a string of array with the expected number for row/col number in
+--                  ascending order, e.g. '{2,4,4}'
+-- grp            : grouping columns. "NULL" if there is no grouping.
+
+-- See more examples in this file to know how it works.
+
+CREATE OR REPLACE FUNCTION assert_col_dimension(column_name VARCHAR, dimension int, expected_result text, grp text)
+RETURNS void AS
+$$
+    DECLARE
+		qry text;
+    result text;
+    BEGIN
+        IF grp is NULL THEN
+          qry := 'select array_agg(row_count order by row_count asc) from (select array_upper(' || column_name ||' ,' || dimension ||') as row_count from minibatch_preprocessing_out order by row_count asc) s';
+        ELSE
+          qry := 'select array_agg(row_count order by ' || grp || ', row_count asc) from (select array_upper(' || column_name ||' ,' || dimension ||') as row_count,' || grp || ' from minibatch_preprocessing_out order by ' || grp || ' , row_count asc) s';
+        END IF;
+				EXECUTE qry into result;
+        IF result != expected_result THEN
+          raise exception 'Dependent/Independent Varaiable dimension check failed. Actual: % Expected %', result, expected_result;
+        END IF;
+    END;
+$$ LANGUAGE plpgsql;
+
 DROP TABLE IF EXISTS minibatch_preprocessing_input;
 CREATE TABLE minibatch_preprocessing_input(
     sex TEXT,
@@ -46,50 +80,18 @@ INSERT INTO minibatch_preprocessing_input(id,sex,length,diameter,height,whole,sh
 -- no of rows = 10, buffer_size = 4, so assert that count =  10/4 = 3
 \set expected_row_count 3
 DROP TABLE IF EXISTS minibatch_preprocessing_out, minibatch_preprocessing_out_standardization, minibatch_preprocessing_out_summary;
-SELECT minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out',  'length>0.2',  'ARRAY[diameter,height,whole,shucked,viscera,shell]', 4);
+SELECT minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out',  'length>0.2',  'ARRAY[diameter,height,whole,shucked,viscera,shell]', NULL, 4);
 SELECT assert
         (
-        row_count = :expected_row_count, 'Row count validation failed for minibatch_preprocessing_out.
+        row_count = :expected_row_count, 'Row count validation failed.
         Expected:' || :expected_row_count || ' Actual: ' || row_count
         ) from (select count(*) as row_count from minibatch_preprocessing_out) s;
 
-\set expected_dep_row_count '\'' 2,4,4 '\''
-\set expected_dep_col_count '\'' 2,2,2 '\''
-\set expected_indep_row_count '\'' 2,4,4 '\''
-\set expected_indep_col_count '\'' 6,6,6 '\''
-
 -- assert dimensions for both dependent and independent variable
-SELECT assert
-        (
-        str_dep_row_count = :expected_dep_row_count, 'Dependent variable row count failed. Actual: ' || str_dep_row_count || ' Expected:' || :expected_dep_row_count
-        ) from
-        (
-        select array_to_string(array_agg(row_count order by row_count asc), ',') as str_dep_row_count from (select array_upper(dependent_varname,1) as row_count from minibatch_preprocessing_out order by row_count asc) s
-        ) s;
-
-SELECT assert
-        (
-        str_dep_col_count = :expected_dep_col_count, 'Dependent variable col count failed. Actual: ' || str_dep_col_count || ' Expected:' || :expected_dep_col_count
-        ) from
-        (
-        select array_to_string(array_agg(col_count order by col_count asc), ',') as str_dep_col_count from (select array_upper(dependent_varname,2) as col_count from minibatch_preprocessing_out order by col_count asc) s
-        ) s;
-
-SELECT assert
-        (
-        str_indep_row_count = :expected_indep_row_count, 'Independent variable row count failed. Actual: ' || str_indep_row_count || ' Expected:' || :expected_indep_row_count
-        ) from
-        (
-        select array_to_string(array_agg(row_count order by row_count asc), ',') as str_indep_row_count from (select array_upper(independent_varname, 1) as row_count from minibatch_preprocessing_out order by row_count asc) s
-        ) s;
-
-SELECT assert
-        (
-        str_indep_col_count = :expected_indep_col_count, 'Independent variable col count failed. Actual: ' || str_indep_col_count || ' Expected:' || :expected_indep_col_count
-        ) from
-        (
-        select array_to_string(array_agg(col_count order by col_count asc), ',') as str_indep_col_count from (select array_upper(independent_varname,2) as col_count from minibatch_preprocessing_out order by col_count asc) s
-        ) s;
+SELECT assert_col_dimension('dependent_varname', 1 , '{2,4,4}', NULL);
+SELECT assert_col_dimension('dependent_varname', 2 , '{2,2,2}', NULL);
+SELECT assert_col_dimension('independent_varname', 1 , '{2,4,4}', NULL);
+SELECT assert_col_dimension('independent_varname', 2 , '{6,6,6}', NULL);
 
 SELECT assert
         (
@@ -102,32 +104,88 @@ SELECT assert
         num_rows_processed  = 10 AND
         num_missing_rows_skipped    = 0 AND
         grouping_cols       is NULL,
-        'Summary Validation failed. Expected:' || __to_char(summary)
+        'Summary Validation failed. Actual:' || __to_char(summary)
         ) from (select * from minibatch_preprocessing_out_summary) summary;
 
-
--- Test null values in x and y
-\set expected_row_count 1
+-- grouping with the same dataset
+\set expected_grouping_row_count '\'' 1,1,2 '\''
 DROP TABLE IF EXISTS minibatch_preprocessing_out, minibatch_preprocessing_out_standardization, minibatch_preprocessing_out_summary;
-
-TRUNCATE TABLE minibatch_preprocessing_input;
-INSERT INTO minibatch_preprocessing_input(id,sex,length,diameter,height,whole,shucked,viscera,shell,rings) VALUES
-(1040,'F',0.66,0.475,0.18,NULL,0.641,0.294,0.335,6),
-(3160,'F',0.34,0.35,0.085,0.204,0.097,0.021,0.05,6),
-(3984,NULL,0.585,0.45,0.25,0.874,0.3545,0.2075,0.225,5),
-(861,'M',0.595,0.475,NULL,1.1405,0.547,0.231,0.271,6),
-(932,NULL,0.445,0.335,0.11,0.4355,0.2025,0.1095,0.1195,6),
-(698,'F',0.445,0.335,0.11,0.4355,0.2025,0.1095,0.1195,6),
-(922,NULL,0.445,0.335,0.11,NULL,0.2025,0.1095,0.1195,6);
-SELECT minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out', 'sex', 'ARRAY[length,diameter,height,whole,shucked,viscera,shell]', 2);
+SELECT minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out',  'length>0.2',  'ARRAY[diameter,height,whole,shucked,viscera,shell]', 'rings', 4);
 SELECT assert
         (
-        row_count = :expected_row_count, 'Row count validation failed for minibatch_preprocessing_out.
-        Expected:' || :expected_row_count || ' Actual: ' || row_count
+        str_row_count = :expected_grouping_row_count, 'Row count validation failed for minibatch_preprocessing grouping.
+        Expected:' || :expected_grouping_row_count || ' Actual: ' || str_row_count
+        ) from
+        (
+            select array_to_string(array_agg(row_count order by row_count asc),',') as str_row_count from
+                (
+                    select  count(*) as row_count
+                    from minibatch_preprocessing_out group by rings order by rings
+                ) s
+        ) s1;
+
+-- assert dimensions for both dependent and independent variable, notice that in
+-- each query, the result is order by grouping_cols and rowcount so we end up
+-- having one str of array
+SELECT assert_col_dimension('dependent_varname', 1 , '{1,1,4,4}', 'rings');
+SELECT assert_col_dimension('dependent_varname', 2 , '{2,2,2,2}', 'rings');
+SELECT assert_col_dimension('independent_varname', 1 , '{1,1,4,4}', 'rings');
+SELECT assert_col_dimension('independent_varname', 2 , '{6,6,6,6}', 'rings');
+
+SELECT assert
+        (
+        source_table        = 'minibatch_preprocessing_input' AND
+        output_table        = 'minibatch_preprocessing_out' AND
+        dependent_varname   = 'length>0.2' AND
+        independent_varname = 'ARRAY[diameter,height,whole,shucked,viscera,shell]' AND
+        buffer_size         = 4 AND
+        class_values        = '{f,t}' AND -- we sort the class values in python
+        num_rows_processed  = 10 AND
+        num_missing_rows_skipped    = 0 AND
+        grouping_cols       = 'rings',
+        'Summary Validation failed for grouping col. Expected:' || __to_char(summary)
+        ) from (select * from minibatch_preprocessing_out_summary) summary;
+
+-- Test that the standardization table gets created.
+select count(*) from minibatch_preprocessing_out_standardization;
+-- Test that the summary table gets created.
+select count(*) from minibatch_preprocessing_out_summary;
+
+-- Test null values in x and y both with and without grouping
+DROP TABLE IF EXISTS minibatch_preprocessing_out, minibatch_preprocessing_out_standardization, minibatch_preprocessing_out_summary;
+TRUNCATE TABLE minibatch_preprocessing_input;
+INSERT INTO minibatch_preprocessing_input(id,sex,length,diameter,height,whole,shucked,viscera,shell,rings) VALUES
+(1040,'F',0.66,0.475,0.18,NULL,0.641,0.294,0.335,5),
+(3984,NULL,0.585,0.45,0.25,0.874,0.3545,0.2075,0.225,5),
+(861,'M',0.595,0.475,NULL,1.1405,0.547,0.231,0.271,5),
+(932,NULL,0.445,0.335,0.11,0.4355,0.2025,0.1095,0.1195,5),
+(698,'F',0.445,0.335,0.11,0.4355,0.2025,0.1095,0.1195,6),
+(698,'F',0.445,0.335,0.11,0.4355,NULL,0.1095,0.1195,6),
+(698,'F',0.445,0.335,0.11,0.4355,0.2025,0.1095,0.1195,6),
+(922,NULL,0.445,0.335,0.11,NULL,0.2025,0.1095,0.1195,5),
+(942,'F',0.445,0.335,0.11,0.25,0.2025,0.1095,0.1195,5);
+SELECT minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out', 'sex', 'ARRAY[length,diameter,height,whole,shucked,viscera,shell]', NULL, 2);
+SELECT assert
+        (
+        row_count = 2, 'Row count validation failed with null values.
+        Expected:' || 2 || ' Actual: ' || row_count
         ) from (select count(*) as row_count from minibatch_preprocessing_out) s;
 SELECT assert
-        (num_rows_processed = 2 AND num_missing_rows_skipped = 5,
-         'Rows processed/skipped validation failed for minibatch_preprocessing_out_summary.
+        (num_rows_processed = 3 AND num_missing_rows_skipped = 6,
+         'Rows processed/skipped validation failed_summary.
+         Actual num_rows_processed:' || num_rows_processed || ', Actual num_missing_rows_skipped: ' || num_missing_rows_skipped
+        ) from (select * from minibatch_preprocessing_out_summary) s;
+
+DROP TABLE IF EXISTS minibatch_preprocessing_out, minibatch_preprocessing_out_standardization, minibatch_preprocessing_out_summary;
+  SELECT minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out', 'sex', 'ARRAY[length,diameter,height,whole,shucked,viscera,shell]', 'rings', 2);
+SELECT assert
+        (
+        row_count = 2, 'Row count validation failed with null values and grouping.
+        Expected:' || 2 || ' Actual: ' || row_count
+        ) from (select count(*) as row_count from minibatch_preprocessing_out) s;
+SELECT assert
+        (num_rows_processed = 3 AND num_missing_rows_skipped = 6,
+         'Rows processed/skipped validation failed_summary with grouping.
          Actual num_rows_processed:' || num_rows_processed || ', Actual num_missing_rows_skipped: ' || num_missing_rows_skipped
         ) from (select * from minibatch_preprocessing_out_summary) s;
 
@@ -138,7 +196,7 @@ CREATE TABLE minibatch_preprocessing_input(x1 INTEGER ,x2 INTEGER ,y TEXT);
 INSERT INTO minibatch_preprocessing_input(x1,x2,y) VALUES
 (2,10,'y1'),
 (4,30,'y2');
-SELECT minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out', 'y', 'ARRAY[x1,x2]', 2);
+SELECT minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out', 'y', 'ARRAY[x1,x2]', NULL, 2);
 
 -- since the order is not deterministic, we assert for all possible orders
 \set expected_normalized_independent_var1 '\'' {{-1, -1},{1, 1}} '\''
@@ -154,28 +212,10 @@ SELECT assert
     select __to_char(independent_varname) as independent_varname from minibatch_preprocessing_out
 ) s;
 
-
 -- Test that the standardization table gets created.
-\set expected_row_count 1
-SELECT assert
-(
-  row_count = :expected_row_count, 'Row count validation failed for minibatch_preprocessing_out_standardization.
-        Expected:' || :expected_row_count || ' Actual: ' || row_count
-) from
-(
-  select count(*) as row_count from minibatch_preprocessing_out_standardization
-) s;
-
+select count(*) from minibatch_preprocessing_out_standardization;
 -- Test that the summary table gets created.
-\set expected_row_count 1
-SELECT assert
-(
-  row_count = :expected_row_count, 'Row count validation failed for minibatch_preprocessing_out_summary.
-        Expected:' || :expected_row_count || ' Actual: ' || row_count
-) from
-(
-  select count(*) as row_count from minibatch_preprocessing_out_summary
-) s;
+select count(*) from minibatch_preprocessing_out_summary;
 
 -- Test for array values in indep column
 DROP TABLE IF EXISTS minibatch_preprocessing_input;
@@ -194,19 +234,19 @@ INSERT INTO minibatch_preprocessing_input(id,sex,attributes) VALUES
 (932,NULL,ARRAY[0.445,0.335,0.11,0.4355,0.2025,0.1095,0.1195]),
 (NULL,'F',ARRAY[0.445,0.335,0.11,0.4355,0.2025,0.1095,0.1195]),
 (922,NULL,ARRAY[0.445,0.335,0.11,NULL,0.2025,0.1095,0.1195]);
-SELECT minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out', 'sex', 'attributes', 1);
+SELECT minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out', 'sex', 'attributes', NULL, 1);
 SELECT assert
         (
-        row_count = 2, 'Row count validation failed for minibatch_preprocessing_out.
+        row_count = 2, 'Row count validation failed with array values in independent variable.
         Expected:' || 2 || ' Actual: ' || row_count
         ) from (select count(*) as row_count from minibatch_preprocessing_out) s;
 
 -- Test for array values in dep column
 DROP TABLE IF EXISTS minibatch_preprocessing_out, minibatch_preprocessing_out_standardization, minibatch_preprocessing_out_summary;
-SELECT minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out', 'attributes', 'ARRAY[id]', 1);
+SELECT minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out', 'attributes', 'ARRAY[id]', NULL, 1);
 SELECT assert
         (
-        row_count = 3, 'Row count validation failed array values in dependent variable.
+        row_count = 3, 'Row count validation failed with array values in dependent variable.
         Expected:' || 3 || ' Actual: ' || row_count
         ) from (select count(*) as row_count from minibatch_preprocessing_out) s;
 
@@ -219,3 +259,28 @@ SELECT assert
         Buffer size from summary table: ' || buffer_size || ' does not match the output table:'
         || ind_var_rows
         ) from (select max(array_upper(o.dependent_varname, 1)) as dep_var_rows, max(array_upper(o.independent_varname, 1)) as ind_var_rows , s1.buffer_size from minibatch_preprocessing_out o, minibatch_preprocessing_out_summary s1 group by buffer_size) s;
+
+-- Test special characters in independent_var, dependent_var and grouping_cols
+DROP TABLE IF EXISTS minibatch_preprocessing_input;
+CREATE TABLE minibatch_preprocessing_input(
+    "se''x" TEXT,
+    "len'%*()gth" DOUBLE PRECISION[],
+    "rin!#'gs" INTEGER);
+
+INSERT INTO minibatch_preprocessing_input VALUES
+('F',ARRAY[0.66, 0.5],6);
+DROP TABLE IF EXISTS minibatch_preprocessing_out, minibatch_preprocessing_out_standardization, minibatch_preprocessing_out_summary;
+SELECT minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out', '"se''''x"', '"len''%*()gth"', '"rin!#''gs"');
+SELECT assert
+        (
+        source_table        = 'minibatch_preprocessing_input' AND
+        output_table        = 'minibatch_preprocessing_out' AND
+        dependent_varname   = '"se''''x"' AND
+        independent_varname = '"len''%*()gth"' AND
+        buffer_size         = 1 AND
+        class_values        = '{F}' AND -- we sort the class values in python
+        num_rows_processed  = 1 AND
+        num_missing_rows_skipped    = 0 AND
+        grouping_cols       = '"rin!#''gs"',
+        'Summary Validation failed for special chars. Expected:' || __to_char(summary)
+        ) from (select * from minibatch_preprocessing_out_summary) summary;
