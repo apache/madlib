@@ -949,7 +949,7 @@ def _get_bins_grps(
                                             " THEN 'True' ELSE 'False' END)")
             else:
                 if null_proxy is not None:
-                    all_col_expressions[col] = ("COALESCE({0}, {1})".
+                    all_col_expressions[col] = ("COALESCE({0}::TEXT, '{1}')".
                                                 format(col, null_proxy))
                 else:
                     all_col_expressions[col] = col
@@ -970,16 +970,35 @@ def _get_bins_grps(
                          "one value are dropped from the tree model.")
             cat_features = [feature for feature in cat_features if feature in use_cat_features]
 
-        grp_to_col_to_row = dict((grp_key, dict(
-            (row['colname'], row['levels']) for row in items))
-            for grp_key, items in groupby(all_levels, key=itemgetter('grp_key')))
-
+        # grp_col_to_levels is a list of tuples (pairs) with
+        #   first value = group value,
+        #   second value = a dict mapping a categorical column to its levels in data
+        #           (these levels are specific to the group and can be different
+        #               for different groups)
+        #   The list of tuples can be converted to a dict, but the ordering
+        #   will be lost.
+        # eg. grp_col_to_levels =
+        #   [
+        #       ('3', {'vs': [0, 1], 'cyl': [4,6,8]}),
+        #       ('4', {'vs': [0, 1], 'cyl': [4,6]}),
+        #       ('5', {'vs': [0, 1], 'cyl': [4,6,8]})
+        #   ]
+        grp_to_col_to_levels = [
+            (grp_key, dict((row['colname'], row['levels']) for row in items))
+            for grp_key, items in groupby(all_levels, key=itemgetter('grp_key'))]
     if cat_features:
-        cat_items_list = [rows[col] for col in cat_features
-                          for grp_key, rows in grp_to_col_to_row.items() if col in rows]
+        # Below statements collect the grp_to_col_to_levels into multiple variables
+        # From above eg.
+        #   cat_items_list = [[0,1], [4,6,8], [0,1], [4,6], [0,1], [4,6,8]]
+        #   cat_n = [2, 3, 2, 2, 2, 3]
+        #   cat_n = [0, 1, 4, 6, 8, 0, 1, 4, 6, 0, 1, 4, 6, 8]
+        #   grp_key_cat = ['3', '4', '5']
+        cat_items_list = [rows[col]
+                            for grp_key, rows in grp_to_col_to_levels
+                            for col in cat_features if col in rows]
         cat_n = [len(i) for i in cat_items_list]
-        cat_origin = [item for subl in cat_items_list for item in subl]
-        grp_key_cat=[grp_key for grp_key in grp_to_col_to_row]
+        cat_origin = [item for sublist in cat_items_list for item in sublist]
+        grp_key_cat=[item[0] for item in grp_to_col_to_levels]
     else:
         cat_n = []
         cat_origin = []
@@ -1033,7 +1052,7 @@ def get_feature_str(schema_madlib, boolean_cats,
         cat_features_str = "NULL"
 
     if len(con_features) > 0:
-        con_features_list = ["coalesce(" + str(con) + ", 'nan'::double precision)"
+        con_features_list = ["COALESCE(" + str(con) + ", 'nan'::double precision)"
                              for con in con_features]
         con_features_str = "ARRAY[" + ", ".join(con_features_list) + "]"
     else:
