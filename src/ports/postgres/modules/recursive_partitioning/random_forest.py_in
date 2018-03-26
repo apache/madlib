@@ -946,6 +946,11 @@ def _calculate_oob_prediction(
 
     oob_var_dist_view = unique_string()
     if importance:
+        if con_features:
+            initialized_float_array = ("{0}.array_of_float({1})::integer[]".
+                                       format(schema_madlib, len(con_features)))
+        else:
+            initialized_float_array = "NULL::integer[]"
         sql_create_oob_var_dist_view = """
             CREATE VIEW {oob_var_dist_view} AS
             SELECT
@@ -966,12 +971,10 @@ def _calculate_oob_prediction(
                             {con_features_str}::double precision[],
                             con_splits
                         ), -- bin_indices, -1 for NaN
-                        1 -- -1 shift to 0 for nulls
+                        1 -- -1 shifted to 0 for null values
                     ),
-                    {schema_madlib}.array_fill(
-                        {schema_madlib}.array_of_float({n_con})::integer[],
-                        ({num_bins}+1)::integer
-                    )
+                    {schema_madlib}.array_fill({initialized_float_array},
+                                               ({num_bins} + 1)::integer)
                     -- level of any continuous feature == num_bins
                 ) AS con_index_distributions
             FROM
@@ -986,7 +989,7 @@ def _calculate_oob_prediction(
                 {con_splits_table}
             USING (gid)
             GROUP BY gid
-        """.format(n_con=len(con_features), **locals())
+        """.format(**locals())
     else:
         sql_create_oob_var_dist_view = """
             CREATE VIEW {oob_var_dist_view} AS
