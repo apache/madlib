@@ -39,8 +39,8 @@ Refer to Breiman and Cutler [1][2] for details on the implementation
 used here.
 
 Also refer to  
-the <a href="group__grp__decision__tree.html">decision tree</a>
-user documentation since many parameters and examples are similar to 
+the <a href="group__grp__decision__tree.html">decision tree user documentation</a>
+since many parameters and examples are similar to 
 random forest.
 
 @anchor train
@@ -368,12 +368,12 @@ forest_train(training_table_name,
 
     <tr>
       <th>total_rows_processed</th>
-      <td>BIG INTEGER. Total numbers of rows processed in all groups.</td>
+      <td>BIGINT. Total numbers of rows processed in all groups.</td>
     </tr>
 
     <tr>
       <th>total_rows_skipped</th>
-      <td>BIG INTEGER. Total numbers of rows skipped in all 
+      <td>BIGINT. Total numbers of rows skipped in all 
       groups due to missing values or failures.</td>
     </tr>
 
@@ -610,8 +610,8 @@ plotting software to plot the trees in a nice format:
 </pre>
 
 Please see
-the <a href="group__grp__decision__tree.html">decision tree</a>
-user documentation for more details on working with tree output formats.
+the <a href="group__grp__decision__tree.html">decision tree user documentation</a>
+for more details on working with tree output formats.
 
 @anchor examples
 @examp
@@ -619,8 +619,8 @@ user documentation for more details on working with tree output formats.
 @note
  - Not all random forest parameters are demonstrated in 
  the examples below.  Some are shown in 
- the <a href="group__grp__decision__tree.html">decision tree</a>
- user documentation since usage is similar.
+ the <a href="group__grp__decision__tree.html">decision tree user documentation</a>
+ since usage is similar.
  - Your results may look different than those below 
 due the random nature of random forests.
 
@@ -790,10 +790,11 @@ second indented child (2i+2) is the 'False' node.
        (6)[2 0]  * --> "Don't Play"
 &nbsp;-------------------------------------
 </pre>
-Please see the decision tree user docs for an 
-explanation on how to interpret the tree display above.
+Please see 
+the <a href="group__grp__decision__tree.html">decision tree user documentation</a> 
+for an explanation on how to interpret the tree display above.
 
--# View tree in dot format.
+-# View tree in dot format:
 <pre class="example">
 SELECT madlib.get_tree('train_output',1,7);
 </pre>
@@ -1066,20 +1067,20 @@ SELECT * FROM mt_cars_output_group ORDER BY gid;
 gid                | 1
 am                 | 0
 success            | t
-cat_n_levels       | {3,3}
-cat_levels_in_text | {4,6,8,4,6,8}
-oob_error          | 9.09125627587947
-cat_var_importance | {0,2.07405156893004}
-con_var_importance | {3.98060662445534,0.352773199588477,2.75243555366591}
+cat_n_levels       | {2,3}
+cat_levels_in_text | {0,1,4,6,8}
+oob_error          | 7.61453121176269
+cat_var_importance | {1.67195685185185,1.78292533068783}
+con_var_importance | {4.74889044753087,3.00387950664048,0.730074734848485}
 -[ RECORD 2 ]------+------------------------------------------------------
 gid                | 2
 am                 | 1
 success            | t
-cat_n_levels       | {2,2}
-cat_levels_in_text | {0,1,0,1}
-oob_error          | 23.2565256468669
-cat_var_importance | {11.2229872391002,0}
-con_var_importance | {1.95019814868805,2.87270208864796,2.78544338734568}
+cat_n_levels       | {2,3}
+cat_levels_in_text | {0,1,4,6,8}
+oob_error          | 14.8126620718319
+cat_var_importance | {0.631733333333333,13.4535567708333}
+con_var_importance | {14.6258526998299,0.631733333333333,0}
 </pre>
 
 -# Predict regression output for the same data and compare with original:
@@ -1166,6 +1167,137 @@ SELECT madlib.get_tree_surr('mt_cars_output',1,7);
       2: disp > 275.8    [common rows = 5]
       [Majority branch = 4 ]
 </pre>
+
+<h4>NULL Handling Example</h4>
+
+-# Create toy example to illustrate 'null-as-category' handling 
+for categorical features:
+<pre class='example'>
+DROP TABLE IF EXISTS null_handling_example;
+CREATE TABLE null_handling_example (
+    id integer,
+    country text,
+    city text,
+    weather text,
+    response text
+);
+INSERT INTO null_handling_example VALUES
+(1,null,null,null,'a'),
+(2,'US',null,null,'b'),
+(3,'US','NY',null,'c'),
+(4,'US','NY','rainy','d');
+</pre>
+
+-# Train random forest tree.  Note that 'NULL' is set as a 
+valid level for the categorical features country, weather and city:
+<pre class='example'>
+DROP TABLE IF EXISTS train_output, train_output_group, train_output_summary;
+SELECT madlib.forest_train('null_handling_example',  -- source table
+                           'train_output',    -- output model table
+                           'id',              -- id column
+                           'response',        -- response
+                           'country, weather, city',   -- features
+                           NULL,              -- exclude columns
+                           NULL,              -- grouping columns
+                           10::integer,        -- number of trees
+                           2::integer,        -- number of random features
+                           TRUE::boolean,     -- variable importance
+                           1::integer,        -- num_permutations
+                           3::integer,        -- max depth
+                           2::integer,        -- min split
+                           1::integer,        -- min bucket
+                           3::integer,        -- number of splits per continuous variable
+                           'null_as_category=TRUE'
+                           );
+SELECT * FROM train_output_summary;
+</pre>
+<pre class='result'>
+-[ RECORD 1 ]---------+----------------------
+method                | forest_train
+is_classification     | t
+source_table          | null_handling_example
+model_table           | train_output
+id_col_name           | id
+dependent_varname     | response
+independent_varnames  | country,weather,city
+cat_features          | country,weather,city
+con_features          | 
+grouping_cols         | 
+num_trees             | 10
+num_random_features   | 2
+max_tree_depth        | 3
+min_split             | 2
+min_bucket            | 1
+num_splits            | 3
+verbose               | f
+importance            | t
+num_permutations      | 1
+num_all_groups        | 1
+num_failed_groups     | 0
+total_rows_processed  | 4
+total_rows_skipped    | 0
+dependent_var_levels  | "a","b","c","d"
+dependent_var_type    | text
+independent_var_types | text, text, text
+null_proxy            | __NULL__
+</pre>
+View the summary table:
+<pre class='example'>
+\\x on
+SELECT * FROM train_output_group;
+</pre>
+<pre class='result'>
+-[ RECORD 1 ]------+------------------------------------------
+gid                | 1
+success            | t
+cat_n_levels       | {2,2,2}
+cat_levels_in_text | {US,__NULL__,rainy,__NULL__,NY,__NULL__}
+oob_error          | 1.00000000000000000000
+cat_var_importance | {0.0714285714285714,0.0714285714285714,0}
+con_var_importance | 
+</pre>
+
+-# Predict for data not previously seen by assuming NULL 
+value as the default:
+<pre class='example'>
+\\x off
+DROP TABLE IF EXISTS table_test;
+CREATE TABLE table_test (
+    id integer,
+    country text,
+    city text,
+    weather text,
+    expected_response text
+);
+INSERT INTO table_test VALUES
+(1,'IN','MUM','cloudy','a'),
+(2,'US','HOU','humid','b'),
+(3,'US','NY','sunny','c'),
+(4,'US','NY','rainy','d');
+DROP TABLE IF EXISTS prediction_results;
+SELECT madlib.forest_predict('train_output',
+                             'table_test',
+                             'prediction_results',
+                             'response');
+SELECT s.id, expected_response, estimated_response
+FROM prediction_results p, table_test s
+WHERE s.id = p.id ORDER BY id;
+</pre>
+<pre class='result'>
+ id | expected_response | estimated_response 
+----+-------------------+--------------------
+  1 | a                 | a
+  2 | b                 | b
+  3 | c                 | c
+  4 | d                 | d
+(4 rows)
+</pre>
+There is only training data for country 'US' so the 
+response for country 'IN' is 'a', corresponding to 
+a NULL (not 'US') country level.  Likewise, any 
+city in the 'US' that is not 'NY' will predict 
+response 'b', corresponding to a NULL (not 'NY') 
+city level. 
 
 @anchor literature
 @par Literature
