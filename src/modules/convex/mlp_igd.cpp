@@ -83,38 +83,37 @@ mlp_igd_transition::run(AnyType &args) {
             ArrayHandle<double> numbersOfUnits = args[4].getAs<ArrayHandle<double> >();
             int numberOfStages = numbersOfUnits.size() - 1;
 
-            double stepsize = args[5].getAs<double>();
             state.allocate(*this, numberOfStages,
                            reinterpret_cast<const double *>(numbersOfUnits.ptr()));
-            state.task.stepsize = stepsize;
-
-            const int activation = args[6].getAs<int>();
-            const int is_classification = args[7].getAs<int>();
+            state.task.stepsize = args[5].getAs<double>();
+            state.task.model.activation = static_cast<double>(args[6].getAs<int>());
+            state.task.model.is_classification = static_cast<double>(args[7].getAs<int>());
             // args[8] is for weighting the input row, which is populated later.
-            const bool warm_start = args[9].getAs<bool>();
-            const double lambda = args[11].getAs<double>();
-            state.task.lambda = lambda;
-            MLPTask::lambda = lambda;
+            state.task.lambda = args[10].getAs<double>();
+            MLPTask::lambda = state.task.lambda;
 
-            double is_classification_double = (double) is_classification;
-            double activation_double = (double) activation;
-            MappedColumnVector coeff = args[10].getAs<MappedColumnVector>();
-            state.task.model.rebind(&is_classification_double,&activation_double,
-                                    &coeff.data()[0], numberOfStages,
-                                    &numbersOfUnits[0]);
+            if (!args[9].isNull()){
+                // initial coefficients are provided
+                MappedColumnVector warm_start_coeff = args[9].getAs<MappedColumnVector>();
 
-            // state.task.model.is_classification =
-            //     static_cast<double>(is_classification);
-            // state.task.model.activation = static_cast<double>(activation);
-            // MappedColumnVector initial_coeff = args[10].getAs<MappedColumnVector>();
-            // // copy initial_coeff into the model
-            // Index fan_in, fan_out, layer_start = 0;
-            // for (size_t k = 0; k < numberOfStages; ++k){
-            //     fan_in = numbersOfUnits[k];
-            //     fan_out = numbersOfUnits[k+1];
-            //     state.task.model.u[k] << initial_coeff.segment(layer_start, (fan_in+1)*fan_out);
-            //     layer_start = (fan_in + 1) * fan_out;
-            // }
+                // copy warm start into the task model
+                // state.reset() ensures algo.incrModel is copied from task.model
+                Index layer_start = 0;
+                for (size_t k = 0; k < numberOfStages; ++k){
+                    for (size_t j=0; j < state.task.model.u[k].cols(); ++j){
+                        for (size_t i=0; i < state.task.model.u[k].rows(); ++i){
+                            state.task.model.u[k](i, j) = warm_start_coeff(
+                                layer_start + j * state.task.model.u[k].rows() + i);
+                        }
+                    }
+                    layer_start = state.task.model.u[k].rows() * state.task.model.u[k].cols();
+                }
+            } else {
+                // initialize the model with appropriate coefficients
+                state.task.model.initialize(
+                    numberOfStages,
+                    reinterpret_cast<const double *>(numbersOfUnits.ptr()));
+            }
         }
         // resetting in either case
         state.reset();
@@ -144,6 +143,45 @@ mlp_igd_transition::run(AnyType &args) {
 
     return state;
 }
+
+/**
+ * @brief Perform the perliminary aggregation function: Merge transition states
+ */
+AnyType
+mlp_igd_merge::run(AnyType &args) {
+    MLPIGDState<MutableArrayHandle<double> > stateLeft = args[0];
+    MLPIGDState<ArrayHandle<double> > stateRight = args[1];
+
+    if (stateLeft.algo.numRows == 0) { return stateRight; }
+    else if (stateRight.algo.numRows == 0) { return stateLeft; }
+
+    MLPIGDAlgorithm::merge(stateLeft, stateRight);
+    MLPLossAlgorithm::merge(stateLeft, stateRight);
+
+    // The following numRows update cannot be put above, because the model
+    // averaging depends on their original values
+    stateLeft.algo.numRows += stateRight.algo.numRows;
+
+    return stateLeft;
+}
+/**
+ * @brief Perform the multilayer perceptron final step
+ */
+AnyType
+mlp_igd_final::run(AnyType &args) {
+    // We request a mutable object. Depending on the backend, this might perform
+    // a deep copy.
+    MLPIGDState<MutableArrayHandle<double> > state = args[0];
+
+    if (state.algo.numRows == 0) { return Null(); }
+
+    L2<MLPModelType>::lambda = state.task.lambda;
+    state.algo.loss = state.algo.loss/static_cast<double>(state.algo.numRows);
+    state.algo.loss += L2<MLPModelType>::loss(state.task.model);
+    MLPIGDAlgorithm::final(state);
+    return state;
+}
+
 /**
  * @brief Perform the multilayer perceptron minibatch transition step
  *
@@ -157,48 +195,48 @@ mlp_minibatch_transition::run(AnyType &args) {
     MLPMiniBatchState<MutableArrayHandle<double> > state = args[0];
 
     // initilize the state if first tuple
-    if (state.algo.numRows == 0) {
+    if (state.numRows == 0) {
         if (!args[3].isNull()) {
             MLPMiniBatchState<ArrayHandle<double> > previousState = args[3];
-            state.allocate(*this, previousState.task.numberOfStages,
-                           previousState.task.numbersOfUnits);
+            state.allocate(*this, previousState.numberOfStages,
+                           previousState.numbersOfUnits);
             state = previousState;
         } else {
             // configuration parameters
             ArrayHandle<double> numbersOfUnits = args[4].getAs<ArrayHandle<double> >();
             int numberOfStages = numbersOfUnits.size() - 1;
 
-            double stepsize = args[5].getAs<double>();
 
             state.allocate(*this, numberOfStages,
                            reinterpret_cast<const double *>(numbersOfUnits.ptr()));
-            state.task.stepsize = stepsize;
-            const int activation = args[6].getAs<int>();
-            const int is_classification = args[7].getAs<int>();
+            state.stepsize = args[5].getAs<double>();
+            state.model.activation = static_cast<double>(args[6].getAs<int>());
+            state.model.is_classification = static_cast<double>(args[7].getAs<int>());
             // args[8] is for weighting the input row, which is populated later.
-            const bool warm_start = args[9].getAs<bool>();
-            const double lambda = args[11].getAs<double>();
-            state.algo.batchSize = args[12].getAs<int>();
-            state.algo.nEpochs = args[13].getAs<int>();
-            state.task.lambda = lambda;
-            MLPTask::lambda = lambda;
-
-            /* FIXME: The state is set back to zero for second row onwards if
-               initialized as in IGD. The following avoids that, but there is
-               some failure with debug build that must be fixed.
-            */
-            state.task.model.is_classification =
-                static_cast<double>(is_classification);
-            state.task.model.activation = static_cast<double>(activation);
-            MappedColumnVector initial_coeff = args[10].getAs<MappedColumnVector>();
-            // copy initial_coeff into the model
-            Index fan_in, fan_out, layer_start = 0;
-            for (size_t k = 0; k < numberOfStages; ++k){
-                fan_in = numbersOfUnits[k];
-                fan_out = numbersOfUnits[k+1];
-                state.task.model.u[k] << initial_coeff.segment(layer_start, (fan_in+1)*fan_out);
-                layer_start = (fan_in + 1) * fan_out;
+            if (!args[9].isNull()){
+                // initial coefficients are provided copy warm start into the model
+                MappedColumnVector warm_start_coeff = args[9].getAs<MappedColumnVector>();
+                Index layer_start = 0;
+                for (size_t k = 0; k < numberOfStages; ++k){
+                    for (size_t j=0; j < state.model.u[k].cols(); ++j){
+                        for (size_t i=0; i < state.model.u[k].rows(); ++i){
+                            state.model.u[k](i, j) = warm_start_coeff(
+                                layer_start + j * state.model.u[k].rows() + i);
+                        }
+                    }
+                    layer_start = state.model.u[k].rows() * state.model.u[k].cols();
+                }
+            } else {
+                // initialize the model with appropriate coefficients
+                state.model.initialize(
+                    numberOfStages,
+                    reinterpret_cast<const double *>(numbersOfUnits.ptr()));
             }
+
+            state.lambda = args[10].getAs<double>();
+            MLPTask::lambda = state.lambda;
+            state.batchSize = args[11].getAs<int>();
+            state.nEpochs = args[12].getAs<int>();
         }
         // resetting in either case
         state.reset();
@@ -234,29 +272,8 @@ mlp_minibatch_transition::run(AnyType &args) {
         both computed in one function now.
     */
     MLPMiniBatchAlgorithm::transitionInMiniBatch(state, tuple);
-    state.algo.numRows += tuple.indVar.rows();
+    state.numRows += tuple.indVar.rows();
     return state;
-}
-
-/**
- * @brief Perform the perliminary aggregation function: Merge transition states
- */
-AnyType
-mlp_igd_merge::run(AnyType &args) {
-    MLPIGDState<MutableArrayHandle<double> > stateLeft = args[0];
-    MLPIGDState<ArrayHandle<double> > stateRight = args[1];
-
-    if (stateLeft.algo.numRows == 0) { return stateRight; }
-    else if (stateRight.algo.numRows == 0) { return stateLeft; }
-
-    MLPIGDAlgorithm::merge(stateLeft, stateRight);
-    MLPLossAlgorithm::merge(stateLeft, stateRight);
-
-    // The following numRows update cannot be put above, because the model
-    // averaging depends on their original values
-    stateLeft.algo.numRows += stateRight.algo.numRows;
-
-    return stateLeft;
 }
 /**
  * @brief Perform the perliminary aggregation function: Merge transition states
@@ -266,37 +283,18 @@ mlp_minibatch_merge::run(AnyType &args) {
     MLPMiniBatchState<MutableArrayHandle<double> > stateLeft = args[0];
     MLPMiniBatchState<ArrayHandle<double> > stateRight = args[1];
 
-    if (stateLeft.algo.numRows == 0) { return stateRight; }
-    else if (stateRight.algo.numRows == 0) { return stateLeft; }
+    if (stateLeft.numRows == 0) { return stateRight; }
+    else if (stateRight.numRows == 0) { return stateLeft; }
 
     MLPMiniBatchAlgorithm::mergeInPlace(stateLeft, stateRight);
 
     // The following numRows update, cannot be put above, because the model
     // averaging depends on their original values
-    stateLeft.algo.numRows += stateRight.algo.numRows;
-    stateLeft.algo.loss += stateRight.algo.loss;
+    stateLeft.numRows += stateRight.numRows;
+    stateLeft.loss += stateRight.loss;
 
     return stateLeft;
 }
-
-/**
- * @brief Perform the multilayer perceptron final step
- */
-AnyType
-mlp_igd_final::run(AnyType &args) {
-    // We request a mutable object. Depending on the backend, this might perform
-    // a deep copy.
-    MLPIGDState<MutableArrayHandle<double> > state = args[0];
-
-    if (state.algo.numRows == 0) { return Null(); }
-
-    L2<MLPModelType>::lambda = state.task.lambda;
-    state.algo.loss = state.algo.loss/static_cast<double>(state.algo.numRows);
-    state.algo.loss += L2<MLPModelType>::loss(state.task.model);
-    MLPIGDAlgorithm::final(state);
-    return state;
-}
-
 
 /**
  * @brief Perform the multilayer perceptron final step
@@ -307,11 +305,11 @@ mlp_minibatch_final::run(AnyType &args) {
     // a deep copy.
     MLPMiniBatchState<MutableArrayHandle<double> > state = args[0];
     // Aggregates that haven't seen any data just return Null.
-    if (state.algo.numRows == 0) { return Null(); }
+    if (state.numRows == 0) { return Null(); }
 
-    L2<MLPModelType>::lambda = state.task.lambda;
-    state.algo.loss = state.algo.loss/static_cast<double>(state.algo.numRows);
-    state.algo.loss += L2<MLPModelType>::loss(state.task.model);
+    L2<MLPModelType>::lambda = state.lambda;
+    state.loss = state.loss/static_cast<double>(state.numRows);
+    state.loss += L2<MLPModelType>::loss(state.model);
     return state;
 }
 
@@ -331,7 +329,7 @@ internal_mlp_minibatch_distance::run(AnyType &args) {
     MLPMiniBatchState<ArrayHandle<double> > stateLeft = args[0];
     MLPMiniBatchState<ArrayHandle<double> > stateRight = args[1];
 
-    return std::abs(stateLeft.algo.loss - stateRight.algo.loss);
+    return std::abs(stateLeft.loss - stateRight.loss);
 }
 
 /**
@@ -345,11 +343,9 @@ internal_mlp_igd_result::run(AnyType &args) {
     flattenU.rebind(&state.task.model.u[0](0, 0),
                     state.task.model.arraySize(state.task.numberOfStages,
                                                state.task.numbersOfUnits));
-    double loss = state.algo.loss;
-
     AnyType tuple;
     tuple << flattenU
-          << loss;
+          << static_cast<double>(state.algo.loss);;
     return tuple;
 }
 
@@ -360,14 +356,12 @@ AnyType
 internal_mlp_minibatch_result::run(AnyType &args) {
     MLPMiniBatchState<ArrayHandle<double> > state = args[0];
     HandleTraits<ArrayHandle<double> >::ColumnVectorTransparentHandleMap flattenU;
-    flattenU.rebind(&state.task.model.u[0](0, 0),
-                    state.task.model.arraySize(state.task.numberOfStages,
-                                               state.task.numbersOfUnits));
-    double loss = state.algo.loss;
-
+    flattenU.rebind(&state.model.u[0](0, 0),
+                    state.model.arraySize(state.numberOfStages,
+                                          state.numbersOfUnits));
     AnyType tuple;
     tuple << flattenU
-          << loss;
+          << static_cast<double>(state.loss);
     return tuple;
 }
 
