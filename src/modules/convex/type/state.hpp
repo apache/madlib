@@ -732,8 +732,8 @@ public:
      * @brief Reset the intra-iteration fields.
      */
     inline void reset() {
-        algo.numRows = 0;
-        algo.loss = 0.;
+        numRows = 0;
+        loss = 0.;
     }
 
     /**
@@ -760,11 +760,11 @@ public:
         // effect. I can also do something like "mStorage[0] = N",
         // but I am not clear about the type binding/alignment
         rebind();
-        task.numberOfStages = inNumberOfStages;
+        numberOfStages = inNumberOfStages;
         uint16_t N = inNumberOfStages;
         uint16_t k;
         for (k = 0; k <= N; k ++) {
-            task.numbersOfUnits[k] = inNumbersOfUnits[k];
+            numbersOfUnits[k] = inNumbersOfUnits[k];
         }
 
         // This time all the member fields are correctly binded
@@ -823,23 +823,22 @@ private:
      * - N + 9 + sizeOfModel: loss (loss value, the sum of squared errors)
      */
     void rebind() {
+        numberOfStages.rebind(&mStorage[0]);
+        size_t N = numberOfStages;
 
-        task.numberOfStages.rebind(&mStorage[0]);
-        size_t N = task.numberOfStages;
-
-        task.numbersOfUnits =
+        numbersOfUnits =
             reinterpret_cast<dimension_pointer_type>(&mStorage[1]);
-        task.stepsize.rebind(&mStorage[N + 2]);
-        task.lambda.rebind(&mStorage[N + 3]);
-        size_t sizeOfModel = task.model.rebind(&mStorage[N + 4],
+        stepsize.rebind(&mStorage[N + 2]);
+        lambda.rebind(&mStorage[N + 3]);
+        size_t sizeOfModel = model.rebind(&mStorage[N + 4],
                                                &mStorage[N + 5],
                                                &mStorage[N + 6],
-                                               task.numberOfStages,
-                                               task.numbersOfUnits);
-        algo.numRows.rebind(&mStorage[N + 6 + sizeOfModel]);
-        algo.batchSize.rebind(&mStorage[N + 7 + sizeOfModel]);
-        algo.nEpochs.rebind(&mStorage[N + 8 + sizeOfModel]);
-        algo.loss.rebind(&mStorage[N + 9 + sizeOfModel]);
+                                               numberOfStages,
+                                               numbersOfUnits);
+        numRows.rebind(&mStorage[N + 6 + sizeOfModel]);
+        batchSize.rebind(&mStorage[N + 7 + sizeOfModel]);
+        nEpochs.rebind(&mStorage[N + 8 + sizeOfModel]);
+        loss.rebind(&mStorage[N + 9 + sizeOfModel]);
     }
 
 
@@ -849,20 +848,17 @@ private:
     typedef typename HandleTraits<Handle>::ReferenceToDouble numeric_type;
 
 public:
-    struct TaskState {
-        dimension_type numberOfStages;
-        dimension_pointer_type numbersOfUnits;
-        numeric_type stepsize;
-        numeric_type lambda;
-        MLPModel<Handle> model;
-    } task;
+    dimension_type numberOfStages;
+    dimension_pointer_type numbersOfUnits;
+    numeric_type stepsize;
+    numeric_type lambda;
+    MLPModel<Handle> model;
 
-    struct AlgoState {
-        count_type numRows;
-        dimension_type batchSize;
-        dimension_type nEpochs;
-        numeric_type loss;
-    } algo;
+    count_type numRows;
+    dimension_type batchSize;
+    dimension_type nEpochs;
+    numeric_type loss;
+
 };
 
 
