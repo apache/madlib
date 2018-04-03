@@ -141,9 +141,14 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
         else:
             num_output_nodes = get_col_dimension(source_table,
                                                  dependent_varname, dim=2)
-        # Get the type of the original source table's dependent variable column.
-        dependent_type = get_expr_type(pp_summary_dict['dependent_varname'],
-                                       pp_summary_dict['source_table'])
+
+        # This variable is used for creating the classes_str column in the model
+        # summary table. We append [] when we create this column in the create
+        # summary table command so we need to strip it out here.
+        dependent_type = get_expr_type(mlp_preprocessor.CLASS_VALUES,
+                                       mlp_preprocessor.summary_table)
+        if dependent_type[-2:] == '[]':
+            dependent_type = dependent_type[:-2]
     else:
         x_mean_table = unique_string(desp='x_mean_table')
         tbl_data_scaled = unique_string(desp="tbl_data_scaled")
@@ -184,6 +189,7 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
                 dependent_varname = "ARRAY[" + col_dep_var_norm_new + "]"
             num_output_nodes = get_col_dimension(tbl_data_scaled,
                                                  dependent_varname, dim=1)
+
     # Need layers sizes before validating for warm_start
     layer_sizes = [num_input_nodes] + hidden_layer_sizes + [num_output_nodes]
     col_grp_key = unique_string(desp='col_grp_key')
@@ -451,8 +457,10 @@ def _create_summary_table(args):
     if args['warm_start']:
         plpy.execute("DROP TABLE IF EXISTS {0}".format(args['summary_table']))
 
+
     classes_str = PY2SQL([strip_end_quotes(cl, "'") for cl in args['classes']],
                          array_type=args['dependent_type'])
+
     minibatch_summary_col_names = ''
     minibatch_summary_col_vals = ''
     if args['is_minibatch_enabled']:
@@ -678,7 +686,7 @@ def _validate_dependent_var(source_table, dependent_varname,
         if is_classification:
             _assert(("[]" in expr_type \
                      and is_psql_numeric_type(expr_type[:-2]) \
-                     and not _is_dep_var_multi_dim(dependent_varname, source_table) \
+                     and not _get_dep_var_second_dim(dependent_varname, source_table) \
                     ) \
                     or expr_type in classification_types,
                     "Dependent variable column should either be a numeric 1-D"
@@ -687,14 +695,16 @@ def _validate_dependent_var(source_table, dependent_varname,
             _assert("[]" in expr_type or is_psql_numeric_type(expr_type),
                     "Dependent variable column should be of numeric type.")
 
-def _is_dep_var_multi_dim(dependent_varname, source_table):
+def _get_dep_var_second_dim(dependent_varname, source_table):
     # Check if dependent variable is an array of two or higher dimension
+    # Return back the value of the second dimension, returns None if it less
+    # than 2-D.
     dep_array_sec_dim = plpy.execute("""
             SELECT array_upper({0}, 2) AS n_y
             FROM {1}
             LIMIT 1
         """.format(dependent_varname, source_table))
-    return bool(dep_array_sec_dim[0]['n_y'])
+    return dep_array_sec_dim[0]['n_y']
 
 def _validate_params_based_on_minibatch(source_table, independent_varname,
                                         dependent_varname, weights,
