@@ -141,14 +141,7 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
         else:
             num_output_nodes = get_col_dimension(source_table,
                                                  dependent_varname, dim=2)
-
-        # This variable is used for creating the classes_str column in the model
-        # summary table. We append [] when we create this column in the create
-        # summary table command so we need to strip it out here.
-        dependent_type = get_expr_type(mlp_preprocessor.CLASS_VALUES,
-                                       mlp_preprocessor.summary_table)
-        if dependent_type[-2:] == '[]':
-            dependent_type = dependent_type[:-2]
+        dependent_vartype = pp_summary_dict["dependent_vartype"]
     else:
         x_mean_table = unique_string(desp='x_mean_table')
         tbl_data_scaled = unique_string(desp="tbl_data_scaled")
@@ -160,12 +153,12 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
                                             dim=1)
         dimension = num_input_nodes  # dimension is used for normalize
         normalize_data(locals())
-        dependent_type = get_expr_type(dependent_varname, source_table)
+        dependent_vartype = get_expr_type(dependent_varname, source_table)
 
         if is_classification:
             # If dependent variable is an array during classification, assume
             # that it is already one-hot-encoded.
-            if "[]" in dependent_type:
+            if "[]" in dependent_vartype:
                 # We are now using tbl_data_scaled, so change the dependent
                 # varname accordingly.
                 dependent_varname = col_dep_var_norm_new
@@ -185,7 +178,7 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
                 # dependent_varname should be replaced with one-hot encoded varname
                 dependent_varname = "ARRAY[{0}]::integer[]".format(level_vals_str)
         else:
-            if "[]" not in dependent_type:
+            if "[]" not in dependent_vartype:
                 dependent_varname = "ARRAY[" + col_dep_var_norm_new + "]"
             num_output_nodes = get_col_dimension(tbl_data_scaled,
                                                  dependent_varname, dim=1)
@@ -449,12 +442,10 @@ def _create_summary_table(args):
     if args['warm_start']:
         plpy.execute("DROP TABLE IF EXISTS {0}".format(args['summary_table']))
 
-
-    classes_str = PY2SQL([strip_end_quotes(cl, "'") for cl in args['classes']],
-                         array_type=args['dependent_type'])
-
+    classes_type = args['dependent_vartype']
     minibatch_summary_col_names = ''
     minibatch_summary_col_vals = ''
+    dependent_vartype_colname = 'dependent_vartype'
     if args['is_minibatch_enabled']:
         # Add a few more columns in the summary table
         minibatch_summary_col_names = """
@@ -464,10 +455,16 @@ def _create_summary_table(args):
                 batch_size  INTEGER,
                 n_epochs    INTEGER,
             """
+        dependent_vartype_colname = 'original_dependent_vartype'
         mlp_pre_dict = args['pp_summary_dict']
         source_table = mlp_pre_dict['source_table']
         independent_varname = mlp_pre_dict['independent_varname']
         dependent_varname = mlp_pre_dict['dependent_varname']
+        # This variable is used for creating the classes_str column in the model
+        # summary table. We append [] when we create this column in the create
+        # summary table command so we need to strip it out here.
+        if classes_type[-2:] == '[]':
+            classes_type = classes_type[:-2]
         batch_size = args['batch_size']
         n_epochs = args['n_epochs']
         minibatch_summary_col_vals = """
@@ -477,12 +474,16 @@ def _create_summary_table(args):
                 {batch_size},
                 {n_epochs},
             """.format(**locals())
+
+    classes_str = PY2SQL([strip_end_quotes(cl, "'") for cl in args['classes']],
+                         array_type=classes_type)
     summary_table_creation_query = """
         CREATE TABLE {summary_table}(
             source_table TEXT,
             independent_varname TEXT,
             dependent_varname TEXT,
             {minibatch_summary_col_names}
+            {dependent_vartype_colname} TEXT,
             tolerance FLOAT,
             learning_rate_init FLOAT,
             learning_rate_policy TEXT,
@@ -491,10 +492,12 @@ def _create_summary_table(args):
             layer_sizes INTEGER[],
             activation TEXT,
             is_classification BOOLEAN,
-            classes {dependent_type}[],
+            classes {classes_type}[],
             weights VARCHAR,
             grouping_col VARCHAR
         )""".format(minibatch_summary_col_names=minibatch_summary_col_names,
+                    dependent_vartype_colname=dependent_vartype_colname,
+                    classes_type=classes_type,
                     **args)
     summary_table_update_query = """
         INSERT INTO {summary_table} VALUES(
@@ -502,6 +505,7 @@ def _create_summary_table(args):
             '{independent_varname}',
             '{dependent_varname_backup}',
             {minibatch_summary_col_vals}
+            '{dependent_vartype}',
             {tolerance},
             {step_size_init},
             '{learning_rate_policy}',
@@ -832,22 +836,32 @@ def _get_minibatch_param_from_mlp_model_summary(summary_dict, param,
                                                 minibatch_param):
     """
         Return the value of specific columns from the model summary table.
-        This is to be used only for three params:
+        This is to be used only for these params:
             source_table
             independent_varname
             dependent_varname
-        If the model was trained with minibatch, there would be three new
+            dependent_vartype
+        If the model was trained with minibatch, there would be four new
         columns introduced, that correspond to the above columns:
             original_source_table
             original_independent_varname
             original_dependent_varname
+            original_dependent_vartype
         This is because, when minibatch is used, the column names without
         prefix 'original_' will have the values from the minibatch preprocessed
         input table, and the column names with the prefix correspond to the
         original table that was input to the minibatch preprocessing step.
+
+        Only dependent_vartype or original_dependent_vartype can exist.
+        This is used by predict regression to know if the dependent column
+        is array or not.
     """
-    return summary_dict[minibatch_param] \
-                if minibatch_param in summary_dict else summary_dict[param]
+    if minibatch_param in summary_dict:
+        return summary_dict[minibatch_param]
+    elif param in summary_dict:
+        return summary_dict[param]
+
+    return None
 
 def mlp_predict(schema_madlib, model_table, data_table, id_col_name,
                 output_table, pred_type='response', **kwargs):
@@ -1038,12 +1052,17 @@ def mlp_predict(schema_madlib, model_table, data_table, id_col_name,
                 """
     else:
         # Regression
-        dependent_type = get_expr_type(dependent_varname, source_table)
+        dependent_type = _get_minibatch_param_from_mlp_model_summary(summary,
+                        'dependent_vartype', 'original_dependent_vartype')
         unnest_if_not_array = ""
         # Return the same type as the user provided.  Internally we always
         # use an array, but if they provided a scalar, unnest it for
         # the user
-        if "[]" not in dependent_type:
+        # If the dependent_type is None, it means that the model was trained
+        # before this column was added (< 1.14). In this case, always unnest the
+        # output. Note that this will return a array of len 1 even if the input is
+        # scalar
+        if dependent_type and "[]" not in dependent_type:
             unnest_if_not_array = "UNNEST"
         sql = header + """
                 SELECT {grouping_col_comma}
