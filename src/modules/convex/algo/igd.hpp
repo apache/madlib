@@ -34,8 +34,8 @@ public:
     typedef typename Task::model_type model_type;
 
     static void transition(state_type &state, const tuple_type &tuple);
-    static void transitionInMiniBatch(state_type &state, const tuple_type &tuple);
     static void merge(state_type &state, const_state_type &otherState);
+    static void transitionInMiniBatch(state_type &state, const tuple_type &tuple);
     static void mergeInPlace(state_type &state, const_state_type &otherState);
     static void final(state_type &state);
 };
@@ -58,6 +58,35 @@ IGD<State, ConstState, Task>::transition(state_type &state,
             state.task.stepsize * tuple.weight);
 }
 
+template <class State, class ConstState, class Task>
+void
+IGD<State, ConstState, Task>::merge(state_type &state,
+        const_state_type &otherState) {
+    // Having zero checking here to reduce dependency to the caller.
+    // This can be removed if it affects performance in the future,
+    // with the expectation that callers should do the zero checking.
+    if (state.algo.numRows == 0) {
+        state.algo.incrModel = otherState.algo.incrModel;
+        return;
+    } else if (otherState.algo.numRows == 0) {
+        return;
+    }
+
+    // The reason of this weird algorithm instead of an intuitive one
+    // -- (w1 * m1 + w2 * m2) / (w1 + w2): we have only one mutable state,
+    // therefore, (m1 * w1 / w2  + m2)  * w2 / (w1 + w2).
+    // Order:         111111111  22222  3333333333333333
+
+    // model averaging, weighted by rows seen
+    double totalNumRows = static_cast<double>(state.algo.numRows + otherState.algo.numRows);
+    state.algo.incrModel *= static_cast<double>(state.algo.numRows) /
+        static_cast<double>(otherState.algo.numRows);
+    state.algo.incrModel += otherState.algo.incrModel;
+    state.algo.incrModel *= static_cast<double>(otherState.algo.numRows) /
+        static_cast<double>(totalNumRows);
+}
+
+
 /**
   * @brief Update the transition state in mini-batches
   *
@@ -78,8 +107,8 @@ IGD<State, ConstState, Task>::transition(state_type &state,
                   std::runtime_error("Invalid data. Independent and dependent "
                                      "batches don't have same number of rows."));
 
-    int batch_size = state.algo.batchSize;
-    int n_epochs = state.algo.nEpochs;
+    int batch_size = state.batchSize;
+    int n_epochs = state.nEpochs;
 
     // n_rows/n_ind_cols are the rows/cols in a transition tuple.
     int n_rows = tuple.indVar.rows();
@@ -117,12 +146,12 @@ IGD<State, ConstState, Task>::transition(state_type &state,
                 Y_batch = tuple.depVar.block(curr_batch_row_index, 0, batch_size, tuple.depVar.cols());
             }
             loss += Task::getLossAndUpdateModel(
-                state.task.model, X_batch, Y_batch, state.task.stepsize);
+                state.model, X_batch, Y_batch, state.stepsize);
         }
 
         // The first epoch will most likely have the highest loss.
         // Being pessimistic, use the total loss only from the first epoch.
-        if (curr_epoch==0) state.algo.loss += loss;
+        if (curr_epoch==0) state.loss += loss;
     }
     return;
  }
@@ -130,51 +159,23 @@ IGD<State, ConstState, Task>::transition(state_type &state,
 
 template <class State, class ConstState, class Task>
 void
-IGD<State, ConstState, Task>::merge(state_type &state,
-        const_state_type &otherState) {
-    // Having zero checking here to reduce dependency to the caller.
-    // This can be removed if it affects performance in the future,
-    // with the expectation that callers should do the zero checking.
-    if (state.algo.numRows == 0) {
-        state.algo.incrModel = otherState.algo.incrModel;
-        return;
-    } else if (otherState.algo.numRows == 0) {
-        return;
-    }
-
-    // The reason of this weird algorithm instead of an intuitive one
-    // -- (w1 * m1 + w2 * m2) / (w1 + w2): we have only one mutable state,
-    // therefore, (m1 * w1 / w2  + m2)  * w2 / (w1 + w2).
-    // Order:         111111111  22222  3333333333333333
-
-    // model averaging, weighted by rows seen
-    double totalNumRows = static_cast<double>(state.algo.numRows + otherState.algo.numRows);
-    state.algo.incrModel *= static_cast<double>(state.algo.numRows) /
-        static_cast<double>(otherState.algo.numRows);
-    state.algo.incrModel += otherState.algo.incrModel;
-    state.algo.incrModel *= static_cast<double>(otherState.algo.numRows) /
-        static_cast<double>(totalNumRows);
-}
-
-template <class State, class ConstState, class Task>
-void
 IGD<State, ConstState, Task>::mergeInPlace(state_type &state,
         const_state_type &otherState) {
     // avoid division by zero
-    if (state.algo.numRows == 0) {
-        state.task.model = otherState.task.model;
+    if (state.numRows == 0) {
+        state.model = otherState.model;
         return;
-    } else if (otherState.algo.numRows == 0) {
+    } else if (otherState.numRows == 0) {
         return;
     }
 
     // model averaging, weighted by rows seen
-    double leftRows = static_cast<double>(state.algo.numRows + state.algo.numRows);
-    double rightRows = static_cast<double>(otherState.algo.numRows + otherState.algo.numRows);
+    double leftRows = static_cast<double>(state.numRows + state.numRows);
+    double rightRows = static_cast<double>(otherState.numRows + otherState.numRows);
     double totalNumRows = leftRows + rightRows;
-    state.task.model *= leftRows / rightRows;
-    state.task.model += otherState.task.model;
-    state.task.model *= rightRows / totalNumRows;
+    state.model *= leftRows / rightRows;
+    state.model += otherState.model;
+    state.model *= rightRows / totalNumRows;
 }
 
 template <class State, class ConstState, class Task>

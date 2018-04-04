@@ -164,7 +164,7 @@ struct MLPModel {
         for (k =0; k < N; ++k){
             // Initalize according to Glorot and Bengio (2010)
             // See design doc for more info
-            span = sqrt(6.0 / (n[k] + n[k+1]));
+            span = 0.5 * sqrt(6.0 / (n[k] + n[k+1]));
             u[k] << span * Matrix::Random(u[k].rows(), u[k].cols());
         }
     }

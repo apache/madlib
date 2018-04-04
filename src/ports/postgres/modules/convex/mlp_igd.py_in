@@ -81,7 +81,7 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
     step_size = step_size_init
     n_tries = optimizer_params["n_tries"]
     # lambda is a reserved word in python
-    lmbda = optimizer_params["lambda"]
+    lambda_ = optimizer_params["lambda"]
     batch_size = optimizer_params['batch_size']
     n_epochs = optimizer_params['n_epochs']
 
@@ -212,6 +212,10 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
                 """.format(**locals())
         else:
             start_coeff = PY2SQL(coeff, array_type="DOUBLE PRECISION")
+    else:
+        # if warm start not enabled then initialization is the responsibility of
+        # the model
+        start_coeff = "NULL::DOUBLE PRECISION[]"
 
     if grouping_col:
         group_by_clause = "GROUP BY {0}, {1}".format(grouping_col, col_grp_key)
@@ -236,12 +240,13 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
         "warm_start": warm_start,
         "n_iterations": n_iterations,
         "tolerance": tolerance,
-        "lmbda": lmbda,
+        "lambda_": lambda_,
         "grouping_col": grouping_col,
         "grouping_str": grouping_str,
         "x_mean_table": x_mean_table,
         "batch_size": batch_size,
-        "n_epochs": n_epochs
+        "n_epochs": n_epochs,
+        "start_coeff": start_coeff
     }
     # variables to be used by GroupIterationController
     it_args.update({
@@ -269,17 +274,6 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
 
     for _ in range(n_tries):
         prev_state = None
-        if not warm_start:
-            coeff = []
-            for fan_in, fan_out in zip(layer_sizes, layer_sizes[1:]):
-                # Initalize according to Glorot and Bengio (2010)
-                # See design doc for more info
-                span = math.sqrt(6.0 / (fan_in + fan_out))
-                dim = (fan_in + 1) * fan_out
-                rand = [span * (random() - 0.5) for _ in range(dim)]
-                coeff += rand
-            start_coeff = PY2SQL(coeff, "double precision")
-        it_args['start_coeff'] = start_coeff
         iterationCtrl = GroupIterationController(it_args)
         with iterationCtrl as it:
             it.iteration = 0
@@ -303,9 +297,8 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
                             {activation},
                             {is_classification},
                             ({weights})::DOUBLE PRECISION,
-                            {warm_start},
                             ({start_coeff})::DOUBLE PRECISION[],
-                            {lmbda},
+                            {lambda_},
                             {batch_size}::integer,
                             {n_epochs}::integer
                         )
@@ -321,9 +314,8 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
                             {activation},
                             {is_classification},
                             ({weights})::DOUBLE PRECISION,
-                            {warm_start},
                             ({start_coeff})::DOUBLE PRECISION[],
-                            {lmbda}
+                            {lambda_}
                         )
                         """
                 it.update(train_sql)
@@ -539,10 +531,13 @@ def _create_output_table(output_table, temp_output_table,
         plpy.execute("DROP TABLE IF EXISTS {0}".format(output_table))
     build_output_query = """
         CREATE TABLE {output_table} AS
-        SELECT {grouping_col_comma} coeff, loss, num_iterations FROM
-        (SELECT {temp_output_table}.*, row_number()
-        OVER ({partition_by} ORDER BY loss)
-        AS rank FROM {temp_output_table}) x WHERE x.rank=1;
+            SELECT {grouping_col_comma} coeff, loss, num_iterations
+            FROM (
+                SELECT {temp_output_table}.*,
+                        row_number() OVER ({partition_by} ORDER BY loss) AS rank
+                FROM {temp_output_table}
+            ) x
+            WHERE x.rank = 1;
     """.format(**locals())
     plpy.execute(build_output_query)
 
