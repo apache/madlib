@@ -33,6 +33,7 @@ from utilities import is_psql_numeric_type
 from utilities import is_string_formatted_as_array_expression
 from utilities import py_list_to_sql_string
 from utilities import split_quoted_delimited_str
+from utilities import unique_string
 from utilities import _string_to_array
 from utilities import validate_module_input_params
 from mean_std_dev_calculator import MeanStdDevCalculator
@@ -53,13 +54,15 @@ class MiniBatchPreProcessor:
     source table into one row based on the buffer size
     """
     def __init__(self, schema_madlib, source_table, output_table,
-                  dependent_varname, independent_varname, buffer_size, **kwargs):
+                  dependent_varname, independent_varname, grouping_cols,
+                  buffer_size, **kwargs):
         self.schema_madlib = schema_madlib
         self.source_table = source_table
         self.output_table = output_table
         self.dependent_varname = dependent_varname
         self.independent_varname = independent_varname
         self.buffer_size = buffer_size
+        self.grouping_cols = grouping_cols
 
         self.module_name = "minibatch_preprocessor"
         self.output_standardization_table = add_postfix(self.output_table,
@@ -83,8 +86,8 @@ class MiniBatchPreProcessor:
                                              self.source_table,
                                              dep_var_array_str,
                                              indep_var_array_str,
+                                             self.grouping_cols,
                                              self.output_standardization_table)
-        standardize_query = standardizer.get_query_for_standardizing()
 
         num_rows_processed, num_missing_rows_skipped = self.\
                                                 _get_skipped_rows_processed_count(
@@ -119,13 +122,25 @@ class MiniBatchPreProcessor:
         # This ID is the unique row id that get assigned to each row after
         # preprocessing
         unique_row_id = "__id__"
+        standardize_query = standardizer.get_query_for_standardizing()
+
+        partition_by = ''
+        grouping_cols_select_col = ''
+        grouping_cols_group_by = ''
+        if self.grouping_cols:
+            partition_by = 'PARTITION BY {0}'.format(self.grouping_cols)
+            grouping_cols_select_col = self.grouping_cols + ','
+            grouping_cols_group_by = ',' + self.grouping_cols
+
         sql = """
             CREATE TABLE {output_table} AS
             SELECT {row_id},
+                   {grouping_cols_select_col}
                    {schema_madlib}.matrix_agg({dep_colname}) as {dep_colname},
                    {schema_madlib}.matrix_agg({ind_colname}) as {ind_colname}
             FROM (
-                SELECT (row_number() OVER (ORDER BY random()) - 1) / {buffer_size}
+                SELECT (row_number() OVER ({partition_by} ORDER BY random()) - 1)
+                        / {buffer_size}
                             as {row_id}, * FROM
                 (
                     {standardize_query}
@@ -133,7 +148,7 @@ class MiniBatchPreProcessor:
                  WHERE NOT {schema_madlib}.array_contains_null({dep_colname})
                  AND NOT {schema_madlib}.array_contains_null({ind_colname})
             ) sub_query_2
-            GROUP BY {row_id}
+            GROUP BY {row_id} {grouping_cols_group_by}
             {distributed_by_clause}
             """.format(
             schema_madlib=self.schema_madlib,
@@ -150,9 +165,9 @@ class MiniBatchPreProcessor:
             **locals())
         plpy.execute(sql)
 
-
         standardizer.create_output_standardization_table()
         MiniBatchSummarizer.create_output_summary_table(
+            self.output_summary_table,
             self.source_table,
             self.output_table,
             self.dependent_varname,
@@ -161,7 +176,8 @@ class MiniBatchPreProcessor:
             dep_var_classes_str,
             num_rows_processed,
             num_missing_rows_skipped,
-            self.output_summary_table)
+            self.grouping_cols
+            )
 
     def _validate_minibatch_preprocessor_params(self):
         # Test if the independent variable can be typecasted to a double
@@ -174,6 +190,7 @@ class MiniBatchPreProcessor:
         validate_module_input_params(self.source_table, self.output_table,
                                      typecasted_ind_varname,
                                      self.dependent_varname, self.module_name,
+                                     self.grouping_cols,
                                      [self.output_summary_table,
                                       self.output_standardization_table])
 
@@ -313,18 +330,18 @@ class MiniBatchStandardizer:
     3. Creating the output standardization table
     """
     def __init__(self, schema_madlib, source_table, dep_var_array_str,
-                 indep_var_array_str, output_standardization_table):
+                 indep_var_array_str, grouping_cols,
+                 output_standardization_table):
         self.schema_madlib = schema_madlib
         self.source_table = source_table
         self.dep_var_array_str = dep_var_array_str
         self.indep_var_array_str = indep_var_array_str
+        self.grouping_cols = grouping_cols
         self.output_standardization_table = output_standardization_table
 
+        self.x_mean_table = unique_string(desp='x_mean_table')
         self.x_mean_str = None
         self.x_std_dev_str = None
-        self.source_table_row_count = 0
-        self.grouping_cols = "NULL"
-        self.independent_var_dimension = None
         self._calculate_mean_and_std_dev_str()
 
     def _calculate_mean_and_std_dev_str(self):
@@ -338,15 +355,28 @@ class MiniBatchStandardizer:
                                           self.source_table,
                                           self.indep_var_array_str,
                                           self.independent_var_dimension)
-
-        self.x_mean_str, self.x_std_dev_str = calculator.\
-                                              get_mean_and_std_dev_for_ind_var()
-
-        if not self.x_mean_str or not self.x_std_dev_str:
-            plpy.error("mean/stddev for the independent variable"
-                       "cannot be null")
+        """
+        For grouping, we have to create a temp mean table because we have
+        to join the mean table and the source table by grouping cols. It's
+        easier to call utils_normalize_data with a table instead of storing this
+        information in memory in a data structure.
+        When if there is no grouping, a simple python string is enough to
+        store the mean and std_dev.
+        """
+        if self.grouping_cols:
+            calculator.create_mean_std_table_for_ind_var_grouping(
+                self.x_mean_table, self.grouping_cols)
+        else:
+            self.x_mean_str, self.x_std_dev_str = calculator.\
+                                            get_mean_and_std_dev_for_ind_var()
 
     def get_query_for_standardizing(self):
+        if self.grouping_cols:
+            return self._get_query_for_standardizing_with_grouping()
+        else:
+            return self._get_query_for_standardizing_without_grouping()
+
+    def _get_query_for_standardizing_without_grouping(self):
         query="""
         SELECT
         {dep_var_array_str} as {dep_colname},
@@ -367,33 +397,66 @@ class MiniBatchStandardizer:
             x_std_dev_str = self.x_std_dev_str)
         return query
 
-    def create_output_standardization_table(self):
-        query = """
-        CREATE TABLE {output_standardization_table} AS
-        select {grouping_cols}::TEXT AS grouping_cols,
-        '{x_mean_str}'::double precision[] AS mean,
-        '{x_std_dev_str}'::double precision[] AS std
+    def _get_query_for_standardizing_with_grouping(self):
+        query="""
+        SELECT
+        {dep_var_array_str} as {dep_colname},
+        {schema_madlib}.utils_normalize_data
+        (
+            {indep_var_array_str},__x__.mean::double precision[], __x__.std::double precision[]
+        ) as {ind_colname},
+        {source_table}.{grouping_cols}
+        FROM
+        {source_table} INNER JOIN {x_mean_table} AS __x__ ON  {source_table}.{grouping_cols} = __x__.{grouping_cols}
         """.format(
-        output_standardization_table = self.output_standardization_table,
-        grouping_cols = self.grouping_cols,
-        x_mean_str = self.x_mean_str,
-        x_std_dev_str = self.x_std_dev_str)
+            source_table = self.source_table,
+            schema_madlib = self.schema_madlib,
+            dep_var_array_str = self.dep_var_array_str,
+            indep_var_array_str = self.indep_var_array_str,
+            dep_colname = MINIBATCH_OUTPUT_DEPENDENT_COLNAME,
+            ind_colname = MINIBATCH_OUTPUT_INDEPENDENT_COLNAME,
+            grouping_cols = self.grouping_cols,
+            x_mean_table = self.x_mean_table,
+            **locals())
+        return query
+
+    def create_output_standardization_table(self):
+        if self.grouping_cols:
+            query = """
+            ALTER TABLE {x_mean_table} RENAME TO {output_standardization_table}
+            """.format(
+            x_mean_table = self.x_mean_table,
+            output_standardization_table = self.output_standardization_table)
+        else:
+            query = """
+            CREATE TABLE {output_standardization_table} AS
+            select '{x_mean_str}'::double precision[] AS mean,
+            '{x_std_dev_str}'::double precision[] AS std
+            """.format(
+            output_standardization_table = self.output_standardization_table,
+            x_mean_str = self.x_mean_str,
+            x_std_dev_str = self.x_std_dev_str)
+
         plpy.execute(query)
 
 class MiniBatchSummarizer:
     @staticmethod
-    def create_output_summary_table(source_table, output_table,
-                                    dep_var_array_str, indep_var_array_str,
-                                    buffer_size, class_values,
-                                    num_rows_processed,
-                                    num_missing_rows_skipped,
-                                    output_summary_table):
+    def create_output_summary_table(output_summary_table, source_table,
+                                    output_table, dep_var_array_str,
+                                    indep_var_array_str, buffer_size,
+                                    class_values, num_rows_processed,
+                                    num_missing_rows_skipped, grouping_cols):
+        # 1. All the string columns are surrounded by "$$" to take care of
+        #    special characters in the column name.
+        # 2. We have to typecast all the string column names to ::TEXT because
+        #    otherwise there is a warning from psql
+        #    WARNING: column "independent_varname" has type "unknown"
         query = """
             CREATE TABLE {output_summary_table} AS
-            SELECT '{source_table}'::TEXT AS source_table,
-            '{output_table}'::TEXT AS output_table,
-            '{dependent_varname}'::TEXT AS dependent_varname,
-            '{independent_varname}'::TEXT AS independent_varname,
+            SELECT $${source_table}$$::TEXT AS source_table,
+            $${output_table}$$::TEXT AS output_table,
+            $${dependent_varname}$$::TEXT AS dependent_varname,
+            $${independent_varname}$$::TEXT AS independent_varname,
             {buffer_size} AS buffer_size,
             {class_values} AS class_values,
             {num_rows_processed} AS num_rows_processed,
@@ -408,7 +471,8 @@ class MiniBatchSummarizer:
                    class_values = class_values,
                    num_rows_processed = num_rows_processed,
                    num_missing_rows_skipped = num_missing_rows_skipped,
-                   grouping_cols = "NULL")
+                   grouping_cols = "$$" + grouping_cols + "$$"
+                                    if grouping_cols else "NULL")
         plpy.execute(query)
 
 class MiniBatchBufferSizeCalculator:
