@@ -30,23 +30,39 @@ m4_include(`SQLCommon.m4')
 @addtogroup grp_minibatch_preprocessing
 
 <div class="toc"><b>Contents</b><ul>
-<li class="level1"><a href="#todo">todo</a></li>
+<li class="level1"><a href="#minibatch_preprocessor">Minibatch Preprocessor</a></li>
+<li class="level1"><a href="#example">Examples</a></li>
+<li class="level1"><a href="#literature">Literature</a></li>
+<li class="level1"><a href="#related">Related Topics</a></li>
 </ul></div>
 
-MiniBatch Preprocessor is a utility function to pre process the input
-data for use with models that support mini-batching as an optimization
+The mini-batch preprocessor is a utility that prepares input
+data for use by models that support mini-batch as an optimization option.
+(This is currently 
+only the case for <a href="group__grp__nn.html">Neural Networks</a>.)
+It is effectively a packing operation that builds
+arrays of dependent and independent variables from the source data table.
+
+The advantage of using mini-batching is that it can perform better than
+stochastic gradient descent because it uses more than one training
+example at a time, typically resulting faster and smoother convergence [1]. 
 
 @brief
+Utility that prepares input data for use by models that support 
+mini-batch as an optimization option.
+
 @anchor minibatch_preprocessor
 @par MiniBatch Preprocessor
+The mini-batch preprocessor has the following format:
+
 <pre class="syntax">
-minibatch_preprocessor(
-    source_table
-    output_table
-    dependent_varname
-    independent_varname
-    buffer_size
-    )
+minibatch_preprocessor( source_table,
+                        output_table,
+                        dependent_varname,
+                        independent_varname,
+                        grouping_col,
+                        buffer_size
+                        )
 </pre>
 
 \b Arguments
@@ -56,8 +72,11 @@ minibatch_preprocessor(
   </dd>
 
   <dt>output_table</dt>
-  <dd>TEXT.  Name of the output table from the preprocessor which will be used
-    as input to algorithms that support mini-batching.
+  <dd>TEXT.  Name of the output table from the preprocessor which 
+  will be used as input to algorithms that support mini-batching.
+  Note that the arrays packed into the output table are randomized 
+  and normalized, so they will not match up in an obvious way with the
+  rows in the source table.
   </dd>
 
   <dt>dependent_varname</dt>
@@ -66,45 +85,61 @@ minibatch_preprocessor(
 
   <dt>independent_varname</dt>
   <dd>TEXT. Column name or expression list to evaluate for the independent
-  variable.  Will be cast to double when packing.
+  variable.  Please note that independent variables
+  are cast to double precision by the preprocessor, 
+  so categorical variables should be
+  one-hot or dummy encoded as appropriate.
+  See <a href="group__grp__encode__categorical.html">Encoding Categorical Variables</a>
+  for more details on this.
   @note
-  Supported expressions for independent variable
-  ‘ARRAY[x1,x2,x3]’ , where x1,x2,x3 are columns in source table with scalar values
-  ‘x1’, where x1 is a single column in source table, with value as an array, like ARRAY[1,2,3] or {1,2,3}
-  We might already support expressions that evaluate to array but haven't tested it.
-
-  Not supported
-  ‘x1,x2,x3’, where x1,x2,x3 are columns in source table with scalar values
-  ARRAY[x1,x2] where x1 is scalar and x2 is array
-  ARRAY[x1,x2] where both x1 and x2 are arrays
-  ARRAY[x1] where x1 is array
-  </dd>
-
-  <dt>buffer_size</dt>
-  <dd>INTEGER. default: ???. Number of source input rows to pack into batch
+  Supported expressions for independent variables include:
+  - ‘ARRAY[x1,x2,x3]’, where x1, x2, and x3 are 
+  columns in the source table containing scalar values.
+  - Single column in the source table containing 
+  an array like ARRAY[1,2,3] or {1,2,3}.
+  @note
+  The following forms are not currently supported:
+  - ‘x1,x2,x3’, where x1,x2,x3 are columns in source table with scalar values
+  - ARRAY[x1,x2] where x1 is scalar and x2 is array
+  - ARRAY[x1,x2] where both x1 and x2 are arrays
+  - ARRAY[x1] where x1 is array
   </dd>
 
   <dt>grouping_col (optional)</dt>
   <dd>TEXT, default: NULL.
    An expression list used to group the input dataset into discrete groups,
-   running one preprocessing step per group. Similar to the SQL GROUP BY clause.
-   When this value is NULL, no grouping is used and a single preprocessing step
-   is performed for the whole data set.
+   which runs the preprocessing separately for each group.
+   If you plan to use grouping in the model training, then set
+   up the groups in the preprocessor using this parameter.
+   When this value is NULL, no grouping is used and a single preprocessor step
+   is run for the whole data set.
+  </dd>
+
+  <dt>buffer_size (optional)</dt>
+  <dd>INTEGER, default: computed.  Buffer size is the 
+  number of rows from the
+  source table that are packed into one row of the preprocessor
+  output table.  The default value is computed considering size of 
+  the source table, number of independent variables, number of groups,
+  and number of segments in the database cluster.  For larger data sets,
+  the computed buffer size will typically be a value in the millions.
   </dd>
 </dl>
 
 <b>Output tables</b>
 <br>
-    The output table produced by MLP contains the following columns:
+    The output table produced by the mini-batch preprocessor contains the following columns:
     <table class="output">
       <tr>
-        <th>id</th>
+        <th>__id__</th>
         <td>INTEGER. Unique id for packed table.
         </td>
       </tr>
       <tr>
         <th>dependent_varname</th>
-        <td>FLOAT8[]. Packed array of dependent variables.
+        <td>FLOAT8[]. Packed array of dependent variables.  If the
+        dependent variable in the source table is categorical, 
+        the preprocessor will one-hot encode it. 
         </td>
       </tr>
       <tr>
@@ -114,7 +149,7 @@ minibatch_preprocessor(
       </tr>
       <tr>
         <th>grouping_cols</th>
-        <td>TEXT. Name of grouping columns
+        <td>TEXT. Name of grouping columns.
         </td>
       </tr>
     </table>
@@ -123,15 +158,15 @@ A summary table named \<output_table\>_summary is also created, which has the fo
     <table class="output">
     <tr>
         <th>source_table</th>
-        <td>The source table.</td>
+        <td>Name of the source table.</td>
     </tr>
     <tr>
         <th>output_table</th>
-        <td>Output table name from preprocessor.</td>
+        <td>Name of output table generated by preprocessor.</td>
     </tr>
     <tr>
         <th>dependent_varname</th>
-        <td>Dependent variable from the input table.</td>
+        <td>Dependent variable from the source table.</td>
     </tr>
     <tr>
         <th>independent_varname</th>
@@ -143,43 +178,262 @@ A summary table named \<output_table\>_summary is also created, which has the fo
     </tr>
     <tr>
         <th>class_values</th>
-        <td>Class values of the dependent variable (‘NULL’(as TEXT type) for non categorical vars, i,e., if dependent_vartype=”Categorical”)./td>
+        <td>Class values (i.e., levels) of the dependent 
+        variable if categorical.  If the dependent variable is not 
+        categorical, this will be NULL./td>
     </tr>
     <tr>
         <th>num_rows_processed</th>
-        <td>The total number of rows that were used in the computation.</td>
+        <td>The total number of rows that were used in the 
+        preprocessing operation.</td>
     </tr>
     <tr>
         <th>num_missing_rows_skipped</th>
-        <td>The total number of rows that were skipped because of NULL values in them.</td>
+        <td>The total number of rows that were skipped because of 
+        NULL values in either the dependent or independent variables.</td>
     </tr>
     <tr>
         <th>grouping_col</th>
-        <td>NULL if no grouping_col was specified , and a comma separated
-        list of grouping column names if not.</td>
+        <td>Comma separated list of grouping column names 
+        if grouping is used. If no grouping, will be NULL.</td>
     </tr>
    </table>
 
-A standardization table named \<output_table\>_standardization is also created, that has the
-following columns:
+A standardization table named \<output_table\>_standardization 
+is also created.  This is needed by the models that will use the
+preprocessed data so is likely not of much interest to users.  
+It has the following columns:
   <table class="output">
     <tr>
         <th>grouping columns</th>
-        <td>If grouping_col is specified during training, a column for each grouping column
+        <td>If 'grouping_col' is specified, 
+        a column for each grouping column
         is created.</td>
     </tr>
     <tr>
         <th>mean</th>
-        <td>Mean of independent vars by group</td>
+        <td>Mean of independent variables.</td>
     </tr>
     <tr>
         <th>std</th>
-        <td>Standard deviation of independent vars by group</td>
+        <td>Population standard deviation of 
+        independent variables.</td>
     </tr>
   </table>
 
 @anchor example
 @par Examples
+-#  Create an input data set based on the well known iris data set:
+<pre class="example">
+DROP TABLE IF EXISTS iris_data;
+CREATE TABLE iris_data(
+    id serial,
+    attributes numeric[],
+    class_text varchar,
+    class integer,
+    state varchar
+);
+INSERT INTO iris_data(id, attributes, class_text, class, state) VALUES
+(1,ARRAY[5.0,3.2,1.2,0.2],'Iris_setosa',1,'Alaska'),
+(2,ARRAY[5.5,3.5,1.3,0.2],'Iris_setosa',1,'Alaska'),
+(3,ARRAY[4.9,3.1,1.5,0.1],'Iris_setosa',1,'Alaska'),
+(4,ARRAY[4.4,3.0,1.3,0.2],'Iris_setosa',1,'Alaska'),
+(5,ARRAY[5.1,3.4,1.5,0.2],'Iris_setosa',1,'Alaska'),
+(6,ARRAY[5.0,3.5,1.3,0.3],'Iris_setosa',1,'Alaska'),
+(7,ARRAY[4.5,2.3,1.3,0.3],'Iris_setosa',1,'Alaska'),
+(8,ARRAY[4.4,3.2,1.3,0.2],'Iris_setosa',1,'Alaska'),
+(9,ARRAY[5.0,3.5,1.6,0.6],'Iris_setosa',1,'Alaska'),
+(10,ARRAY[5.1,3.8,1.9,0.4],'Iris_setosa',1,'Alaska'),
+(11,ARRAY[4.8,3.0,1.4,0.3],'Iris_setosa',1,'Alaska'),
+(12,ARRAY[5.1,3.8,1.6,0.2],'Iris_setosa',1,'Alaska'),
+(13,ARRAY[5.7,2.8,4.5,1.3],'Iris_versicolor',2,'Alaska'),
+(14,ARRAY[6.3,3.3,4.7,1.6],'Iris_versicolor',2,'Alaska'),
+(15,ARRAY[4.9,2.4,3.3,1.0],'Iris_versicolor',2,'Alaska'),
+(16,ARRAY[6.6,2.9,4.6,1.3],'Iris_versicolor',2,'Alaska'),
+(17,ARRAY[5.2,2.7,3.9,1.4],'Iris_versicolor',2,'Alaska'),
+(18,ARRAY[5.0,2.0,3.5,1.0],'Iris_versicolor',2,'Alaska'),
+(19,ARRAY[5.9,3.0,4.2,1.5],'Iris_versicolor',2,'Alaska'),
+(20,ARRAY[6.0,2.2,4.0,1.0],'Iris_versicolor',2,'Alaska'),
+(21,ARRAY[6.1,2.9,4.7,1.4],'Iris_versicolor',2,'Alaska'),
+(22,ARRAY[5.6,2.9,3.6,1.3],'Iris_versicolor',2,'Alaska'),
+(23,ARRAY[6.7,3.1,4.4,1.4],'Iris_versicolor',2,'Alaska'),
+(24,ARRAY[5.6,3.0,4.5,1.5],'Iris_versicolor',2,'Alaska'),
+(25,ARRAY[5.8,2.7,4.1,1.0],'Iris_versicolor',2,'Alaska'),
+(26,ARRAY[6.2,2.2,4.5,1.5],'Iris_versicolor',2,'Alaska'),
+(27,ARRAY[5.6,2.5,3.9,1.1],'Iris_versicolor',2,'Alaska'),
+(28,ARRAY[5.0,3.4,1.5,0.2],'Iris_setosa',1,'Tennessee'),
+(29,ARRAY[4.4,2.9,1.4,0.2],'Iris_setosa',1,'Tennessee'),
+(30,ARRAY[4.9,3.1,1.5,0.1],'Iris_setosa',1,'Tennessee'),
+(31,ARRAY[5.4,3.7,1.5,0.2],'Iris_setosa',1,'Tennessee'),
+(32,ARRAY[4.8,3.4,1.6,0.2],'Iris_setosa',1,'Tennessee'),
+(33,ARRAY[4.8,3.0,1.4,0.1],'Iris_setosa',1,'Tennessee'),
+(34,ARRAY[4.3,3.0,1.1,0.1],'Iris_setosa',1,'Tennessee'),
+(35,ARRAY[5.8,4.0,1.2,0.2],'Iris_setosa',1,'Tennessee'),
+(36,ARRAY[5.7,4.4,1.5,0.4],'Iris_setosa',1,'Tennessee'),
+(37,ARRAY[5.4,3.9,1.3,0.4],'Iris_setosa',1,'Tennessee'),
+(38,ARRAY[6.0,2.9,4.5,1.5],'Iris_versicolor',2,'Tennessee'),
+(39,ARRAY[5.7,2.6,3.5,1.0],'Iris_versicolor',2,'Tennessee'),
+(40,ARRAY[5.5,2.4,3.8,1.1],'Iris_versicolor',2,'Tennessee'),
+(41,ARRAY[5.5,2.4,3.7,1.0],'Iris_versicolor',2,'Tennessee'),
+(42,ARRAY[5.8,2.7,3.9,1.2],'Iris_versicolor',2,'Tennessee'),
+(43,ARRAY[6.0,2.7,5.1,1.6],'Iris_versicolor',2,'Tennessee'),
+(44,ARRAY[5.4,3.0,4.5,1.5],'Iris_versicolor',2,'Tennessee'),
+(45,ARRAY[6.0,3.4,4.5,1.6],'Iris_versicolor',2,'Tennessee'),
+(46,ARRAY[6.7,3.1,4.7,1.5],'Iris_versicolor',2,'Tennessee'),
+(47,ARRAY[6.3,2.3,4.4,1.3],'Iris_versicolor',2,'Tennessee'),
+(48,ARRAY[5.6,3.0,4.1,1.3],'Iris_versicolor',2,'Tennessee'),
+(49,ARRAY[5.5,2.5,4.0,1.3],'Iris_versicolor',2,'Tennessee'),
+(50,ARRAY[5.5,2.6,4.4,1.2],'Iris_versicolor',2,'Tennessee'),
+(51,ARRAY[6.1,3.0,4.6,1.4],'Iris_versicolor',2,'Tennessee'),
+(52,ARRAY[5.8,2.6,4.0,1.2],'Iris_versicolor',2,'Tennessee');
+</pre>
+
+-#  Run the preprocessor:
+<pre class="example">
+DROP TABLE IF EXISTS iris_data_packed, iris_data_packed_summary, iris_data_packed_standardization;
+SELECT madlib.minibatch_preprocessor('iris_data',         -- Source table
+                                     'iris_data_packed',  -- Output table
+                                     'class_text',        -- Dependent variable
+                                     'attributes'        -- Independent variables
+                                     );
+</pre>
+For small datasets like in this example, buffer size is mainly 
+determined by the number of segments in the database. 
+This example is run on a Greenplum database with 2 segments, 
+so there are 2 rows with a buffer size of 26. 
+For PostgresSQL, there would be only one row with a buffer 
+size of 52 since it is a single node database. 
+For larger data sets, other factors go into 
+computing buffers size besides number of segments.
+Also, note that the dependent variable has 
+been one-hot encoded since it is categorical.
+Here is a sample of the packed output table:
+<pre class="example">
+SELECT * FROM iris_data_packed;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]-------+-------------------------------------
+__id__              | 0
+dependent_varname   | {{1,0},{0,1},{1,0},{0,1},{1,0},{0,1},{0,1},{1,0},{1,0},{1,0},{1,0},{0,1},{0,1},{0,1},{1,0},{0,1},{0,1},{0,1},{1,0},{0,1},{1,0},{0,1},{1,0},{1,0},{1,0},{0,1}}
+independent_varname | {{-0.767560815504508,0.806649237861967,-1.07515071152907,-1.18456909732025},{-0.0995580974152422,0.00385956572525086,1.03989986852812,1.17758048907675},...
+...
+-[ RECORD 2 ]-------+-------------------------------------
+__id__              | 1
+dependent_varname   | {{1,0},{1,0},{1,0},{0,1},{0,1},{1,0},{0,1},{0,1},{0,1},{0,1},{0,1},{0,1},{0,1},{1,0},{0,1},{0,1},{0,1},{0,1},{0,1},{1,0},{0,1},{1,0},{0,1},{1,0},{1,0},{0,1}}
+independent_varname | {{0.568444620674023,2.01083374606704,-1.28665576953479,-1.18456909732025},{-1.76956489263841,0.405254401793609,-1.21615408353289,-1.18456909732025},...
+...
+</pre>
+Review the output summary table:
+<pre class="example">
+SELECT * FROM iris_data_packed_summary;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]------------+------------------------------
+source_table             | iris_data
+output_table             | iris_data_packed
+dependent_varname        | class_text
+independent_varname      | attributes
+buffer_size              | 26
+class_values             | {Iris_setosa,Iris_versicolor}
+num_rows_processed       | 52
+num_missing_rows_skipped | 0
+grouping_cols            | 
+</pre>
+Review the output standardization table:
+<pre class="example">
+SELECT * FROM iris_data_packed_standardization;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]------------------------------------------------------
+mean | {5.45961538462,2.99807692308,3.025,0.851923076923}
+std  | {0.598799958695,0.498262513686,1.41840579525,0.550346179381}
+</pre>
+
+-# Generally the default buffer size will work well, 
+but if you have occasion to experiment with it,
+you can change it:
+<pre class="example">
+DROP TABLE IF EXISTS iris_data_packed, iris_data_packed_summary, iris_data_packed_standardization;
+SELECT madlib.minibatch_preprocessor('iris_data',         -- Source table
+                                     'iris_data_packed',  -- Output table
+                                     'class_text',        -- Dependent variable
+                                     'attributes',        -- Independent variables
+                                     NULL,                -- Grouping
+                                     10                   -- Buffer size
+                                     );
+</pre>
+Review the output summary table:
+<pre class="example">
+SELECT * FROM iris_data_packed_summary;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]------------+------------------------------
+source_table             | iris_data
+output_table             | iris_data_packed
+dependent_varname        | class_text
+independent_varname      | attributes
+buffer_size              | 10
+class_values             | {Iris_setosa,Iris_versicolor}
+num_rows_processed       | 52
+num_missing_rows_skipped | 0
+grouping_cols            | 
+</pre>
+
+-# Run the preprocessor with grouping by state:
+<pre class="example">
+DROP TABLE IF EXISTS iris_data_packed, iris_data_packed_summary, iris_data_packed_standardization;
+SELECT madlib.minibatch_preprocessor('iris_data',         -- Source table
+                                     'iris_data_packed',  -- Output table
+                                     'class_text',        -- Dependent variable
+                                     'attributes',        -- Independent variables
+                                     'state'              -- Grouping
+                                     );
+</pre>
+Review the output summary table:
+<pre class="example">
+SELECT * FROM iris_data_packed_summary;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]------------+------------------------------
+source_table             | iris_data
+output_table             | iris_data_packed
+dependent_varname        | class_text
+independent_varname      | attributes
+buffer_size              | 13
+class_values             | {Iris_setosa,Iris_versicolor}
+num_rows_processed       | 52
+num_missing_rows_skipped | 0
+grouping_cols            | state
+</pre>
+Review the output standardization table:
+<pre class="example">
+SELECT * FROM iris_data_packed_standardization;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]-------------------------------------------------------------------
+state | Alaska
+mean  | {5.40740740740741,2.95925925925926,2.94814814814815,0.833333333333333}
+std   | {0.628888452645665,0.470034875978888,1.39877469405147,0.536103914747325}
+-[ RECORD 2 ]-------------------------------------------------------------------
+state | Tennessee
+mean  | {5.516,3.04,3.108,0.872}
+std   | {0.55905634778617,0.523832034148353,1.43469021046357,0.564637937088893}
+</pre>
+
+@anchor literature
+@literature
+
+[1] Neural Networks for Machine Learning, Lectures 6a and 6b on mini-batch gradient descent,  
+Geoffrey Hinton with Nitsh Srivastava and Kevin Swersky,
+http://www.cs.toronto.edu/~tijmen/csc321/slides/lecture_slides_lec6.pdf
+
+@anchor related
+@par Related Topics
+
+minibatch_preprocessing.sql_in
+
+<a href="group__grp__nn.html"><b>Neural Networks</b></a>
+
  */
 
 CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.minibatch_preprocessor(
