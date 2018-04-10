@@ -10,19 +10,41 @@ m4_changequote(`<!', `!>')
 
 @brief driver functions shared by modules
 """
-
-from distutils.util import strtobool
 import plpy
 
-from utilities import __mad_version
-version_wrapper = __mad_version()
+from distutils.util import strtobool
+from functools import wraps
+
 from utilities import unique_string
-_unique_string = unique_string
 
 
 STATE_IN_MEM = m4_ifdef(<!__HAWQ__!>, <!True!>, <!False!>)
 HAS_FUNCTION_PROPERTIES = m4_ifdef(<!__HAS_FUNCTION_PROPERTIES__!>, <!True!>, <!False!>)
 UDF_ON_SEGMENT_NOT_ALLOWED = m4_ifdef(<!__UDF_ON_SEGMENT_NOT_ALLOWED__!>, <!True!>, <!False!>)
+
+
+# from https://coderwall.com/p/0lk6jg/python-decorators-vs-context-managers-have-your-cake-and-eat-it
+class ContextDecorator(object):
+    """ Class to use a context manager also as a decorator
+
+        Inherit context manager classes from this class to use as a decorator
+    """
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+    def __enter__(self):
+        # Note: Returning self means that in "with ... as x", x will be self
+        return self
+
+    def __exit__(self, typ, val, traceback):
+        pass
+
+    def __call__(self, f):
+        @wraps(f)
+        def wrapper(*args, **kw):
+            with self:
+                return f(*args, **kw)
+        return wrapper
 
 
 class OptimizerControl(object):
@@ -112,7 +134,7 @@ class HashaggControl(object):
                              format(('off', 'on')[self.hashagg_enabled]))
 
 
-class MinWarning:
+class MinWarning(ContextDecorator):
 
     """
     @brief A wrapper for setting the level of logs going into client
