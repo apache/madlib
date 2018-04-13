@@ -30,6 +30,8 @@ from utilities import add_postfix
 from utilities import _assert
 from utilities import get_seg_number
 from utilities import is_platform_pg
+from utilities import is_psql_boolean_type
+from utilities import is_psql_char_type
 from utilities import is_psql_numeric_type
 from utilities import is_psql_int_type
 from utilities import is_string_formatted_as_array_expression
@@ -167,6 +169,7 @@ class MiniBatchPreProcessor:
         plpy.execute(sql)
 
         standardizer.create_output_standardization_table()
+        standardizer.drop_standardized_table()
         MiniBatchSummarizer.create_output_summary_table(
             self.output_summary_table,
             self.source_table,
@@ -288,7 +291,8 @@ class MiniBatchQueryFormatter:
         """
         dep_var_class_value_str = 'NULL::TEXT'
         is_dep_var_int_type = is_psql_int_type(dependent_var_dbtype)
-        to_one_hot_encode = (dependent_var_dbtype in ("text", "boolean") or
+        to_one_hot_encode = (is_psql_char_type(dependent_var_dbtype) or
+                             is_psql_boolean_type(dependent_var_dbtype) or
                                 (to_one_hot_encode_int and
                                     is_dep_var_int_type))
         if to_one_hot_encode:
@@ -314,8 +318,9 @@ class MiniBatchQueryFormatter:
         elif is_psql_numeric_type(dependent_var_dbtype):
             dep_var_array_str = 'ARRAY[{0}]'.format(dependent_varname)
         else:
-            plpy.error("Invalid dependent variable type. It should be text, "
-                       "boolean, numeric, or array.")
+            plpy.error("""Invalid dependent variable type. It should be character,
+                boolean, numeric, or array.""")
+
         return dep_var_array_str, dep_var_class_value_str
 
     def _get_one_hot_encoded_str(self, var_name, var_classes, to_quote=True):
@@ -361,6 +366,7 @@ class MiniBatchStandardizer:
         self.x_mean_table = unique_string(desp='x_mean_table')
         self.x_mean_str = None
         self.x_std_dev_str = None
+        self.standardized_table = unique_string(desp='std_table')
         self._calculate_mean_and_std_dev_str()
 
     def _calculate_mean_and_std_dev_str(self):
@@ -391,42 +397,49 @@ class MiniBatchStandardizer:
 
     def get_query_for_standardizing(self):
         if self.grouping_cols:
-            return self._get_query_for_standardizing_with_grouping()
+            query = self._get_query_for_standardizing_with_grouping()
         else:
-            return self._get_query_for_standardizing_without_grouping()
+            query = self._get_query_for_standardizing_without_grouping()
+        plpy.execute(query)
+
+        return "select * from {0}".format(self.standardized_table)
 
     def _get_query_for_standardizing_without_grouping(self):
         return """
-            SELECT
-                {self.dep_var_array_str} AS {dep_colname},
-                {self.schema_madlib}.utils_normalize_data(
-                    {self.indep_var_array_str},
-                    '{self.x_mean_str}'::double precision[],
-                    '{self.x_std_dev_str}'::double precision[]
-                ) AS {ind_colname}
-            FROM {self.source_table}
-        """.format(dep_colname=MINIBATCH_OUTPUT_DEPENDENT_COLNAME,
-                   ind_colname=MINIBATCH_OUTPUT_INDEPENDENT_COLNAME,
-                   self=self)
+          CREATE TEMP TABLE {self.standardized_table} AS
+          SELECT
+            {self.dep_var_array_str} AS {dep_colname},
+            {self.schema_madlib}.utils_normalize_data(
+              {self.indep_var_array_str},
+              '{self.x_mean_str}'::double precision[],
+              '{self.x_std_dev_str}'::double precision[]
+            ) AS {ind_colname}
+          FROM {self.source_table}
+          """.format(dep_colname=MINIBATCH_OUTPUT_DEPENDENT_COLNAME,
+                     ind_colname=MINIBATCH_OUTPUT_INDEPENDENT_COLNAME,
+                     self=self)
+
 
     def _get_query_for_standardizing_with_grouping(self):
         return """
-            SELECT
-                {self.dep_var_array_str} as {dep_colname},
-                {self.schema_madlib}.utils_normalize_data(
-                    {self.indep_var_array_str},
-                    __x__.mean::double precision[],
-                    __x__.std::double precision[]
-                ) AS {ind_colname},
-                {self.source_table}.{self.grouping_cols}
-            FROM
-                {self.source_table}
-                INNER JOIN
-                {self.x_mean_table} AS __x__
-                ON  {self.source_table}.{self.grouping_cols} = __x__.{self.grouping_cols}
-        """.format(self=self,
-                   dep_colname = MINIBATCH_OUTPUT_DEPENDENT_COLNAME,
-                   ind_colname = MINIBATCH_OUTPUT_INDEPENDENT_COLNAME)
+        CREATE TEMP TABLE {self.standardized_table} AS
+          SELECT
+            {self.dep_var_array_str} AS {dep_colname},
+            {self.schema_madlib}.utils_normalize_data(
+                {self.indep_var_array_str},
+                __x__.mean::double precision[],
+                __x__.std::double precision[]
+            ) AS {ind_colname},
+            {self.source_table}.{self.grouping_cols}
+        FROM
+          {self.source_table} 
+          INNER JOIN 
+          {self.x_mean_table} AS __x__ 
+          ON  {self.source_table}.{self.grouping_cols} = __x__.{self.grouping_cols}
+        """.format(
+            self=self,
+            dep_colname=MINIBATCH_OUTPUT_DEPENDENT_COLNAME,
+            ind_colname=MINIBATCH_OUTPUT_INDEPENDENT_COLNAME)
 
     def create_output_standardization_table(self):
         if self.grouping_cols:
@@ -441,6 +454,9 @@ class MiniBatchStandardizer:
                        '{self.x_std_dev_str}'::double precision[] AS std
             """.format(self=self)
         plpy.execute(query)
+
+    def drop_standardized_table(self):
+        plpy.execute("DROP TABLE IF EXISTS {0}".format(self.standardized_table))
 
 
 class MiniBatchSummarizer:
