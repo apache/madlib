@@ -30,7 +30,7 @@ m4_include(`SQLCommon.m4')
 @addtogroup grp_minibatch_preprocessing
 
 <div class="toc"><b>Contents</b><ul>
-<li class="level1"><a href="#minibatch_preprocessor">Minibatch Preprocessor</a></li>
+<li class="level1"><a href="#minibatch_preprocessor">Mini-Batch Preprocessor</a></li>
 <li class="level1"><a href="#example">Examples</a></li>
 <li class="level1"><a href="#literature">Literature</a></li>
 <li class="level1"><a href="#related">Related Topics</a></li>
@@ -44,7 +44,8 @@ It is effectively a packing operation that builds
 arrays of dependent and independent variables from the source data table.
 
 The advantage of using mini-batching is that it can perform better than
-stochastic gradient descent because it uses more than one training
+stochastic gradient descent (default MADlib optimizer) because it 
+uses more than one training
 example at a time, typically resulting faster and smoother convergence [1]. 
 
 @brief
@@ -52,7 +53,7 @@ Utility that prepares input data for use by models that support
 mini-batch as an optimization option.
 
 @anchor minibatch_preprocessor
-@par MiniBatch Preprocessor
+@par Mini-Batch Preprocessor
 The mini-batch preprocessor has the following format:
 
 <pre class="syntax">
@@ -61,7 +62,8 @@ minibatch_preprocessor( source_table,
                         dependent_varname,
                         independent_varname,
                         grouping_col,
-                        buffer_size
+                        buffer_size,
+                        one_hot_encode_int_dep_var
                         )
 </pre>
 
@@ -123,6 +125,22 @@ minibatch_preprocessor( source_table,
   the source table, number of independent variables, number of groups,
   and number of segments in the database cluster.  For larger data sets,
   the computed buffer size will typically be a value in the millions.
+  </dd>
+
+  <dt>one_hot_encode_int_dep_var (optional)</dt>
+  <dd> BOOLEAN. default: FALSE.
+  Flag to one-hot encode dependent variables that are
+  scalar integers. This parameter is ignored if the 
+  dependent variable is not a scalar integer.
+
+@note The mini-batch preprocessor automatically encodes
+dependent variables that are boolean and character types such as text, char and
+varchar.  However, scalar integers are a special case because they can be used
+in both classification and regression problems, so you must tell the mini-batch
+preprocessor whether you want to encode them or not. In the case that you have
+already encoded the dependent variable yourself,  you can ignore this parameter.
+Also, if you want to encode float values for some reason, cast them to text
+first.
   </dd>
 </dl>
 
@@ -294,7 +312,7 @@ DROP TABLE IF EXISTS iris_data_packed, iris_data_packed_summary, iris_data_packe
 SELECT madlib.minibatch_preprocessor('iris_data',         -- Source table
                                      'iris_data_packed',  -- Output table
                                      'class_text',        -- Dependent variable
-                                     'attributes'        -- Independent variables
+                                     'attributes'         -- Independent variables
                                      );
 </pre>
 For small datasets like in this example, buffer size is mainly 
@@ -309,6 +327,7 @@ Also, note that the dependent variable has
 been one-hot encoded since it is categorical.
 Here is a sample of the packed output table:
 <pre class="example">
+\\x on
 SELECT * FROM iris_data_packed;
 </pre>
 <pre class="result">
@@ -350,8 +369,7 @@ std  | {0.598799958695,0.498262513686,1.41840579525,0.550346179381}
 </pre>
 
 -# Generally the default buffer size will work well, 
-but if you have occasion to experiment with it,
-you can change it:
+but if you have occasion to change it:
 <pre class="example">
 DROP TABLE IF EXISTS iris_data_packed, iris_data_packed_summary, iris_data_packed_standardization;
 SELECT madlib.minibatch_preprocessor('iris_data',         -- Source table
@@ -420,11 +438,43 @@ mean  | {5.516,3.04,3.108,0.872}
 std   | {0.55905634778617,0.523832034148353,1.43469021046357,0.564637937088893}
 </pre>
 
+-# If the depedent variable is scalar integer, 
+and you have not already encoded it, you can ask 
+the preprocessor to encode it for you:
+<pre class="example">
+DROP TABLE IF EXISTS iris_data_packed, iris_data_packed_summary, iris_data_packed_standardization;
+SELECT madlib.minibatch_preprocessor('iris_data',         -- Source table
+                                     'iris_data_packed',  -- Output table
+                                     'class',             -- Integer dependent variable
+                                     'attributes',        -- Independent variables
+                                     NULL,                -- Grouping
+                                     NULL,                -- Buffer size
+                                     TRUE                 -- Encode scalar int dependent variable
+                                     );
+</pre>
+Review the output summary table:
+<pre class="example">
+SELECT * FROM iris_data_packed_summary;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]------------+-----------------
+source_table             | iris_data
+output_table             | iris_data_packed
+dependent_varname        | class
+independent_varname      | attributes
+dependent_vartype        | integer
+buffer_size              | 26
+class_values             | {1,2}
+num_rows_processed       | 52
+num_missing_rows_skipped | 0
+grouping_cols            | 
+</pre>
+
 @anchor literature
 @literature
 
-[1] Neural Networks for Machine Learning, Lectures 6a and 6b on mini-batch gradient descent,  
-Geoffrey Hinton with Nitsh Srivastava and Kevin Swersky,
+[1] "Neural Networks for Machine Learning", Lectures 6a and 6b on mini-batch gradient descent,  
+Geoffrey Hinton with Nitish Srivastava and Kevin Swersky,
 http://www.cs.toronto.edu/~tijmen/csc321/slides/lecture_slides_lec6.pdf
 
 @anchor related
