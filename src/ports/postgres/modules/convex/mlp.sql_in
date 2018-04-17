@@ -65,7 +65,8 @@ the <a href="group__grp__minibatch__preprocessing.html">Mini-Batch Preprocessor<
 which is a utility that prepares input data for 
 use by models that support mini-batch as an optimization option,
 such as MLP.  This is a one-time operation and you would only 
-need to re-run the preprocessor if your input data has changed.
+need to re-run the preprocessor if your input data has changed,
+or if you change the grouping parameter.
 
 @brief Solves classification and regression problems with several
 fully connected layers and non-linear activation functions.
@@ -185,7 +186,11 @@ mlp_classification(
     A single column or a list of comma-separated
     columns that divides the input data into discrete groups, resulting in one
     model per group. When this value is NULL, no grouping is used and
-    a single model is generated for all data.
+    a single model is generated for all data.  If you are using mini-batching, 
+    you must have run the mini-batch preprocessor with exactly the same
+    groups that you specify here for MLP training.  If you change the 
+    groups, or remove the groups, then you must re-run the mini-batch 
+    preprocessor.</dd>
   </DD>
 </dl>
 
@@ -585,6 +590,37 @@ coeff          | {-0.40378996718,0.0157490328855,-0.298904053444,-0.984152185093
 loss           | 0.0103518565103
 num_iterations | 500
 </pre>
+View the model summary table:
+<pre class="example">
+SELECT * FROM mlp_model_summary;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]--------+------------------------------
+source_table         | iris_data
+independent_varname  | attributes
+dependent_varname    | class_text
+dependent_vartype    | character varying
+tolerance            | 0
+learning_rate_init   | 0.003
+learning_rate_policy | constant
+n_iterations         | 500
+n_tries              | 1
+layer_sizes          | {4,5,2}
+activation           | tanh
+is_classification    | t
+classes              | {Iris_setosa,Iris_versicolor}
+weights              | 1
+grouping_col         | NULL
+</pre>
+View the model standardization table:
+<pre class="example">
+SELECT * FROM mlp_model_standardization;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]------------------------------------------------------------------
+mean | {5.45961538461539,2.99807692307692,3.025,0.851923076923077}
+std  | {0.598799958694505,0.498262513685689,1.41840579525043,0.550346179381454}
+</pre>
 
 -# Now let's use the model to predict. In the following example we will
 use the training data set for prediction as well, which is not usual but serves to
@@ -875,6 +911,7 @@ weights for the coefficients when run with warm start.
 <h4>Classification with Grouping</h4>
 
 -# Next, group the training data by state, and learn a different model for each state.
+Note we are not using mini-batching in this example.
 <pre class="example">
 DROP TABLE IF EXISTS mlp_model_group, mlp_model_group_summary, mlp_model_group_standardization;
 -- Set seed so results are reproducible
@@ -988,8 +1025,7 @@ Result for the classification model:
 
 <h4>Regression without Mini-Batching</h4>
 
--# This dataset contains housing prices data, where zipcode 
-can be used as a grouping column:
+-# Create a dataset with housing prices data.
 <pre class="example">
 DROP TABLE IF EXISTS lin_housing;
 CREATE TABLE lin_housing (id serial, x numeric[], zipcode int, y float8);
@@ -1103,15 +1139,13 @@ JOIN mlp_regress_prediction USING (id);
 <h4>Regression with Mini-Batching</h4>
 
 -# Call min-batch preprocessor using 
-the same data set as above. Group by zipcode in the preprocessor, 
-because later we want to train separate models with and without grouping.
+the same data set as above:
 <pre class="example">
 DROP TABLE IF EXISTS lin_housing_packed, lin_housing_packed_summary, lin_housing_packed_standardization;
 SELECT madlib.minibatch_preprocessor('lin_housing',         -- Source table
                                      'lin_housing_packed',  -- Output table
                                      'y',                   -- Dependent variable
-                                     'x',                   -- Independent variables
-                                     'zipcode'              -- Group by zipcode
+                                     'x'                   -- Independent variables
                                      );
 </pre>
 -# Train regression model with mini-batching
@@ -1197,10 +1231,20 @@ JOIN mlp_regress_prediction USING (id);
 
 <h4>Regression with Grouping and Mini-Batching</h4>
 
+-# To use grouping and mini-batching, we must first
+re-run the preprocessor and specify grouping:
+<pre class="example">
+DROP TABLE IF EXISTS lin_housing_packed, lin_housing_packed_summary, lin_housing_packed_standardization;
+SELECT madlib.minibatch_preprocessor('lin_housing',         -- Source table
+                                     'lin_housing_packed',  -- Output table
+                                     'y',                   -- Dependent variable
+                                     'x',                   -- Independent variables
+                                     'zipcode'              -- Group by zipcode
+                                     );
+</pre>
+
 -# Train regression model and group the training data by zipcode
 to learn a different model for each zipcode.
-We have already run the preprocessor above with grouping, 
-so we don't need to run it again.
 <pre class="example">
 DROP TABLE IF EXISTS mlp_regress_group, mlp_regress_group_summary, mlp_regress_group_standardization;
 -- Set seed so results are reproducible
@@ -1222,7 +1266,7 @@ SELECT madlib.mlp_regression(
     'zipcode'                -- Grouping column
 );
 </pre>
--# View regression model with grouping:
+View regression model with grouping:
 <pre class="example">
 \\x on
 SELECT * FROM mlp_regress_group;
@@ -1250,9 +1294,7 @@ SELECT madlib.mlp_predict(
          'mlp_regress_prediction',    -- Output table for predictions
          'response'                   -- Output values, not probabilities
      );
-</pre>
-Result for the regression model:
-<pre class="example">
+\\x off
 SELECT * FROM lin_housing JOIN mlp_regress_prediction USING (zipcode, id) ORDER BY zipcode, id;
 </pre>
 <pre class="result">
