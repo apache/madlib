@@ -110,12 +110,6 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
                                 optimizer_params["learning_rate_policy"])
     activation_index = _get_activation_index(activation)
 
-    reserved_cols = ['coeff', 'loss', 'n_iterations']
-    grouping_col = grouping_col or ""
-    grouping_str, grouping_col = get_grouping_col_str(schema_madlib, 'MLP',
-                                                      reserved_cols,
-                                                      source_table,
-                                                      grouping_col)
     # The original dependent_varname is required later if warm start is
     # used, and while creating the model summary table. Keep a copy of it
     # since dependent_varname is overwritten if one hot encoding is used.
@@ -125,6 +119,13 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
     if is_minibatch_enabled:
         mlp_preprocessor = MLPMinibatchPreProcessor(source_table)
         pp_summary_dict = mlp_preprocessor.preprocessed_summary_dict
+
+        if (pp_summary_dict[MLPMinibatchPreProcessor.GROUPING_COL] and
+                grouping_col):
+            # if a valid grouping_col is provided then it should be same as the
+            # grouping_col used in preprocessing.
+            grouping_col = pp_summary_dict[MLPMinibatchPreProcessor.GROUPING_COL]
+
         batch_size = min(200, pp_summary_dict['buffer_size'])\
                          if batch_size == 1 else batch_size
         tbl_data_scaled = source_table
@@ -147,6 +148,7 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
                                                  dependent_varname, dim=2)
         dependent_vartype = pp_summary_dict["dependent_vartype"]
     else:
+        grouping_col = grouping_col or ""
         x_mean_table = unique_string(desp='x_mean_table')
         tbl_data_scaled = unique_string(desp="tbl_data_scaled")
         col_ind_var_norm_new = unique_string(desp="ind_var_norm")
@@ -187,6 +189,11 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
             num_output_nodes = get_col_dimension(tbl_data_scaled,
                                                  dependent_varname, dim=1)
 
+    reserved_cols = ['coeff', 'loss', 'n_iterations']
+    grouping_str, grouping_col = get_grouping_col_str(schema_madlib, 'MLP',
+                                                      reserved_cols,
+                                                      source_table,
+                                                      grouping_col)
     # Need layers sizes before validating for warm_start
     layer_sizes = [num_input_nodes] + hidden_layer_sizes + [num_output_nodes]
     col_grp_key = unique_string(desp='col_grp_key')
@@ -790,7 +797,8 @@ def _validate_args(source_table, output_table, summary_table,
     if grouping_col:
         cols_in_tbl_valid(source_table,
                           _string_to_array_with_quotes(grouping_col),
-                          'MLP')
+                          'MLP',
+                          invalid_names=[independent_varname, dependent_varname])
 
 def _get_learning_rate_policy_name(learning_rate_policy):
     if not learning_rate_policy:
@@ -1759,9 +1767,8 @@ class MLPMinibatchPreProcessor:
     def _validate_and_set_preprocessed_summary(self):
         if not table_exists(self.summary_table) or not table_exists(self.std_table):
             plpy.error("Tables {0} and/or {1} do not exist. These tables are"
-                       " needed for using minibatch during training.".format(
-                                                             self.summary_table,
-                                                             self.std_table))
+                       " needed for using minibatch during training.".
+                       format(self.summary_table, self.std_table))
 
         query = "SELECT * FROM {0}".format(self.summary_table)
         summary_table_columns = plpy.execute(query)
@@ -1771,12 +1778,11 @@ class MLPMinibatchPreProcessor:
             summary_table_columns = summary_table_columns[0]
 
         required_columns = (self.DEPENDENT_VARNAME, self.INDEPENDENT_VARNAME,
-                            self.CLASS_VALUES)
+                            self.CLASS_VALUES, self.GROUPING_COL)
         if set(required_columns) <= set(summary_table_columns):
             self.preprocessed_summary_dict = summary_table_columns
         else:
             plpy.error("One or more expected columns {0} not present in"
                        " summary table {1}. These columns are"
-                       " needed for using minibatch during training.".format(
-                                                    required_columns,
-                                                    self.summary_table))
+                       " needed for using minibatch during training.".
+                       format(required_columns, self.summary_table))
