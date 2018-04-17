@@ -45,13 +45,28 @@ m4_include(`SQLCommon.m4')
 Multilayer Perceptron (MLP) is a type of neural network that can be
 used for regression and classification.
 
-Also called "vanilla neural networks", MLPs consist of several
+MLPs consist of several
 fully connected hidden layers with non-linear activation
 functions.  In the case of classification, the final layer of the
 neural net has as many nodes as classes, and the output of the
 neural net can be interpreted as the probability that a given input
 feature belongs to a specific class.
 
+MLP can be used with or without mini-batching.
+The advantage of using mini-batching is that it 
+can perform better than stochastic gradient descent
+(default MADlib optimizer)
+because it uses more than one training example at a time, 
+typically resulting faster and smoother convergence [3].
+
+@note
+In order to use mini-batching, you must first run 
+the <a href="group__grp__minibatch__preprocessing.html">Mini-Batch Preprocessor</a>, 
+which is a utility that prepares input data for 
+use by models that support mini-batch as an optimization option,
+such as MLP.  This is a one-time operation and you would only 
+need to re-run the preprocessor if your input data has changed,
+or if you change the grouping parameter.
 
 @brief Solves classification and regression problems with several
 fully connected layers and non-linear activation functions.
@@ -79,7 +94,9 @@ mlp_classification(
 \b Arguments
 <dl class="arglist">
   <dt>source_table</dt>
-  <dd>TEXT. Name of the table containing the training data.</dd>
+  <dd>TEXT. Name of the table containing the training data.
+  If you are using mini-batching, this is the name of the output
+  table from the mini-batch preprocessor.</dd>
 
   <dt>output_table</dt>
   <dd>TEXT. Name of the output table containing the model. Details of the output
@@ -88,21 +105,28 @@ mlp_classification(
 
   <dt>independent_varname</dt>
   <dd>TEXT. Expression list to evaluate for the independent variables.
+  If you are using mini-batching, set this parameter to 'independent_varname'
+  which is the hardcoded name of the column from the mini-batch preprocessor
+  containing the packed independent variables.
 
   @note
-  Please note that an intercept variable should not be included as part
+  If you are not using mini-batching, 
+  please note that an intercept variable should not be included as part
   of this expression - this is different from other MADlib modules.  Also
-  please note that <b>independent variables should be encoded properly.</b>
+  please note that independent variables should be encoded properly.
   All values are cast to DOUBLE PRECISION, so categorical variables should be
   one-hot or dummy encoded as appropriate.
   See <a href="group__grp__encode__categorical.html">Encoding Categorical Variables</a>
-  for more details on how to do this.
+  for more details.
   </dd>
 
   <dt>dependent_varname</dt>
   <dd> TEXT. Name of the dependent variable column. For classification, supported types are:
   text, varchar, character varying, char, character
-  integer, smallint, bigint, and boolean.  </dd>
+  integer, smallint, bigint, and boolean.  
+  If you are using mini-batching, set this parameter to 'dependent_varname'
+  which is the hardcoded name of the column from the mini-batch preprocessor
+  containing the packed dependent variables.</dd>
 
   <DT>hidden_layer_sizes (optional)</DT>
   <DD>INTEGER[], default: ARRAY[100].
@@ -132,6 +156,8 @@ mlp_classification(
     but will not be used
     for loss calculations. If not specified, weight for each row will default to 1 (equal
     weights).  Column should be a numeric type.
+    @note
+    The 'weights' parameter is not currently for mini-batching.
   </DD>
 
   <DT>warm_start (optional)</DT>
@@ -160,7 +186,11 @@ mlp_classification(
     A single column or a list of comma-separated
     columns that divides the input data into discrete groups, resulting in one
     model per group. When this value is NULL, no grouping is used and
-    a single model is generated for all data.
+    a single model is generated for all data.  If you are using mini-batching, 
+    you must have run the mini-batch preprocessor with exactly the same
+    groups that you specify here for MLP training.  If you change the 
+    groups, or remove the groups, then you must re-run the mini-batch 
+    preprocessor.</dd>
   </DD>
 </dl>
 
@@ -180,8 +210,13 @@ mlp_classification(
       </tr>
       <tr>
         <th>loss</th>
-        <td>FLOAT8. The cross entropy over the training data.
+        <td>FLOAT8. The cross entropy loss over the training data.
         See Technical Background section below for more details.</td>
+      </tr>
+      <tr>
+        <th>grouping columns</th>
+        <td>If grouping_col is specified during training, a column for each grouping column
+        is created.</td>
       </tr>
     </table>
 
@@ -252,11 +287,11 @@ A standardization table named \<output_table\>_standardization is also create, t
 following columns:
   <table class="output">
     <tr>
-        <th>x_means</th>
+        <th>mean</th>
         <td>The mean for all input features (used for normalization).</td>
     </tr>
     <tr>
-        <th>x_stds</th>
+        <th>std</th>
         <td>The standard deviation for all input features (used for normalization).</td>
     </tr>
     <tr>
@@ -288,7 +323,7 @@ mlp_regression(
 \b Arguments
 
 Parameters for regression are largely the same as for classification. In the
-model table, the loss refers to mean square error instead of cross entropy. In the
+model table, the loss refers to mean square error instead of cross entropy loss. In the
 summary table, there is no classes column. The following
 arguments have specifications which differ from mlp_classification:
 <DL class="arglist">
@@ -378,21 +413,17 @@ If you want to run the full number of iterations specified in \e n_interations,
 set tolerance=0.0
 </DD>
 
-<DT>tolerance</dt>
-<DD>Default: 1 for IGD, 20 for Minibatch
-If the source_table is detected to contain data
-that is supported by minibatch, then the solver
-uses mini-batch gradient descent, with the specified
-batch_size.
+<DT>batch_size</dt>
+<DD>Default: min(200, buffer_size) where buffer_size
+is set in the mini-batch preprocessor.  The 'batch_size'
+is the size of the mini-batch used in the optimizer.
+This parameter is only used in the case of mini-batching.
 </DD>
 
-<DT>tolerance</dt>
-<DD>Default: 1 for IGD, 20 for Minibatch
-If the source_table is detected to contain data
-that is supported by minibatch, then the solver
-uses mini-batch gradient descent. During gradient
-descent, n_epochs represents the number of times
-all batches in a buffer are iterated over.
+<DT>n_epochs</dt>
+<DD>Default: 1. Represents the number of times
+each batch is used by the optimizer.  This parameter
+is only used in the case of mini-batching.
 </DD>
 </DL>
 
@@ -462,6 +493,9 @@ For regression, only type='response' is defined.
 
 @anchor example
 @par Examples
+
+<h4>Classification without Mini-Batching</h4>
+
 -#  Create an input data set.
 <pre class="example">
 DROP TABLE IF EXISTS iris_data;
@@ -550,440 +584,56 @@ SELECT madlib.mlp_classification(
     FALSE             -- Not verbose
 );
 </pre>
--# View the result for the model.
+View the model:
 <pre class="example">
--- Set extended display on for easier reading of output
-\\x ON
--- Results may vary depending on platform
+\\x on
 SELECT * FROM mlp_model;
 </pre>
-Result:
 <pre class="result">
 -[ RECORD 1 ]--+------------------------------------------------------------------------------------
 coeff          | {-0.40378996718,0.0157490328855,-0.298904053444,-0.984152185093,-0.657684089715 ...
-loss           | 0.00470906197238
+loss           | 0.0103518565103
 num_iterations | 500
 </pre>
-
--# Now, use the n_tries optimizer parameter to learn and choose the best model
-among n_tries number of models learnt by the algorithm. Run only for 50 iterations
-and choose the best model from this short run.
+View the model summary table:
 <pre class="example">
-DROP TABLE IF EXISTS mlp_model, mlp_model_summary, mlp_model_standardization;
--- Set seed so results are reproducible
-SELECT setseed(0);
-SELECT madlib.mlp_classification(
-    'iris_data',      -- Source table
-    'mlp_model',      -- Destination table
-    'attributes',     -- Input features
-    'class_text',     -- Label
-    ARRAY[5],         -- Number of units per layer
-    'learning_rate_init=0.003,
-    n_iterations=50,
-    tolerance=0,
-    n_tries=3',       -- Optimizer params, with n_tries
-    'tanh',           -- Activation function
-    NULL,             -- Default weight (1)
-    FALSE,            -- No warm start
-    FALSE             -- Not verbose
-);
+SELECT * FROM mlp_model_summary;
 </pre>
--# View the result for the model.
-<pre class="example">
--- Results may vary depending on platform
-SELECT * FROM mlp_model;
-</pre>
-Result:
 <pre class="result">
--[ RECORD 1 ]--+------------------------------------------------------------------------------------
-coeff          | {-0.166258065719,0.134984689989,-0.445383330023,0.997461636443,0.00624022069817 ...
-loss           | 0.0501651250932
-num_iterations | 50
+-[ RECORD 1 ]--------+------------------------------
+source_table         | iris_data
+independent_varname  | attributes
+dependent_varname    | class_text
+dependent_vartype    | character varying
+tolerance            | 0
+learning_rate_init   | 0.003
+learning_rate_policy | constant
+n_iterations         | 500
+n_tries              | 1
+layer_sizes          | {4,5,2}
+activation           | tanh
+is_classification    | t
+classes              | {Iris_setosa,Iris_versicolor}
+weights              | 1
+grouping_col         | NULL
 </pre>
-
--# Next, use the warm_start parameter to start learning a new model, using
-the coefficients already present in mlp_model. Note that we must not drop
-the mlp_model table, and cannot use the n_tries parameter if warm_start is
-used.
+View the model standardization table:
 <pre class="example">
-SELECT madlib.mlp_classification(
-    'iris_data',      -- Source table
-    'mlp_model',      -- Destination table
-    'attributes',     -- Input features
-    'class_text',     -- Label
-    ARRAY[5],         -- Number of units per layer
-    'learning_rate_init=0.003,
-    n_iterations=450,
-    tolerance=0',     -- Optimizer params
-    'tanh',           -- Activation function
-    NULL,             -- Default weight (1)
-    TRUE,             -- Warm start
-    FALSE             -- Not verbose
-);
+SELECT * FROM mlp_model_standardization;
 </pre>
--# View the result for the model.
-<pre class="example">
--- Results may vary depending on platform
-SELECT * FROM mlp_model;
-</pre>
-Result:
 <pre class="result">
--[ RECORD 1 ]--+------------------------------------------------------------------------------------
-coeff          | {-0.0269464483507,0.1800462291,-0.550842844362,1.14444526434,0.16573219016 ...
-loss           | 0.00379153493882
-num_iterations | 450
-</pre>
-Notice that the loss is lower compared to the previous example, despite
-having the same values for every other parameter. This is because the algorithm
-learnt three different models starting with a different set of initial weights
-for the coefficients, and chose the best model among them as the initial
-weights for the coefficients when run with warm start.
-
--# Next, group the training data by state, and learn a different model for each state.
-<pre class="example">
-DROP TABLE IF EXISTS mlp_model_group, mlp_model_group_summary, mlp_model_group_standardization;
--- Set seed so results are reproducible
-SELECT setseed(0);
-SELECT madlib.mlp_classification(
-    'iris_data',        -- Source table
-    'mlp_model_group',  -- Destination table
-    'attributes',       -- Input features
-    'class_text',       -- Label
-    ARRAY[5],           -- Number of units per layer
-    'learning_rate_init=0.003,
-    n_iterations=50,
-    tolerance=0,
-    n_tries=3',         -- Optimizer params, with n_tries
-    'tanh',             -- Activation function
-    NULL,               -- Default weight (1)
-    FALSE,              -- No warm start
-    FALSE,              -- Not verbose
-    'state'             -- Grouping column
-);
-</pre>
--# View the result for the model.
-<pre class="example">
--- Results may vary depending on platform
-SELECT * FROM mlp_model_group ORDER BY state;
-</pre>
-Result:
-<pre class="result">
--[ RECORD 1 ]--+------------------------------------------------------------------------------------
-state          | Alaska
-coeff          | {-0.51246602223,-0.78952457411,0.454192045225,0.223214894458,0.188804700547 ...
-loss           | 0.10264382522
-num_iterations | 50
--[ RECORD 2 ]--+------------------------------------------------------------------------------------
-state          | Tennessee
-coeff          | {-0.215009937565,0.116581594162,-0.397643279185,0.919193295184,-0.0811341736111 ...
-loss           | 0.110626560621
-num_iterations | 50
-</pre>
-A separate model is learnt for each state, and the result table displays the name of
-the state (grouping column) associated with the model.
-
--# Next use warm_start to improve the models that are already present
-in the mlp_model_group table. Note again that we cannot use n_tries with warm_start,
-and the model table must already be present.
-<pre class="example">
-SELECT madlib.mlp_classification(
-    'iris_data',        -- Source table
-    'mlp_model_group',  -- Destination table
-    'attributes',       -- Input features
-    'class_text',       -- Label
-    ARRAY[5],           -- Number of units per layer
-    'learning_rate_init=0.003,
-    n_iterations=450,
-    tolerance=0',       -- Optimizer params
-    'tanh',             -- Activation function
-    NULL,               -- Default weight (1)
-    TRUE,               -- Warm start
-    FALSE,              -- Not verbose
-    'state'             -- Grouping column
-);
-</pre>
--# View the result for the model.
-<pre class="example">
--- Results may vary depending on platform
-SELECT * FROM mlp_model_group ORDER BY state;
-</pre>
-Result:
-<pre class="result">
--[ RECORD 1 ]--+------------------------------------------------------------------------------------
-state          | Alaska
-coeff          | {-0.49062677864,-0.831107028791,0.512375074037,0.132255301901,0.0979308947674 ...
-loss           | 0.00848875807291
-num_iterations | 450
--[ RECORD 2 ]--+------------------------------------------------------------------------------------
-state          | Tennessee
-coeff          | {-0.0479694454816,0.204731619449,-0.501981763261,1.083913543,0.0907812789677 ...
-loss           | 0.00789463466086
-num_iterations | 450
+-[ RECORD 1 ]------------------------------------------------------------------
+mean | {5.45961538461539,2.99807692307692,3.025,0.851923076923077}
+std  | {0.598799958694505,0.498262513685689,1.41840579525043,0.550346179381454}
 </pre>
 
-
-
--# Next train a regression example.  First create some test data.  This dataset
-contains housing prices data, where zipcode can be used as a grouping column.
-<pre class="example">
-DROP TABLE IF EXISTS lin_housing;
-CREATE TABLE lin_housing (id serial, x numeric[], zipcode int, y float8);
-INSERT INTO lin_housing(id, x, zipcode, y) VALUES
-(1,ARRAY[1,0.00632,18.00,2.310,0,0.5380,6.5750,65.20,4.0900,1,296.0,15.30,396.90,4.98],94016,24.00),
-(2,ARRAY[1,0.02731,0.00,7.070,0,0.4690,6.4210,78.90,4.9671,2,242.0,17.80,396.90,9.14],94016,21.60),
-(3,ARRAY[1,0.02729,0.00,7.070,0,0.4690,7.1850,61.10,4.9671,2,242.0,17.80,392.83,4.03],94016,34.70),
-(4,ARRAY[1,0.03237,0.00,2.180,0,0.4580,6.9980,45.80,6.0622,3,222.0,18.70,394.63,2.94],94016,33.40),
-(5,ARRAY[1,0.06905,0.00,2.180,0,0.4580,7.1470,54.20,6.0622,3,222.0,18.70,396.90,5.33],94016,36.20),
-(6,ARRAY[1,0.02985,0.00,2.180,0,0.4580,6.4300,58.70,6.0622,3,222.0,18.70,394.12,5.21],94016,28.70),
-(7,ARRAY[1,0.08829,12.50,7.870,0,0.5240,6.0120,66.60,5.5605,5,311.0,15.20,395.60,12.43],94016,22.90),
-(8,ARRAY[1,0.14455,12.50,7.870,0,0.5240,6.1720,96.10,5.9505,5,311.0,15.20,396.90,19.15],94016,27.10),
-(9,ARRAY[1,0.21124,12.50,7.870,0,0.5240,5.6310,100.00,6.0821,5,311.0,15.20,386.63,29.93],94016,16.50),
-(10,ARRAY[1,0.17004,12.50,7.870,0,0.5240,6.0040,85.90,6.5921,5,311.0,15.20,386.71,17.10],94016,18.90),
-(11,ARRAY[1,0.22489,12.50,7.870,0,0.5240,6.3770,94.30,6.3467,5,311.0,15.20,392.52,20.45],94016,15.00),
-(12,ARRAY[1,0.11747,12.50,7.870,0,0.5240,6.0090,82.90,6.2267,5,311.0,15.20,396.90,13.27],20001,18.90),
-(13,ARRAY[1,0.09378,12.50,7.870,0,0.5240,5.8890,39.00,5.4509,5,311.0,15.20,390.50,15.71],20001,21.70),
-(14,ARRAY[1,0.62976,0.00,8.140,0,0.5380,5.9490,61.80,4.7075,4,307.0,21.00,396.90,8.26],20001,20.40),
-(15,ARRAY[1,0.63796,0.00,8.140,0,0.5380,6.0960,84.50,4.4619,4,307.0,21.00,380.02,10.26],20001,18.20),
-(16,ARRAY[1,0.62739,0.00,8.140,0,0.5380,5.8340,56.50,4.4986,4,307.0,21.00,395.62,8.47],20001,19.90),
-(17,ARRAY[1,1.05393,0.00,8.140,0,0.5380,5.9350,29.30,4.4986,4,307.0,21.00,386.85,6.58],20001, 23.10),
-(18,ARRAY[1,0.78420,0.00,8.140,0,0.5380,5.9900,81.70,4.2579,4,307.0,21.00,386.75,14.67],20001,17.50),
-(19,ARRAY[1,0.80271,0.00,8.140,0,0.5380,5.4560,36.60,3.7965,4,307.0,21.00,288.99,11.69],20001,20.20),
-(20,ARRAY[1,0.72580,0.00,8.140,0,0.5380,5.7270,69.50,3.7965,4,307.0,21.00,390.95,11.28],20001,18.20);
-</pre>
--# Now train a regression model using a multilayer
-perceptron with two hidden layers of twenty five nodes each.
-<pre class="example">
-DROP TABLE IF EXISTS mlp_regress, mlp_regress_summary, mlp_regress_standardization;
-SELECT setseed(0);
-SELECT madlib.mlp_regression(
-    'lin_housing',    -- Source table
-    'mlp_regress',    -- Desination table
-    'x',              -- Input features
-    'y',              -- Dependent variable
-    ARRAY[25,25],     -- Number of units per layer
-    'learning_rate_init=0.001,
-    n_iterations=500,
-    lambda=0.001,
-    tolerance=0',     -- Optimizer params
-    'relu',           -- Activation function
-    NULL,             -- Default weight (1)
-    FALSE,            -- No warm start
-    FALSE             -- Not verbose
-);
-</pre>
--# Check the results of the model
-<pre class="example">
--- Set extended display on for easier reading of output.
-\\x ON
--- Results may vary depending on platform.
-SELECT * FROM mlp_regress;
-</pre>
-Result:
-<pre class="result">
-[ RECORD 1 ]--+-------------------------------------------------------------------------------------
-coeff          | {-0.250057620174,0.0630805938982,-0.290635490112,-0.382966162592,-0.212206338909...
-loss           | 0.056318716374
-num_iterations | 500
- </pre>
-
--# Now, use the n_tries optimizer parameter to learn and choose the best model
-among n_tries number of models learnt by the algorithm.
-<pre class="example">
-DROP TABLE IF EXISTS mlp_regress, mlp_regress_summary, mlp_regress_standardization;
--- Set seed so results are reproducible
-SELECT setseed(0);
-SELECT madlib.mlp_regression(
-    'lin_housing',    -- Source table
-    'mlp_regress',    -- Desination table
-    'x',              -- Input features
-    'y',              -- Dependent variable
-    ARRAY[25,25],     -- Number of units per layer
-    'learning_rate_init=0.001,
-    n_iterations=50,
-    n_tries=3,
-    lambda=0.001,
-    tolerance=0',     -- Optimizer params, with n_tries
-    'relu',           -- Activation function
-    NULL,             -- Default weight (1)
-    FALSE,            -- No warm start
-    FALSE             -- Not verbose
-);
-</pre>
--# View the result for the model.
-<pre class="example">
--- Results may vary depending on platform
-SELECT * FROM mlp_regress;
-</pre>
-Result:
-<pre class="result">
--[ RECORD 1 ]--+------------------------------------------------------------------------------------
-coeff          | {-0.205930835968,0.362647441938,-0.303398893908,-0.304178433784,0.394084054048 ...
-loss           | 2.06914906438
-num_iterations | 50
-</pre>
-
--# Next, use the warm_start parameter to start learning a new model, using
-the coefficients already present in mlp_regress.
-<pre class="example">
-SELECT madlib.mlp_regression(
-    'lin_housing',    -- Source table
-    'mlp_regress',    -- Desination table
-    'x',              -- Input features
-    'y',              -- Dependent variable
-    ARRAY[25,25],     -- Number of units per layer
-    'learning_rate_init=0.001,
-    n_iterations=450,
-    lambda=0.001,
-    tolerance=0',     -- Optimizer params
-    'relu',           -- Activation function
-    NULL,             -- Default weight (1)
-    TRUE,             -- Warm start
-    FALSE             -- Not verbose
-);
-</pre>
--# View the result for the model.
-<pre class="example">
--- Results may vary depending on platform
-SELECT * FROM mlp_regress;
-</pre>
-Result:
-<pre class="result">
--[ RECORD 1 ]--+------------------------------------------------------------------------------------
-coeff          | {-0.0876810606854,0.179699128308,-0.145139175157,-0.147247509843,0.163163651648, ...
-loss           | 0.199137729586
-num_iterations | 450
-</pre>
-
--# Next, group the training data by zipcode, and learn a different model for each zipcode.
-<pre class="example">
-DROP TABLE IF EXISTS mlp_regress_group, mlp_regress_group_summary, mlp_regress_group_standardization;
--- Set seed so results are reproducible
-SELECT setseed(0);
-SELECT madlib.mlp_regression(
-    'lin_housing',    -- Source table
-    'mlp_regress_group',    -- Desination table
-    'x',              -- Input features
-    'y',              -- Dependent variable
-    ARRAY[25,25],     -- Number of units per layer
-    'learning_rate_init=0.001,
-    n_iterations=500,
-    lambda=0.001,
-    tolerance=0',     -- Optimizer params
-    'relu',           -- Activation function
-    NULL,             -- Default weight (1)
-    FALSE,            -- No warm start
-    FALSE,            -- Not verbose
-    'zipcode'         -- Grouping column
-);
-</pre>
--# View the result for the model.
-<pre class="example">
--- Results may vary depending on platform
-SELECT * FROM mlp_regress_group;
-</pre>
-Result:
-<pre class="result">
--[ RECORD 1 ]--+------------------------------------------------------------------------------------
-zipcode        | 200001
-coeff          | {-0.193588485849,0.063428493184,-0.30440608833,-0.355695802004,-0.175942716164 ...
-loss           | 0.029218326712
-num_iterations | 500
--[ RECORD 2 ]--+------------------------------------------------------------------------------------
-zipcode        | 94016
-coeff          | {-0.18965351506,0.0633650963628,-0.302423579808,-0.334367637252,-0.230043593847 ...
-loss           | 0.0324142074233
-num_iterations | 500
-</pre>
-
--# Now, use the n_tries optimizer parameter to learn and choose the best model
-among n_tries number of models learnt by the algorithm for each zipcode.
-<pre class="example">
-DROP TABLE IF EXISTS mlp_regress_group, mlp_regress_group_summary, mlp_regress_group_standardization;
--- Set seed so results are reproducible
-SELECT setseed(0);
-SELECT madlib.mlp_regression(
-    'lin_housing',    -- Source table
-    'mlp_regress_group',    -- Desination table
-    'x',              -- Input features
-    'y',              -- Dependent variable
-    ARRAY[25,25],     -- Number of units per layer
-    'learning_rate_init=0.001,
-    n_iterations=50,
-    n_tries=3,
-    lambda=0.001,
-    tolerance=0',     -- Optimizer params, with n_tries
-    'relu',           -- Activation function
-    NULL,             -- Default weight (1)
-    FALSE,            -- No warm start
-    FALSE,            -- Not verbose
-    'zipcode'         -- Grouping column
-);
-</pre>
--# View the result for the model.
-<pre class="example">
--- Results may vary depending on platform
-SELECT * FROM mlp_regress_group ORDER BY zipcode;
-</pre>
-Result:
-<pre class="result">
--[ RECORD 1 ]--+------------------------------------------------------------------------------------
-zipcode        | 200001
-coeff          | {-0.193777024396,0.0636858996065,-0.30615041286,-0.356474420158,-0.177321601091 ...
-loss           | 0.0603516434838
-num_iterations | 50
--[ RECORD 2 ]--+------------------------------------------------------------------------------------
-zipcode        | 94016
-coeff          | {-0.199320228996,0.362810670091,-0.299294076026,-0.255872794062,0.420597404648 ...
-loss           | 1.02032647855
-num_iterations | 50
-</pre>
-
--# Next use warm_start to improve the models that are already present
-in the mlp_regress_group table.
-<pre class="example">
-SELECT madlib.mlp_regression(
-    'lin_housing',    -- Source table
-    'mlp_regress_group',    -- Desination table
-    'x',              -- Input features
-    'y',              -- Dependent variable
-    ARRAY[25,25],     -- Number of units per layer
-    'learning_rate_init=0.001,
-    n_iterations=450,
-    lambda=0.001,
-    tolerance=0',     -- Optimizer params
-    'relu',           -- Activation function
-    NULL,             -- Default weight (1)
-    TRUE,             -- Warm start
-    FALSE,            -- Not verbose
-    'zipcode'         -- Grouping column
-);
-</pre>
--# View the result for the model.
-<pre class="example">
--- Results may vary depending on platform
-SELECT * FROM mlp_regress_group ORDER BY zipcode;
-</pre>
-Result:
-<pre class="result">
--[ RECORD 1 ]--+------------------------------------------------------------------------------------
-zipcode        | 200001
-coeff          | {-0.193247562723,0.063399956769,-0.304224541276,-0.355615534078,-0.175783800454 ...
-loss           | 0.0289356302498
-num_iterations | 450
--[ RECORD 2 ]--+------------------------------------------------------------------------------------
-zipcode        | 94016
-coeff          | {-0.168703459263,0.360820687875,-0.284997924553,-0.266391951143,0.437996440846 ...
-loss           | 0.0330375613383
-num_iterations | 450
-</pre>
-
--# Now let's look at the prediction functions. In the following examples we will
+-# Now let's use the model to predict. In the following example we will
 use the training data set for prediction as well, which is not usual but serves to
-show the syntax. First we will test the classification example.
-The prediction is in the the estimated_class_text column with the
+show the syntax. The prediction is in the estimated_class_text column with the
 actual value in the class_text column.
 <pre class="example">
 DROP TABLE IF EXISTS mlp_prediction;
+\\x off
 SELECT madlib.mlp_predict(
          'mlp_model',         -- Model table
          'iris_data',         -- Test data table
@@ -993,7 +643,6 @@ SELECT madlib.mlp_predict(
      );
 SELECT * FROM mlp_prediction JOIN iris_data USING (id) ORDER BY id;
 </pre>
-Result for the classification model:
 <pre class="result">
  id | estimated_class_text |    attributes     |   class_text    | class |   state
 ----+----------------------+-------------------+-----------------+-------+-----------
@@ -1061,6 +710,252 @@ WHERE mlp_prediction.estimated_class_text != iris_data.class_text;
 -------+
      0
 </pre>
+
+<h4>Classification with Mini-Batching</h4>
+
+-#  Use the same data set as above.  Call mini-batch preprocessor:
+<pre class="example">
+DROP TABLE IF EXISTS iris_data_packed, iris_data_packed_summary, iris_data_packed_standardization;
+SELECT madlib.minibatch_preprocessor('iris_data',         -- Source table
+                                     'iris_data_packed',  -- Output table
+                                     'class_text',        -- Dependent variable
+                                     'attributes'        -- Independent variables
+                                    );
+</pre>
+-# Train the classification model using similar parameters as before:
+<pre class="example">
+DROP TABLE IF EXISTS mlp_model, mlp_model_summary, mlp_model_standardization;
+-- Set seed so results are reproducible
+SELECT setseed(0);
+SELECT madlib.mlp_classification(
+    'iris_data_packed',      -- Output table from mini-batch preprocessor
+    'mlp_model',             -- Destination table
+    'independent_varname',   -- Hardcode to this, from table iris_data_packed
+    'dependent_varname',     -- Hardcode to this, from table iris_data_packed
+    ARRAY[5],                -- Number of units per layer
+    'learning_rate_init=0.1,
+    n_iterations=500,
+    tolerance=0',            -- Optimizer params
+    'tanh',                  -- Activation function
+    NULL,                    -- Default weight (1)
+    FALSE,                   -- No warm start
+    FALSE                    -- Not verbose
+);
+</pre>
+View the model:
+<pre class="example">
+\\x on
+SELECT * FROM mlp_model;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]--+------------------------------------------------------------------------------------
+coeff          | {-0.0780564661828377,-0.0781452670639994,0.3083605989842 ...
+loss           | 0.00563534904146765
+num_iterations | 500
+</pre>
+
+-# Now let's use the model to predict. As before we will
+use the training data set for prediction as well, which is not usual but serves to
+show the syntax. The prediction is in the estimated_class_text column with the
+actual value in the class_text column.
+<pre class="example">
+DROP TABLE IF EXISTS mlp_prediction;
+\\x off
+SELECT madlib.mlp_predict(
+         'mlp_model',         -- Model table
+         'iris_data',         -- Test data table
+         'id',                -- Id column in test table
+         'mlp_prediction',    -- Output table for predictions
+         'response'           -- Output classes, not probabilities
+     );
+SELECT * FROM mlp_prediction JOIN iris_data USING (id) ORDER BY id;
+</pre>
+<pre class="result">
+ id | estimated_class_text |    attributes     |   class_text    | class |   state   
+----+----------------------+-------------------+-----------------+-------+-----------
+  1 | Iris_setosa          | {5.0,3.2,1.2,0.2} | Iris_setosa     |     1 | Alaska
+  2 | Iris_setosa          | {5.5,3.5,1.3,0.2} | Iris_setosa     |     1 | Alaska
+  3 | Iris_setosa          | {4.9,3.1,1.5,0.1} | Iris_setosa     |     1 | Alaska
+  4 | Iris_setosa          | {4.4,3.0,1.3,0.2} | Iris_setosa     |     1 | Alaska
+  5 | Iris_setosa          | {5.1,3.4,1.5,0.2} | Iris_setosa     |     1 | Alaska
+  6 | Iris_setosa          | {5.0,3.5,1.3,0.3} | Iris_setosa     |     1 | Alaska
+  7 | Iris_setosa          | {4.5,2.3,1.3,0.3} | Iris_setosa     |     1 | Alaska
+  8 | Iris_setosa          | {4.4,3.2,1.3,0.2} | Iris_setosa     |     1 | Alaska
+  9 | Iris_setosa          | {5.0,3.5,1.6,0.6} | Iris_setosa     |     1 | Alaska
+ 10 | Iris_setosa          | {5.1,3.8,1.9,0.4} | Iris_setosa     |     1 | Alaska
+ 11 | Iris_setosa          | {4.8,3.0,1.4,0.3} | Iris_setosa     |     1 | Alaska
+ 12 | Iris_setosa          | {5.1,3.8,1.6,0.2} | Iris_setosa     |     1 | Alaska
+ 13 | Iris_versicolor      | {5.7,2.8,4.5,1.3} | Iris_versicolor |     2 | Alaska
+ 14 | Iris_versicolor      | {6.3,3.3,4.7,1.6} | Iris_versicolor |     2 | Alaska
+ 15 | Iris_versicolor      | {4.9,2.4,3.3,1.0} | Iris_versicolor |     2 | Alaska
+ 16 | Iris_versicolor      | {6.6,2.9,4.6,1.3} | Iris_versicolor |     2 | Alaska
+ 17 | Iris_versicolor      | {5.2,2.7,3.9,1.4} | Iris_versicolor |     2 | Alaska
+ 18 | Iris_versicolor      | {5.0,2.0,3.5,1.0} | Iris_versicolor |     2 | Alaska
+ 19 | Iris_versicolor      | {5.9,3.0,4.2,1.5} | Iris_versicolor |     2 | Alaska
+ 20 | Iris_versicolor      | {6.0,2.2,4.0,1.0} | Iris_versicolor |     2 | Alaska
+ 21 | Iris_versicolor      | {6.1,2.9,4.7,1.4} | Iris_versicolor |     2 | Alaska
+ 22 | Iris_versicolor      | {5.6,2.9,3.6,1.3} | Iris_versicolor |     2 | Alaska
+ 23 | Iris_versicolor      | {6.7,3.1,4.4,1.4} | Iris_versicolor |     2 | Alaska
+ 24 | Iris_versicolor      | {5.6,3.0,4.5,1.5} | Iris_versicolor |     2 | Alaska
+ 25 | Iris_versicolor      | {5.8,2.7,4.1,1.0} | Iris_versicolor |     2 | Alaska
+ 26 | Iris_versicolor      | {6.2,2.2,4.5,1.5} | Iris_versicolor |     2 | Alaska
+ 27 | Iris_versicolor      | {5.6,2.5,3.9,1.1} | Iris_versicolor |     2 | Alaska
+ 28 | Iris_setosa          | {5.0,3.4,1.5,0.2} | Iris_setosa     |     1 | Tennessee
+ 29 | Iris_setosa          | {4.4,2.9,1.4,0.2} | Iris_setosa     |     1 | Tennessee
+ 30 | Iris_setosa          | {4.9,3.1,1.5,0.1} | Iris_setosa     |     1 | Tennessee
+ 31 | Iris_setosa          | {5.4,3.7,1.5,0.2} | Iris_setosa     |     1 | Tennessee
+ 32 | Iris_setosa          | {4.8,3.4,1.6,0.2} | Iris_setosa     |     1 | Tennessee
+ 33 | Iris_setosa          | {4.8,3.0,1.4,0.1} | Iris_setosa     |     1 | Tennessee
+ 34 | Iris_setosa          | {4.3,3.0,1.1,0.1} | Iris_setosa     |     1 | Tennessee
+ 35 | Iris_setosa          | {5.8,4.0,1.2,0.2} | Iris_setosa     |     1 | Tennessee
+ 36 | Iris_setosa          | {5.7,4.4,1.5,0.4} | Iris_setosa     |     1 | Tennessee
+ 37 | Iris_setosa          | {5.4,3.9,1.3,0.4} | Iris_setosa     |     1 | Tennessee
+ 38 | Iris_versicolor      | {6.0,2.9,4.5,1.5} | Iris_versicolor |     2 | Tennessee
+ 39 | Iris_versicolor      | {5.7,2.6,3.5,1.0} | Iris_versicolor |     2 | Tennessee
+ 40 | Iris_versicolor      | {5.5,2.4,3.8,1.1} | Iris_versicolor |     2 | Tennessee
+ 41 | Iris_versicolor      | {5.5,2.4,3.7,1.0} | Iris_versicolor |     2 | Tennessee
+ 42 | Iris_versicolor      | {5.8,2.7,3.9,1.2} | Iris_versicolor |     2 | Tennessee
+ 43 | Iris_versicolor      | {6.0,2.7,5.1,1.6} | Iris_versicolor |     2 | Tennessee
+ 44 | Iris_versicolor      | {5.4,3.0,4.5,1.5} | Iris_versicolor |     2 | Tennessee
+ 45 | Iris_versicolor      | {6.0,3.4,4.5,1.6} | Iris_versicolor |     2 | Tennessee
+ 46 | Iris_versicolor      | {6.7,3.1,4.7,1.5} | Iris_versicolor |     2 | Tennessee
+ 47 | Iris_versicolor      | {6.3,2.3,4.4,1.3} | Iris_versicolor |     2 | Tennessee
+ 48 | Iris_versicolor      | {5.6,3.0,4.1,1.3} | Iris_versicolor |     2 | Tennessee
+ 49 | Iris_versicolor      | {5.5,2.5,4.0,1.3} | Iris_versicolor |     2 | Tennessee
+ 50 | Iris_versicolor      | {5.5,2.6,4.4,1.2} | Iris_versicolor |     2 | Tennessee
+ 51 | Iris_versicolor      | {6.1,3.0,4.6,1.4} | Iris_versicolor |     2 | Tennessee
+ 52 | Iris_versicolor      | {5.8,2.6,4.0,1.2} | Iris_versicolor |     2 | Tennessee
+(52 rows)
+</pre>
+Count the misclassifications:
+<pre class="example">
+SELECT COUNT(*) FROM mlp_prediction JOIN iris_data USING (id)
+WHERE mlp_prediction.estimated_class_text != iris_data.class_text;
+</pre>
+<pre class="result">
+ count
+-------+
+     0
+</pre>
+
+<h4>Classification with Other Parameters</h4>
+
+-# Now, use the n_tries optimizer parameter to learn and choose the best model
+among n_tries number of models learnt by the algorithm. Run only for 50 iterations
+and choose the best model from this short run. Note we are not using mini-batching 
+here.
+<pre class="example">
+DROP TABLE IF EXISTS mlp_model, mlp_model_summary, mlp_model_standardization;
+-- Set seed so results are reproducible
+SELECT setseed(0);
+SELECT madlib.mlp_classification(
+    'iris_data',      -- Source table
+    'mlp_model',      -- Destination table
+    'attributes',     -- Input features
+    'class_text',     -- Label
+    ARRAY[5],         -- Number of units per layer
+    'learning_rate_init=0.003,
+    n_iterations=50,
+    tolerance=0,
+    n_tries=3',       -- Optimizer params, with n_tries
+    'tanh',           -- Activation function
+    NULL,             -- Default weight (1)
+    FALSE,            -- No warm start
+    FALSE             -- Not verbose
+);
+</pre>
+View the model:
+<pre class="example">
+\\x on
+SELECT * FROM mlp_model;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]--+------------------------------------------------------------------------------------
+coeff          | {0.000156316559088915,0.131131017223563,-0.293990512682215 ...
+loss           | 0.142238768280717
+num_iterations | 50
+</pre>
+
+-# Next, use the warm_start parameter to start learning a new model, using
+the coefficients already present in mlp_model. Note that we must not drop
+the mlp_model table, and cannot use the n_tries parameter if warm_start is
+used.
+<pre class="example">
+SELECT madlib.mlp_classification(
+    'iris_data',      -- Source table
+    'mlp_model',      -- Destination table
+    'attributes',     -- Input features
+    'class_text',     -- Label
+    ARRAY[5],         -- Number of units per layer
+    'learning_rate_init=0.003,
+    n_iterations=450,
+    tolerance=0',     -- Optimizer params
+    'tanh',           -- Activation function
+    NULL,             -- Default weight (1)
+    TRUE,             -- Warm start
+    FALSE             -- Not verbose
+);
+</pre>
+View the model:
+<pre class="example">
+\\x on
+SELECT * FROM mlp_model;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]--+------------------------------------------------------------------------------------
+coeff          | {0.0883013960215441,0.235944854050211,-0.398126039487036 ...
+loss           | 0.00818899646775659
+num_iterations | 450
+</pre>
+Notice that the loss is lower compared to the previous example, despite
+having the same values for every other parameter. This is because the algorithm
+learnt three different models starting with a different set of initial weights
+for the coefficients, and chose the best model among them as the initial
+weights for the coefficients when run with warm start.
+
+<h4>Classification with Grouping</h4>
+
+-# Next, group the training data by state, and learn a different model for each state.
+Note we are not using mini-batching in this example.
+<pre class="example">
+DROP TABLE IF EXISTS mlp_model_group, mlp_model_group_summary, mlp_model_group_standardization;
+-- Set seed so results are reproducible
+SELECT setseed(0);
+SELECT madlib.mlp_classification(
+    'iris_data',        -- Source table
+    'mlp_model_group',  -- Destination table
+    'attributes',       -- Input features
+    'class_text',       -- Label
+    ARRAY[5],           -- Number of units per layer
+    'learning_rate_init=0.003,
+    n_iterations=500,   -- Optimizer params
+    tolerance=0',
+    'tanh',             -- Activation function
+    NULL,               -- Default weight (1)
+    FALSE,              -- No warm start
+    FALSE,              -- Not verbose
+    'state'             -- Grouping column
+);
+</pre>
+View the model:
+<pre class="example">
+\\x on
+SELECT * FROM mlp_model_group ORDER BY state;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]--+------------------------------------------------------------------------------------
+state          | Alaska
+coeff          | {-0.51246602223,-0.78952457411,0.454192045225,0.223214894458,0.188804700547 ...
+loss           | 0.0225081995679
+num_iterations | 500
+-[ RECORD 2 ]--+------------------------------------------------------------------------------------
+state          | Tennessee
+coeff          | {-0.215009937565,0.116581594162,-0.397643279185,0.919193295184,-0.0811341736111 ...
+loss           | 0.0182854983946
+num_iterations | 500
+</pre>
+A separate model is learnt for each state, and the result table displays the name of
+the state (grouping column) associated with the model.
 
 -# Prediction based on grouping using the state column:
 <pre class="example">
@@ -1133,6 +1028,68 @@ Result for the classification model:
 (52 rows)
 </pre>
 
+<h4>Regression without Mini-Batching</h4>
+
+-# Create a dataset with housing prices data.
+<pre class="example">
+DROP TABLE IF EXISTS lin_housing;
+CREATE TABLE lin_housing (id serial, x numeric[], zipcode int, y float8);
+INSERT INTO lin_housing(id, x, zipcode, y) VALUES
+(1,ARRAY[1,0.00632,18.00,2.310,0,0.5380,6.5750,65.20,4.0900,1,296.0,15.30,396.90,4.98],94016,24.00),
+(2,ARRAY[1,0.02731,0.00,7.070,0,0.4690,6.4210,78.90,4.9671,2,242.0,17.80,396.90,9.14],94016,21.60),
+(3,ARRAY[1,0.02729,0.00,7.070,0,0.4690,7.1850,61.10,4.9671,2,242.0,17.80,392.83,4.03],94016,34.70),
+(4,ARRAY[1,0.03237,0.00,2.180,0,0.4580,6.9980,45.80,6.0622,3,222.0,18.70,394.63,2.94],94016,33.40),
+(5,ARRAY[1,0.06905,0.00,2.180,0,0.4580,7.1470,54.20,6.0622,3,222.0,18.70,396.90,5.33],94016,36.20),
+(6,ARRAY[1,0.02985,0.00,2.180,0,0.4580,6.4300,58.70,6.0622,3,222.0,18.70,394.12,5.21],94016,28.70),
+(7,ARRAY[1,0.08829,12.50,7.870,0,0.5240,6.0120,66.60,5.5605,5,311.0,15.20,395.60,12.43],94016,22.90),
+(8,ARRAY[1,0.14455,12.50,7.870,0,0.5240,6.1720,96.10,5.9505,5,311.0,15.20,396.90,19.15],94016,27.10),
+(9,ARRAY[1,0.21124,12.50,7.870,0,0.5240,5.6310,100.00,6.0821,5,311.0,15.20,386.63,29.93],94016,16.50),
+(10,ARRAY[1,0.17004,12.50,7.870,0,0.5240,6.0040,85.90,6.5921,5,311.0,15.20,386.71,17.10],94016,18.90),
+(11,ARRAY[1,0.22489,12.50,7.870,0,0.5240,6.3770,94.30,6.3467,5,311.0,15.20,392.52,20.45],94016,15.00),
+(12,ARRAY[1,0.11747,12.50,7.870,0,0.5240,6.0090,82.90,6.2267,5,311.0,15.20,396.90,13.27],20001,18.90),
+(13,ARRAY[1,0.09378,12.50,7.870,0,0.5240,5.8890,39.00,5.4509,5,311.0,15.20,390.50,15.71],20001,21.70),
+(14,ARRAY[1,0.62976,0.00,8.140,0,0.5380,5.9490,61.80,4.7075,4,307.0,21.00,396.90,8.26],20001,20.40),
+(15,ARRAY[1,0.63796,0.00,8.140,0,0.5380,6.0960,84.50,4.4619,4,307.0,21.00,380.02,10.26],20001,18.20),
+(16,ARRAY[1,0.62739,0.00,8.140,0,0.5380,5.8340,56.50,4.4986,4,307.0,21.00,395.62,8.47],20001,19.90),
+(17,ARRAY[1,1.05393,0.00,8.140,0,0.5380,5.9350,29.30,4.4986,4,307.0,21.00,386.85,6.58],20001, 23.10),
+(18,ARRAY[1,0.78420,0.00,8.140,0,0.5380,5.9900,81.70,4.2579,4,307.0,21.00,386.75,14.67],20001,17.50),
+(19,ARRAY[1,0.80271,0.00,8.140,0,0.5380,5.4560,36.60,3.7965,4,307.0,21.00,288.99,11.69],20001,20.20),
+(20,ARRAY[1,0.72580,0.00,8.140,0,0.5380,5.7270,69.50,3.7965,4,307.0,21.00,390.95,11.28],20001,18.20);
+</pre>
+
+-# Now train a regression model using a multilayer
+perceptron with two hidden layers of twenty five nodes each:
+<pre class="example">
+DROP TABLE IF EXISTS mlp_regress, mlp_regress_summary, mlp_regress_standardization;
+SELECT setseed(0);
+SELECT madlib.mlp_regression(
+    'lin_housing',    -- Source table
+    'mlp_regress',    -- Desination table
+    'x',              -- Input features
+    'y',              -- Dependent variable
+    ARRAY[25,25],     -- Number of units per layer
+    'learning_rate_init=0.001,
+    n_iterations=500,
+    lambda=0.001,
+    tolerance=0',     -- Optimizer params
+    'relu',           -- Activation function
+    NULL,             -- Default weight (1)
+    FALSE,            -- No warm start
+    FALSE             -- Not verbose
+);
+</pre>
+View the model:
+<pre class="example">
+\\x on
+SELECT * FROM mlp_regress;
+</pre>
+<pre class="result">
+[ RECORD 1 ]--+-------------------------------------------------------------------------------------
+coeff          | {-0.250057620174,0.0630805938982,-0.290635490112,-0.382966162592,-0.212206338909...
+loss           | 1.07042781236
+num_iterations | 500
+</pre>
+
 -# Prediction using the regression model:
 <pre class="example">
 DROP TABLE IF EXISTS mlp_regress_prediction;
@@ -1144,11 +1101,10 @@ SELECT madlib.mlp_predict(
          'response'                   -- Output values, not probabilities
      );
 </pre>
-View results
+View results:
 <pre class="example">
 SELECT * FROM lin_housing JOIN mlp_regress_prediction USING (id) ORDER BY id;
 </pre>
-Result for the regression model:
 <pre class="result">
  id |                                         x                                        | zipcode |  y   |   estimated_y
 ----+----------------------------------------------------------------------------------+---------+------+------------------
@@ -1185,6 +1141,154 @@ JOIN mlp_regress_prediction USING (id);
  0.544960829104004
 </pre>
 
+<h4>Regression with Mini-Batching</h4>
+
+-# Call min-batch preprocessor using 
+the same data set as above:
+<pre class="example">
+DROP TABLE IF EXISTS lin_housing_packed, lin_housing_packed_summary, lin_housing_packed_standardization;
+SELECT madlib.minibatch_preprocessor('lin_housing',         -- Source table
+                                     'lin_housing_packed',  -- Output table
+                                     'y',                   -- Dependent variable
+                                     'x'                   -- Independent variables
+                                     );
+</pre>
+-# Train regression model with mini-batching
+<pre class="example">
+DROP TABLE IF EXISTS mlp_regress, mlp_regress_summary, mlp_regress_standardization;
+SELECT setseed(0);
+SELECT madlib.mlp_regression(
+    'lin_housing_packed',    -- Source table
+    'mlp_regress',           -- Desination table
+    'independent_varname',   -- Hardcode to this, from table lin_housing_packed
+    'dependent_varname',     -- Hardcode to this, from table lin_housing_packed
+    ARRAY[25,25],            -- Number of units per layer
+    'learning_rate_init=0.01,
+    n_iterations=500,
+    lambda=0.001,
+    tolerance=0',            -- Optimizer params
+    'tanh',                  -- Activation function
+    NULL,                    -- Default weight (1)
+    FALSE,                   -- No warm start
+    FALSE                    -- Not verbose
+);
+</pre>
+View model:
+<pre class="example">
+\\x on
+SELECT * FROM mlp_regress;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]--+-------------------------------------------------------------
+coeff          | {0.0395865908810001,-0.164860448878703,-0.132787863194324...
+loss           | 0.0442383714892138
+num_iterations | 500
+</pre>
+-# Prediction for regression:
+<pre class="example">
+DROP TABLE IF EXISTS mlp_regress_prediction;
+SELECT madlib.mlp_predict(
+         'mlp_regress',               -- Model table
+         'lin_housing',               -- Test data table
+         'id',                        -- Id column in test table
+         'mlp_regress_prediction',    -- Output table for predictions
+         'response'                   -- Output values, not probabilities
+     );
+\\x off
+SELECT *, ABS(y-estimated_y) as abs_diff FROM lin_housing JOIN mlp_regress_prediction USING (id) ORDER BY id;
+</pre>
+<pre class="result">
+ id |                                        x                                         | zipcode |  y   | zipcode |   estimated_y    |      abs_diff      
+----+----------------------------------------------------------------------------------+---------+------+---------+------------------+--------------------
+  1 | {1,0.00632,18.00,2.310,0,0.5380,6.5750,65.20,4.0900,1,296.0,15.30,396.90,4.98}   |   94016 |   24 |   94016 | 23.9714991250013 | 0.0285008749987092
+  2 | {1,0.02731,0.00,7.070,0,0.4690,6.4210,78.90,4.9671,2,242.0,17.80,396.90,9.14}    |   94016 | 21.6 |   94016 | 22.3655180133895 |  0.765518013389535
+  3 | {1,0.02729,0.00,7.070,0,0.4690,7.1850,61.10,4.9671,2,242.0,17.80,392.83,4.03}    |   94016 | 34.7 |   94016 | 33.8620767428645 |  0.837923257135465
+  4 | {1,0.03237,0.00,2.180,0,0.4580,6.9980,45.80,6.0622,3,222.0,18.70,394.63,2.94}    |   94016 | 33.4 |   94016 | 35.3094157686524 |   1.90941576865244
+  5 | {1,0.06905,0.00,2.180,0,0.4580,7.1470,54.20,6.0622,3,222.0,18.70,396.90,5.33}    |   94016 | 36.2 |   94016 | 35.0379122731818 |   1.16208772681817
+  6 | {1,0.02985,0.00,2.180,0,0.4580,6.4300,58.70,6.0622,3,222.0,18.70,394.12,5.21}    |   94016 | 28.7 |   94016 | 27.5207943492151 |   1.17920565078487
+  7 | {1,0.08829,12.50,7.870,0,0.5240,6.0120,66.60,5.5605,5,311.0,15.20,395.60,12.43}  |   94016 | 22.9 |   94016 | 24.9841422781166 |    2.0841422781166
+  8 | {1,0.14455,12.50,7.870,0,0.5240,6.1720,96.10,5.9505,5,311.0,15.20,396.90,19.15}  |   94016 | 27.1 |   94016 | 24.5403994064793 |   2.55960059352067
+  9 | {1,0.21124,12.50,7.870,0,0.5240,5.6310,100.00,6.0821,5,311.0,15.20,386.63,29.93} |   94016 | 16.5 |   94016 | 17.2588278443879 |   0.75882784438787
+ 10 | {1,0.17004,12.50,7.870,0,0.5240,6.0040,85.90,6.5921,5,311.0,15.20,386.71,17.10}  |   94016 | 18.9 |   94016 | 17.0600407532569 |    1.8399592467431
+ 11 | {1,0.22489,12.50,7.870,0,0.5240,6.3770,94.30,6.3467,5,311.0,15.20,392.52,20.45}  |   94016 |   15 |   94016 | 15.2284207930287 |  0.228420793028732
+ 12 | {1,0.11747,12.50,7.870,0,0.5240,6.0090,82.90,6.2267,5,311.0,15.20,396.90,13.27}  |   20001 | 18.9 |   20001 | 19.2272848285357 |  0.327284828535671
+ 13 | {1,0.09378,12.50,7.870,0,0.5240,5.8890,39.00,5.4509,5,311.0,15.20,390.50,15.71}  |   20001 | 21.7 |   20001 | 21.3979318641202 |  0.302068135879811
+ 14 | {1,0.62976,0.00,8.140,0,0.5380,5.9490,61.80,4.7075,4,307.0,21.00,396.90,8.26}    |   20001 | 20.4 |   20001 | 19.7743403979155 |  0.625659602084532
+ 15 | {1,0.63796,0.00,8.140,0,0.5380,6.0960,84.50,4.4619,4,307.0,21.00,380.02,10.26}   |   20001 | 18.2 |   20001 | 18.7400800902121 |  0.540080090212125
+ 16 | {1,0.62739,0.00,8.140,0,0.5380,5.8340,56.50,4.4986,4,307.0,21.00,395.62,8.47}    |   20001 | 19.9 |   20001 | 19.6187933144569 |  0.281206685543061
+ 17 | {1,1.05393,0.00,8.140,0,0.5380,5.9350,29.30,4.4986,4,307.0,21.00,386.85,6.58}    |   20001 | 23.1 |   20001 | 23.3492239648177 |  0.249223964817737
+ 18 | {1,0.78420,0.00,8.140,0,0.5380,5.9900,81.70,4.2579,4,307.0,21.00,386.75,14.67}   |   20001 | 17.5 |   20001 | 17.0806608347814 |  0.419339165218577
+ 19 | {1,0.80271,0.00,8.140,0,0.5380,5.4560,36.60,3.7965,4,307.0,21.00,288.99,11.69}   |   20001 | 20.2 |   20001 | 20.1559086626409 |  0.044091337359113
+ 20 | {1,0.72580,0.00,8.140,0,0.5380,5.7270,69.50,3.7965,4,307.0,21.00,390.95,11.28}   |   20001 | 18.2 |   20001 | 18.6980897920022 |  0.498089792002183
+(20 rows)
+</pre>
+RMS error:
+<pre class="example">
+SELECT SQRT(SUM(ABS(y-estimated_y))/COUNT(y)) as rms_error FROM lin_housing 
+JOIN mlp_regress_prediction USING (id);
+</pre>
+<pre class="result">
+     rms_error     
+-------------------+
+ 0.912158035902468
+(1 row)
+</pre>
+
+<h4>Regression with Grouping and Mini-Batching</h4>
+
+-# To use grouping and mini-batching, we must first
+re-run the preprocessor and specify grouping:
+<pre class="example">
+DROP TABLE IF EXISTS lin_housing_packed, lin_housing_packed_summary, lin_housing_packed_standardization;
+SELECT madlib.minibatch_preprocessor('lin_housing',         -- Source table
+                                     'lin_housing_packed',  -- Output table
+                                     'y',                   -- Dependent variable
+                                     'x',                   -- Independent variables
+                                     'zipcode'              -- Group by zipcode
+                                     );
+</pre>
+
+-# Train regression model and group the training data by zipcode
+to learn a different model for each zipcode.
+<pre class="example">
+DROP TABLE IF EXISTS mlp_regress_group, mlp_regress_group_summary, mlp_regress_group_standardization;
+-- Set seed so results are reproducible
+SELECT setseed(0);
+SELECT madlib.mlp_regression(
+    'lin_housing_packed',    -- Source table
+    'mlp_regress_group',     -- Desination table
+    'independent_varname',   -- Input features
+    'dependent_varname',     -- Dependent variable
+    ARRAY[25,25],     -- Number of units per layer
+    'learning_rate_init=0.001,
+    n_iterations=500,
+    lambda=0.001,
+    tolerance=0',            -- Optimizer params
+    'relu',                  -- Activation function
+    NULL,                    -- Default weight (1)
+    FALSE,                   -- No warm start
+    FALSE,                   -- Not verbose
+    'zipcode'                -- Grouping column
+);
+</pre>
+View regression model with grouping:
+<pre class="example">
+\\x on
+SELECT * FROM mlp_regress_group;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]--+------------------------------------------------------------------------------------
+zipcode        | 200001
+coeff          | {-0.193588485849,0.063428493184,-0.30440608833,-0.355695802004,-0.175942716164 ...
+loss           | 0.0904009145541
+num_iterations | 500
+-[ RECORD 2 ]--+------------------------------------------------------------------------------------
+zipcode        | 94016
+coeff          | {-0.18965351506,0.0633650963628,-0.302423579808,-0.334367637252,-0.230043593847 ...
+loss           | 1.04772100552
+num_iterations | 500
+</pre>
+
 -# Prediction using the regression model for each group based on the zipcode:
 <pre class="example">
 DROP TABLE IF EXISTS mlp_regress_prediction;
@@ -1195,38 +1299,35 @@ SELECT madlib.mlp_predict(
          'mlp_regress_prediction',    -- Output table for predictions
          'response'                   -- Output values, not probabilities
      );
-</pre>
-View results
-<pre class="example">
+\\x off
 SELECT * FROM lin_housing JOIN mlp_regress_prediction USING (zipcode, id) ORDER BY zipcode, id;
 </pre>
-Result for the regression model:
 <pre class="result">
- zipcode | id |                                    x                                    |  y   |   estimated_y
----------+----+-------------------------------------------------------------------------+------+------------------
-   20001 | 12 | {1,0.11747,12.5,7.87,0,0.524,6.009,82.9,6.2267,5,311,15.2,396.9,13.27}  | 18.9 | 18.9015848636694
-   20001 | 13 | {1,0.09378,12.5,7.87,0,0.524,5.889,39,5.4509,5,311,15.2,390.5,15.71}    | 21.7 | 21.6953448259341
-   20001 | 14 | {1,0.62976,0,8.14,0,0.538,5.949,61.8,4.7075,4,307,21,396.9,8.26}        | 20.4 | 20.3111342795946
-   20001 | 15 | {1,0.63796,0,8.14,0,0.538,6.096,84.5,4.4619,4,307,21,380.02,10.26}      | 18.2 | 18.2483496870986
-   20001 | 16 | {1,0.62739,0,8.14,0,0.538,5.834,56.5,4.4986,4,307,21,395.62,8.47}       | 19.9 | 20.0052448114423
-   20001 | 17 | {1,1.05393,0,8.14,0,0.538,5.935,29.3,4.4986,4,307,21,386.85,6.58}       | 23.1 |  23.096355805823
-   20001 | 18 | {1,0.7842,0,8.14,0,0.538,5.99,81.7,4.2579,4,307,21,386.75,14.67}        | 17.5 |  17.494006122731
-   20001 | 19 | {1,0.80271,0,8.14,0,0.538,5.456,36.6,3.7965,4,307,21,288.99,11.69}      | 20.2 | 20.1906548782618
-   20001 | 20 | {1,0.7258,0,8.14,0,0.538,5.727,69.5,3.7965,4,307,21,390.95,11.28}       | 18.2 | 18.1765233580419
-   94016 |  1 | {1,0.00632,18,2.31,0,0.538,6.575,65.2,4.09,1,296,15.3,396.9,4.98}       |   24 | 23.9998833863682
-   94016 |  2 | {1,0.02731,0,7.07,0,0.469,6.421,78.9,4.9671,2,242,17.8,396.9,9.14}      | 21.6 | 21.6005641560929
-   94016 |  3 | {1,0.02729,0,7.07,0,0.469,7.185,61.1,4.9671,2,242,17.8,392.83,4.03}     | 34.7 | 34.6986979263639
-   94016 |  4 | {1,0.03237,0,2.18,0,0.458,6.998,45.8,6.0622,3,222,18.7,394.63,2.94}     | 33.4 | 33.4004355375207
-   94016 |  5 | {1,0.06905,0,2.18,0,0.458,7.147,54.2,6.0622,3,222,18.7,396.9,5.33}      | 36.2 | 36.1960129477404
-   94016 |  6 | {1,0.02985,0,2.18,0,0.458,6.43,58.7,6.0622,3,222,18.7,394.12,5.21}      | 28.7 | 28.6982928526275
-   94016 |  7 | {1,0.08829,12.5,7.87,0,0.524,6.012,66.6,5.5605,5,311,15.2,395.6,12.43}  | 22.9 | 22.8994945607741
-   94016 |  8 | {1,0.14455,12.5,7.87,0,0.524,6.172,96.1,5.9505,5,311,15.2,396.9,19.15}  | 27.1 | 27.0986128441621
-   94016 |  9 | {1,0.21124,12.5,7.87,0,0.524,5.631,100,6.0821,5,311,15.2,386.63,29.93}  | 16.5 | 16.5002686243432
-   94016 | 10 | {1,0.17004,12.5,7.87,0,0.524,6.004,85.9,6.5921,5,311,15.2,386.71,17.1}  | 18.9 | 18.8994689601322
-   94016 | 11 | {1,0.22489,12.5,7.87,0,0.524,6.377,94.3,6.3467,5,311,15.2,392.52,20.45} |   15 | 15.0010664443965
+ zipcode | id |                                        x                                         |  y   |   estimated_y    
+---------+----+----------------------------------------------------------------------------------+------+------------------
+   20001 | 12 | {1,0.11747,12.50,7.870,0,0.5240,6.0090,82.90,6.2267,5,311.0,15.20,396.90,13.27}  | 18.9 | 19.2272848285357
+   20001 | 13 | {1,0.09378,12.50,7.870,0,0.5240,5.8890,39.00,5.4509,5,311.0,15.20,390.50,15.71}  | 21.7 | 21.3979318641202
+   20001 | 14 | {1,0.62976,0.00,8.140,0,0.5380,5.9490,61.80,4.7075,4,307.0,21.00,396.90,8.26}    | 20.4 | 19.7743403979155
+   20001 | 15 | {1,0.63796,0.00,8.140,0,0.5380,6.0960,84.50,4.4619,4,307.0,21.00,380.02,10.26}   | 18.2 | 18.7400800902121
+   20001 | 16 | {1,0.62739,0.00,8.140,0,0.5380,5.8340,56.50,4.4986,4,307.0,21.00,395.62,8.47}    | 19.9 | 19.6187933144569
+   20001 | 17 | {1,1.05393,0.00,8.140,0,0.5380,5.9350,29.30,4.4986,4,307.0,21.00,386.85,6.58}    | 23.1 | 23.3492239648177
+   20001 | 18 | {1,0.78420,0.00,8.140,0,0.5380,5.9900,81.70,4.2579,4,307.0,21.00,386.75,14.67}   | 17.5 | 17.0806608347814
+   20001 | 19 | {1,0.80271,0.00,8.140,0,0.5380,5.4560,36.60,3.7965,4,307.0,21.00,288.99,11.69}   | 20.2 | 20.1559086626409
+   20001 | 20 | {1,0.72580,0.00,8.140,0,0.5380,5.7270,69.50,3.7965,4,307.0,21.00,390.95,11.28}   | 18.2 | 18.6980897920022
+   94016 |  1 | {1,0.00632,18.00,2.310,0,0.5380,6.5750,65.20,4.0900,1,296.0,15.30,396.90,4.98}   |   24 | 23.9714991250013
+   94016 |  2 | {1,0.02731,0.00,7.070,0,0.4690,6.4210,78.90,4.9671,2,242.0,17.80,396.90,9.14}    | 21.6 | 22.3655180133895
+   94016 |  3 | {1,0.02729,0.00,7.070,0,0.4690,7.1850,61.10,4.9671,2,242.0,17.80,392.83,4.03}    | 34.7 | 33.8620767428645
+   94016 |  4 | {1,0.03237,0.00,2.180,0,0.4580,6.9980,45.80,6.0622,3,222.0,18.70,394.63,2.94}    | 33.4 | 35.3094157686524
+   94016 |  5 | {1,0.06905,0.00,2.180,0,0.4580,7.1470,54.20,6.0622,3,222.0,18.70,396.90,5.33}    | 36.2 | 35.0379122731818
+   94016 |  6 | {1,0.02985,0.00,2.180,0,0.4580,6.4300,58.70,6.0622,3,222.0,18.70,394.12,5.21}    | 28.7 | 27.5207943492151
+   94016 |  7 | {1,0.08829,12.50,7.870,0,0.5240,6.0120,66.60,5.5605,5,311.0,15.20,395.60,12.43}  | 22.9 | 24.9841422781166
+   94016 |  8 | {1,0.14455,12.50,7.870,0,0.5240,6.1720,96.10,5.9505,5,311.0,15.20,396.90,19.15}  | 27.1 | 24.5403994064793
+   94016 |  9 | {1,0.21124,12.50,7.870,0,0.5240,5.6310,100.00,6.0821,5,311.0,15.20,386.63,29.93} | 16.5 | 17.2588278443879
+   94016 | 10 | {1,0.17004,12.50,7.870,0,0.5240,6.0040,85.90,6.5921,5,311.0,15.20,386.71,17.10}  | 18.9 | 17.0600407532569
+   94016 | 11 | {1,0.22489,12.50,7.870,0,0.5240,6.3770,94.30,6.3467,5,311.0,15.20,392.52,20.45}  |   15 | 15.2284207930287
 (20 rows)
 </pre>
-Note that the results you get for all examples may vary with the platform you are using.
+Note that the results you get for all examples may vary with the database you are using.
 
 @anchor background
 @par Technical Background
@@ -1249,8 +1350,12 @@ For details on backpropogation, see [2].
 [1] https://en.wikipedia.org/wiki/Multilayer_perceptron
 
 [2] Yu Hen Hu. "Lecture 11. MLP (III): Back-Propagation."
-    University of Wisconsin Madison: Computer-Aided Engineering. Web. 12 July 2017,
-    http://homepages.cae.wisc.edu/~ece539/videocourse/notes/pdf/lec%2011%20MLP%20(3)%20BP.pdf
+University of Wisconsin Madison: Computer-Aided Engineering. Web. 12 July 2017,
+http://homepages.cae.wisc.edu/~ece539/videocourse/notes/pdf/lec%2011%20MLP%20(3)%20BP.pdf
+
+[3] "Neural Networks for Machine Learning", Lectures 6a and 6b on mini-batch gradient descent,  
+Geoffrey Hinton with Nitish Srivastava and Kevin Swersky,
+http://www.cs.toronto.edu/~tijmen/csc321/slides/lecture_slides_lec6.pdf
 
 @anchor related
 @par Related Topics
