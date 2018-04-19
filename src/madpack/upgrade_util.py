@@ -82,16 +82,21 @@ class UpgradeBase:
                     proname,
                     textin(regtypeout(prorettype::regtype)) AS rettype,
                     CASE array_upper(proargtypes,1) WHEN -1 THEN ''
-                        ELSE textin(regtypeout(unnest(proargtypes)::regtype))
+                        ELSE textin(regtypeout(foo))
                     END AS argtype,
                     CASE WHEN proargnames IS NULL THEN ''
-                        ELSE unnest(proargnames)
+                        ELSE bar
                     END AS argname,
                     CASE array_upper(proargtypes,1) WHEN -1 THEN 1
-                        ELSE generate_series(0, array_upper(proargtypes, 1))
+                        ELSE zee
                     END AS i
                 FROM
-                    pg_proc AS p
+                    (SELECT *, oid,
+                        unnest(proargtypes)::regtype AS foo,
+                        unnest(proargnames) AS bar,
+                        generate_series(0, array_upper(proargtypes, 1)) AS zee
+                        FROM pg_proc
+                    ) AS p
                 WHERE
                     oid = {oid}
             ) AS f
@@ -304,8 +309,9 @@ class ChangeHandler(UpgradeBase):
         res = defaultdict(bool)
         for udf in self._udf:
             for item in self._udf[udf]:
+                udf_arglist = item['argument'] if 'argument' in item else ''
                 signature = get_signature_for_compare(
-                    self._schema, udf, item['rettype'], item['argument'])
+                    self._schema, udf, item['rettype'], udf_arglist)
                 res[signature] = True
         return res
 
@@ -316,8 +322,9 @@ class ChangeHandler(UpgradeBase):
         res = defaultdict(bool)
         for uda in self._uda:
             for item in self._uda[uda]:
+                uda_arglist = item['argument'] if 'argument' in item else ''
                 signature = get_signature_for_compare(
-                    self._schema, uda, item['rettype'], item['argument'])
+                    self._schema, uda, item['rettype'], uda_arglist)
                 res[signature] = True
         return res
 
@@ -1020,14 +1027,18 @@ class ScriptCleaner(UpgradeBase):
                     textin(regtypeout(prorettype::regtype)) AS rettype,
 
                     CASE array_upper(proargtypes,1) WHEN -1 THEN ''
-                        ELSE textin(regtypeout(unnest(proargtypes)::regtype))
+                        ELSE textin(regtypeout(foo))
                     END AS argtype,
 
                     CASE array_upper(proargtypes,1) WHEN -1 THEN 1
-                        ELSE generate_series(0, array_upper(proargtypes, 1))
+                        ELSE zee
                     END AS i
                 FROM
-                    pg_proc AS p,
+                    (SELECT *, oid,
+                        unnest(proargtypes)::regtype AS foo,
+                        generate_series(0, array_upper(proargtypes, 1)) AS zee
+                        FROM pg_proc
+                    ) as p,
                     pg_namespace AS nsp
                 WHERE
                     p.pronamespace = nsp.oid AND
