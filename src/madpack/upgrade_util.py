@@ -71,7 +71,29 @@ class UpgradeBase:
         pg_catalog.pg_get_function_result in PG for a complete implementation, which are
         not supported by GP
         """
-        row = self._run_sql("""
+
+        # Check if the function has any arguments
+        proargtypes = self._run_sql(
+            """
+            SELECT
+                array_upper(proargtypes,1) as proargtypes
+            FROM pg_proc
+            WHERE oid = {oid}
+            """.format(oid=oid))
+        # If it does not have any arguments then the unnest will not return
+        # any rows. We need a single row with an empty string.
+        unnest_proargtypes = "\'\'::VARCHAR"
+        gen_series_proargtypes = "1"
+        if proargtypes[0]['proargtypes'] != "-1":
+            # Convert the argument types to text
+            unnest_proargtypes = "textin(regtypeout(unnest(proargtypes)::regtype))"
+            gen_series_proargtypes = "generate_series(0, array_upper(proargtypes, 1))"
+
+        # Convert the return type to text. The aggregate (max) is necessary for
+        # the array_to_string aggregate to work. Every row should have the same
+        # proname and rettype.
+        row = self._run_sql(
+            """
             SELECT
                 max(proname) AS proname,
                 max(rettype) AS rettype,
@@ -81,26 +103,14 @@ class UpgradeBase:
                 SELECT
                     proname,
                     textin(regtypeout(prorettype::regtype)) AS rettype,
-                    CASE array_upper(proargtypes,1) WHEN -1 THEN ''
-                        ELSE textin(regtypeout(foo))
-                    END AS argtype,
-                    CASE WHEN proargnames IS NULL THEN ''
-                        ELSE bar
-                    END AS argname,
-                    CASE array_upper(proargtypes,1) WHEN -1 THEN 1
-                        ELSE zee
-                    END AS i
+                    {unnest_proargtypes} AS argtype,
+                    {gen_series_proargtypes} AS i
                 FROM
-                    (SELECT *, oid,
-                        unnest(proargtypes)::regtype AS foo,
-                        unnest(proargnames) AS bar,
-                        generate_series(0, array_upper(proargtypes, 1)) AS zee
-                        FROM pg_proc
-                    ) AS p
+                    pg_proc AS p
                 WHERE
                     oid = {oid}
             ) AS f
-            """.format(oid=oid))
+            """.format(**locals()))
         return {"proname": row[0]['proname'],
                 "rettype": row[0]['rettype'],
                 "argument": row[0]['argument']}
@@ -1012,8 +1022,10 @@ class ScriptCleaner(UpgradeBase):
 
     def _get_existing_uda(self):
         """
-        @brief Get the existing UDAs in the current version
+        @brief Get the existing UDAs in the current version.
         """
+        # See _get_function_info for explanations.
+
         rows = self._run_sql("""
             SELECT
                 max(proname) AS proname,
@@ -1025,20 +1037,10 @@ class ScriptCleaner(UpgradeBase):
                     p.oid AS procoid,
                     proname,
                     textin(regtypeout(prorettype::regtype)) AS rettype,
-
-                    CASE array_upper(proargtypes,1) WHEN -1 THEN ''
-                        ELSE textin(regtypeout(foo))
-                    END AS argtype,
-
-                    CASE array_upper(proargtypes,1) WHEN -1 THEN 1
-                        ELSE zee
-                    END AS i
+                    textin(regtypeout(unnest(proargtypes)::regtype)) AS argtype,
+                    generate_series(0, array_upper(proargtypes, 1)) AS i
                 FROM
-                    (SELECT *, oid,
-                        unnest(proargtypes)::regtype AS foo,
-                        generate_series(0, array_upper(proargtypes, 1)) AS zee
-                        FROM pg_proc
-                    ) as p,
+                    pg_proc AS p,
                     pg_namespace AS nsp
                 WHERE
                     p.pronamespace = nsp.oid AND
