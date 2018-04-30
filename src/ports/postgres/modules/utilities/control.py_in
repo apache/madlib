@@ -1,5 +1,4 @@
 # coding=utf-8
-m4_changequote(`<!', `!>')
 
 """
 @file control.py_in
@@ -17,10 +16,7 @@ from functools import wraps
 
 from utilities import unique_string
 
-
-STATE_IN_MEM = m4_ifdef(<!__HAWQ__!>, <!True!>, <!False!>)
-HAS_FUNCTION_PROPERTIES = m4_ifdef(<!__HAS_FUNCTION_PROPERTIES__!>, <!True!>, <!False!>)
-UDF_ON_SEGMENT_NOT_ALLOWED = m4_ifdef(<!__UDF_ON_SEGMENT_NOT_ALLOWED__!>, <!True!>, <!False!>)
+HAS_FUNCTION_PROPERTIES = m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `True', `False')
 
 
 # from https://coderwall.com/p/0lk6jg/python-decorators-vs-context-managers-have-your-cake-and-eat-it
@@ -53,7 +49,7 @@ class OptimizerControl(ContextDecorator):
         then sets it back to the original value on exit
 
     This context manager accesses two GUCs:
-        optimizer: GUC to control the optimizer used in Greenplum and HAWQ platforms
+        optimizer: GUC to control the optimizer used in Greenplum
 
         optimizer_control: Used to check if 'optimizer' GUC can be updated by MADlib.
                             This is assumed to be True if the GUC is not available
@@ -63,7 +59,7 @@ class OptimizerControl(ContextDecorator):
         self.to_enable = enable
         self.error_on_fail = error_on_fail
 
-        # use the fact that all GPDB/HAWQ versions that have the
+        # use the fact that all GPDB versions that have the
         # optimizer also define function properties
         self.guc_exists = True if HAS_FUNCTION_PROPERTIES else False
 
@@ -204,18 +200,15 @@ class IterationController:
         self.inWith = False
         self.iteration = -1
         self.initialize_state = initialize_state
-        if STATE_IN_MEM:
-            self.new_state={"_iteration": 0, "_state": None}
-            self.old_state={"_iteration": 0, "_state": None}
 
     def __enter__(self):
         with MinWarning('warning'):
             self.runSQL("""
                 DROP TABLE IF EXISTS {rel_state};
                 CREATE {temp} TABLE {unqualified_rel_state} (
-                    _iteration  INTEGER m4_ifdef(<!__HAWQ__!>, <!!>, <!PRIMARY KEY!>),
+                    _iteration  INTEGER PRIMARY KEY,
                     _state      {stateType}
-                )m4_ifdef(<!__POSTGRESQL__!>, <!!>, <!DISTRIBUTED BY (_iteration)!>);
+                )
                 """.format(
                 temp='TEMPORARY' if self.temporaryTables else '',
                 **self.kwargs))
@@ -228,13 +221,6 @@ class IterationController:
 
     def __exit__(self, type, value, tb):
         self.inWith = False
-        if STATE_IN_MEM:
-            insert_plan = plpy.prepare("""
-                INSERT INTO {rel_state}
-                SELECT $1, $2
-                """.format(**self.kwargs), ["INTEGER", "DOUBLE PRECISION[]"])
-            plpy.execute(insert_plan,
-                         [self.new_state['_iteration'], self.new_state['_state']])
 
     def runSQL(self, sql):
         if self.verbose:
@@ -259,30 +245,16 @@ class IterationController:
         # since currently ORCA has a bug for left outer joins (MPP-21868).
         # This should be removed when the issue is fixed in ORCA.
         with OptimizerControl(False):
-            if STATE_IN_MEM:
-                eval_plan = plpy.prepare("""
-                    SELECT ({expression}) AS expression
-                    FROM {{rel_args}} AS _args
-                        LEFT OUTER JOIN (
-                            SELECT $1 AS _state
-                        ) AS _state ON True
-                    """.format(expression=expression).
-                    format(iteration=self.iteration, **self.kwargs),
-                    ["DOUBLE PRECISION[]"])
-                resultObject = plpy.execute(eval_plan,
-                                            [[] if self.new_state['_state'] is None
-                                             else self.new_state['_state']])
-            else:
-                resultObject = self.runSQL("""
-                    SELECT ({expression}) AS expression
-                    FROM {{rel_args}} AS _args
-                        LEFT OUTER JOIN (
-                            SELECT _state
-                            FROM {{rel_state}} AS _state
-                            WHERE _state._iteration = {{iteration}}
-                        ) AS _state ON True
-                    """.format(expression=expression).
-                    format(iteration=self.iteration, **self.kwargs))
+            resultObject = self.runSQL("""
+                SELECT ({expression}) AS expression
+                FROM {{rel_args}} AS _args
+                    LEFT OUTER JOIN (
+                        SELECT _state
+                        FROM {{rel_state}} AS _state
+                        WHERE _state._iteration = {{iteration}}
+                    ) AS _state ON True
+                """.format(expression=expression).
+                format(iteration=self.iteration, **self.kwargs))
 
         if resultObject.nrows() == 0:
             return None
@@ -328,29 +300,19 @@ class IterationController:
         newState = newState.format(iteration=self.iteration, **updateKwargs)
         self.iteration = self.iteration + 1
 
-        if STATE_IN_MEM:
-            self.old_state = self.new_state
-            update_plan = plpy.prepare("""
-                SELECT {0} AS _iteration, ({1}) AS _state
-                """.format(self.iteration, newState).format(__state__='$1'),
-                ["DOUBLE PRECISION[]"])
-            self.new_state = plpy.execute(update_plan,
-                                          [None if self.new_state['_state'] is None
-                                           else self.new_state['_state']])[0]
-        else:
+        self.runSQL("""
+            INSERT INTO {rel_state}
+            SELECT
+                {iteration},
+                ({newState})
+            """.format(iteration=self.iteration,
+                       newState=newState,
+                       **self.kwargs))
+        if self.truncAfterIteration:
             self.runSQL("""
-                INSERT INTO {rel_state}
-                SELECT
-                    {iteration},
-                    ({newState})
-                """.format(iteration=self.iteration,
-                           newState=newState,
-                           **self.kwargs))
-            if self.truncAfterIteration:
-                self.runSQL("""
-                    DELETE FROM {rel_state} AS _state
-                    WHERE _state._iteration < {iteration}
-                """.format(iteration=self.iteration, **self.kwargs))
+                DELETE FROM {rel_state} AS _state
+                WHERE _state._iteration < {iteration}
+            """.format(iteration=self.iteration, **self.kwargs))
 
 
 class IterationController2D(IterationController):
@@ -361,14 +323,6 @@ class IterationController2D(IterationController):
 
     def __exit__(self, type, value, tb):
         self.inWith = False
-        if STATE_IN_MEM:
-            insert_plan = plpy.prepare("""
-                    INSERT INTO {rel_state}
-                    SELECT $1, {schema_madlib}.array_to_2d($2)
-                """.format(**self.kwargs),
-                ["INTEGER", "DOUBLE PRECISION[]"])
-            plpy.execute(insert_plan,
-                         [self.new_state['_iteration'], self.new_state['_state']])
 
     def evaluate(self, expression):
         """
@@ -387,30 +341,16 @@ class IterationController2D(IterationController):
         # since ORCA has a bug for left outer joins (MPP-21868).
         # This should be removed when the issue is fixed in ORCA.
         with OptimizerControl(False):
-            if STATE_IN_MEM:
-                eval_plan = plpy.prepare("""
-                    SELECT ({expression}) AS expression
-                    FROM {{rel_args}} AS _args
-                        LEFT OUTER JOIN (
-                            SELECT {{schema_madlib}}.array_to_2d($1) AS _state
-                        ) AS _state ON True
-                    """.format(expression=expression).
-                    format(**self.kwargs), ["DOUBLE PRECISION[]"])
-
-                resultObject = plpy.execute(
-                    eval_plan,
-                    [[] if self.new_state['_state'] is None else self.new_state['_state']])
-            else:
-                resultObject = self.runSQL("""
-                    SELECT ({expression}) AS expression
-                    FROM {{rel_args}} AS _args
-                        LEFT OUTER JOIN (
-                            SELECT *
-                            FROM {{rel_state}} AS _state
-                            WHERE _state._iteration = {{iteration}}
-                        ) AS _state ON True
-                    """.format(expression=expression).
-                    format(iteration=self.iteration, **self.kwargs))
+            resultObject = self.runSQL("""
+                SELECT ({expression}) AS expression
+                FROM {{rel_args}} AS _args
+                    LEFT OUTER JOIN (
+                        SELECT *
+                        FROM {{rel_state}} AS _state
+                        WHERE _state._iteration = {{iteration}}
+                    ) AS _state ON True
+                """.format(expression=expression).
+                format(iteration=self.iteration, **self.kwargs))
         if resultObject.nrows() == 0:
             return None
         else:
@@ -442,30 +382,17 @@ class IterationController2D(IterationController):
             **updateKwargs)
         self.iteration = self.iteration + 1
 
-        if STATE_IN_MEM:
-            self.old_state = self.new_state
-            update_plan = plpy.prepare("""
-                SELECT
-                    {iteration} AS _iteration,
-                    {schema_madlib}.array_to_1d(({newState})) AS _state
-                """.format(iteration=self.iteration,
-                           newState=newState, **self.kwargs),
-                ["DOUBLE PRECISION[]"])
-            self.new_state = plpy.execute(update_plan,
-                                          [None if self.new_state['_state'] is None
-                                           else self.new_state['_state']])[0]
-        else:
+        self.runSQL("""
+            INSERT INTO {rel_state}
+            SELECT
+                {iteration},
+                ({newState})
+            """.format(iteration=self.iteration, newState=newState, **self.kwargs))
+        if self.truncAfterIteration:
             self.runSQL("""
-                INSERT INTO {rel_state}
-                SELECT
-                    {iteration},
-                    ({newState})
-                """.format(iteration=self.iteration, newState=newState, **self.kwargs))
-            if self.truncAfterIteration:
-                self.runSQL("""
-                    DELETE FROM {rel_state} AS _state
-                    WHERE _state._iteration < {iteration}
-                """.format(iteration=self.iteration, **self.kwargs))
+                DELETE FROM {rel_state} AS _state
+                WHERE _state._iteration < {iteration}
+            """.format(iteration=self.iteration, **self.kwargs))
 
 
 class IterationController2S(IterationController):
@@ -476,55 +403,30 @@ class IterationController2S(IterationController):
     """
 
     def evaluate(self, expression):
-        if STATE_IN_MEM:
-            eval_plan = plpy.prepare("""
-                SELECT ({expression}) AS expression
-                FROM {{rel_args}} AS _args
-                    LEFT OUTER JOIN (
-                        SELECT
-                            $1 AS _state_previous,
-                            $2 AS _state_current
-                    ) AS _state ON True
-                """.format(expression=expression).
-                    format(iteration=self.iteration, **self.kwargs),
-                    ["DOUBLE PRECISION[]", "DOUBLE PRECISION[]"])
-
-            resultObject = plpy.execute(
-                eval_plan,
-                [self.old_state['_state'], self.new_state['_state']])
-        else:
-            resultObject = self.runSQL("""
-                SELECT ({expression}) AS expression
-                FROM {{rel_args}} AS _args
-                    LEFT OUTER JOIN (
-                        SELECT
-                            _state_previous, _state_current
-                        FROM
-                        (
-                            SELECT _state AS _state_previous
-                            FROM {{rel_state}}
-                            WHERE _iteration = {{iteration}} - 1
-                        ) sub1,
-                        (
-                            SELECT _state AS _state_current
-                            FROM {{rel_state}}
-                            WHERE _iteration = {{iteration}}
-                        ) sub2
-                    ) AS _state ON True
-                """.format(expression=expression).
-                    format(iteration=self.iteration,
-                           **self.kwargs))
+        resultObject = self.runSQL("""
+            SELECT ({expression}) AS expression
+            FROM {{rel_args}} AS _args
+                LEFT OUTER JOIN (
+                    SELECT
+                        _state_previous, _state_current
+                    FROM
+                    (
+                        SELECT _state AS _state_previous
+                        FROM {{rel_state}}
+                        WHERE _iteration = {{iteration}} - 1
+                    ) sub1,
+                    (
+                        SELECT _state AS _state_current
+                        FROM {{rel_state}}
+                        WHERE _iteration = {{iteration}}
+                    ) sub2
+                ) AS _state ON True
+            """.format(expression=expression).
+                format(iteration=self.iteration,
+                       **self.kwargs))
 
         if resultObject.nrows() == 0:
             return None
         else:
             return resultObject[0]['expression']
 
-    if STATE_IN_MEM:
-        def get_state_size(self):
-            return len(self.new_state)
-
-        def get_state_value(self, index):
-            return self.new_state['_state'][index]
-
-m4_changequote(<!`!> , <!'!>)

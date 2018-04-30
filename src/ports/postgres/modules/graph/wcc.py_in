@@ -34,7 +34,7 @@ from utilities.utilities import get_table_qualified_col_str
 from utilities.utilities import extract_keyvalue_params
 from utilities.utilities import unique_string, split_quoted_delimited_str
 from utilities.validate_args import columns_exist_in_table, get_expr_type
-from utilities.utilities import is_platform_pg, is_platform_hawq
+from utilities.utilities import is_platform_pg
 from utilities.utilities import add_postfix
 from utilities.validate_args import table_exists
 from utilities.control import MinWarning
@@ -117,7 +117,6 @@ def wcc(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
     old_new_update_where_condition = ''
     new_to_update_where_condition = ''
     edge_to_update_where_condition = ''
-    is_hawq = is_platform_hawq()
 
     INT_MAX = 2147483647
     component_id = 'component_id'
@@ -193,13 +192,6 @@ def wcc(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
                 FROM {vertex_table}
                 {distribution}
             """.format(**locals()))
-    if is_hawq:
-        plpy.execute("""
-                CREATE TABLE {temp_out_table} AS
-                SELECT * FROM {newupdate}
-                LIMIT 0
-                {distribution}
-            """.format(**locals()))
     nodes_to_update = 1
     while nodes_to_update > 0:
         # Look at all the neighbors of a node, and assign the smallest node id
@@ -237,38 +229,13 @@ def wcc(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
             {distribution}
         """.format(**locals()))
 
-        if is_hawq:
-            plpy.execute("""
-                    TRUNCATE TABLE {temp_out_table};
-                    INSERT INTO {temp_out_table}
-                        SELECT *
-                        FROM {newupdate}
-                        WHERE NOT EXISTS (
-                            SELECT *
-                            FROM {toupdate}
-                            WHERE {newupdate}.{vertex_id}={toupdate}.{vertex_id}
-                            {new_to_update_where_condition}
-                        )
-                        UNION
-                        SELECT * FROM {toupdate};
-                """.format(**locals()))
-            plpy.execute("DROP TABLE {0}".format(newupdate))
-            plpy.execute("ALTER TABLE {0} RENAME TO {1}".
-                         format(temp_out_table, newupdate))
-            plpy.execute("""
-                    CREATE TABLE {temp_out_table} AS
-                    SELECT * FROM {newupdate}
-                    LIMIT 0
-                    {distribution}
-                """.format(**locals()))
-        else:
-            plpy.execute("""
-                    UPDATE {newupdate} SET
-                    {component_id}={toupdate}.{component_id}
-                    FROM {toupdate}
-                    WHERE {newupdate}.{vertex_id}={toupdate}.{vertex_id}
-                        {new_to_update_where_condition}
-                """.format(**locals()))
+        plpy.execute("""
+                UPDATE {newupdate} SET
+                {component_id}={toupdate}.{component_id}
+                FROM {toupdate}
+                WHERE {newupdate}.{vertex_id}={toupdate}.{vertex_id}
+                    {new_to_update_where_condition}
+            """.format(**locals()))
 
         plpy.execute("DROP TABLE IF EXISTS {0}".format(message))
         plpy.execute("""
@@ -330,10 +297,8 @@ def wcc(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
             '{vertex_id_type}')
         """.format(grouping_cols_summary='' if not grouping_cols else
                    "'{0}', ".format(grouping_cols), **locals()))
-    plpy.execute("""DROP TABLE IF EXISTS {0},{1},{2},{3}
-        """.format(message, oldupdate, newupdate, toupdate))
-    if is_hawq:
-        plpy.execute("""DROP TABLE IF EXISTS {0}""".format(temp_out_table))
+    plpy.execute("DROP TABLE IF EXISTS {0},{1},{2},{3} ".
+                 format(message, oldupdate, newupdate, toupdate))
 
 
 # WCC Helper functions:
