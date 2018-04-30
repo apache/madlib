@@ -123,14 +123,13 @@ class ChangeHandler(UpgradeBase):
     """
 
     def __init__(self, schema, portid, con_args, maddir, mad_dbrev,
-                 is_hawq2, upgrade_to=None):
+                 upgrade_to=None):
         UpgradeBase.__init__(self, schema, portid, con_args)
 
         # FIXME: maddir includes the '/src' folder. It's supposed to be the
         # parent of that directory.
         self._maddir = maddir
         self._mad_dbrev = mad_dbrev
-        self._is_hawq2 = is_hawq2
         self._newmodule = {}
         self._curr_rev = self._get_current_version() if not upgrade_to else upgrade_to
 
@@ -402,12 +401,11 @@ class ChangeHandler(UpgradeBase):
         dependencies
         """
         for udt in self._udt:
-            if udt in ('svec', 'bytea8'):
-                # because the recv and send functions and the type depends on each other
-                if self._portid != 'hawq' or self._is_hawq2:
-                    self._run_sql("DROP TYPE IF EXISTS {0}.{1} CASCADE".format(self._schema, udt))
-            else:
-                self._run_sql("DROP TYPE IF EXISTS {0}.{1}".format(self._schema, udt))
+            cascade_str = 'CASCADE' if udt in ('svec', 'bytea8') else ''
+            # CASCADE DROP for svec and bytea8 because the recv/send
+            # functions and the type depend on each other
+            self._run_sql("DROP TYPE IF EXISTS {0}.{1} {2}".
+                          format(self._schema, udt, cascade_str))
 
     def drop_changed_udf(self):
         """
@@ -1332,7 +1330,6 @@ class TestChangeHandler(unittest.TestCase):
         self.maddir = os.path.abspath(
             os.path.join(os.path.dirname(os.path.realpath(__file__)),
                          os.pardir))
-        self._dummy_hawq2 = False
 
     def tearDown(self):
         pass
@@ -1341,14 +1338,12 @@ class TestChangeHandler(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             ChangeHandler(self._dummy_schema, self._dummy_portid,
                           self._dummy_con_args, self.maddir,
-                          '1.9', self._dummy_hawq2,
-                          upgrade_to=get_rev_num('1.12'))
+                          '1.9', upgrade_to=get_rev_num('1.12'))
 
     def test_valid_path(self):
         ch = ChangeHandler(self._dummy_schema, self._dummy_portid,
                            self._dummy_con_args, self.maddir,
-                           '1.9.1', self._dummy_hawq2,
-                           upgrade_to=get_rev_num('1.12'))
+                           '1.9.1', upgrade_to=get_rev_num('1.12'))
         self.assertEqual(ch.newmodule.keys(),
                          ['knn', 'sssp', 'apsp', 'measures', 'stratified_sample',
                           'encode_categorical', 'bfs', 'mlp', 'pagerank',

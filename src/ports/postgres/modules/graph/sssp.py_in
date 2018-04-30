@@ -39,7 +39,7 @@ from utilities.utilities import add_postfix
 from utilities.utilities import extract_keyvalue_params
 from utilities.utilities import unique_string
 from utilities.utilities import split_quoted_delimited_str
-from utilities.utilities import is_platform_pg, is_platform_hawq
+from utilities.utilities import is_platform_pg
 
 from utilities.validate_args import table_exists
 from utilities.validate_args import columns_exist_in_table
@@ -107,8 +107,6 @@ def graph_sssp(schema_madlib, vertex_table, vertex_id, edge_table,
 
         distribution = '' if is_platform_pg() else "DISTRIBUTED BY ({0})".format(vertex_id)
         local_distribution = '' if is_platform_pg() else "DISTRIBUTED BY (id)"
-
-        is_hawq = is_platform_hawq()
 
         _validate_sssp(vertex_table, vertex_id, edge_table,
                        edge_params, source_vertex, out_table, glist)
@@ -188,15 +186,7 @@ def graph_sssp(schema_madlib, vertex_table, vertex_id, edge_table,
                 {local_distribution}
                 """.format(**locals()))
 
-        # Since HAWQ does not allow us to update, we create a new table and
-        # rename at every iteration.
-        if is_hawq:
-            temp_table = unique_string(desp='temp')
-            sql = """ CREATE TABLE {temp_table} AS (SELECT * FROM {out_table} )
-                {distribution} """
-            plpy.execute(sql.format(**locals()))
-
-        # GPDB and HAWQ have distributed by clauses to help them with indexing.
+        # GPDB has distributed by clauses to help them with indexing.
         # For Postgres we add the indices manually.
         if is_platform_pg():
             plpy.execute("""
@@ -281,43 +271,17 @@ def graph_sssp(schema_madlib, vertex_table, vertex_id, edge_table,
         for i in range(0, v_cnt + 1):
 
             # Apply the updates calculated in the last iteration.
-            if is_hawq:
-                sql = """
-                TRUNCATE TABLE {temp_table};
-                INSERT INTO {temp_table}
-                    SELECT *
-                    FROM {out_table}
-                    WHERE NOT EXISTS (
-                        SELECT 1
-                        FROM {oldupdate} as oldupdate
-                        WHERE {out_table}.{vertex_id} = oldupdate.id
-                        {checkg_oo})
-                    UNION
-                    SELECT {grp_comma} id, {weight}, parent FROM {oldupdate};
-                """
-                plpy.execute(sql.format(**locals()))
-                plpy.execute("DROP TABLE {0}".format(out_table))
-                plpy.execute("ALTER TABLE {0} RENAME TO {1}".
-                             format(temp_table, out_table))
-                sql = """ CREATE TABLE {temp_table} AS (
-                    SELECT * FROM {out_table} LIMIT 0)
-                    {distribution};"""
-                plpy.execute(sql.format(**locals()))
-                ret = plpy.execute("SELECT id FROM {0} LIMIT 1".
-                                   format(oldupdate))
-            else:
-                sql = """
-                UPDATE {out_table} SET
-                    {weight} = oldupdate.{weight},
-                    parent = oldupdate.parent
-                FROM
-                    {oldupdate} AS oldupdate
-                WHERE
-                    {out_table}.{vertex_id} = oldupdate.id AND
-                    {out_table}.{weight} > oldupdate.{weight} {checkg_oo}
-                """
-                ret = plpy.execute(sql.format(**locals()))
-
+            sql = """
+            UPDATE {out_table} SET
+                {weight} = oldupdate.{weight},
+                parent = oldupdate.parent
+            FROM
+                {oldupdate} AS oldupdate
+            WHERE
+                {out_table}.{vertex_id} = oldupdate.id AND
+                {out_table}.{weight} > oldupdate.{weight} {checkg_oo}
+            """
+            ret = plpy.execute(sql.format(**locals()))
             if ret.nrows() == 0:
                 break
 
@@ -385,8 +349,6 @@ def graph_sssp(schema_madlib, vertex_table, vertex_id, edge_table,
             if not grouping_cols:
                 plpy.execute("DROP TABLE IF EXISTS {0},{1},{2}".
                              format(out_table, summary_table, oldupdate))
-                if is_hawq:
-                    plpy.execute("DROP TABLE IF EXISTS {0}".format(temp_table))
                 plpy.error("Graph SSSP: Detected a negative cycle in the graph.")
 
             # It is possible that not all groups has negative cycles.
@@ -402,26 +364,10 @@ def graph_sssp(schema_madlib, vertex_table, vertex_id, edge_table,
                     """.format(**locals()))[0]['grp']
 
                 # Delete the groups with negative cycles from the output table.
-                if is_hawq:
-                    sql_del = """
-                        TRUNCATE TABLE {temp_table};
-                        INSERT INTO {temp_table}
-                            SELECT *
-                            FROM {out_table}
-                            WHERE NOT EXISTS(
-                                SELECT 1
-                                FROM {oldupdate} as oldupdate
-                                WHERE {checkg_oo_sub}
-                                );"""
-                    plpy.execute(sql_del.format(**locals()))
-                    plpy.execute("DROP TABLE {0}".format(out_table))
-                    plpy.execute("ALTER TABLE {0} RENAME TO {1}".
-                                 format(temp_table, out_table))
-                else:
-                    sql_del = """ DELETE FROM {out_table}
-                        USING {oldupdate} AS oldupdate
-                        WHERE {checkg_oo_sub}"""
-                    plpy.execute(sql_del.format(**locals()))
+                sql_del = """ DELETE FROM {out_table}
+                    USING {oldupdate} AS oldupdate
+                    WHERE {checkg_oo_sub} """
+                plpy.execute(sql_del.format(**locals()))
 
                 # If every group has a negative cycle,
                 # drop the output table as well.
@@ -435,9 +381,6 @@ def graph_sssp(schema_madlib, vertex_table, vertex_id, edge_table,
                     format(str(negs)[1:-1]))
 
         plpy.execute("DROP TABLE IF EXISTS {0}".format(oldupdate))
-        if is_hawq:
-            plpy.execute("DROP TABLE IF EXISTS {temp_table} ".
-                         format(**locals()))
     return None
 
 

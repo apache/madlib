@@ -39,7 +39,7 @@ from utilities.utilities import add_postfix
 from utilities.utilities import extract_keyvalue_params
 from utilities.utilities import unique_string
 from utilities.utilities import split_quoted_delimited_str
-from utilities.utilities import is_platform_pg, is_platform_hawq
+from utilities.utilities import is_platform_pg
 from utilities.validate_args import table_exists
 from utilities.validate_args import columns_exist_in_table
 from utilities.validate_args import table_is_empty
@@ -97,7 +97,6 @@ def graph_apsp(schema_madlib, vertex_table, vertex_id, edge_table,
         weight = edge_params["weight"]
 
         distribution = '' if is_platform_pg() else "DISTRIBUTED BY ({0})".format(src)
-        is_hawq = is_platform_hawq()
 
         _validate_apsp(vertex_table, vertex_id, edge_table,
                        edge_params, out_table, glist)
@@ -194,112 +193,63 @@ def graph_apsp(schema_madlib, vertex_table, vertex_id, edge_table,
         ot_sql = """ SELECT * FROM {out_table}
             WHERE {weight} != {init_w} AND {src} != {dest} """
 
-        # HAWQ does not support UPDATE so the initialization has to differ.
-        if is_hawq:
+        plpy.execute(""" CREATE TABLE {out_table} AS
+            (SELECT {grp_comma} {src}, {dest}, {weight},
+                {src} AS parent FROM {edge_table} LIMIT 0)
+            {distribution} """.format(**locals()))
 
-            plpy.execute(" DROP TABLE IF EXISTS {0},{1}".format(
-                out_table_1, out_table_2))
-            # Create 2 identical tables to swap at every iteration.
-            plpy.execute(""" CREATE TABLE {out_table_1} AS
-                SELECT {grp_comma} {src},{dest},{weight}, NULL::INT AS parent
-                FROM {edge_table} LIMIT 0 {distribution}
+        plpy.execute(""" INSERT INTO {out_table}
+            SELECT {grp_v1_comma}
+                v1.{vertex_id} AS {src}, v2.{vertex_id} AS {dest},
+                {init_w} AS {weight}, NULL::INT AS parent
+            FROM
+                {tmp_view} AS v1 INNER JOIN
+                {tmp_view} AS v2 ON ({checkg_vv_sub})
                 """.format(**locals()))
-            plpy.execute(""" CREATE TABLE {out_table_2} AS
-                SELECT * FROM {out_table_1} LIMIT 0 {distribution}
-                """.format(**locals()))
+        plpy.execute("DROP VIEW IF EXISTS {0}".format(tmp_view))
 
-            # The source can be reached with 0 cost and next is itself.
-            plpy.execute(""" INSERT INTO {out_table_2}
-                SELECT {grp_comma} {vertex_id} AS {src}, {vertex_id} AS {dest},
-                    0 AS {weight}, {vertex_id} AS parent
-                FROM {tmp_view} """.format(**locals()))
-            # Distance = 1: every edge means there is a path from src to dest
-            plpy.execute(""" INSERT INTO {out_table_2}
-                SELECT {grp_comma} {src}, {dest}, {weight}, {dest} AS parent
-                FROM {edge_table} """.format(**locals()))
-
-            # Fill the rest of the possible pairs with infinite initial weights
-            fill_sql = """ INSERT INTO {out_table_1}
-                SELECT {grp_v1_comma}
-                    v1.{vertex_id} AS {src}, v2.{vertex_id} AS {dest},
-                    {init_w} AS {weight}, NULL::INT AS parent
-                FROM {tmp_view} v1, {tmp_view} v2
-                WHERE NOT EXISTS
-                    (SELECT 1 FROM {out_table_2}
-                        WHERE v1.{vertex_id} = {src} AND
-                            v2.{vertex_id} = {dest}
-                            {checkg_vv} {checkg_o2v})
-                    {checkg_vv}
-                UNION
-                SELECT * FROM {out_table_2}
-                """.format(**locals())
-            plpy.execute(fill_sql)
-
-            ot_sql1 = ot_sql.format(out_table=out_table_1, init_w=init_w,
-                                    weight=weight, src=src, dest=dest)
-            ot_sql2 = ot_sql.format(out_table=out_table_2, init_w=init_w,
-                                    weight=weight, src=src, dest=dest)
-
-        # PostgreSQL & GPDB initialization
+        # GPDB has distributed by clauses to help them with indexing.
+        # For Postgres we add the indices manually.
+        if is_platform_pg():
+            sql_index = "CREATE INDEX ON {0}({1})".format(out_table, src)
         else:
+            sql_index = ''
 
-            plpy.execute(""" CREATE TABLE {out_table} AS
-                (SELECT {grp_comma} {src}, {dest}, {weight},
-                    {src} AS parent FROM {edge_table} LIMIT 0)
-                {distribution} """.format(**locals()))
+        plpy.execute(sql_index)
 
-            plpy.execute(""" INSERT INTO {out_table}
-                SELECT {grp_v1_comma}
-                    v1.{vertex_id} AS {src}, v2.{vertex_id} AS {dest},
-                    {init_w} AS {weight}, NULL::INT AS parent
-                FROM
-                    {tmp_view} AS v1 INNER JOIN
-                    {tmp_view} AS v2 ON ({checkg_vv_sub})
-                    """.format(**locals()))
-            plpy.execute("DROP VIEW IF EXISTS {0}".format(tmp_view))
+        # The source can be reached with 0 cost and next is itself.
+        plpy.execute(
+            """ UPDATE {out_table} SET
+            {weight} = 0, parent = {vertex_id}
+            FROM {vertex_table}
+            WHERE {out_table}.{src} = {vertex_id}
+            AND {out_table}.{dest} = {vertex_id}
+            """.format(**locals()))
 
-            # GPDB and HAWQ have distributed by clauses to help them with indexing.
-            # For Postgres we add the indices manually.
-            if is_platform_pg():
-                sql_index = "CREATE INDEX ON {0}({1})".format(out_table, src)
-            else:
-                sql_index = ''
+        # Distance = 1: every edge means there is a path from src to dest
 
-            plpy.execute(sql_index)
+        # There may be multiple edges defined as a->b,
+        # we only need the minimum weighted one.
 
-            # The source can be reached with 0 cost and next is itself.
-            plpy.execute(
-                """ UPDATE {out_table} SET
-                {weight} = 0, parent = {vertex_id}
-                FROM {vertex_table}
-                WHERE {out_table}.{src} = {vertex_id}
-                AND {out_table}.{dest} = {vertex_id}
-                """.format(**locals()))
+        plpy.execute(
+            """ CREATE VIEW {tmp_view} AS
+                SELECT {grp_comma} {src}, {dest},
+                    min({weight}) AS {weight}
+                FROM {edge_table}
+                GROUP BY {grp_comma} {src}, {dest}
+            """.format(**locals()))
+        plpy.execute(
+            """ UPDATE {out_table} SET
+            {weight} = {tmp_view}.{weight}, parent = {tmp_view}.{dest}
+            FROM {tmp_view}
+            WHERE {out_table}.{src} = {tmp_view}.{src}
+            AND {out_table}.{dest} = {tmp_view}.{dest}
+            AND {out_table}.{weight} > {tmp_view}.{weight} {checkg_ot}
+            """.format(**locals()))
+        plpy.execute("DROP VIEW IF EXISTS {0}".format(tmp_view))
 
-            # Distance = 1: every edge means there is a path from src to dest
-
-            # There may be multiple edges defined as a->b,
-            # we only need the minimum weighted one.
-
-            plpy.execute(
-                """ CREATE VIEW {tmp_view} AS
-                    SELECT {grp_comma} {src}, {dest},
-                        min({weight}) AS {weight}
-                    FROM {edge_table}
-                    GROUP BY {grp_comma} {src}, {dest}
-                """.format(**locals()))
-            plpy.execute(
-                """ UPDATE {out_table} SET
-                {weight} = {tmp_view}.{weight}, parent = {tmp_view}.{dest}
-                FROM {tmp_view}
-                WHERE {out_table}.{src} = {tmp_view}.{src}
-                AND {out_table}.{dest} = {tmp_view}.{dest}
-                AND {out_table}.{weight} > {tmp_view}.{weight} {checkg_ot}
-                """.format(**locals()))
-            plpy.execute("DROP VIEW IF EXISTS {0}".format(tmp_view))
-
-            ot_sql1 = ot_sql.format(**locals())
-            out_table_1 = out_table
+        ot_sql1 = ot_sql.format(**locals())
+        out_table_1 = out_table
 
         # Find the maximum number of iterations to try
         # If not done by v_cnt iterations, there is a negative cycle.
@@ -314,9 +264,6 @@ def graph_apsp(schema_madlib, vertex_table, vertex_id, edge_table,
             plpy.execute("DROP VIEW IF EXISTS {0}".format(tmp_view))
             plpy.execute("DROP TABLE IF EXISTS {0},{1}".
                          format(out_table, summary_table))
-            if is_hawq:
-                plpy.execute("DROP TABLE IF EXISTS {0},{1}".format(
-                    out_table_1, out_table_2))
             if grouping_cols:
                 plpy.error(("Graph APSP: {0} has less than 2 vertices in " +
                             "every group.").format(edge_table))
@@ -382,51 +329,16 @@ def graph_apsp(schema_madlib, vertex_table, vertex_id, edge_table,
                 """.format(**locals())
             plpy.execute(update_sql)
 
-            # HAWQ employs alternating tables and has to be handled separately
-            if is_hawq:
-
-                # Stop if therea re no more updates
-                if table_is_empty(tmp_view):
-
-                    plpy.execute("DROP VIEW {0}".format(tmp_view))
-                    plpy.execute("ALTER TABLE {0} RENAME TO {1}".format(
-                        out_table_1, out_table))
-                    break
-
-                # The new output table will still have the old values for
-                # every vertex pair that does not appear on the update view.
-
-                plpy.execute("TRUNCATE TABLE {0}".format(out_table_2))
-                fill_sql = """ INSERT INTO {out_table_2}
-                    SELECT * FROM {out_table_1} AS out WHERE NOT EXISTS
-                        (SELECT 1 FROM {tmp_view} AS t
-                        WHERE t.{src} = out.{src} AND
-                            t.{dest} = out.{dest} {checkg_o1t})
-                    UNION
-                    SELECT * FROM {tmp_view}""".format(**locals())
-                plpy.execute(fill_sql)
-
-                # Swap the table names and the sql command we use for filtering
-                tmpname = out_table_1
-                out_table_1 = out_table_2
-                out_table_2 = tmpname
-
-                tmpname = ot_sql1
-                ot_sql1 = ot_sql2
-                ot_sql2 = tmpname
-
-            else:
-
-                updates = plpy.execute(
-                    """ UPDATE {out_table}
-                        SET {weight} = {tmp_view}.{weight},
-                            parent = {tmp_view}.parent
-                        FROM {tmp_view}
-                        WHERE {tmp_view}.{src} = {out_table}.{src} AND
-                            {tmp_view}.{dest} = {out_table}.{dest} {checkg_ot}
-                    """.format(**locals()))
-                if updates.nrows() == 0:
-                    break
+            updates = plpy.execute(
+                """ UPDATE {out_table}
+                    SET {weight} = {tmp_view}.{weight},
+                        parent = {tmp_view}.parent
+                    FROM {tmp_view}
+                    WHERE {tmp_view}.{src} = {out_table}.{src} AND
+                        {tmp_view}.{dest} = {out_table}.{dest} {checkg_ot}
+                """.format(**locals()))
+            if updates.nrows() == 0:
+                break
 
         # The algorithm should have reached a break command by this point.
         # This check handles the existence of a negative cycle.
@@ -437,9 +349,6 @@ def graph_apsp(schema_madlib, vertex_table, vertex_id, edge_table,
                 plpy.execute("DROP VIEW IF EXISTS {0}".format(tmp_view))
                 plpy.execute("DROP TABLE IF EXISTS {0},{1}".
                              format(out_table, summary_table))
-                if is_hawq:
-                    plpy.execute("DROP TABLE IF EXISTS {0},{1}".format(
-                        out_table_1, out_table_2))
                 plpy.error("Graph APSP: Detected a negative cycle in the graph.")
 
             # It is possible that not all groups has negative cycles.
@@ -455,25 +364,10 @@ def graph_apsp(schema_madlib, vertex_table, vertex_id, edge_table,
 
                 # Delete the groups with negative cycles from the output table.
 
-                # HAWQ doesn't support DELETE so we have to copy the valid results.
-                if is_hawq:
-                    sql_del = """ CREATE TABLE {out_table} AS
-                        SELECT *
-                        FROM {out_table_1} AS out
-                        WHERE NOT EXISTS(
-                            SELECT 1
-                            FROM {tmp_view}
-                            WHERE {checkg_o1t_sub}
-                            );"""
-                    plpy.execute(sql_del.format(**locals()))
-                    plpy.execute("DROP VIEW IF EXISTS {0}".format(tmp_view))
-                    plpy.execute("DROP TABLE IF EXISTS {0},{1}".format(
-                        out_table_1, out_table_2))
-                else:
-                    sql_del = """ DELETE FROM {out_table}
-                        USING {tmp_view}
-                        WHERE {checkg_ot_sub}"""
-                    plpy.execute(sql_del.format(**locals()))
+                sql_del = """ DELETE FROM {out_table}
+                    USING {tmp_view}
+                    WHERE {checkg_ot_sub}"""
+                plpy.execute(sql_del.format(**locals()))
 
                 plpy.execute("DROP VIEW IF EXISTS {0}".format(tmp_view))
 
@@ -489,8 +383,6 @@ def graph_apsp(schema_madlib, vertex_table, vertex_id, edge_table,
 
         else:
             plpy.execute("DROP VIEW IF EXISTS {0}".format(tmp_view))
-            if is_hawq:
-                plpy.execute("DROP TABLE IF EXISTS {0}".format(out_table_2))
 
     return None
 
