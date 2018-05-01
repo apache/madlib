@@ -31,7 +31,7 @@ from utilities.utilities import _assert
 from utilities.utilities import extract_keyvalue_params
 from utilities.utilities import unique_string
 from utilities.utilities import add_postfix
-from utilities.utilities import is_psql_numeric_type
+from utilities.utilities import is_psql_numeric_type, is_psql_boolean_type
 from utilities.utilities import split_quoted_delimited_str
 from utilities.utilities import py_list_to_sql_string
 # ------------------------------------------------------------
@@ -56,6 +56,11 @@ def _tree_validate_args(
             "Decision tree error: Invalid data table.")
     _assert(table_exists(training_table_name),
             "Decision tree error: Data table is missing.")
+    _assert(not table_is_empty(training_table_name,
+                               _get_filter_str(dependent_variable, grouping_cols)),
+            "Decision tree error: Data table ({0}) is empty "
+            "(after filtering invalid tuples)".
+            format(training_table_name))
 
     _assert(not table_exists(output_table_name, only_first_schema=True),
             "Decision tree error: Output table already exists.")
@@ -567,10 +572,13 @@ def _is_dep_categorical(training_table_name, dependent_variable):
     @brief Sample the dependent variable to check whether it is
     a categorical variable.
     """
-    sample_dep = plpy.execute("SELECT " + dependent_variable +
-                              " AS dep FROM " +
-                              training_table_name + " LIMIT 1")[0]['dep']
-    return (not isinstance(sample_dep, float), isinstance(sample_dep, bool))
+    sample_dep = get_expr_type(dependent_variable, training_table_name)
+    is_dep_numeric = is_psql_numeric_type(sample_dep,
+                                          exclude=['smallint',
+                                                   'integer',
+                                                   'bigint'])
+    is_dep_bool = is_psql_boolean_type(sample_dep)
+    return (not is_dep_numeric, is_dep_bool)
 # ------------------------------------------------------------
 
 

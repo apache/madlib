@@ -2,7 +2,6 @@ import plpy
 import re
 import string
 
-
 # Postgresql naming restrictions
 """
 Both keywords and identifier names in PostgreSQL have a maximum length limit of
@@ -272,16 +271,24 @@ def drop_tables(table_list):
     if drop_str:
         plpy.execute("DROP TABLE IF EXISTS {0}".format(drop_str))
 
-def table_is_empty(tbl):
+def table_is_empty(tbl, filter_str=None):
     """
     Returns True if the input table has no rows
     """
     if tbl is None or tbl.lower() == 'null':
         plpy.error('Input error: Table name (NULL) is invalid')
-    content = plpy.execute("""SELECT count(*) FROM
-                                (SELECT * FROM {0} LIMIT 1) q1""".
-                           format(tbl))[0]["count"]
-    return not bool(content)   # if content == 0 then True, else False
+    where_clause = "WHERE " + filter_str if filter_str else ''
+    n_valid_tuples = plpy.execute("""
+        SELECT count(*)
+        FROM (
+            -- create a sub-query to get only single tuple
+            SELECT *
+            FROM {0}
+            {1}
+            LIMIT 1
+        ) q
+        """.format(tbl, where_clause))[0]["count"]
+    return (False if n_valid_tuples > 0 else True)
 # -------------------------------------------------------------------------
 
 
@@ -368,8 +375,12 @@ def get_expr_type(expr, tbl):
         SELECT pg_typeof({0}) AS type
         FROM {1}
         LIMIT 1
-        """.format(expr, tbl))[0]['type']
-    return expr_type.lower()
+        """.format(expr, tbl))
+    if not expr_type:
+        plpy.error("Unable to get type of expression ({0}). "
+                   "Table {1} may not contain any valid tuples".
+                   format(expr, tbl))
+    return expr_type[0]['type'].lower()
 # -------------------------------------------------------------------------
 
 
