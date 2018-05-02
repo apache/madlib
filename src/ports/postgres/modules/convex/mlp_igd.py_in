@@ -75,31 +75,34 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
     """
     warm_start = bool(warm_start)
     optimizer_params = _get_optimizer_params(optimizer_param_str or "")
-
-    tolerance = optimizer_params["tolerance"]
-    n_iterations = optimizer_params["n_iterations"]
-    step_size_init = optimizer_params["learning_rate_init"]
-    iterations_per_step = optimizer_params["iterations_per_step"]
-    power = optimizer_params["power"]
-    gamma = optimizer_params["gamma"]
-    step_size = step_size_init
-    n_tries = optimizer_params["n_tries"]
-    # lambda is a reserved word in python
-    lambda_ = optimizer_params["lambda"]
-    batch_size = optimizer_params['batch_size']
-    n_epochs = optimizer_params['n_epochs']
-
     summary_table = add_postfix(output_table, "_summary")
     standardization_table = add_postfix(output_table, "_standardization")
     hidden_layer_sizes = hidden_layer_sizes or []
 
-    # Note that we don't support weights with mini batching yet, so validate
-    # this based on is_minibatch_enabled.
-    weights = '1' if not weights or not weights.strip() else weights.strip()
     _validate_args(source_table, output_table, summary_table,
                    standardization_table, independent_varname,
                    dependent_varname, hidden_layer_sizes, optimizer_params,
                    warm_start, activation, grouping_col)
+
+    tolerance = optimizer_params['tolerance']
+    n_iterations = optimizer_params['n_iterations']
+    step_size_init = optimizer_params['learning_rate_init']
+    iterations_per_step = optimizer_params['iterations_per_step']
+    power = optimizer_params['power']
+    gamma = optimizer_params['gamma']
+    step_size = step_size_init
+    n_tries = optimizer_params['n_tries']
+    # lambda is a reserved word in python
+    lambda_ = optimizer_params['lambda']
+    batch_size = optimizer_params['batch_size']
+    n_epochs = optimizer_params['n_epochs']
+    momentum = optimizer_params['momentum']
+    is_nesterov = optimizer_params['nesterov']
+
+    # Note that we don't support weights with mini batching yet, so validate
+    # this based on is_minibatch_enabled.
+    weights = '1' if not weights or not weights.strip() else weights.strip()
+
     is_minibatch_enabled = check_if_minibatch_enabled(source_table, independent_varname)
     _validate_params_based_on_minibatch(source_table, independent_varname,
                                         dependent_varname, weights,
@@ -107,7 +110,7 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
                                         is_minibatch_enabled)
     activation = _get_activation_function_name(activation)
     learning_rate_policy = _get_learning_rate_policy_name(
-                                optimizer_params["learning_rate_policy"])
+        optimizer_params["learning_rate_policy"])
     activation_index = _get_activation_index(activation)
 
     # The original dependent_varname is required later if warm start is
@@ -251,7 +254,9 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
         "x_mean_table": x_mean_table,
         "batch_size": batch_size,
         "n_epochs": n_epochs,
-        "start_coeff": start_coeff
+        "start_coeff": start_coeff,
+        "momentum": momentum,
+        "is_nesterov": is_nesterov
     }
     # variables to be used by GroupIterationController
     it_args.update({
@@ -305,7 +310,9 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
                             ({start_coeff})::DOUBLE PRECISION[],
                             {lambda_},
                             {batch_size}::integer,
-                            {n_epochs}::integer
+                            {n_epochs}::integer,
+                            {momentum}::FLOAT8,
+                            {is_nesterov}::boolean
                         )
                         """
                 else:
@@ -320,7 +327,9 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
                             {is_classification},
                             ({weights})::DOUBLE PRECISION,
                             ({start_coeff})::DOUBLE PRECISION[],
-                            {lambda_}
+                            {lambda_},
+                            {momentum}::FLOAT8,
+                            {is_nesterov}::boolean
                         )
                         """
                 it.update(train_sql)
@@ -498,6 +507,8 @@ def _create_summary_table(args):
             tolerance FLOAT,
             learning_rate_init FLOAT,
             learning_rate_policy TEXT,
+            momentum FLOAT,
+            nesterov BOOLEAN,
             n_iterations INTEGER,
             n_tries INTEGER,
             layer_sizes INTEGER[],
@@ -520,6 +531,8 @@ def _create_summary_table(args):
             {tolerance},
             {step_size_init},
             '{learning_rate_policy}',
+            {momentum},
+            {is_nesterov},
             {n_iterations},
             {n_tries},
             {layer_sizes_str},
@@ -616,7 +629,9 @@ def _get_optimizer_params(param_str):
         "power": (0.5, float),
         "lambda": (0, float),
         "n_epochs": (1, int),
-        "batch_size": (1, int)
+        "batch_size": (1, int),
+        "momentum": (0.9, float),
+        "nesterov": (True, bool)
     }
     param_defaults = dict([(k, v[0]) for k, v in params_defaults.items()])
     param_types = dict([(k, v[1]) for k, v in params_defaults.items()])
@@ -794,12 +809,15 @@ def _validate_args(source_table, output_table, summary_table,
             "MLP error: batch_size should be greater than 0.")
     _assert(optimizer_params["n_epochs"] > 0,
             "MLP error: n_epochs should be greater than 0.")
+    _assert(0 <= optimizer_params["momentum"] <= 1,
+            "MLP error: momentum should be in the range [0, 1].")
 
     if grouping_col:
         cols_in_tbl_valid(source_table,
                           _string_to_array_with_quotes(grouping_col),
                           'MLP',
                           invalid_names=[independent_varname, dependent_varname])
+
 
 def _get_learning_rate_policy_name(learning_rate_policy):
     if not learning_rate_policy:
@@ -1199,6 +1217,8 @@ def mlp_help(schema_madlib, message, is_classification):
     tolerance            -- The tolerance as given in optimizer_params.
     learning_rate_init   -- The initial learning rate as given in optimizer_params.
     learning_rate_policy -- The learning rate policy as given in optimizer_params.
+    momentum             -- Momentum value as given in optimizer_params.
+    nesterov             -- Nesterov value as given in optimizer_params.
     n_iterations         -- The number of iterations run.
     n_tries              -- The number of tries as given in optimizer_params.
     layer_sizes          -- The number of units in each layer including the input
@@ -1571,6 +1591,20 @@ def mlp_help(schema_madlib, message, is_classification):
                                             uses mini-batch gradient descent. During gradient
                                             descent, n_epochs represents the number of times
                                             all batches in a buffer are iterated over.
+    momentum                            --  Default: 0.9. Momentum can help accelerate
+                                            learning and avoid local minima when
+                                            using gradient descent. Value must be in the
+                                            range 0 to 1, where 0 means no momentum.
+    nesterov                            --  Default: TRUE. Nesterov momentum can provide
+                                            better results than using classical momentum alone,
+                                            due to its look ahead characteristics. In Nesterov
+                                            momentum, we first move the model in the direction of
+                                            velocity and use the updated model to calculate
+                                            the gradient. The main difference being that in
+                                            classical momentum, we compute the gradient before
+                                            updating the model whereas in nesterov we first update
+                                            the model and then compute the gradient from the
+                                            updated position.
     """.format(**args)
 
     if not message:
@@ -1753,6 +1787,7 @@ class MLPMinibatchPreProcessor:
     """
     # summary table columns names
     DEPENDENT_VARNAME = "dependent_varname"
+    DEPENDENT_VARTYPE = "dependent_vartype"
     INDEPENDENT_VARNAME = "independent_varname"
     GROUPING_COL = "grouping_cols"
     CLASS_VALUES = "class_values"
@@ -1781,7 +1816,7 @@ class MLPMinibatchPreProcessor:
             summary_table_columns = summary_table_columns[0]
 
         required_columns = (self.DEPENDENT_VARNAME, self.INDEPENDENT_VARNAME,
-                            self.CLASS_VALUES, self.GROUPING_COL)
+                            self.CLASS_VALUES, self.GROUPING_COL, self.DEPENDENT_VARTYPE)
         if set(required_columns) <= set(summary_table_columns):
             self.preprocessed_summary_dict = summary_table_columns
         else:
