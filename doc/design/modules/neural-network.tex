@@ -22,7 +22,12 @@
 \chapter{Neural Network}
 
 \begin{moduleinfo}
-\item[Authors] {Xixuan Feng, Cooper Sloan}
+\item[Authors] {Xixuan Feng, Cooper Sloan, Rahul Iyer, Nikhil Kak}
+\item[History]
+    \begin{modulehistory}
+        \item[v0.1] Initial version
+        \item[v0.2] Added a section for momentum updates. Also updated the mlp-train-iteration algorithm to include momentum calculations.
+    \end{modulehistory}
 \end{moduleinfo}
 
 % Abstract. What is the problem we want to solve?
@@ -87,7 +92,7 @@ For inner (hidden) layers, it is more difficult to compute the partial derivativ
 That said, $\frac{\partial f}{\partial \mathit{net}_N^t} = (o_N^t - y^t) \phi'(\mathit{net}_N^t)$ is easy, where $t = 1,...,n_N$, but $\frac{\partial f}{\partial \mathit{net}_k^j}$ is hard, where $k = 1,...,N-1, j = 1,..,n_k$.
 This hard-to-compute statistic is referred to as \textit{delta error}, and let $\delta_k^j = \frac{\partial f}{\partial \mathit{net}_k^j}$, where $k = 1,...,N-1, j = 1,..,n_k$.
 If this is solved, the gradient can be easily computed as follow
-\[\frac{\partial f}{\partial u_{k-1}^{sj}} = \boxed{\frac{\partial f}{\partial \mathit{net}_k^j}} \cdot \frac{\partial \mathit{net}_k^j}{\partial u_{k-1}^{sj}} = \boxed{\delta_k^j} o_{k-1}^s,\]
+    \[\frac{\partial f}{\partial u_{k-1}^{sj}} = \boxed{\frac{\partial f}{\partial \mathit{net}_k^j}} \cdot \frac{\partial \mathit{net}_k^j}{\partial u_{k-1}^{sj}} = \boxed{\delta_k^j} o_{k-1}^s,\]
 where $k = 1,...,N-1, s = 0,...,n_{k-1}, j = 1,..,n_k$.
 To solve this, we introduce the popular backpropagation below.
 
@@ -116,6 +121,26 @@ Using the above equation, we can solve delta error backward iteratively
 To sum up, we need the following equation for error back propagation
 \[\boxed{\delta_{k}^j = \sum_{t=1}^{n_{k+1}} \left( \delta_{k+1}^t \cdot u_{k}^{jt} \right) \cdot \phi'(\mathit{net}_{k}^j)}\]
 where $k = 1,...,N-1$, and $j = 1,...,n_{k}$.
+
+\paragraph{Momentum updates.}
+Momentum\cite{momentum_ilya}\cite{momentum_cs231n} can help accelerate learning and avoid local minima when using gradient descent. We also support nesterov's accelarated gradient due to its look ahead characteristics. \\
+Here we need to introduce two new variables namely velocity and momentum. momentum must be in the range 0 to 1, where 0 means no momentum.
+The velocity is the same size as the coefficient and is accumulated in the direction of persistent reduction, which speeds up the optimization. The momentum value is responsible for damping the velocity and is analogous to the coefficient of friction. \\
+In classical momentum we first correct the velocity, and then update the model with that velocity, whereas in Nesterov momentum, we first move the model in the direction of momentum*velocity, then correct the velocity and finally use the updated model to calculate the gradient. The main difference being that in classical momentum, we compute the gradient before updating the model whereas in nesterov we first update the model and then compute the gradient from the updated position.\\
+
+Classic momentum update
+\[\begin{aligned}
+    \mathit{v} = \mu * \mathit{v} - \eta * \frac{\partial f}{\partial u_{k-1}^{sj}} &\quad \text{ (velocity update),} \\
+    \mathit{u} = \mathit{u} + \mathit{v} \\
+\end{aligned}\]
+
+Nesterov momentum update
+\[\begin{aligned}
+    \mathit{ua} = \mathit{u} + \mu * \mathit{v}  &\quad \text{ (nesterov's initial coefficient update to the model),} \\
+    \mathit{v} = \mu * \mathit{v} -  \eta * \frac{\partial f}{\partial ua_{k-1}^{sj}}  &\quad \text{ (velocity update, use the lookahead model $ua$ for gradient calculations),} \\
+    \mathit{u} = \mathit{u} - \eta * \frac{\partial f}{\partial ua_{k-1}^{sj}} \\
+\end{aligned}\]
+where $u$ is the coefficient vector, $v$ is the velocity vector, $\mu$ is the momentum value, $\eta$ is the learning rate and $\frac{\partial f}{\partial ua_{k-1}^{sj}}$ is the gradient calculated at the updated position $ua$
 
 \subsubsection{The $\mathit{Gradient}$ Function}
 \begin{algorithm}[mlp-gradient$(u, x, y)$] \label{alg:mlp-gradient}
@@ -196,17 +221,28 @@ derivative of activation unit $\phi' : \mathbb{R} \to \mathbb{R}$}
 \end{algorithmic}
 \end{algorithm}
 
-\begin{algorithm}[mlp-train-iteration$(X, Y, \eta)$] \label{alg:mlp-train-iteration}
+\begin{algorithm}[mlp-train-iteration$(X, Y, \eta, \mu, n)$] \label{alg:mlp-train-iteration}
 \alginput{
 start vectors $X_{i...m} \in \mathbb{R}^{n_0}$,\\
 end vectors $Y_{i...m} \in \mathbb{R}^{n_N}$,\\
-learning rate $\eta$,\\}
+learning rate $\eta$,\\
+momentum $\mu$,\\
+nesterov flag n\\}
 \algoutput{Coefficients $u = \{ u_{k-1}^{sj} \; | \; k = 1,...,N, \: s = 0,...,n_{k-1}, \: j = 1,...,n_k\}$}
 \begin{algorithmic}[1]
     \State \texttt{Randomnly initialize u}
+    \State \texttt{Initialize velocity v to 0}
     \For{$i = 1,...,m$}
+        \If{n == True}
+            \State $u \set u + \mu * v$ \text{ (nesterov's initial coefficient update)}
+        \EndIf
         \State $\nabla f(u) \set \texttt{mlp-gradient}(u,X_i,Y_i)$
-        \State $u \set u - (\eta \nabla f(u) u + \lambda u)$
+        \State $v \set \mu * v - (\eta \nabla f(u) u + \lambda u)$ \Comment{(nesterov's initial coefficient update)}
+        \If{$\mu$ == 0 and n == False }
+            \State $u \set u + v$ \Comment{ (classic(non-nesterov) momentum update)}
+        \Else
+            \State $u \set u - (\eta \nabla f(u) u + \lambda u)$
+        \EndIf
     \EndFor
     \State \Return $u$
 \end{algorithmic}

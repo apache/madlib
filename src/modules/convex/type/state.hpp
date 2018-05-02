@@ -632,6 +632,8 @@ public:
             + 1                         // lambda
             + 1                         // is_classification
             + 1                         // activation
+            + 1                         // momentum
+            + 1                         // is_nesterov
             + sizeOfModel               // model
             + sizeOfModel               // incrModel
             + 1                         // numRows
@@ -669,16 +671,13 @@ private:
             reinterpret_cast<dimension_pointer_type>(&mStorage[1]);
         task.stepsize.rebind(&mStorage[N + 2]);
         task.lambda.rebind(&mStorage[N + 3]);
-        size_t sizeOfModel = task.model.rebind(&mStorage[N + 4],
-                                                 &mStorage[N + 5],
-                                                 &mStorage[N + 6],
-                                                 task.numberOfStages,
-                                                 task.numbersOfUnits);
-
-        algo.incrModel.rebind(&mStorage[N + 4],&mStorage[N + 5],&mStorage[N + 6 + sizeOfModel],
+        size_t sizeOfModel = task.model.rebind(&mStorage[N + 4],&mStorage[N + 5],&mStorage[N + 6],&mStorage[N + 7], &mStorage[N + 8],
                 task.numberOfStages, task.numbersOfUnits);
-        algo.numRows.rebind(&mStorage[N + 6 + 2*sizeOfModel]);
-        algo.loss.rebind(&mStorage[N + 7 + 2*sizeOfModel]);
+
+        algo.incrModel.rebind(&mStorage[N + 4], &mStorage[N + 5], &mStorage[N + 6], &mStorage[N + 7], &mStorage[N + 8 + sizeOfModel],
+                task.numberOfStages, task.numbersOfUnits);
+        algo.numRows.rebind(&mStorage[N + 8 + 2*sizeOfModel]);
+        algo.loss.rebind(&mStorage[N + 9 + 2*sizeOfModel]);
 
     }
 
@@ -796,12 +795,13 @@ public:
             + 1                         // lambda
             + 1                         // is_classification
             + 1                         // activation
+            + 1                          // momentum
+            + 1                          // is_nesterov
             + sizeOfModel               // model
             + 1                         // numRows
             + 1                         // batchSize
             + 1                         // nEpochs
             + 1;                        // loss
-
     }
 
     Handle mStorage;
@@ -834,14 +834,17 @@ private:
         stepsize.rebind(&mStorage[N + 2]);
         lambda.rebind(&mStorage[N + 3]);
         size_t sizeOfModel = model.rebind(&mStorage[N + 4],
-                                               &mStorage[N + 5],
-                                               &mStorage[N + 6],
-                                               numberOfStages,
-                                               numbersOfUnits);
-        numRows.rebind(&mStorage[N + 6 + sizeOfModel]);
-        batchSize.rebind(&mStorage[N + 7 + sizeOfModel]);
-        nEpochs.rebind(&mStorage[N + 8 + sizeOfModel]);
-        loss.rebind(&mStorage[N + 9 + sizeOfModel]);
+                                          &mStorage[N + 5],
+                                          &mStorage[N + 6],
+                                          &mStorage[N + 7],
+                                          &mStorage[N + 8],
+                                          numberOfStages,
+                                          numbersOfUnits);
+
+        numRows.rebind(&mStorage[N + 8 + sizeOfModel]);
+        batchSize.rebind(&mStorage[N + 9 + sizeOfModel]);
+        nEpochs.rebind(&mStorage[N + 10 + sizeOfModel]);
+        loss.rebind(&mStorage[N + 11 + sizeOfModel]);
     }
 
 

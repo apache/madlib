@@ -58,6 +58,18 @@ public:
             const Matrix                        &y,
             const double                        &stepsize);
 
+    static double getLossAndGradient(
+            model_type                    &model,
+            const Matrix                        &x,
+            const Matrix                        &y,
+            std::vector<Matrix>                 &total_gradient_per_layer,
+            const double                        &stepsize);
+
+    static double getLoss(
+            const ColumnVector                  &y_true,
+            const ColumnVector                  &y_estimated,
+            const bool                          is_classification);
+
     static double loss(
             const model_type                    &model,
             const independent_variables_type    &x,
@@ -120,56 +132,80 @@ double MLP<Model, Tuple>::lambda = 0;
 
 template <class Model, class Tuple>
 double
+MLP<Model, Tuple>::getLoss(const ColumnVector &y_true,
+                           const ColumnVector &y_estimated,
+                           const bool is_classification){
+    if(is_classification){
+        // cross entropy loss function
+        double clip = 1.e-10;
+        ColumnVector y_clipped = y_estimated.cwiseMax(clip).cwiseMin(1. - clip);
+        return -(y_true.array() * y_clipped.array().log() +
+                    (1 - y_true.array()) * (1 - y_clipped.array()).log()
+                ).sum();
+    }
+    else{
+        // squared loss
+        return 0.5 * (y_estimated - y_true).squaredNorm();
+    }
+}
+
+template <class Model, class Tuple>
+double
 MLP<Model, Tuple>::getLossAndUpdateModel(
         model_type           &model,
         const Matrix         &x_batch,
         const Matrix         &y_true_batch,
         const double         &stepsize) {
 
-    uint16_t num_layers = static_cast<uint16_t>(model.u.size()); // assuming nu. of layers >= 1
-    Index num_rows_in_batch = x_batch.rows();
     double total_loss = 0.;
+    // model is updated with the momentum step (i.e. velocity vector)
+    // if Nesterov Accelerated Gradient is enabled
+    model.nesterovUpdatePosition();
 
-    // gradient added over the batch
-    std::vector<Matrix> total_gradient_per_layer(num_layers);
-    for (Index k=0; k < num_layers; ++k)
+    // initialize gradient vector
+    std::vector<Matrix> total_gradient_per_layer(model.num_layers);
+    for (Index k=0; k < model.num_layers; ++k) {
         total_gradient_per_layer[k] = Matrix::Zero(model.u[k].rows(),
                                                    model.u[k].cols());
+    }
 
+    std::vector<ColumnVector> net, o, delta;
+    Index num_rows_in_batch = x_batch.rows();
     for (Index i=0; i < num_rows_in_batch; i++){
+        // gradient and loss added over the batch
         ColumnVector x = x_batch.row(i);
         ColumnVector y_true = y_true_batch.row(i);
 
-        std::vector<ColumnVector> net, o, delta;
         feedForward(model, x, net, o);
         backPropogate(y_true, o.back(), net, model, delta);
 
-        for (Index k=0; k < num_layers; k++){
+        // compute the gradient
+        for (Index k=0; k < model.num_layers; k++){
                 total_gradient_per_layer[k] += o[k] * delta[k].transpose();
         }
 
-        // loss computation
-        ColumnVector y_estimated = o.back();
-        if(model.is_classification){
-            double clip = 1.e-10;
-            y_estimated = y_estimated.cwiseMax(clip).cwiseMin(1.-clip);
-            total_loss += - (y_true.array()*y_estimated.array().log()
-                   + (-y_true.array()+1)*(-y_estimated.array()+1).log()).sum();
-        }
-        else{
-            total_loss += 0.5 * (y_estimated - y_true).squaredNorm();
-        }
+        // compute the loss
+        total_loss += getLoss(y_true, o.back(), model.is_classification);
     }
-    for (Index k=0; k < num_layers; k++){
+
+    // convert gradient to a gradient update vector
+    //  1. normalize to per row update
+    //  2. discount by stepsize
+    //  3. add regularization
+    //  4. make negative
+    for (Index k=0; k < model.num_layers; k++){
         Matrix regularization = MLP<Model, Tuple>::lambda * model.u[k];
         regularization.row(0).setZero(); // Do not update bias
-        model.u[k] -=
-            stepsize *
-            (total_gradient_per_layer[k] / static_cast<double>(num_rows_in_batch) +
-             regularization);
+        total_gradient_per_layer[k] = -stepsize * (total_gradient_per_layer[k] / static_cast<double>(num_rows_in_batch) +
+                                                  regularization);
+        model.updateVelocity(total_gradient_per_layer[k], k);
+        model.updatePosition(total_gradient_per_layer[k], k);
     }
+
     return total_loss;
+
 }
+
 
 template <class Model, class Tuple>
 void
@@ -177,17 +213,29 @@ MLP<Model, Tuple>::gradientInPlace(
         model_type                          &model,
         const independent_variables_type    &x,
         const dependent_variable_type       &y_true,
-        const double                        &stepsize) {
-    size_t N = model.u.size(); // assuming nu. of layers >= 1
+        const double                        &stepsize)
+{
+    model.nesterovUpdatePosition();
+
     std::vector<ColumnVector> net, o, delta;
 
     feedForward(model, x, net, o);
     backPropogate(y_true, o.back(), net, model, delta);
 
-    for (size_t k=0; k < N; k++){
+    for (Index k=0; k < model.num_layers; k++){
         Matrix regularization = MLP<Model, Tuple>::lambda*model.u[k];
         regularization.row(0).setZero(); // Do not update bias
-        model.u[k] -= stepsize * (o[k] * delta[k].transpose() + regularization);
+        if (model.momentum > 0){
+            Matrix gradient = -stepsize * (o[k] * delta[k].transpose() + regularization);
+            model.updateVelocity(gradient, k);
+            model.updatePosition(gradient, k);
+        }
+        else {
+            // Updating model inline instead of using updatePosition because
+            // we suspect that updatePosition ends up creating a copy of the
+            // gradient even if it is passed by reference and hence making it slower.
+            model.u[k] -= stepsize * (o[k] * delta[k].transpose() + regularization);
+        }
     }
 }
 
@@ -197,21 +245,14 @@ MLP<Model, Tuple>::loss(
         const model_type                    &model,
         const independent_variables_type    &x,
         const dependent_variable_type       &y_true) {
+
     // Here we compute the loss. In the case of regression we use sum of square errors
     // In the case of classification the loss term is cross entropy.
     std::vector<ColumnVector> net, o;
     feedForward(model, x, net, o);
     ColumnVector y_estimated = o.back();
 
-    if(model.is_classification){
-        double clip = 1.e-10;
-        y_estimated = y_estimated.cwiseMax(clip).cwiseMin(1.-clip);
-        return - (y_true.array()*y_estimated.array().log()
-               + (-y_true.array()+1)*(-y_estimated.array()+1).log()).sum();
-    }
-    else{
-        return 0.5 * (y_estimated - y_true).squaredNorm();
-    }
+    return getLoss(y_true, y_estimated, model.is_classification);
 }
 
 template <class Model, class Tuple>
@@ -323,4 +364,5 @@ MLP<Model, Tuple>::backPropogate(
 } // namespace madlib
 
 #endif
+
 
