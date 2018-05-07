@@ -800,26 +800,39 @@ def get_table_qualified_col_str(tbl_name, col_list):
                        for col in col_list])
 
 
+def validate_reserved_and_target_cols_intersection(source_table,
+                                                   target_cols_list,
+                                                   reserved_cols_list,
+                                                   module_name):
+    """
+        Function to check if any target column name is part of reserved column
+        names. Throw an error if it is.
+    """
+    cols_in_tbl_valid(source_table,
+                      target_cols_list,
+                      module_name)
+    intersect = frozenset(target_cols_list).intersection(
+                                                frozenset(reserved_cols_list))
+    _assert(len(intersect) == 0,
+            "{0} error: Conflicting column names.\n"
+            "Some predefined keyword(s) ({1}) are not allowed "
+            "for column names in module input params.".format(
+                module_name, ', '.join(intersect)))
+
 def get_grouping_col_str(schema_madlib, module_name, reserved_cols,
                          source_table, grouping_col):
     if grouping_col and grouping_col.lower() != 'null':
         grouping_col_array = _string_to_array_with_quotes(grouping_col)
-        cols_in_tbl_valid(source_table,
-                          grouping_col_array,
-                          module_name)
-        intersect = frozenset(
-            _string_to_array(grouping_col)).intersection(frozenset(reserved_cols))
-        _assert(len(intersect) == 0,
-                "{0} error: Conflicting grouping column name.\n"
-                "Some predefined keyword(s) ({1}) are not allowed "
-                "for grouping column names!".format(module_name, ', '.join(intersect)))
-
-        grouping_list = [i + "::text"
-                         for i in explicit_bool_to_text(
-                             source_table,
-                             grouping_col_array,
-                             schema_madlib)]
-        grouping_str = ','.join(grouping_list)
+        validate_reserved_and_target_cols_intersection(source_table,
+                                                       grouping_col_array,
+                                                       reserved_cols,
+                                                       module_name)
+        grouping_list_with_text = [i + "::text" for i in
+                                                    explicit_bool_to_text(
+                                                        source_table,
+                                                        grouping_col_array,
+                                                        schema_madlib)]
+        grouping_str = ','.join(grouping_list_with_text)
     else:
         grouping_str = "Null"
         grouping_col = None
