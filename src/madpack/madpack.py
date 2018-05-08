@@ -27,8 +27,9 @@ py_min_ver = [2, 6]
 
 # Check python version
 if sys.version_info[:2] < py_min_ver:
-    print("ERROR: python version too old (%s). You need %s or greater." %
-          ('.'.join(str(i) for i in sys.version_info[:3]), '.'.join(str(i) for i in py_min_ver)))
+    print("ERROR: python version too old ({0}). You need {1} or greater.".
+          format('.'.join(map(str, sys.version_info[:3])),
+                 '.'.join(map(str, py_min_ver))))
     exit(1)
 
 # Find MADlib root directory. This file is installed to
@@ -57,7 +58,7 @@ portid_list = []
 for port in ports:
     portid_list.append(port)
 
-SUPPORTED_PORTS = ('postgres', 'greenplum', 'hawq')
+SUPPORTED_PORTS = ('postgres', 'greenplum')
 
 # Global variables
 portid = None       # Target port ID (eg: pg90, gp40)
@@ -66,7 +67,6 @@ con_args = {}       # DB connection arguments
 verbose = None      # Verbose flag
 keeplogs = None
 tmpdir = None
-is_hawq2 = False
 
 
 def _make_dir(dir):
@@ -99,7 +99,7 @@ def _internal_run_query(sql, show_error):
 def _get_relative_maddir(maddir, port):
     """ Return a relative path version of maddir
 
-    GPDB and HAWQ installations have a symlink outside of GPHOME that
+    GPDB installations have a symlink outside of GPHOME that
     links to the current GPHOME. After a DB upgrade, this symlink is updated to
     the new GPHOME.
 
@@ -107,7 +107,7 @@ def _get_relative_maddir(maddir, port):
     madlib function definition. Replacing the GPHOME path with the equivalent
     relative path makes it simpler to perform DB upgrades without breaking MADlib.
     """
-    if port not in ('greenplum', 'hawq'):
+    if port == 'postgres':
         # do nothing for postgres
         return maddir
 
@@ -119,13 +119,12 @@ def _get_relative_maddir(maddir, port):
     except ValueError:
         return maddir
 
-    link_name = 'greenplum-db' if port == 'greenplum' else 'hawq'
-
     # Check outside $GPHOME if there is a symlink to this absolute path
     # os.pardir is equivalent to ..
     # os.path.normpath removes the extraneous .. from that path
-    rel_gphome = os.path.normpath(os.path.join(abs_gphome, os.pardir, link_name))
-    if os.path.islink(rel_gphome) and os.path.realpath(rel_gphome) == os.path.realpath(abs_gphome):
+    rel_gphome = os.path.normpath(os.path.join(abs_gphome, os.pardir, 'greenplum-db'))
+    if (os.path.islink(rel_gphome) and
+            os.path.realpath(rel_gphome) == os.path.realpath(abs_gphome)):
         # if the relative link exists and is pointing to current location
         return os.path.join(rel_gphome, 'madlib', tail)
     else:
@@ -198,7 +197,7 @@ def _run_sql_file(schema, maddir_mod_py, module, sqlfile,
             open(tmpfile, 'w').write(sql)
 
     # Run the SQL using DB command-line utility
-    if portid in ('greenplum', 'postgres', 'hawq'):
+    if portid in SUPPORTED_PORTS:
         sqlcmd = 'psql'
         # Test the DB cmd line utility
         std, err = subprocess.Popen(['which', sqlcmd], stdout=subprocess.PIPE,
@@ -255,9 +254,6 @@ def _check_db_port(portid):
             if row[0]['version'].lower().find('greenplum') < 0:
                 return True
         elif portid == 'greenplum':
-            if row[0]['version'].lower().find('hawq') < 0:
-                return True
-        elif portid == 'hawq':
             return True
     return False
 # ------------------------------------------------------------------------------
@@ -355,59 +351,37 @@ def _db_install(schema, dbrev, testcase):
         schema_writable = False
     # CASE #1: Target schema exists with MADlib objects:
     if schema_writable and madlib_exists:
-        # work-around before UDT is available in HAWQ
-        if portid == 'hawq':
-            hawq_overwrite_msg = (
-                "***************************************************************************"
-                "* Schema MADLIB already exists"
-                "* MADlib objects will be overwritten to the 'MADLIB' schema"
-                "* It may drop any database objects (tables, views, etc.) that depend on 'MADLIB' SCHEMA"
-                "***************************************************************************"
-                "Would you like to continue? [Y/N]")
-            info_(this, hawq_overwrite_msg)
-            go = raw_input('>>> ').upper()
-            while go not in ('Y', 'YES', 'N', 'NO'):
-                go = raw_input('Yes or No >>> ').upper()
-            if go in ('N', 'NO'):
-                info_(this, 'Installation stopped.', True)
-                return
-            # Rolling back in HAWQ will drop catalog functions. For exception, we
-            # simply push the exception to the caller to terminate the install
-            _db_create_objects(schema, None, testcase=testcase, hawq_debug=True)
-        else:
-            schema_overwrite_msg = (
-                "***************************************************************************"
-                "* Schema {0} already exists"
-                "* Installer will rename it to {1}"
-                "***************************************************************************"
-                "Would you like to continue? [Y/N]".
-                format(schema.upper(), temp_schema.upper()))
-            info_(this, schema_overwrite_msg)
-            go = raw_input('>>> ').upper()
-            while go not in ('Y', 'YES', 'N', 'NO'):
-                go = raw_input('Yes or No >>> ').upper()
-            if go in ('N', 'NO'):
-                info_(this, 'Installation stopped.', True)
-                return
+        schema_overwrite_msg = (
+            "***************************************************************************"
+            "* Schema {0} already exists"
+            "* Installer will rename it to {1}"
+            "***************************************************************************"
+            "Would you like to continue? [Y/N]".
+            format(schema.upper(), temp_schema.upper()))
+        info_(this, schema_overwrite_msg)
+        go = raw_input('>>> ').upper()
+        while go not in ('Y', 'YES', 'N', 'NO'):
+            go = raw_input('Yes or No >>> ').upper()
+        if go in ('N', 'NO'):
+            info_(this, 'Installation stopped.', True)
+            return
 
-            # Rename MADlib schema
-            _db_rename_schema(schema, temp_schema)
+        # Rename MADlib schema
+        _db_rename_schema(schema, temp_schema)
 
-            # Create MADlib schema
-            try:
-                _db_create_schema(schema)
-            except:
-                _db_rollback(schema, temp_schema)
+        # Create MADlib schema
+        try:
+            _db_create_schema(schema)
+        except:
+            _db_rollback(schema, temp_schema)
 
-            # Create MADlib objects
-            try:
-                _db_create_objects(schema, temp_schema, testcase=testcase)
-            except:
-                _db_rollback(schema, temp_schema)
+        # Create MADlib objects
+        try:
+            _db_create_objects(schema, temp_schema, testcase=testcase)
+        except:
+            _db_rollback(schema, temp_schema)
 
     # CASE #2: Target schema exists w/o MADlib objects:
-    # For HAWQ, after the DB initialization, there is no
-    # madlib.migrationhistory table, thus madlib_exists is False
     elif schema_writable and not madlib_exists:
             # Create MADlib objects
             try:
@@ -421,11 +395,6 @@ def _db_install(schema, dbrev, testcase):
     # CASE #3: Target schema does not exist:
     #
     elif not schema_writable:
-        if portid == 'hawq' and not is_hawq2:
-            # Rolling back in HAWQ will drop catalog functions. For exception, we
-            # simply push the exception to the caller to terminate the install
-            raise Exception("MADLIB schema is required for HAWQ")
-
         info_(this, "> Schema %s does not exist" % schema.upper(), verbose)
 
         # Create MADlib schema
@@ -465,7 +434,7 @@ def _db_upgrade(schema, dbrev):
     info_(this, "\tDetecting dependencies...", True)
 
     info_(this, "\tLoading change list...", True)
-    ch = uu.ChangeHandler(schema, portid, con_args, maddir, dbrev, is_hawq2)
+    ch = uu.ChangeHandler(schema, portid, con_args, maddir, dbrev)
 
     info_(this, "\tDetecting table dependencies...", True)
     td = uu.TableDependency(schema, portid, con_args)
@@ -606,17 +575,14 @@ def _db_create_schema(schema):
 # ------------------------------------------------------------------------------
 
 
-def _db_create_objects(schema, old_schema, upgrade=False, sc=None, testcase="",
-                       hawq_debug=False):
+def _db_create_objects(schema, old_schema, upgrade=False, sc=None, testcase=""):
     """
     Create MADlib DB objects in the schema
         @param schema Name of the target schema
         @param sc ScriptCleaner object
         @param testcase Command-line args for modules to install
-
-        @param hawq_debug
     """
-    if not upgrade and not hawq_debug:
+    if not upgrade:
         # Create MigrationHistory table
         try:
             info_(this, "> Creating %s.MigrationHistory table" % schema.upper(), True)
@@ -713,9 +679,6 @@ def _db_create_objects(schema, old_schema, upgrade=False, sc=None, testcase="",
         # Execute all SQL files for the module
         for sqlfile in sql_files:
             algoname = os.path.basename(sqlfile).split('.')[0]
-            if portid == 'hawq' and not is_hawq2 and algoname in ('svec'):
-                continue
-
             # run only algo specified
             if module in modset and len(modset[module]) > 0 \
                     and algoname not in modset[module]:
@@ -820,8 +783,7 @@ def parse_arguments():
                   reinstall      : performs uninstall and install
                   version        : compare and print MADlib version (binaries vs database objects)
                   install-check  : test all installed modules
-
-                  (uninstall is currently unavailable for the HAWQ port)"""
+                  """
     choice_list = ['install', 'update', 'upgrade', 'uninstall',
                    'reinstall', 'version', 'install-check']
 
@@ -939,15 +901,6 @@ def main(argv):
         # Get DB version
         global dbver
         dbver = get_dbver(con_args, portid)
-        global is_hawq2
-        if portid == "hawq" and is_rev_gte(get_rev_num(dbver), get_rev_num('2.0')):
-            is_hawq2 = True
-        else:
-            is_hawq2 = False
-
-        # HAWQ < 2.0 has hard-coded schema name 'madlib'
-        if portid == 'hawq' and not is_hawq2 and schema.lower() != 'madlib':
-            error_(this, "*** Installation is currently restricted only to 'madlib' schema ***", True)
 
         # update maddir to use a relative path if available
         global maddir
@@ -973,13 +926,7 @@ def main(argv):
                   True)
 
             dbver_split = get_rev_num(dbver)
-            if portid == "hawq":
-                # HAWQ (starting 2.0) uses semantic versioning. Hence,
-                # only need first digit for major version.
-                if is_rev_gte(dbver_split, get_rev_num('2.0')):
-                    is_hawq2 = True
-                    dbver = str(dbver_split[0])
-            elif portid == 'greenplum':
+            if portid == 'greenplum':
                 if is_rev_gte(dbver_split, get_rev_num('5.0')):
                     # GPDB (starting 5.0) uses semantic versioning. Hence, only
                     # need first digit for major version.
@@ -1046,10 +993,7 @@ def main(argv):
         _print_revs(rev, dbrev, con_args, schema)
 
     # COMMAND: uninstall/reinstall
-    if args.command[0] in ('uninstall',) and (portid == 'hawq' and not is_hawq2):
-        error_(this, "madpack uninstall is currently not available for HAWQ", True)
-
-    if args.command[0] in ('uninstall', 'reinstall') and (portid != 'hawq' or is_hawq2):
+    if args.command[0] in ('uninstall', 'reinstall'):
         if get_rev_num(dbrev) == [0]:
             info_(this, "Nothing to uninstall. No version found in schema %s." % schema.upper(), True)
             return
@@ -1124,8 +1068,8 @@ def main(argv):
         if is_rev_gte(get_rev_num(dbrev), get_rev_num(rev)):
             info_(this, "Current MADlib version already up to date.", True)
             return
-        # proceed to create objects if nothing installed in DB or for HAWQ < 2.0
-        elif dbrev is None or (portid == 'hawq' and not is_hawq2):
+        # proceed to create objects if nothing installed in DB
+        elif dbrev is None:
             pass
         # error and refer to upgrade if OS > DB
         else:
@@ -1264,11 +1208,10 @@ def main(argv):
             # Loop through all test SQL files for this module
             sql_files = maddir_mod_sql + '/' + module + '/test/*.sql_in'
             for sqlfile in sorted(glob.glob(sql_files), reverse=True):
-                # work-around for HAWQ
                 algoname = os.path.basename(sqlfile).split('.')[0]
                 # run only algo specified
-                if module in modset and len(modset[module]) > 0 \
-                        and algoname not in modset[module]:
+                if (module in modset and modset[module] and
+                        algoname not in modset[module]):
                     continue
 
                 # Set file names
