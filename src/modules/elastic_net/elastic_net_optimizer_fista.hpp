@@ -254,10 +254,9 @@ AnyType Fista<Model>::fista_final (AnyType& args)
 
         // In some case, the algo will be trapped into a single running pass and
         // the state.backtracking will be increased forever until the algo exits
-        // after the max_iter is reached. This is only found with HAWQ. The
-        // possible reason is the precision loss of double values when passing
-        // between Python and C. The first part in the following if condition is
-        // added to solve the problem.
+        // after the max_iter is reached. The possible reason is the precision
+        // loss of double values when passing between Python and C. The first
+        // part in the following if condition is added to solve the problem.
         if (state.backtracking >= 3 || state.fn <= state.Qfn + extra_Q) {
             // use last backtracking coef
             // update tk
@@ -273,7 +272,6 @@ AnyType Fista<Model>::fista_final (AnyType& args)
             // state.intercept is the old value
             state.coef = state.b_coef;
             state.intercept = state.b_intercept;
-
 
             state.backtracking = 0; // stop backtracking
 

@@ -37,7 +37,6 @@ Optional:
 - For generating a complete installation package (RPM, Package Maker, etc.; see
   below):
   + PostgreSQL 9.2, 9.3, 9.4
-  + HAWQ 1.2, 1.3
   + Greenplum 4.2, 4.3
   + All requirements for generating user-level documentation (see above)
 
@@ -56,7 +55,7 @@ From the MADlib root directory, execute the following commands:
 	./configure
 	cd build/
 	make
-    
+
 To build the user-level documentation using doxygen, run:
 
     make doc
@@ -96,8 +95,8 @@ To create a complete installation package (for all supported DBMSs, equivalent
 to what is offered on the MADlib web site), make sure that the build process is
 able to locate the DBMS installations. For complete control, run `./configure`
 with arguments `-D<DBMS>_PG_CONFIG=/path/to/pg_config` for all `<DBMS>` in
-`POSTGRESQL_9_2`, `POSTGRESQL_9_3`, `POSTGRESQL_9_4`, `HAWQ_1_2`,
-`HAWQ_1_3`, `GREENPLUM_4_2`, and `GREENPLUM_4_3`.
+`POSTGRESQL_9_2`, `POSTGRESQL_9_3`, `POSTGRESQL_9_4`, `GREENPLUM_4_2`,
+and `GREENPLUM_4_3`.
 
 Configuration Options:
 ----------------------
@@ -118,26 +117,25 @@ root directory) for more options, after having run `cmake` the first time.
 
     List (separated by `;` without trailing space) of additional search
     paths (for each `${PREFIX_PATH}` in `${CMAKE_PREFIX_PATH}`, binaries are
-    searched for in `${PREFIX_PATH}/bin`, headers are searched for in 
+    searched for in `${PREFIX_PATH}/bin`, headers are searched for in
     `${PREFIX_PATH}/include`, etc.)
-    
+
     For instance, if Boost header files are located under a non-standard
     location like `/opt/local/include/boost`, run
     `./configure -DCMAKE_PREFIX_PATH=/opt/local`.
-    
+
 - `CMAKE_INSTALL_PREFIX` (default: `/usr/local/madlib`)
 
     Prefix when installing MADlib with `make install`. All files will be
     installed within `${CMAKE_INSTALL_PREFIX}`.
 
 - `<DBMS>_PG_CONFIG` (for `<DBMS>` in `POSTGRESQL_9_2`, `POSTGRESQL_9_3`,
-  `POSTGRESQL_9_4`, `HAWQ_1_2`, `HAWQ_1_3`, `GREENPLUM_4_2`, and `GREENPLUM_4_3`
-  default: *empty*)
+  `POSTGRESQL_9_4`, `GREENPLUM_4_2`, and `GREENPLUM_4_3`. Default: *empty*)
 
     Path to `pg_config` of the respective DBMS. If none is set, the build
     script will check if `$(command -v pg_config)` points to a
     PostgreSQL/Greenplum installation.
-    
+
     Note: If no `GREENPLUM<...>_PG_CONFIG` is specified, the build script will
     look for `/usr/local/greenplum-db/bin/pg_config`.
 
@@ -148,11 +146,11 @@ root directory) for more options, after having run `cmake` the first time.
     runtime dependency (not supported on Mac OS X). E.g., if MADlib should
     require no more than the libstdc++ shipped with gcc 4.1.2, call
     `./configure` with `-DLIBSTDCXX_COMPAT=40102`.
-    
+
     The current minimum value supported for option `LIBSTDCXX_COMPAT` is
     `40102`, and the latest version of gcc supported when setting this option is
     gcc 4.6.x.
-    
+
     Setting this option will enable workarounds in
     `src/utils/libstdcxx-compatibility.cpp`.
 

@@ -87,12 +87,6 @@ function(determine_target_versions OUT_VERSIONS)
                 # Starting Postgresql 10, semantic versioning will be followed,
                 # implying we only need 1 folder for same major versions
                 set(VERSION ${${PORT_UC}_VERSION_MAJOR})
-
-            elseif(${PORT_UC} STREQUAL "HAWQ" AND
-                    ${${PORT_UC}_VERSION_MAJOR} EQUAL 2)
-                # Starting HAWQ 2.0, semantic versioning will be followed,
-                # implying we only need 1 folder for same major versions
-                set(VERSION "2")
             endif()
 
             list(FIND SUPPORTED_VERSIONS "${VERSION}" _POS)

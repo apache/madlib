@@ -1,5 +1,4 @@
 # coding=utf-8
-m4_changequote(`<!', `!>')
 
 """
 @file control.py_in
@@ -18,10 +17,6 @@ version_wrapper = __mad_version()
 from utilities import unique_string
 _unique_string = unique_string
 from control import MinWarning
-
-STATE_IN_MEM = m4_ifdef(<!__HAWQ__!>, <!True!>, <!False!>)
-HAS_FUNCTION_PROPERTIES = m4_ifdef(<!__HAS_FUNCTION_PROPERTIES__!>, <!True!>, <!False!>)
-UDF_ON_SEGMENT_NOT_ALLOWED = m4_ifdef(<!__UDF_ON_SEGMENT_NOT_ALLOWED__!>, <!True!>, <!False!>)
 
 
 class IterationControllerComposite:
@@ -63,16 +58,13 @@ class IterationControllerComposite:
         self.verbose = verbose
         self.inWith = False
         self.iteration = -1
-        if STATE_IN_MEM:
-            self.new_state = None
-            self.old_state = None
 
     def __enter__(self):
         with MinWarning('warning'):
             self.runSQL("""
                 DROP TABLE IF EXISTS {rel_state};
                 CREATE {temp} TABLE {unqualified_rel_state} (
-                    _iteration  INTEGER m4_ifdef(<!__HAWQ__!>, <!!>, <!PRIMARY KEY!>),
+                    _iteration  INTEGER PRIMARY KEY,
                     _state      {stateType}
                 )m4_ifdef(<!__POSTGRESQL__!>, <!!>, <!DISTRIBUTED BY (_iteration)!>);
                 """.format(
@@ -83,19 +75,6 @@ class IterationControllerComposite:
 
     def __exit__(self, type, value, tb):
         self.inWith = False
-        if STATE_IN_MEM:
-            insert_plan=plpy.prepare("""
-                INSERT INTO {rel_state}
-                SELECT $1, CAST( ({schema_madlib}.array_to_2d($2), $3, $4, $5, $6) AS {schema_madlib}.kmeans_state)
-                """.format(**self.kwargs), ["INTEGER", "DOUBLE PRECISION[]",
-                                            "INTEGER[]", "DOUBLE PRECISION[]",
-                                            "DOUBLE PRECISION", "DOUBLE PRECISION"])
-            plpy.execute(insert_plan, [self.new_state['_iteration'],
-                         self.new_state['centroids'],
-                         self.new_state['old_centroid_ids'],
-                         self.new_state['cluster_variance'],
-                         self.new_state['objective_fn'],
-                         self.new_state['frac_reassigned']])
 
     def runSQL(self, sql):
         if self.verbose:
@@ -115,35 +94,17 @@ class IterationControllerComposite:
         @return None if \c expression evaluates to NULL, otherwise the value of
             \c expression
         """
-        if STATE_IN_MEM:
-            cast_str = "CAST (({schema_madlib}.array_to_2d($1), $2, $3, $4, $5) AS {schema_madlib}.kmeans_state)".format(**self.kwargs)
-            cast_type = ["DOUBLE PRECISION[]", "INTEGER[]", "DOUBLE PRECISION[]",
-                         "DOUBLE PRECISION", "DOUBLE PRECISION"]
-            cast_para = [None if self.new_state is None else self.new_state[i]
-                         for i in ('centroids', 'old_centroid_ids', 'cluster_variance',
-                                   'objective_fn', 'frac_reassigned')]
-            eval_plan = plpy.prepare("""
-                SELECT ({expression}) AS expression
-                FROM {{rel_args}} AS _args
-                    LEFT OUTER JOIN (
-                        SELECT {{schema_madlib}}.array_to_2d($1) AS _state
-                    ) AS _state ON True
-                """.format(expression=expression).
-                    format(iteration=self.iteration,
-                           curr_state=cast_str, **self.kwargs), cast_type)
-            resultObject = plpy.execute(eval_plan, cast_para)
-        else:
-            resultObject = self.runSQL("""
-                SELECT ({expression}) AS expression
-                FROM {{rel_args}} AS _args
-                    LEFT OUTER JOIN (
-                        SELECT *
-                        FROM {{rel_state}} AS _state
-                        WHERE _state._iteration = {{iteration}}
-                    ) AS _state ON True
-                """.format(expression=expression).
-                    format(iteration=self.iteration,
-                           **self.kwargs))
+        resultObject = self.runSQL("""
+            SELECT ({expression}) AS expression
+            FROM {{rel_args}} AS _args
+                LEFT OUTER JOIN (
+                    SELECT *
+                    FROM {{rel_state}} AS _state
+                    WHERE _state._iteration = {{iteration}}
+                ) AS _state ON True
+            """.format(expression=expression).
+                format(iteration=self.iteration,
+                       **self.kwargs))
 
         if resultObject.nrows() == 0:
             return None
@@ -188,57 +149,15 @@ class IterationControllerComposite:
         updateKwargs.update(**self.kwargs)
         newState = newState.format(iteration=self.iteration, **updateKwargs)
         self.iteration = self.iteration + 1
-
-        if STATE_IN_MEM:
-            cast_str = """CAST (({schema_madlib}.array_to_2d($1), $2, $3, $4, $5)
-                            AS {schema_madlib}.kmeans_state)""".format(**self.kwargs)
-            cast_str_old = """CAST (({schema_madlib}.array_to_2d($6), $7, $8, $9, $10)
-                                AS {schema_madlib}.kmeans_state)""".format(**self.kwargs)
-            cast_type = [
-                "DOUBLE PRECISION[]", "INTEGER[]", "DOUBLE PRECISION[]",
-                "DOUBLE PRECISION", "DOUBLE PRECISION",
-                "DOUBLE PRECISION[]", "INTEGER[]", "DOUBLE PRECISION[]",
-                "DOUBLE PRECISION", "DOUBLE PRECISION"
-            ]
-
-            cast_para = [None if self.new_state is None else self.new_state[i]
-                         for i in ('centroids', 'old_centroid_ids', 'cluster_variance',
-                                   'objective_fn', 'frac_reassigned')]
-            cast_para.extend([None if self.old_state is None else self.old_state[i]
-                              for i in ('centroids', 'old_centroid_ids', 'cluster_variance',
-                                        'objective_fn', 'frac_reassigned')])
-
-            updateKwargs.update(curr_state=cast_str, old_state=cast_str_old)
-            self.old_state = self.new_state
-
-            update_plan = plpy.prepare("""
-                SELECT
-                    {iteration} AS _iteration,
-                    {schema_madlib}.array_to_1d((_state).centroids) AS centroids,
-                    (_state).old_centroid_ids,
-                    (_state).cluster_variance,
-                    (_state).objective_fn,
-                    (_state).frac_reassigned
-                FROM
-                (
-                    SELECT ({newState}) AS _state
-                ) q
-                """.format(iteration=self.iteration,
-                           newState=newState, **self.kwargs).format(**updateKwargs),
-                cast_type)
-            self.new_state = plpy.execute(update_plan, cast_para)[0]
-        else:
+        self.runSQL("""
+            INSERT INTO {rel_state}
+            SELECT
+                {iteration},
+                ({newState})
+            """.format(iteration=self.iteration, newState=newState,
+                       **self.kwargs))
+        if self.truncAfterIteration:
             self.runSQL("""
-                INSERT INTO {rel_state}
-                SELECT
-                    {iteration},
-                    ({newState})
-                """.format(iteration=self.iteration, newState=newState,
-                           **self.kwargs))
-            if self.truncAfterIteration:
-                self.runSQL("""
-                    DELETE FROM {rel_state} AS _state
-                    WHERE _state._iteration < {iteration}
-                """.format(iteration=self.iteration, **self.kwargs))
-
-m4_changequote(<!`!>, <!'!>)
+                DELETE FROM {rel_state} AS _state
+                WHERE _state._iteration < {iteration}
+            """.format(iteration=self.iteration, **self.kwargs))

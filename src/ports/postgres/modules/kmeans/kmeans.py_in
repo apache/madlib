@@ -22,9 +22,7 @@ from utilities.validate_args import table_is_empty
 from utilities.validate_args import get_expr_type
 from utilities.utilities import unique_string
 
-STATE_IN_MEM = m4_ifdef(<!__HAWQ__!>, <!True!>, <!False!>)
 HAS_FUNCTION_PROPERTIES = m4_ifdef(<!__HAS_FUNCTION_PROPERTIES__!>, <!True!>, <!False!>)
-UDF_ON_SEGMENT_NOT_ALLOWED = m4_ifdef(<!__UDF_ON_SEGMENT_NOT_ALLOWED__!>, <!True!>, <!False!>)
 # ----------------------------------------------------------------------
 
 
@@ -104,20 +102,10 @@ def compute_kmeanspp_seeding(schema_madlib, rel_args, rel_state, rel_source,
         rel_source=rel_source,
         expr_point=expr_point)
     with iterationCtrl as it:
-        if UDF_ON_SEGMENT_NOT_ALLOWED:
-            fn_dist_str = plpy.execute("SELECT fn_dist_name as t FROM " + rel_args)[0]['t']
-        else:
-            fn_dist_str = plpy.execute("SELECT fn_dist as t FROM " + rel_args)[0]['t']
+        fn_dist_str = plpy.execute("SELECT fn_dist as t FROM " + rel_args)[0]['t']
 
-        if STATE_IN_MEM:
-            state_str = "(SELECT {schema_madlib}.array_to_2d($1))"
-        else:
-            state_str = """(SELECT _state FROM {rel_state}
-                            WHERE _iteration = {iteration})"""
-        if UDF_ON_SEGMENT_NOT_ALLOWED:
-            closest_column_str = "{schema_madlib}.closest_column"
-        else:
-            closest_column_str = "{schema_madlib}._closest_column"
+        state_str = """(SELECT _state FROM {rel_state} WHERE _iteration = {iteration})"""
+        closest_column_str = "{schema_madlib}._closest_column"
 
         if it.test("_args.initial_centroids IS NULL"):
             it.update("""
@@ -142,9 +130,7 @@ def compute_kmeanspp_seeding(schema_madlib, rel_args, rel_state, rel_source,
                                         %(state_str)s
                                         , _src.{expr_point}::FLOAT8[]
                                         , '%(fn_dist_str)s'
-                                        m4_ifdef(<!__UDF_ON_SEGMENT_NOT_ALLOWED__!>,
-                                                 <!!>,
-                                                 <!, '{fn_dist_name}'!>)
+                                        , '{fn_dist_name}'
                                     )
                                 ).distance)
                     )
@@ -199,8 +185,8 @@ def compute_kmeans_random_seeding(schema_madlib, rel_args, rel_state,
         it.update("""
             SELECT _args.initial_centroids FROM {rel_args} AS _args
             """)
-        state_str = "$1" if STATE_IN_MEM else "_state._state"
-        state_join_str = "" if STATE_IN_MEM else """
+        state_str = "_state._state"
+        state_join_str = """
                     , {rel_state} AS _state
                 WHERE
                     _state._iteration = {iteration}
@@ -283,31 +269,18 @@ def compute_kmeans(schema_madlib, rel_args, rel_state, rel_source,
         agg_centroid=agg_centroid)
     with iterationCtrl as it:
         # Create the initial inter-iteration state of type kmeans_state
-        if STATE_IN_MEM:
-            centroid_str = "SELECT ({{curr_state}}).centroids"
-
-            old_centroid_str = "SELECT ({{curr_state}}).old_centroid_ids"
-        else:
-            centroid_str = """SELECT (_state).centroids
+        centroid_str = """SELECT (_state).centroids
+                          FROM {rel_state} as rel_state
+                          WHERE _iteration = {iteration}"""
+        old_centroid_str = """SELECT (_state).old_centroid_ids
                               FROM {rel_state} as rel_state
                               WHERE _iteration = {iteration}"""
-            old_centroid_str = """SELECT (_state).old_centroid_ids
-                                  FROM {rel_state} as rel_state
-                                  WHERE _iteration = {iteration}"""
 
-        # if UDF cannot be dispatched to segments then
-        # we get the name of the distance function instead of the regproc
-        if UDF_ON_SEGMENT_NOT_ALLOWED:
-            fn_dist_name_str = ""
-            fn_dist_str = plpy.execute("SELECT fn_dist_name FROM " + rel_args
-                                       )[0]["fn_dist_name"]
-            closest_column_str = "{schema_madlib}.closest_column"
-        else:
-            # note the 'comma' is included in the string below
-            fn_dist_name_str = ", '{fn_dist_name}'"
-            fn_dist_str = plpy.execute("SELECT fn_dist FROM " + rel_args
-                                       )[0]["fn_dist"]
-            closest_column_str = "{schema_madlib}._closest_column"
+        # note the 'comma' is included in the string below
+        fn_dist_name_str = ", '{fn_dist_name}'"
+        fn_dist_str = plpy.execute("SELECT fn_dist FROM " + rel_args
+                                   )[0]["fn_dist"]
+        closest_column_str = "{schema_madlib}._closest_column"
 
         # subquery to get closest centroid to given point from current iteration assignments
         curr_assignment = closest_column_str + """(
@@ -318,13 +291,10 @@ def compute_kmeans(schema_madlib, rel_args, rel_state, rel_source,
                                 )
                            """ % (centroid_str, fn_dist_str, fn_dist_name_str)
 
-        if STATE_IN_MEM:
-            prev_centroid_str = "SELECT ({{old_state}}).centroids"
-        else:
-            prev_centroid_str = """SELECT (_state).centroids
-                                   FROM {rel_state} as rel_state
-                                   WHERE _iteration = {iteration} - 1
-                                """
+        prev_centroid_str = """SELECT (_state).centroids
+                               FROM {rel_state} as rel_state
+                               WHERE _iteration = {iteration} - 1
+                            """
         # subquery to get closest centroid to point from previous iteration assignments
         prev_assignment_id = """(%s((%s)
                                     , _src.{expr_point}::FLOAT8[]
@@ -342,10 +312,10 @@ def compute_kmeans(schema_madlib, rel_args, rel_state, rel_source,
                     {schema_madlib}.kmeans_state)
             FROM {rel_args} AS _args
             """)
-        state_str = "{curr_state}" if STATE_IN_MEM else "_state._state"
+        state_str = "_state._state"
         while it.test("""{iteration} < _args.max_num_iterations AND
                          (%s).frac_reassigned > _args.min_frac_reassigned
-                      """%(state_str)):
+                      """ % (state_str)):
             it.update("""
                 SELECT
                     CAST((
