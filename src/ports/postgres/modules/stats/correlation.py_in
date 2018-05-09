@@ -14,9 +14,9 @@ from utilities.utilities import get_table_qualified_col_str
 from utilities.utilities import py_list_to_sql_string
 from utilities.utilities import split_quoted_delimited_str
 from utilities.utilities import unique_string
-from utilities.utilities import validate_reserved_and_target_cols_intersection
-from utilities.validate_args import get_cols_and_types
 from utilities.validate_args import cols_in_tbl_valid
+from utilities.validate_args import does_exclude_reserved
+from utilities.validate_args import get_cols_and_types
 from utilities.validate_args import input_tbl_valid
 from utilities.validate_args import output_tbl_valid
 
@@ -40,10 +40,7 @@ def correlation(schema_madlib, source_table, output_table,
         Tuple (output table name, number of columns, time for computation)
     """
     with MinWarning("info" if verbose else "error"):
-        if get_cov:
-            function_name = "Covariance"
-        else:
-            function_name = "Correlation"
+        function_name = 'Covariance' if get_cov else 'Correlation'
         _validate_corr_arg(source_table, output_table, function_name)
         _numeric_column_names, _nonnumeric_column_names = _get_numeric_columns(source_table)
         _target_cols = _analyze_target_cols(source_table, target_cols,
@@ -131,10 +128,8 @@ def _validate_grouping_cols_param(source_table, grouping_cols, function_name):
                                           'column_names',
                                           'mean_vector',
                                           'total_rows_processed'])
-    validate_reserved_and_target_cols_intersection(source_table,
-                                                   grouping_cols_list,
-                                                   reserved_cols_in_summary_table,
-                                                   function_name)
+    cols_in_tbl_valid(source_table, grouping_cols_list, function_name)
+    does_exclude_reserved(grouping_cols_list, reserved_cols_in_summary_table)
 
 def _get_numeric_columns(source_table):
     """
@@ -171,10 +166,8 @@ def _analyze_target_cols(source_table, target_cols, function_name):
         target_cols =  split_quoted_delimited_str(target_cols)
         reserved_cols_in_output_table = set(['column_position',
                                              'variable'])
-        validate_reserved_and_target_cols_intersection(source_table,
-                                                       target_cols,
-                                                       reserved_cols_in_output_table,
-                                                       function_name)
+        cols_in_tbl_valid(source_table, target_cols, function_name)
+        does_exclude_reserved(target_cols, reserved_cols_in_output_table)
     return target_cols
 # ------------------------------------------------------------------------------
 
@@ -283,22 +276,21 @@ def _populate_output_table(schema_madlib, source_table, output_table,
         # create output table
         plpy.info(col_names)
         create_output_table_query = """
-        CREATE TABLE {output_table} AS
-        SELECT {grouping_cols_comma} column_position, variable, {target_cols}
-        FROM
-        (
-            SELECT
-                generate_series(1, {num_cols}) AS column_position,
-                unnest({col_names_as_text_array}) AS variable
-        ) {variable_subquery}
-        JOIN
-        (
-            {deconstruction_query}
-        ) {matrix_subquery}
-        USING (column_position)
-        """.format( num_cols=len(col_names),
-                    target_cols=' , '.join(col_names),
-                    **locals())
+
+            CREATE TABLE {output_table} AS
+            SELECT *
+            FROM
+            (
+                SELECT
+                    generate_series(1, {num_cols}) AS column_position,
+                    unnest({col_names_as_text_array}) AS variable
+            ) {variable_subquery}
+            JOIN
+            (
+                {deconstruction_query}
+            ) {matrix_subquery}
+            USING (column_position)
+            """.format(num_cols=len(col_names), **locals())
         plpy.execute(create_output_table_query)
 
          # create summary table

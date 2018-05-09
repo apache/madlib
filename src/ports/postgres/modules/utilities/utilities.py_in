@@ -8,6 +8,7 @@ from distutils.util import strtobool
 from validate_args import _get_table_schema_names
 from validate_args import get_first_schema
 from validate_args import cols_in_tbl_valid
+from validate_args import does_exclude_reserved
 from validate_args import explicit_bool_to_text
 from validate_args import input_tbl_valid
 from validate_args import is_var_valid
@@ -798,41 +799,19 @@ def get_table_qualified_col_str(tbl_name, col_list):
     """
     return ' , '.join([" {tbl_name}.{col} ".format(**locals())
                        for col in col_list])
+# ------------------------------------------------------------------------------
 
-
-def validate_reserved_and_target_cols_intersection(source_table,
-                                                   target_cols_list,
-                                                   reserved_cols_list,
-                                                   module_name):
-    """
-        Function to check if any target column name is part of reserved column
-        names. Throw an error if it is.
-    """
-    cols_in_tbl_valid(source_table,
-                      target_cols_list,
-                      module_name)
-    intersect = frozenset(target_cols_list).intersection(
-                                                frozenset(reserved_cols_list))
-    _assert(len(intersect) == 0,
-            "{0} error: Conflicting column names.\n"
-            "Some predefined keyword(s) ({1}) are not allowed "
-            "for column names in module input params.".format(
-                module_name, ', '.join(intersect)))
 
 def get_grouping_col_str(schema_madlib, module_name, reserved_cols,
                          source_table, grouping_col):
     if grouping_col and grouping_col.lower() != 'null':
         grouping_col_array = _string_to_array_with_quotes(grouping_col)
-        validate_reserved_and_target_cols_intersection(source_table,
-                                                       grouping_col_array,
-                                                       reserved_cols,
-                                                       module_name)
-        grouping_list_with_text = [i + "::text" for i in
-                                                    explicit_bool_to_text(
-                                                        source_table,
-                                                        grouping_col_array,
-                                                        schema_madlib)]
-        grouping_str = ','.join(grouping_list_with_text)
+        cols_in_tbl_valid(source_table, grouping_col_array, module_name)
+        does_exclude_reserved(grouping_col_array, reserved_cols)
+        grp_array_w_cast = explicit_bool_to_text(source_table,
+                                                grouping_col_array,
+                                                schema_madlib)
+        grouping_str = ', '.join(i + "::text" for i in grp_array_w_cast)
     else:
         grouping_str = "Null"
         grouping_col = None
