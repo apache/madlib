@@ -25,19 +25,23 @@ m4_include(`SQLCommon.m4')
 </ul>
 </div>
 
-@brief Generates a cross-correlation matrix for all pairs of numeric columns in a table.
+@brief Generates a cross-correlation matrix for pairs of numeric columns in a table.
 
 A correlation function is the degree and direction of association of two
-variables&mdash;how well one random variable can be predicted from the other. The
-coefficient of correlation varies from -1 to 1. A coefficient of 1 implies perfect
-correlation, 0 means no correlation, and -1 means perfect anti-correlation.
+variables&mdash;how well one random variable can be predicted from the other. 
+It is a normalized version of covariance.
+The Pearson correlation coefficient has a value between -1 and 1,
+where 1 implies total positive linear correlation, 0 means no linear correlation, 
+and -1 means total negative linear correlation.
 
-This function provides a cross-correlation matrix for all pairs of numeric
-columns in a <em>source_table</em>. A correlation matrix describes correlation
-among \f$ M \f$ variables. It is a square symmetrical \f$ M \f$x \f$M \f$ matrix
-with the \f$ (ij) \f$th element equal to the correlation coefficient between the
+This function generates an \f$N\f$x\f$N\f$ cross correlation matrix for 
+pairs of numeric columns in a <em>source_table</em>. It is square symmetrical
+with the \f$ (i,j) \f$th element equal to the correlation coefficient between the
 \f$i\f$th and the \f$j\f$th variable. The diagonal elements (correlations of
 variables with themselves) are always equal to 1.0.
+
+We also provide a covariance function which is similar in nature to correlation,
+and is a measure of the joint variability of two random variables.
 
 @anchor usage
 @par Correlation Function
@@ -52,61 +56,66 @@ correlation( source_table,
            )
 </pre>
 
-The covariance function, with a similar syntax,
-can be used to compute the covariance between features.
+The covariance function has a similar syntax:
 <pre class="syntax">
 covariance( source_table,
-             output_table,
-             target_cols,
-             verbose,
-             grouping_cols
-           )
+            output_table,
+            target_cols,
+            verbose,
+            grouping_cols
+          )
 </pre>
 
 <dl class="arglist">
 
 <dt>source_table</dt>
-<dd>TEXT. The name of the data containing the input data.</dd>
+<dd>TEXT. Name of the table containing the input data.</dd>
 
 <dt>output_table</dt>
-<dd>TEXT. The name of the table where the cross-correlation matrix will be saved.
-The output is a table with N+2 columns and N rows, where N is the number of
-target columns. It contains the following columns.
+<dd>TEXT. Name of the table containing the cross correlation matrix.
+The output table has N rows, where N is the number 
+of '<em>target_cols</em>' in the '<em>source_table'</em> for which 
+correlation or covariance is being computed. 
+It has the following columns:
 <table class="output">
 <tr>
-<th>grouping_cols</th>
-<td>Contains the grouping columns if applicable.</td>
-</tr>
-<tr>
 <th>column_position</th>
-<td>A sequential counter indicating the position of the variable in the '<em>output_table</em>' (for its group if applicable).</td>
+<td>An automatically generated sequential counter indicating the order of the 
+variable in the '<em>output_table</em>'.</td>
 </tr>
 <tr>
 <th>variable</th>
-<td>Contains the row-header for the variables.</td>
+<td>Contains the row header for the variables of interest.</td>
+</tr>
+<tr>
+<th>grouping_cols</th>
+<td>Contains the grouping columns, if any.</td>
 </tr>
 <tr>
 <th><...></th>
 <td>The remainder of the table is the NxN correlation matrix for the pairs of
-numeric 'source_table' columns.</td>
+variables of interest.</td>
 </tr>
 </table>
 The output table is arranged as a lower-triangular matrix with the upper
 triangle set to NULL and the diagonal elements set to 1.0. To obtain the result
-from the '<em>output_table</em>' in this matrix format ensure to order the
-elements using the '<em>column_position</em>', as shown in the example below.
+from the '<em>output_table</em>' order by '<em>column_position</em>':
 <pre class="example">
 SELECT * FROM output_table ORDER BY column_position;
 </pre>
 
 In addition to output table, a summary table named \<output_table\>_summary
-is also created at the same time, which has the following columns:
+is also created, which has the following columns:
 <table class="output">
-<tr><th>method</th><td>'correlation'</td></tr>
-<tr><th>source_table</th><td>VARCHAR. The data source table name.</td></tr>
-<tr><th>output_table</th><td>VARCHAR. The output table name.</td></tr>
-<tr><th>column_names</th><td>VARCHAR. Column names used for correlation computation, comma-separated string.</td></tr>
-<tr><th>mean_vector</th><td>FLOAT8[]. Vector where each is the mean of a column.</td></tr>
+<tr><th>method</th><td>'Correlation' or 'Covariance'</td></tr>
+<tr><th>source_table</th><td>VARCHAR. Data source table name.</td></tr>
+<tr><th>output_table</th><td>VARCHAR. Output table name.</td></tr>
+<tr><th>column_names</th><td>VARCHAR. Column names used for correlation 
+computation, as a comma-separated string.</td></tr>
+<tr><th>grouping_cols</th>
+<td>Contains the grouping columns, if any.</td></tr>
+<tr><th>mean_vector</th><td>FLOAT8[]. Mean value of column 
+for variables of interest.</td></tr>
 <tr>
   <th>total_rows_processed</th>
   <td>BIGINT. Total numbers of rows processed.</td>
@@ -119,7 +128,7 @@ is also created at the same time, which has the following columns:
 If NULL or <tt>'*'</tt>, results are produced for all numeric columns.</dd>
 
 <dt>verbose (optional)</dt>
-<dd>BOOLEAN, default: FALSE. Print verbose debugging information if TRUE.</dd>
+<dd>BOOLEAN, default: FALSE. Print verbose information if TRUE.</dd>
 
 <dt>grouping_cols (optional)</dt>
 <dd>TEXT, default: NULL. A comma-separated list of the columns to group by.</dd>
@@ -129,182 +138,204 @@ If NULL or <tt>'*'</tt>, results are produced for all numeric columns.</dd>
 @anchor examples
 @examp
 
--# View online help for the correlation function.
-<pre class="example">
-SELECT madlib.correlation();
-</pre>
-
 -# Create an input dataset.
 <pre class="example">
 DROP TABLE IF EXISTS example_data CASCADE;
-CREATE TABLE example_data(
-    id SERIAL, outlook TEXT,
-    temperature FLOAT8, humidity FLOAT8,
-    windy TEXT, class TEXT,
-    g TEXT);
+CREATE TABLE example_data( 
+    id SERIAL, 
+    outlook TEXT,
+    temperature FLOAT8, 
+    humidity FLOAT8,
+    windy TEXT, 
+    class TEXT,
+    day TEXT
+);
 INSERT INTO example_data VALUES
-(1, 'sunny', 85, 85, 'false', 'Dont Play', 1),
-(2, 'sunny', 80, 90, 'true', 'Dont Play', 1),
-(3, 'overcast', 83, 78, 'false', 'Play', 1),
-(4, 'rain', 70, 96, 'false', 'Play', 1),
-(5, 'rain', 68, 80, 'false', 'Play', 1),
-(6, 'rain', 65, 70, 'true', 'Dont Play', 1),
-(7, 'overcast', 64, 65, 'true', 'Play', 1),
-(8, 'sunny', 72, 95, 'false', 'Dont Play', 1),
-(9, 'sunny', 69, 70, 'false', 'Play', 1),
-(10, 'rain', 75, 80, 'false', 'Play', 1),
-(11, 'sunny', 75, 70, 'true', 'Play', 1),
-(12, 'overcast', 72, 90, 'true', 'Play', 1),
-(13, 'overcast', 81, 75, 'false', 'Play', 1),
-(14, 'rain', 71, 80, 'true', 'Dont Play', 1),
-(15, NULL, 100, 100, 'true', NULL, 1),
-(16, NULL, 110, 100, 'true', NULL, 1);
-INSERT INTO example_data VALUES
-(1, 'sunny', 85, 85, 'false', 'Dont Play', 2),
-(2, 'sunny', 80, 90, 'true', 'Dont Play', 2),
-(3, 'overcast', 83, 78, 'false', 'Play', 2),
-(4, 'rain', 70, 96, 'false', 'Play', 2),
-(5, 'rain', 68, 80, 'false', 'Play', 2),
-(6, 'rain', 65, 70, 'true', 'Dont Play', 2),
-(7, 'overcast', 64, 65, 'true', 'Play', 2),
-(8, 'sunny', 72, 95, 'false', 'Dont Play', 2),
-(9, 'sunny', 69, 70, 'false', 'Play', 2),
-(10, 'rain', 75, 80, 'false', 'Play', 2),
-(11, 'sunny', 75, 70, 'true', 'Play', 2),
-(12, 'overcast', 72, 90, 'true', 'Play', 2),
-(13, 'overcast', 81, 75, 'false', 'Play', 2),
-(14, 'rain', 71, 80, 'true', 'Dont Play', 2),
-(15, NULL, 100, 100, 'true', NULL, 2),
-(16, NULL, 110, 100, 'true', NULL, 2);
-INSERT INTO example_data VALUES
-(1, 'sunny', 85, 85, 'false', 'Dont Play', 3),
-(2, 'sunny', 80, 90, 'true', 'Dont Play', 3),
-(3, 'overcast', 83, 78, 'false', 'Play', 3),
-(4, 'rain', 70, 96, 'false', 'Play', 3),
-(5, 'rain', 68, 80, 'false', 'Play', 3),
-(6, 'rain', 65, 70, 'true', 'Dont Play', 3),
-(7, 'overcast', 64, 65, 'true', 'Play', 3),
-(8, 'sunny', 7, 95, 'false', 'Dont Play', 3),
-(9, 'sunny', 6, 70, 'false', 'Play', 3),
-(10, 'rain', 7, 80, 'false', 'Play', 3),
-(11, 'sunny', 75, 70, 'true', 'Play', 3),
-(12, 'overcast', 72, 90, 'true', 'Play', 3),
-(13, 'overcast', 81, 75, 'false', 'Play', 3),
-(14, 'rain', 71, 80, 'true', 'Dont Play', 3),
-(15, NULL, 10, 100, 'true', NULL, 3),
-(16, NULL, 10, 100, 'true', NULL, 3),
-(21, 'sunny', 85, 85, 'false', 'Dont Play', 3),
-(22, 'sunny', 80, 9, 'true', 'Dont Play', 3),
-(23, 'overcast', 83, 78, 'false', 'Play', 3),
-(24, 'rain', 70, 9, 'false', 'Play', 3),
-(25, 'rain', 68, 80, 'false', 'Play', 3),
-(26, 'rain', 65, 7, 'true', 'Dont Play', 3),
-(27, 'overcast', 64, 65, 'true', 'Play', 3),
-(28, 'sunny', 72, 95, 'false', 'Dont Play', 3),
-(29, 'sunny', 69, 7, 'false', 'Play', 3),
-(210, 'rain', 75, 8, 'false', 'Play', 3),
-(211, 'sunny', 75, 70, 'true', 'Play', 3),
-(212, 'overcast', 72, 90, 'true', 'Play', 3),
-(213, 'overcast', 1, 75, 'false', 'Play', 3),
-(214, 'rain', 71, 80, 'true', 'Dont Play', 3),
-(215, NULL, 100, 100, 'true', NULL, 3),
-(216, NULL, 110, 100, 'true', NULL, 3);
+(1, 'sunny', 85, 85, 'false', 'Dont Play', 'Mon'),
+(2, 'sunny', 80, 90, 'true', 'Dont Play', 'Mon'),
+(3, 'overcast', 83, 78, 'false', 'Play', 'Mon'),
+(4, 'rain', 70, 96, 'false', 'Play', 'Mon'),
+(5, 'rain', 68, 80, 'false', 'Play', 'Mon'),
+(6, 'rain', 65, 70, 'true', 'Dont Play', 'Mon'),
+(7, 'overcast', 64, 65, 'true', 'Play', 'Mon'),
+(8, 'sunny', 72, 95, 'false', 'Dont Play', 'Mon'),
+(9, 'sunny', 69, 70, 'false', 'Play', 'Mon'),
+(10, 'rain', 75, 80, 'false', 'Play', 'Mon'),
+(11, 'sunny', 75, 70, 'true', 'Play', 'Mon'),
+(12, 'overcast', 72, 90, 'true', 'Play', 'Mon'),
+(13, 'overcast', 81, 75, 'false', 'Play', 'Mon'),
+(14, 'rain', 71, 80, 'true', 'Dont Play', 'Mon'),
+(15, NULL, 100, 100, 'true', NULL, 'Mon'),
+(16, NULL, 110, 100, 'true', NULL, 'Mon'),
+(101, 'sunny', 85, 85, 'false', 'Dont Play', 'Tues'),
+(102, 'sunny', 80, 90, 'true', 'Dont Play', 'Tues'),
+(103, 'overcast', 83, 78, 'false', 'Play', 'Tues'),
+(104, 'rain', 70, 96, 'false', 'Play', 'Tues'),
+(105, 'rain', 68, 80, 'false', 'Play', 'Tues'),
+(106, 'rain', 65, 70, 'true', 'Dont Play', 'Tues'),
+(107, 'overcast', 64, 65, 'true', 'Play', 'Tues'),
+(108, 'sunny', 72, 95, 'false', 'Dont Play', 'Tues'),
+(109, 'sunny', 69, 70, 'false', 'Play', 'Tues'),
+(110, 'rain', 75, 80, 'false', 'Play', 'Tues'),
+(111, 'sunny', 75, 70, 'true', 'Play', 'Tues'),
+(112, 'overcast', 72, 90, 'true', 'Play', 'Tues'),
+(113, 'overcast', 81, 75, 'false', 'Play', 'Tues'),
+(114, 'rain', 71, 80, 'true', 'Dont Play', 'Tues'),
+(115, NULL, 100, 100, 'true', NULL, 'Tues'),
+(116, NULL, 110, 100, 'true', NULL, 'Tues'),
+(201, 'sunny', 85, 85, 'false', 'Dont Play', 'Wed'),
+(202, 'sunny', 80, 90, 'true', 'Dont Play', 'Wed'),
+(203, 'overcast', 83, 78, 'false', 'Play', 'Wed'),
+(204, 'rain', 70, 96, 'false', 'Play', 'Wed'),
+(205, 'rain', 68, 80, 'false', 'Play', 'Wed'),
+(206, 'rain', 65, 70, 'true', 'Dont Play', 'Wed'),
+(207, 'overcast', 64, 65, 'true', 'Play', 'Wed'),
+(208, 'sunny', 7, 95, 'false', 'Dont Play', 'Wed'),
+(209, 'sunny', 6, 70, 'false', 'Play', 'Wed'),
+(210, 'rain', 7, 80, 'false', 'Play', 'Wed'),
+(211, 'sunny', 75, 70, 'true', 'Play', 'Wed'),
+(212, 'overcast', 72, 90, 'true', 'Play', 'Wed'),
+(213, 'overcast', 81, 75, 'false', 'Play', 'Wed'),
+(214, 'rain', 71, 80, 'true', 'Dont Play', 'Wed'),
+(215, NULL, 10, 100, 'true', NULL, 'Wed'),
+(216, NULL, 10, 100, 'true', NULL, 'Wed'),
+(217, 'sunny', 85, 85, 'false', 'Dont Play', 'Wed'),
+(218, 'sunny', 80, 9, 'true', 'Dont Play', 'Wed'),
+(219, 'overcast', 83, 78, 'false', 'Play', 'Wed'),
+(220, 'rain', 70, 9, 'false', 'Play', 'Wed'),
+(221, 'rain', 68, 80, 'false', 'Play', 'Wed');
 </pre>
 
-
--# Create a view for a single group.
+-# Get correlation between temperature and humidity:
 <pre class="example">
-DROP VIEW IF EXISTS example_view;
-CREATE VIEW example_view AS SELECT * FROM example_data WHERE g = '1';
-</pre>
-
--# Run the correlation() function on the dataset.
-<pre class="example">
--- Correlate all numeric columns
-DROP TABLE IF EXISTS example_view_output, example_view_output_summary;
-SELECT madlib.correlation( 'example_view',
-                           'example_view_output'
-                         );
--- Setting target_cols to NULL or '*' also correlates all numeric columns
-DROP TABLE IF EXISTS example_view_output, example_view_output_summary;
-SELECT madlib.correlation( 'example_view',
-                           'example_view_output',
-                           '*'
-                         );
--- Correlate only the temperature and humidity columns
-DROP TABLE IF EXISTS example_view_output, example_view_output_summary;
-SELECT madlib.correlation( 'example_view',
-                           'example_view_output',
+DROP TABLE IF EXISTS example_data_output, example_data_output_summary;
+SELECT madlib.correlation( 'example_data',
+                           'example_data_output',
                            'temperature, humidity'
                          );
 </pre>
-
--# View the correlation matrix.
+View the correlation matrix:
 <pre class="example">
-SELECT * FROM example_view_output ORDER BY column_position;
+SELECT * FROM example_data_output ORDER BY column_position; 
 </pre>
-Result:
 <pre class="result">
- column_position |  variable   |    temperature    | humidity
------------------+-------------+-------------------+----------
-               1 | temperature |               1.0 |
-               2 | humidity    | 0.616876934548786 |      1.0
+ column_position |  variable   |     temperature     | humidity 
+-----------------+-------------+---------------------+----------
+               1 | temperature |                   1 |         
+               2 | humidity    | 0.00607993890408995 |        1
 (2 rows)
 </pre>
-
--# Compute the correlation for multiple groups
+View the summary table:
 <pre class="example">
+\\x on
+SELECT * FROM example_data_output_summary; 
+</pre>
+<pre class="result">
+-[ RECORD 1 ]--------+-----------------------------------
+method               | Correlation
+source               | example_data
+output_table         | example_data_output
+column_names         | {temperature,humidity}
+mean_vector          | {70.188679245283,79.8679245283019}
+total_rows_processed | 53
+</pre>
+
+-# Correlation with grouping by day:
+<pre class="example">
+\\x off
 DROP TABLE IF EXISTS example_data_output, example_data_output_summary;
 SELECT madlib.correlation( 'example_data',
                            'example_data_output',
                            'temperature, humidity',
                            FALSE,
-                           'g'
+                           'day'
                          );
 </pre>
-
--# View the correlation matrix.
+View the correlation matrix by group:
 <pre class="example">
-SELECT * FROM example_data_output ORDER BY g, column_position;
+SELECT * FROM example_data_output ORDER BY day, column_position;
 </pre>
-Result:
 <pre class="result">
- g | column_position |  variable   |    temperature     | humidity
----+-----------------+-------------+--------------------+----------
- 1 |               1 | temperature |                  1 |
- 1 |               2 | humidity    |  0.616876934548786 |        1
- 2 |               1 | temperature |                  1 |
- 2 |               2 | humidity    |  0.616876934548786 |        1
- 3 |               1 | temperature |                  1 |
- 3 |               2 | humidity    | -0.120552853814947 |        1
-(2 rows)
+ column_position |  variable   | day  |    temperature    | humidity 
+-----------------+-------------+------+-------------------+----------
+               1 | temperature | Mon  |                 1 |         
+               2 | humidity    | Mon  | 0.616876934548786 |        1
+               1 | temperature | Tues |                 1 |         
+               2 | humidity    | Tues | 0.616876934548786 |        1
+               1 | temperature | Wed  |                 1 |         
+               2 | humidity    | Wed  | -0.28969669368457 |        1
+(6 rows)
+</pre>
+View the summary table:
+<pre class="example">
+\\x on
+SELECT * FROM example_data_output_summary ORDER BY day; 
+</pre>
+<pre class="result">
+-[ RECORD 1 ]--------+------------------------------------
+method               | Correlation
+source               | example_data
+output_table         | example_data_output
+column_names         | {temperature,humidity}
+day                  | Mon
+mean_vector          | {77.5,82.75}
+total_rows_processed | 16
+-[ RECORD 2 ]--------+------------------------------------
+method               | Correlation
+source               | example_data
+output_table         | example_data_output
+column_names         | {temperature,humidity}
+day                  | Tues
+mean_vector          | {77.5,82.75}
+total_rows_processed | 16
+-[ RECORD 3 ]--------+------------------------------------
+method               | Correlation
+source               | example_data
+output_table         | example_data_output
+column_names         | {temperature,humidity}
+day                  | Wed
+mean_vector          | {59.0476190476191,75.4761904761905}
+total_rows_processed | 21
 </pre>
 
--# Compute the covariance of features in the dataset.
+-# Get covariance between temperature and humidity:
 <pre class="example">
-DROP TABLE IF EXISTS cov_output, cov_output_summary;
-SELECT madlib.covariance( 'example_view',
-                          'cov_output',
-                           'temperature, humidity'
+\\x off
+DROP TABLE IF EXISTS example_data_output, example_data_output_summary;
+SELECT madlib.covariance( 'example_data',
+                          'example_data_output',
+                          'temperature, humidity'
                          );
 </pre>
-
--# View the covariance matrix.
+View the covariance matrix:
 <pre class="example">
-SELECT * FROM cov_output ORDER BY column_position;
+SELECT * FROM example_data_output ORDER BY column_position; 
 </pre>
-Result:
 <pre class="result">
- column_position |  variable   |    temperature    | humidity
------------------+-------------+-------------------+----------
-               1 | temperature |      146.25       |
-               2 | humidity    |      82.125       | 121.1875
+ column_position |  variable   |   temperature    |     humidity     
+-----------------+-------------+------------------+------------------
+               1 | temperature | 507.926664293343 |                 
+               2 | humidity    | 2.40227839088644 | 307.359914560342
 (2 rows)
+</pre>
+View the summary table:
+<pre class="example">
+\\x on
+SELECT * FROM example_data_output_summary; 
+</pre>
+<pre class="result">
+-[ RECORD 1 ]--------+-----------------------------------
+method               | Covariance
+source               | example_data
+output_table         | example_data_output
+column_names         | {temperature,humidity}
+mean_vector          | {70.188679245283,79.8679245283019}
+total_rows_processed | 53
 </pre>
 
 @par Notes
 
-Null values will be replaced by the mean of their respective columns (Mean
+Null values will be replaced by the mean of their respective columns (mean
 imputation/substitution). Mean imputation is a method in which the missing
 value on a certain variable is replaced by the mean of the available cases.
 This method maintains the sample size and is easy to use, but the variability
