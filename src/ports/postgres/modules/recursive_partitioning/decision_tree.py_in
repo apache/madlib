@@ -1480,6 +1480,8 @@ def _create_summary_table(
         dep_list, all_cols_types, cp, grouping_cols=None, n_groups=1,
         use_existing_tables=False, n_folds=0, null_proxy=None):
 
+    output_table_summary = add_postfix(output_table_name, "_summary")
+
     # dependent variables
     if dep_list:
         dep_list_str = ("$dep_list$" +
@@ -1503,11 +1505,10 @@ def _create_summary_table(
         cp_str = str(cp) + "::double precision"
 
     if use_existing_tables:
-        header = "INSERT INTO {0} ".format(
-            add_postfix(output_table_name, "_summary"))
+        plpy.execute("TRUNCATE " + output_table_summary)
+        header = "INSERT INTO {0} ".format(output_table_summary)
     else:
-        header = "CREATE TABLE {0} AS ".format(
-            add_postfix(output_table_name, "_summary"))
+        header = "CREATE TABLE {0} AS ".format(output_table_summary)
     null_proxy_str="NULL" if null_proxy is None else "'{0}'".format(null_proxy)
     sql = header + """
             SELECT
@@ -1617,7 +1618,8 @@ def tree_predict(schema_madlib, model, source, output, pred_type='response',
     """
     _validate_predict(schema_madlib, model, source, output, use_existing_tables)
     model_summary = add_postfix(model, "_summary")
-    # obtain the cat_features and con_features from model table
+
+    # obtain the cat_features and con_features from model summary table
     summary_elements = plpy.execute("SELECT * FROM {0}".format(model_summary))[0]
 
     list_of_features = split_quoted_delimited_str(summary_elements["independent_varnames"])
@@ -1627,12 +1629,13 @@ def tree_predict(schema_madlib, model, source, output, pred_type='response',
             "Decision tree error: Missing columns in predict data table ({0}) "
             "that were used during training".format(source))
     id_col_name = summary_elements["id_col_name"]
-    grouping_cols_str = summary_elements.get("grouping_cols")  # optional, default = None
     dep_varname = summary_elements["dependent_varname"]
     dep_levels = summary_elements["dependent_var_levels"]
     is_classification = summary_elements["is_classification"]
     dep_type = summary_elements['dependent_var_type']
-    null_proxy = summary_elements.get('null_proxy')  # optional, default = None
+    # optional variables, default value is None
+    grouping_cols_str = summary_elements.get("grouping_cols")
+    null_proxy = summary_elements.get('null_proxy')
 
     # find which columns are of type boolean
     boolean_cats = set([key for key, value in get_cols_and_types(source)
@@ -1667,7 +1670,10 @@ def tree_predict(schema_madlib, model, source, output, pred_type='response',
                         tree,
                         {cat_features_str}::INTEGER[],
                         {con_features_str}::DOUBLE PRECISION[]) as {pred_name}
-            FROM {source} as s {join_str} {model} as m {using_str}
+            FROM {source} as s
+                 {join_str}
+                 {model} as m
+                 {using_str}
             {use_fold}
             """
     else:
