@@ -9,15 +9,21 @@ from time import time
 
 import plpy
 from utilities.control import MinWarning
-from utilities.utilities import unique_string, add_postfix
-from utilities.validate_args import get_cols_and_types
-from utilities.validate_args import input_tbl_valid, output_tbl_valid, cols_in_tbl_valid
+from utilities.utilities import add_postfix
+from utilities.utilities import get_table_qualified_col_str
 from utilities.utilities import py_list_to_sql_string
+from utilities.utilities import split_quoted_delimited_str
+from utilities.utilities import unique_string
+from utilities.validate_args import cols_in_tbl_valid
+from utilities.validate_args import does_exclude_reserved
+from utilities.validate_args import get_cols_and_types
+from utilities.validate_args import input_tbl_valid
+from utilities.validate_args import output_tbl_valid
 
 
 def correlation(schema_madlib, source_table, output_table,
-                target_cols, get_cov=False, verbose=False,
-                **kwargs):
+                target_cols, grouping_cols, get_cov=False,
+                verbose=False, **kwargs):
     """
     Populates an output table with the coefficients of correlation between
     the columns in a source table
@@ -34,9 +40,15 @@ def correlation(schema_madlib, source_table, output_table,
         Tuple (output table name, number of columns, time for computation)
     """
     with MinWarning("info" if verbose else "error"):
-        _validate_corr_arg(source_table, output_table)
+        function_name = 'Covariance' if get_cov else 'Correlation'
+        _validate_corr_arg(source_table, output_table, function_name)
         _numeric_column_names, _nonnumeric_column_names = _get_numeric_columns(source_table)
-        _target_cols = _analyze_target_cols(source_table, target_cols)
+        _target_cols = _analyze_target_cols(source_table, target_cols,
+                                            function_name)
+        # Validate grouping_cols param
+        if grouping_cols:
+            _validate_grouping_cols_param(source_table, grouping_cols,
+                                          function_name)
         if _target_cols:
             # prune all non-numeric column types from target columns
             _existing_target_cols = []
@@ -69,26 +81,29 @@ def correlation(schema_madlib, source_table, output_table,
             plpy.error("Correlation error: Only one numeric column found in the target list.")
 
     run_time = _populate_output_table(schema_madlib, source_table, output_table,
-                                      _existing_target_cols, get_cov, verbose)
+                                      _existing_target_cols, grouping_cols,
+                                      function_name, get_cov, verbose)
     # ---- Output message ----
-    output_text_list = ["Summary for 'correlation' function"]
+    output_text_list = ["Summary for '{0}' function".format(function_name)]
     output_text_list.append("Output table = " + str(output_table))
     if _nonnumeric_target_cols:
-        output_text_list.append(("Non-numeric columns ignored: {0}".
-                                 format(str(_nonnumeric_target_cols))))
+        output_text_list.append("Non-numeric columns ignored: {0}".
+                                 format(','.join(_nonnumeric_target_cols)))
     if _nonexisting_target_cols:
-        output_text_list.append(("Columns that don't exist in '{0}' ignored: {1}".
-                                format(source_table, str(_nonexisting_target_cols))))
-
-    output_text_list.append(("Producing correlation for columns: {0}".
-                            format(str(_existing_target_cols))))
+        output_text_list.append("Columns that don't exist in '{0}' ignored: {1}".
+                                format(source_table, ','.join(_nonexisting_target_cols)))
+    if grouping_cols:
+        output_text_list.append("Grouping columns: {0}".
+                                 format(grouping_cols))
+    output_text_list.append("Producing {0} for columns: {1}".
+                            format(function_name.lower(), ','.join(_existing_target_cols)))
     output_text_list.append("Total run time = " + str(run_time))
     # ---- Output message ----
     return '\n'.join(output_text_list)
 # ------------------------------------------------------------------------------
 
 
-def _validate_corr_arg(source_table, output_table):
+def _validate_corr_arg(source_table, output_table, function_name):
     """
     Validates all arguments and raises an error if there is an invalid argument
 
@@ -100,11 +115,23 @@ def _validate_corr_arg(source_table, output_table):
     Returns:
         True if all arguments are valid
     """
-    input_tbl_valid(source_table, "Correlation")
-    output_tbl_valid(output_table, "Correlation")
-    output_tbl_valid(add_postfix(output_table, "_summary"), "Correlation")
+    input_tbl_valid(source_table, function_name)
+    output_tbl_valid(output_table, function_name)
+    output_tbl_valid(add_postfix(output_table, "_summary"), function_name)
 # ------------------------------------------------------------------------------
 
+
+def _validate_grouping_cols_param(source_table, grouping_cols, function_name):
+    grouping_cols_list = split_quoted_delimited_str(grouping_cols)
+    # Column names that are used in summary table.
+    reserved_cols_in_summary_table = set(['method',
+                                          'source',
+                                          'output_table',
+                                          'column_names',
+                                          'mean_vector',
+                                          'total_rows_processed'])
+    cols_in_tbl_valid(source_table, grouping_cols_list, function_name)
+    does_exclude_reserved(grouping_cols_list, reserved_cols_in_summary_table)
 
 def _get_numeric_columns(source_table):
     """
@@ -131,21 +158,25 @@ def _get_numeric_columns(source_table):
 # ------------------------------------------------------------------------------
 
 
-def _analyze_target_cols(source_table, target_cols):
+def _analyze_target_cols(source_table, target_cols, function_name):
     """
     Analyzes target_cols string input and converts it to a list
     """
     if not target_cols or target_cols.strip() in ('', '*'):
         target_cols = None
     else:
-        target_cols = [i.strip() for i in target_cols.split(',')]
-        cols_in_tbl_valid(source_table, target_cols, "Correlation")
+        target_cols =  split_quoted_delimited_str(target_cols)
+        reserved_cols_in_output_table = set(['column_position',
+                                             'variable'])
+        cols_in_tbl_valid(source_table, target_cols, function_name)
+        does_exclude_reserved(target_cols, reserved_cols_in_output_table)
     return target_cols
 # ------------------------------------------------------------------------------
 
 
 def _populate_output_table(schema_madlib, source_table, output_table,
-                           col_names, get_cov=False, verbose=False):
+                           col_names, grouping_cols, function_name,
+                           get_cov=False, verbose=False):
     """
     Creates a relation with the appropriate number of columns given a list of
     column names and populates with the correlation coefficients. If the table
@@ -158,6 +189,7 @@ def _populate_output_table(schema_madlib, source_table, output_table,
         @param col_names      Name of all columns to place in output table
         @param get_cov        If False return the correlation matrix else
                                 return covariance matrix
+        @param grouping_cols  Name of all columns to be used for grouping
 
     Returns:
         Tuple (output table name, number of columns, time for computation)
@@ -166,101 +198,186 @@ def _populate_output_table(schema_madlib, source_table, output_table,
         start = time()
         col_len = len(col_names)
         col_names_as_text_array = py_list_to_sql_string(col_names, "varchar")
-        temp_table = unique_string()
+        # Create unique strings to be used in queries.
+        coalesced_col_array = unique_string(desp='coalesced_col_array')
+        mean_col = unique_string(desp='mean')
         if get_cov:
-            function_name = "Covariance"
             agg_str = """
                 (CASE WHEN count(*) > 0
-                      THEN {0}.array_scalar_mult({0}.covariance_agg(x, mean),
+                      THEN {0}.array_scalar_mult({0}.covariance_agg({1}, {2}),
                                                  1.0 / count(*)::double precision)
                       ELSE NULL
-                END) """.format(schema_madlib)
+                END) """.format(schema_madlib, coalesced_col_array, mean_col)
         else:
-            function_name = "Correlation"
-            agg_str = "{0}.correlation_agg(x, mean)".format(schema_madlib)
+            agg_str = "{0}.correlation_agg({1}, {2})".format(schema_madlib,
+                                                             coalesced_col_array,
+                                                             mean_col)
 
         cols = ','.join(["coalesce({0}, {1})".format(col, add_postfix(col, "_avg"))
                         for col in col_names])
         avgs = ','.join(["avg({0}) AS {1}".format(col, add_postfix(col, "_avg"))
                         for col in col_names])
         avg_array = ','.join([str(add_postfix(col, "_avg")) for col in col_names])
-        # actual computation
-        sql1 = """
+        # Create unique strings to be used in queries.
+        tot_cnt = unique_string(desp='tot_cnt')
+        cor_mat = unique_string(desp='cor_mat')
+        temp_output_table = unique_string(desp='temp_output')
+        subquery1 = unique_string(desp='subq1')
+        subquery2 = unique_string(desp='subq2')
 
-            CREATE TEMP TABLE {temp_table} AS
-            SELECT
-                count(*) AS tot_cnt,
-                mean,
-                {agg_str} as cor_mat
+        grouping_cols_comma = ''
+        subquery_grouping_cols_comma = ''
+        inner_group_by = ''
+        # Cross join if there are no groups to consider
+        join_condition = ' ON (1=1) '
+
+        if grouping_cols:
+            group_col_list = split_quoted_delimited_str(grouping_cols)
+            grouping_cols_comma = add_postfix(grouping_cols, ', ')
+            subquery_grouping_cols_comma = get_table_qualified_col_str(
+                                                subquery2, group_col_list) + " , "
+
+            inner_group_by = " GROUP BY {0}".format(grouping_cols)
+            join_condition = " USING ({0})".format(grouping_cols)
+
+        create_temp_output_table_query = """
+                CREATE TEMP TABLE {temp_output_table} AS
+                SELECT
+                    {subquery_grouping_cols_comma}
+                    count(*) AS {tot_cnt},
+                    {mean_col},
+                    {agg_str} AS {cor_mat}
+                FROM
+                (
+                    SELECT {grouping_cols_comma}
+                           ARRAY[ {cols} ] AS {coalesced_col_array},
+                           ARRAY [ {avg_array} ] AS {mean_col}
+
+                    FROM {source_table}
+                    JOIN
+                    (
+                        SELECT {grouping_cols_comma} {avgs}
+                        FROM {source_table}
+                        {inner_group_by}
+                    ) {subquery1}
+                    {join_condition}
+                ) {subquery2}
+                GROUP BY {grouping_cols_comma} {mean_col}
+                """.format(**locals())
+        plpy.execute(create_temp_output_table_query)
+
+        # Prepare the query for converting the matrix into the lower triangle
+        deconstruction_query = _create_deconstruction_query(schema_madlib,
+                                                            col_names,
+                                                            grouping_cols,
+                                                            temp_output_table,
+                                                            cor_mat)
+
+        variable_subquery = unique_string(desp='variable_subq')
+        matrix_subquery = unique_string(desp='matrix_subq')
+        # create output table
+        create_output_table_query = """
+
+            CREATE TABLE {output_table} AS
+            SELECT *
             FROM
             (
-                SELECT ARRAY[ {cols} ] AS x,
-                        ARRAY [ {avg_array} ] AS mean
-                FROM {source_table},
-                (
-                    SELECT {avgs}
-                    FROM {source_table}
-                )sub1
-            ) sub2
-            GROUP BY mean
-            """.format(**locals())
+                SELECT
+                    generate_series(1, {num_cols}) AS column_position,
+                    unnest({col_names_as_text_array}) AS variable
+            ) {variable_subquery}
+            JOIN
+            (
+                {deconstruction_query}
+            ) {matrix_subquery}
+            USING (column_position)
+            """.format(num_cols=len(col_names), **locals())
+        plpy.execute(create_output_table_query)
 
-        plpy.execute(sql1)
-
-        # create summary table
+         # create summary table
         summary_table = add_postfix(output_table, "_summary")
-        q_summary = """
+        create_summary_table_query = """
             CREATE TABLE {summary_table} AS
             SELECT
                 '{function_name}'::varchar  AS method,
                 '{source_table}'::varchar   AS source,
                 '{output_table}'::varchar   AS output_table,
                 {col_names_as_text_array}   AS column_names,
-                mean                        AS mean_vector,
-                tot_cnt                     AS total_rows_processed
-            FROM {temp_table}
+                {grouping_cols_comma}
+                {mean_col}                  AS mean_vector,
+                {tot_cnt}                   AS total_rows_processed
+            FROM {temp_output_table}
             """.format(**locals())
-
-        plpy.execute(q_summary)
-
-        # create output table
-        variable_list = []
-        for k, c in enumerate(col_names):
-            if k % 10 == 0:
-                variable_list.append("\n                ")
-            variable_list.append(str(c) + " float8")
-            variable_list.append(",")
-        variable_list_str = ''.join(variable_list[:-1])  # remove the last comma
-
-        plpy.execute("""
-            CREATE TABLE {output_table} AS
-            SELECT
-                *
-            FROM
-            (
-                SELECT
-                    generate_series(1, {num_cols}) AS column_position,
-                    unnest({col_names_as_text_array}) AS variable
-            ) variable_subq
-            JOIN
-            (
-                SELECT
-                    *
-                FROM
-                    {schema_madlib}.__deconstruct_lower_triangle(
-                        (SELECT cor_mat FROM {temp_table})
-                    )
-                    AS deconstructed(column_position integer, {variable_list_str})
-            ) matrix_subq
-            USING (column_position)
-            """.format(num_cols=len(col_names), **locals()))
+        plpy.execute(create_summary_table_query)
 
         # clean up and return
-        plpy.execute("DROP TABLE {temp_table}".format(**locals()))
+        plpy.execute("DROP TABLE IF EXISTS {temp_output_table}".format(**locals()))
+
         end = time()
         return (output_table, len(col_names), end - start)
 # ------------------------------------------------------------------------------
 
+def _create_deconstruction_query(schema_madlib, col_names, grouping_cols,
+                                 temp_output_table, cor_mat):
+    """
+    Creates the query to convert the matrix into the lower-traingular format.
+
+    Args:
+        @param schema_madlib        Schema of MADlib
+        @param col_names            Name of all columns to place in output table
+        @param grouping_cols        Name of all columns to be used for grouping
+        @param temp_output_table    Name of the temporary table that contains
+                                    the matrix to deconstruct
+        @param cor_mat              Name of column that containss the matrix
+                                    to deconstruct
+
+    Returns:
+        String (SQL querry for deconstructing the matrix)
+    """
+    # The matrix that holds the PCC computation must be converted to a
+    # table capturing all pair wise PCC values. That is done using
+    # a UDF named __deconstruct_lower_triangle.
+    # With grouping, calling that UDF becomes a lot more complex, so
+    # construct the query accordingly.
+
+    COL_WIDTH = 10
+    # split the col_names to equal size sets with newline between to prevent a long query
+    # Build a 2d array of the col_names, each inner array with COL_WIDTH number of names.
+    col_names_split = [col_names[x : x + COL_WIDTH]
+                                 for x in range(0, len(col_names), COL_WIDTH)]
+    variable_list_str = ', \n'.join([', '.join(
+                                        ['{0} float8'.format(col)
+                                            for col in cols_blob
+                                         ]) for cols_blob in col_names_split
+                                     ])
+
+
+    if grouping_cols:
+        grp_dict_rows = plpy.execute("SELECT {0} FROM {1}".format(
+                                        grouping_cols,
+                                        temp_output_table))
+        deconstruction_queries_list = list()
+        for grp_dict in grp_dict_rows:
+            where_condition = 'WHERE ' + ' AND '.join("{0} = '{1}'".format(k, v)
+                                             for k, v in grp_dict.items())
+
+            select_grouping_cols = ' , '.join("'{1}' AS {0}".format(k, v)
+                                         for k, v in grp_dict.items())
+            deconstruction_queries_list.append("""
+                    SELECT {select_grouping_cols}, *
+                    FROM {schema_madlib}.__deconstruct_lower_triangle(
+                        (SELECT {cor_mat} FROM {temp_output_table} {where_condition})
+                    ) AS deconstructed(column_position integer, {variable_list_str})
+                """.format(**locals()))
+        deconstruction_query = ' UNION ALL '.join(deconstruction_queries_list)
+    else:
+        deconstruction_query = """
+            SELECT * FROM
+            {schema_madlib}.__deconstruct_lower_triangle(
+                (SELECT {cor_mat} FROM {temp_output_table})
+            ) AS deconstructed(column_position integer, {variable_list_str})
+        """.format(**locals())
+    return deconstruction_query
 
 def correlation_help_message(schema_madlib, message, cov=False, **kwargs):
     """
@@ -275,11 +392,12 @@ Usage:
 -----------------------------------------------------------------------
 SELECT {schema_madlib}.{func}
 (
-    source_table TEXT,   -- Source table name (Required)
-    output_table TEXT,   -- Output table name (Required)
-    target_cols  TEXT,   -- Comma separated columns for which summary is desired
-                         --   (Default: '*' - produces result for all columns)
-    verbose      BOOLEAN -- Verbosity
+    source_table   TEXT,    -- Source table name (Required)
+    output_table   TEXT,    -- Output table name (Required)
+    target_cols    TEXT,    -- Comma separated columns for which summary is desired
+                            --   (Default: '*' - produces result for all columns)
+    verbose        BOOLEAN, -- Verbosity
+    grouping_cols  TEXT     -- Comma separated columns for grouping
 )
 -----------------------------------------------------------------------
 Output will be a table with N+2 columns and N rows, where N is the number
