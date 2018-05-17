@@ -69,9 +69,14 @@ if(CMAKE_COMPILER_IS_GNUCC)
     # http://pubs.opengroup.org/onlinepubs/9699919799/functions/V2_chap02.html#tag_15_02_01_01
     # We specify that we are POSIX.1-2001 compliant and XSI-conforming. We only
     # need to specify _XOPEN_SOURCE as _POSIX_C_SOURCE will be set implicitly.
-    set(CMAKE_C_FLAGS "-std=c99 -pedantic -Wall -Wextra -Wno-clobbered -D_XOPEN_SOURCE=600"
+    set(CMAKE_C_FLAGS "-std=c99 -D_GLIBCXX_USE_CXX11_ABI=0 -pedantic -Wall -Wextra -Wno-clobbered -D_XOPEN_SOURCE=600"
         CACHE STRING
         "Flags used by the compiler during all build types." FORCE)
+    if((CMAKE_C_COMPILER_VERSION VERSION_EQUAL 5.0) OR (CMAKE_C_COMPILER_VERSION VERSION_GREATER 5.0))
+        # Versions 5+ fail with the "Release" build type i.e. when optimization
+        # level is -O3 or greater.
+        add_compile_options("-O2")
+    endif()
 
     # See comments below for C++:
     # Weird enough, the following property is set only for C++ but not for C
@@ -93,10 +98,15 @@ if(CMAKE_COMPILER_IS_GNUCXX)
     # - long long is not part of the C++ 1998/2003 standard, but it is such a
     # common (and useful) extension that we do not want to hear warnings about
     # it.
-    set(CMAKE_CXX_FLAGS "-std=gnu++98 -fdiagnostics-show-option -Wall -Wextra -pedantic -Wconversion -Wno-long-long -Wno-clobbered -mno-sse2 -fstrict-aliasing"
+    set(CMAKE_CXX_FLAGS "-std=gnu++98 -D_GLIBCXX_USE_CXX11_ABI=0 -fdiagnostics-show-option -Wall -Wextra -pedantic -Wconversion -Wno-long-long -Wno-clobbered -mno-sse2 -fstrict-aliasing"
         CACHE STRING
         "Flags used by the compiler during all build types." FORCE)
 
+    if((CMAKE_CXX_COMPILER_VERSION VERSION_EQUAL 5.0) OR (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 5.0))
+        # Versions 5+ fail with the "Release" build type i.e. when optimization
+        # level is -O3 or greater.
+        add_compile_options("-O2")
+    endif()
     # We want to include some header files as system header files in order to
     # disable warnings. However, on Mac OS X, a CMake variable is not set
     # correctly on Mac OS X. http://www.cmake.org/Bug/view.php?id=10837

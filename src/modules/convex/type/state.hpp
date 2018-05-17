@@ -669,8 +669,11 @@ private:
             reinterpret_cast<dimension_pointer_type>(&mStorage[1]);
         task.stepsize.rebind(&mStorage[N + 2]);
         task.lambda.rebind(&mStorage[N + 3]);
-        uint32_t sizeOfModel = task.model.rebind(&mStorage[N + 4],&mStorage[N + 5],&mStorage[N + 6],
-                task.numberOfStages, task.numbersOfUnits);
+        size_t sizeOfModel = task.model.rebind(&mStorage[N + 4],
+                                                 &mStorage[N + 5],
+                                                 &mStorage[N + 6],
+                                                 task.numberOfStages,
+                                                 task.numbersOfUnits);
 
         algo.incrModel.rebind(&mStorage[N + 4],&mStorage[N + 5],&mStorage[N + 6 + sizeOfModel],
                 task.numberOfStages, task.numbersOfUnits);

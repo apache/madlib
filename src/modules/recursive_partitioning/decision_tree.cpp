@@ -160,12 +160,14 @@ compute_leaf_stats_transition::run(AnyType & args){
         // tree to the index in the actual tree.
         ColumnVector leaf_feature_indices =
             dt.feature_indices.tail(dt.feature_indices.size()/2 + 1).cast<double>();
-        ColumnVector leaf_node_lookup(leaf_feature_indices.size());
-        size_t n_leaves_not_finished = 0;
+        IntegerVector leaf_node_lookup(leaf_feature_indices.size());
+
+        uint32_t n_leaves_not_finished = 0;
         for (Index i=0; i < leaf_feature_indices.size(); i++){
             if ((leaf_feature_indices(i) != dt.NODE_NON_EXISTING) &&
                     (leaf_feature_indices(i) != dt.FINISHED_LEAF)){
-                leaf_node_lookup(i) = n_leaves_not_finished++;  // increment after assigning
+                leaf_node_lookup(i) = static_cast<int>(n_leaves_not_finished);
+                n_leaves_not_finished++;
             }
             else{
                 leaf_node_lookup(i) = -1;
@@ -321,11 +323,12 @@ compute_surr_stats_transition::run(AnyType & args){
             ColumnVector final_internal_feature_indices =
                 dt.feature_indices.segment(dt.feature_indices.size()/4,
                                            dt.feature_indices.size()/4 + 1).cast<double>();
-            ColumnVector index_lookup(final_internal_feature_indices.size());
-            Index n_internal_nodes_reachable = 0;
+            IntegerVector index_lookup(final_internal_feature_indices.size());
+            uint32_t n_internal_nodes_reachable = 0;
             for (Index i=0; i < final_internal_feature_indices.size(); i++){
                 if (final_internal_feature_indices(i) >= 0){
-                    index_lookup(i) = n_internal_nodes_reachable++;  // increment after assigning
+                    index_lookup(i) = static_cast<int>(n_internal_nodes_reachable);
+                    n_internal_nodes_reachable++;
                 }
                 else{
                     index_lookup(i) = -1;

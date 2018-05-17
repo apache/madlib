@@ -81,7 +81,7 @@ mlp_igd_transition::run(AnyType &args) {
             // configuration parameters and initialization
             // this is run only once (first iteration, first tuple)
             ArrayHandle<double> numbersOfUnits = args[4].getAs<ArrayHandle<double> >();
-            int numberOfStages = numbersOfUnits.size() - 1;
+            uint16_t numberOfStages = static_cast<uint16_t>(numbersOfUnits.size() - 1);
 
             state.allocate(*this, numberOfStages,
                            reinterpret_cast<const double *>(numbersOfUnits.ptr()));
@@ -100,8 +100,8 @@ mlp_igd_transition::run(AnyType &args) {
                 // state.reset() ensures algo.incrModel is copied from task.model
                 Index layer_start = 0;
                 for (size_t k = 0; k < numberOfStages; ++k){
-                    for (size_t j=0; j < state.task.model.u[k].cols(); ++j){
-                        for (size_t i=0; i < state.task.model.u[k].rows(); ++i){
+                    for (Index j=0; j < state.task.model.u[k].cols(); ++j){
+                        for (Index i=0; i < state.task.model.u[k].rows(); ++i){
                             state.task.model.u[k](i, j) = warm_start_coeff(
                                 layer_start + j * state.task.model.u[k].rows() + i);
                         }
@@ -204,9 +204,7 @@ mlp_minibatch_transition::run(AnyType &args) {
         } else {
             // configuration parameters
             ArrayHandle<double> numbersOfUnits = args[4].getAs<ArrayHandle<double> >();
-            int numberOfStages = numbersOfUnits.size() - 1;
-
-
+            uint16_t numberOfStages = static_cast<uint16_t>(numbersOfUnits.size() - 1);
             state.allocate(*this, numberOfStages,
                            reinterpret_cast<const double *>(numbersOfUnits.ptr()));
             state.stepsize = args[5].getAs<double>();
@@ -218,8 +216,8 @@ mlp_minibatch_transition::run(AnyType &args) {
                 MappedColumnVector warm_start_coeff = args[9].getAs<MappedColumnVector>();
                 Index layer_start = 0;
                 for (size_t k = 0; k < numberOfStages; ++k){
-                    for (size_t j=0; j < state.model.u[k].cols(); ++j){
-                        for (size_t i=0; i < state.model.u[k].rows(); ++i){
+                    for (Index j=0; j < state.model.u[k].cols(); ++j){
+                        for (Index i=0; i < state.model.u[k].rows(); ++i){
                             state.model.u[k](i, j) = warm_start_coeff(
                                 layer_start + j * state.model.u[k].rows() + i);
                         }
@@ -235,8 +233,8 @@ mlp_minibatch_transition::run(AnyType &args) {
 
             state.lambda = args[10].getAs<double>();
             MLPTask::lambda = state.lambda;
-            state.batchSize = args[11].getAs<int>();
-            state.nEpochs = args[12].getAs<int>();
+            state.batchSize = static_cast<uint16_t>(args[11].getAs<int>());
+            state.nEpochs = static_cast<uint16_t>(args[12].getAs<int>());
         }
         // resetting in either case
         state.reset();
@@ -375,7 +373,7 @@ internal_predict_mlp::run(AnyType &args) {
     MappedColumnVector coeff = args[0].getAs<MappedColumnVector>();
     MappedColumnVector layerSizes = args[4].getAs<MappedColumnVector>();
     // Input layer doesn't count
-    size_t numberOfStages = layerSizes.size()-1;
+    uint16_t numberOfStages = static_cast<uint16_t>(layerSizes.size() - 1);
     double is_classification = args[2].getAs<double>();
     double activation = args[3].getAs<double>();
     int is_dep_var_array_for_classification = args[8].getAs<int>();

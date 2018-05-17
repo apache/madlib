@@ -552,7 +552,7 @@ DecisionTree<Container>::expand(const Accumulator &state,
             uint64_t total_count = statCount(predictions.row(current));
             if (max_impurity_gain > 0 &&
                     shouldSplit(total_count, true_count, false_count,
-                                min_split, min_bucket, sps, max_depth)) {
+                                min_split, min_bucket, max_depth)) {
 
                 double max_threshold;
                 if (max_is_cat)
@@ -864,7 +864,7 @@ DecisionTree<Container>::expand_by_sampling(const Accumulator &state,
 
             if (max_impurity_gain > 0 &&
                     shouldSplit(total_count, true_count, false_count,
-                                min_split, min_bucket, sps, max_depth)) {
+                                min_split, min_bucket, max_depth)) {
 
                 double max_threshold;
                 if (max_is_cat)
@@ -1062,7 +1062,6 @@ DecisionTree<Container>::shouldSplit(const uint64_t &total_count,
                                      const uint64_t &false_count,
                                      const uint16_t &min_split,
                                      const uint16_t &min_bucket,
-                                     const uint16_t &stats_per_split,
                                      const uint16_t &max_depth) const {
     // total_count != true_count + false_count if there are rows with NULL values
 

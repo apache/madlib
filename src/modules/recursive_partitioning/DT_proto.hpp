@@ -101,7 +101,6 @@ public:
                      const uint64_t &false_count,
                      const uint16_t &min_split,
                      const uint16_t &min_bucket,
-                     const uint16_t &stats_per_split,
                      const uint16_t &max_depth) const;
 
     template <class Accumulator>

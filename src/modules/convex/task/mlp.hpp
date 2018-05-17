@@ -126,18 +126,17 @@ MLP<Model, Tuple>::getLossAndUpdateModel(
         const Matrix         &y_true_batch,
         const double         &stepsize) {
 
-    uint16_t num_layers = model.u.size(); // assuming nu. of layers >= 1
-    size_t num_rows_in_batch = x_batch.rows();
-    size_t i, k;
+    uint16_t num_layers = static_cast<uint16_t>(model.u.size()); // assuming nu. of layers >= 1
+    Index num_rows_in_batch = x_batch.rows();
     double total_loss = 0.;
 
     // gradient added over the batch
     std::vector<Matrix> total_gradient_per_layer(num_layers);
-    for (k=0; k < num_layers; ++k)
+    for (Index k=0; k < num_layers; ++k)
         total_gradient_per_layer[k] = Matrix::Zero(model.u[k].rows(),
                                                    model.u[k].cols());
 
-    for (i=0; i < num_rows_in_batch; i++){
+    for (Index i=0; i < num_rows_in_batch; i++){
         ColumnVector x = x_batch.row(i);
         ColumnVector y_true = y_true_batch.row(i);
 
@@ -145,7 +144,7 @@ MLP<Model, Tuple>::getLossAndUpdateModel(
         feedForward(model, x, net, o);
         backPropogate(y_true, o.back(), net, model, delta);
 
-        for (k=0; k < num_layers; k++){
+        for (Index k=0; k < num_layers; k++){
                 total_gradient_per_layer[k] += o[k] * delta[k].transpose();
         }
 
@@ -161,12 +160,13 @@ MLP<Model, Tuple>::getLossAndUpdateModel(
             total_loss += 0.5 * (y_estimated - y_true).squaredNorm();
         }
     }
-    for (k=0; k < num_layers; k++){
+    for (Index k=0; k < num_layers; k++){
         Matrix regularization = MLP<Model, Tuple>::lambda * model.u[k];
         regularization.row(0).setZero(); // Do not update bias
-        model.u[k] -= stepsize * (total_gradient_per_layer[k] / \
-                                  num_rows_in_batch + \
-                                  regularization);
+        model.u[k] -=
+            stepsize *
+            (total_gradient_per_layer[k] / static_cast<double>(num_rows_in_batch) +
+             regularization);
     }
     return total_loss;
 }
@@ -178,14 +178,13 @@ MLP<Model, Tuple>::gradientInPlace(
         const independent_variables_type    &x,
         const dependent_variable_type       &y_true,
         const double                        &stepsize) {
-    uint16_t N = model.u.size(); // assuming nu. of layers >= 1
-    uint16_t k;
+    size_t N = model.u.size(); // assuming nu. of layers >= 1
     std::vector<ColumnVector> net, o, delta;
 
     feedForward(model, x, net, o);
     backPropogate(y_true, o.back(), net, model, delta);
 
-    for (k=0; k < N; k++){
+    for (size_t k=0; k < N; k++){
         Matrix regularization = MLP<Model, Tuple>::lambda*model.u[k];
         regularization.row(0).setZero(); // Do not update bias
         model.u[k] -= stepsize * (o[k] * delta[k].transpose() + regularization);
@@ -252,13 +251,11 @@ MLP<Model, Tuple>::feedForward(
         const independent_variables_type    &x,
         std::vector<ColumnVector>           &net,
         std::vector<ColumnVector>           &o){
-    uint16_t k, N;
-    /*
-        The network starts with the 0th layer (input), followed by n_layers
+    /* The network starts with the 0th layer (input), followed by n_layers
         number of hidden layers, and then an output layer.
     */
     // Total number of coefficients in the model
-    N = model.u.size(); // assuming >= 1
+    size_t N = model.u.size(); // assuming >= 1
     net.resize(N + 1);
     // o[k] is a vector of the output of the kth layer
     o.resize(N + 1);
@@ -274,7 +271,7 @@ MLP<Model, Tuple>::feedForward(
     o[0].resize(x.size() + 1);
     o[0] << 1.,x;
 
-    for (k = 1; k < N; k ++) {
+    for (size_t k = 1; k < N; k ++) {
         // o_k = activation(sum(o_{k-1} * u_{k-1}))
         // net_k just does the inner sum: input to the activation function
         net[k] = model.u[k-1].transpose() * o[k-1];
@@ -300,8 +297,7 @@ MLP<Model, Tuple>::backPropogate(
         const std::vector<ColumnVector>     &net,
         const model_type                    &model,
         std::vector<ColumnVector>           &delta) {
-    uint16_t k, N;
-    N = model.u.size(); // assuming >= 1
+    size_t N = model.u.size(); // assuming >= 1
     delta.resize(N);
 
     double (*activationDerivative)(const double&);
@@ -313,7 +309,7 @@ MLP<Model, Tuple>::backPropogate(
         activationDerivative = &tanhDerivative;
 
     delta.back() = y_estimated - y_true;
-    for (k = N - 1; k >= 1; k --) {
+    for (size_t k = N - 1; k >= 1; k --) {
         // Do not include the bias terms
         delta[k-1] = model.u[k].bottomRows(model.u[k].rows()-1) * delta[k];
         delta[k-1] = delta[k-1].array() * net[k].unaryExpr(activationDerivative).array();
