@@ -4,10 +4,12 @@ import os
 import re
 import yaml
 
+from utilities import _write_to_file
 from utilities import is_rev_gte
-from utilities import get_rev_num
-from utilities import run_query
 from utilities import get_dbver
+from utilities import get_rev_num
+from utilities import remove_comments_from_sql
+from utilities import run_query
 
 if not __name__ == "__main__":
     def run_sql(sql, portid, con_args):
@@ -123,7 +125,7 @@ class ChangeHandler(UpgradeBase):
     """
 
     def __init__(self, schema, portid, con_args, maddir, mad_dbrev,
-                 upgrade_to=None):
+                 output_filehandle, upgrade_to=None):
         UpgradeBase.__init__(self, schema, portid, con_args)
 
         # FIXME: maddir includes the '/src' folder. It's supposed to be the
@@ -132,7 +134,7 @@ class ChangeHandler(UpgradeBase):
         self._mad_dbrev = mad_dbrev
         self._newmodule = {}
         self._curr_rev = self._get_current_version() if not upgrade_to else upgrade_to
-
+        self.output_filehandle = output_filehandle
         self._udt = {}
         self._udf = {}
         self._uda = {}
@@ -404,8 +406,8 @@ class ChangeHandler(UpgradeBase):
             cascade_str = 'CASCADE' if udt in ('svec', 'bytea8') else ''
             # CASCADE DROP for svec and bytea8 because the recv/send
             # functions and the type depend on each other
-            self._run_sql("DROP TYPE IF EXISTS {0}.{1} {2}".
-                          format(self._schema, udt, cascade_str))
+            _write_to_file("DROP TYPE IF EXISTS {0}.{1} {2};".
+                                format(self._schema, udt, cascade_str))
 
     def drop_changed_udf(self):
         """
@@ -418,10 +420,10 @@ class ChangeHandler(UpgradeBase):
                 # so dropping that function needs this extra check.
                 udf_arglist = item['argument'] if 'argument' in item else ''
 
-                self._run_sql("DROP FUNCTION IF EXISTS {schema}.{udf}({arg})".
-                              format(schema=self._schema,
-                                     udf=udf,
-                                     arg=udf_arglist))
+                _write_to_file("DROP FUNCTION IF EXISTS {schema}.{udf}({arg});".
+                                    format(schema=self._schema,
+                                           udf=udf,
+                                           arg=udf_arglist))
 
     def drop_changed_uda(self):
         """
@@ -429,10 +431,10 @@ class ChangeHandler(UpgradeBase):
         """
         for uda in self._uda:
             for item in self._uda[uda]:
-                self._run_sql("DROP AGGREGATE IF EXISTS {schema}.{uda}({arg})".
-                              format(schema=self._schema,
-                                     uda=uda,
-                                     arg=item['argument']))
+                _write_to_file("DROP AGGREGATE IF EXISTS {schema}.{uda}({arg});".
+                                    format(schema=self._schema,
+                                           uda=uda,
+                                           arg=item['argument']))
 
     def drop_changed_udc(self):
         """
@@ -440,17 +442,17 @@ class ChangeHandler(UpgradeBase):
         @note We have special treatment for UDCs defined in the svec module
         """
         for udc in self._udc:
-            self._run_sql("DROP CAST IF EXISTS ({sourcetype} AS {targettype})".
-                          format(sourcetype=self._udc[udc]['sourcetype'],
-                                 targettype=self._udc[udc]['targettype']))
+            _write_to_file("DROP CAST IF EXISTS ({sourcetype} AS {targettype});".
+                                format(sourcetype=self._udc[udc]['sourcetype'],
+                                       targettype=self._udc[udc]['targettype']))
 
     def drop_traininginfo_4dt(self):
         """
         @brief Drop the madlib.training_info table, which should no longer be used since
         the version 1.5
         """
-        self._run_sql("DROP TABLE IF EXISTS {schema}.training_info".format(
-            schema=self._schema))
+        _write_to_file("DROP TABLE IF EXISTS {schema}.training_info;".
+                            format(schema=self._schema))
 
     def drop_changed_udo(self):
         """
@@ -460,8 +462,8 @@ class ChangeHandler(UpgradeBase):
             for value in self._udo[op]:
                 leftarg = value['leftarg'].replace('schema_madlib', self._schema)
                 rightarg = value['rightarg'].replace('schema_madlib', self._schema)
-                self._run_sql("""
-                    DROP OPERATOR IF EXISTS {schema}.{op} ({leftarg}, {rightarg})
+                _write_to_file("""
+                    DROP OPERATOR IF EXISTS {schema}.{op} ({leftarg}, {rightarg});
                     """.format(schema=self._schema, **locals()))
 
     def drop_changed_udoc(self):
@@ -471,8 +473,8 @@ class ChangeHandler(UpgradeBase):
         for op_cls in self._udoc:
             for value in self._udoc[op_cls]:
                 index = value['index']
-                self._run_sql("""
-                    DROP OPERATOR CLASS IF EXISTS {schema}.{op_cls} USING {index}
+                _write_to_file("""
+                    DROP OPERATOR CLASS IF EXISTS {schema}.{op_cls} USING {index};
                     """.format(schema=self._schema, **locals()))
 
 
@@ -1077,7 +1079,7 @@ class ScriptCleaner(UpgradeBase):
                 p_str = "CREATE\s+OPERATOR\s+{schema}\.{op_name}\s*\(" \
                         "\s*leftarg\s*=\s*{leftarg}\s*," \
                         "\s*rightarg\s*=\s*{rightarg}\s*," \
-                        ".*?\)\s*;".format(schema=self._schema.upper(),
+                        ".*?\)\s*;".format(schema=self._schema,
                                            op_name=re.escape(each_udo), **locals())
                 operator_patterns.append(p_str)
         return operator_patterns
@@ -1102,7 +1104,7 @@ class ScriptCleaner(UpgradeBase):
                 index = each_item['index']
                 p_str = "CREATE\s+OPERATOR\s+CLASS\s+{schema}\.{opc_name}" \
                         ".*?USING\s+{index}" \
-                        ".*?;".format(schema=self._schema.upper(),
+                        ".*?;".format(schema=self._schema,
                                       opc_name=each_udoc, **locals())
                 opclass_patterns.append(p_str)
         return opclass_patterns
@@ -1132,7 +1134,7 @@ class ScriptCleaner(UpgradeBase):
                     else:
                         p_arg_str += ',\s*%s\s*' % arg
                 p_str = "CREATE\s+(ORDERED\s)*\s*AGGREGATE" \
-                        "\s+%s\.(%s)\s*\(\s*%s\)(.*?);" % (self._schema.upper(),
+                        "\s+%s\.(%s)\s*\(\s*%s\)(.*?);" % (self._schema,
                                                            each_uda,
                                                            p_arg_str)
                 aggregate_patterns.append(p_str)
@@ -1165,22 +1167,12 @@ class ScriptCleaner(UpgradeBase):
         """
         @brief Remove comments in the sql script
         """
-        pattern = re.compile(r"""(/\*(.|[\r\n])*?\*/)|(--(.*|[\r\n]))""")
-        res = ''
-        lines = re.split(r'[\r\n]+', self._sql)
-        for line in lines:
-            tmp = line
-            if not tmp.strip().startswith("E'"):
-                line = re.sub(pattern, '', line)
-            res += line + '\n'
-        self._sql = res.strip()
-        self._sql = re.sub(pattern, '', self._sql).strip()
-
-    """
-    @breif Remove "drop/create type" statements in the sql script
-    """
+        self._sql = remove_comments_from_sql(self._sql)
 
     def _clean_type(self):
+        """
+        @breif Remove "drop/create type" statements in the sql script
+        """
         # remove 'drop type'
         pattern = re.compile('DROP(\s+)TYPE(.*?);', re.DOTALL | re.IGNORECASE)
         self._sql = re.sub(pattern, '', self._sql)
@@ -1194,7 +1186,7 @@ class ScriptCleaner(UpgradeBase):
                 udt_str += udt
             else:
                 udt_str += '|' + udt
-        p_str = 'CREATE(\s+)TYPE(\s+)%s\.(%s)(.*?);' % (self._schema.upper(), udt_str)
+        p_str = 'CREATE(\s+)TYPE(\s+)%s\.(%s)(.*?);' % (self._schema, udt_str)
         pattern = re.compile(p_str, re.DOTALL | re.IGNORECASE)
         self._sql = re.sub(pattern, '', self._sql)
 
@@ -1299,18 +1291,22 @@ class ScriptCleaner(UpgradeBase):
         pattern = re.compile(r"""CREATE(\s+)FUNCTION""", re.DOTALL | re.IGNORECASE)
         self._sql = re.sub(pattern, 'CREATE OR REPLACE FUNCTION', self._sql)
 
-    def cleanup(self, sql):
+    def cleanup(self, sql, algoname):
         """
         @brief Entry function for cleaning the sql script
         """
         self._sql = sql
-        self._clean_comment()
-        self._clean_type()
-        self._clean_cast()
-        self._clean_operator()
-        self._clean_opclass()
-        self._clean_aggregate()
-        self._clean_function()
+        # Modify the original sql during upgrade. Clean only non-new modules as
+        # they already exist prior to the upgrade. Mostly, all drops are removed
+        # and replaced by creates.
+        if algoname not in self.get_change_handler().newmodule:
+            self._clean_comment()
+            self._clean_type()
+            self._clean_cast()
+            self._clean_operator()
+            self._clean_opclass()
+            self._clean_aggregate()
+            self._clean_function()
         return self._sql
 
 

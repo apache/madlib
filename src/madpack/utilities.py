@@ -32,6 +32,13 @@ import unittest
 # Some read-only variables
 this = os.path.basename(sys.argv[0])    # name of this script
 
+# ------------------------------------------------------------------------------
+
+def _write_to_file(handle, sql):
+    handle.write(sql)
+    handle.write('\n')
+
+# ------------------------------------------------------------------------------
 
 def error_(src_name, msg, stop=False):
     """
@@ -44,8 +51,8 @@ def error_(src_name, msg, stop=False):
     # stack trace is not printed
     if stop:
         exit(2)
-# ------------------------------------------------------------------------------
 
+# ------------------------------------------------------------------------------
 
 def info_(src_name, msg, verbose=True):
     """
@@ -57,6 +64,22 @@ def info_(src_name, msg, verbose=True):
         print("{0}: INFO : {1}".format(src_name, msg))
 # ------------------------------------------------------------------------------
 
+def remove_comments_from_sql(sql):
+    """
+    @brief Remove comments in the sql script
+    """
+    pattern = re.compile(r"""(/\*(.|[\r\n])*?\*/)|(--(.*|[\r\n]))""")
+    res = ''
+    lines = re.split(r'[\r\n]+', sql)
+    for line in lines:
+        tmp = line
+        if not tmp.strip().startswith("E'"):
+            line = re.sub(pattern, '', line)
+        res += line + '\n'
+    return_sql = res.strip()
+    return_sql = re.sub(pattern, '', return_sql).strip()
+    return return_sql
+# ------------------------------------------------------------------------------
 
 def run_query(sql, con_args, show_error=True):
     # Define sqlcmd
@@ -119,7 +142,7 @@ def run_query(sql, con_args, show_error=True):
 # ------------------------------------------------------------------------------
 
 
-def get_madlib_dbrev(con_args, schema):
+def get_db_madlib_version(con_args, schema):
     """
     Read MADlib version from database
         @param con_args database conection object

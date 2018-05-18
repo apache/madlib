@@ -14,14 +14,15 @@ import tempfile
 import shutil
 
 import upgrade_util as uu
+from utilities import _write_to_file
 from utilities import error_
+from utilities import get_dbver
+from utilities import get_db_madlib_version
+from utilities import get_rev_num
 from utilities import info_
 from utilities import is_rev_gte
-from utilities import get_rev_num
+from utilities import remove_comments_from_sql
 from utilities import run_query
-from utilities import get_madlib_dbrev
-from utilities import get_dbver
-
 # Required Python version
 py_min_ver = [2, 6]
 
@@ -53,7 +54,7 @@ maddir_lib = maddir + "/lib/libmadlib.so"  # C/C++ libraries
 
 # Read the config files
 ports = configyml.get_ports(maddir_conf)  # object made of Ports.yml
-rev = configyml.get_version(maddir_conf)  # MADlib OS-level version
+new_madlib_ver = configyml.get_version(maddir_conf)  # MADlib OS-level version
 portid_list = []
 for port in ports:
     portid_list.append(port)
@@ -95,7 +96,6 @@ def _internal_run_query(sql, show_error):
     return run_query(sql, con_args, show_error)
 # ------------------------------------------------------------------------------
 
-
 def _get_relative_maddir(maddir, port):
     """ Return a relative path version of maddir
 
@@ -131,35 +131,38 @@ def _get_relative_maddir(maddir, port):
         return maddir
 # ------------------------------------------------------------------------------
 
-
-def _run_sql_file(schema, maddir_mod_py, module, sqlfile,
-                  tmpfile, logfile, pre_sql, upgrade=False,
-                  sc=None):
+def _cleanup_comments_in_sqlfile(output_filename, upgrade):
     """
-        Run SQL file
-            @param schema name of the target schema
-            @param maddir_mod_py name of the module dir with Python code
-            @param module  name of the module
-            @param sqlfile name of the file to parse
-            @param tmpfile name of the temp file to run
-            @param logfile name of the log file (stdout)
-            @param pre_sql optional SQL to run before executing the file
-            @param upgrade are we upgrading as part of this sql run
-            @param sc object of ScriptCleaner
+    @brief Remove comments in the sql script, and re-write the file with the
+    cleaned up script.
     """
+    if not upgrade:
+        with open(output_filename, 'r+') as output_filehandle:
+            full_sql = output_filehandle.read()
+            full_sql = remove_comments_from_sql(full_sql)
+        # Re-write the cleaned-up sql to a new file. Python does not let us
+        # erase all the content of a file and rewrite the same file again.
+        cleaned_output_filename = output_filename+'.tmp'
+        with open(cleaned_output_filename, 'w') as output_filehandle:
+            _write_to_file(output_filehandle, full_sql)
+        # Move the cleaned output file to the old one.
+        os.rename(cleaned_output_filename, output_filename)
 
+def _run_m4_and_append(schema, maddir_mod_py, module, sqlfile,
+                       output_filehandle, pre_sql=None):
+    """
+    Function to process a sql file with M4.
+    """
     # Check if the SQL file exists
     if not os.path.isfile(sqlfile):
         error_(this, "Missing module SQL file (%s)" % sqlfile, False)
-        raise ValueError("Missing module SQL file (%s)" % sqlfile)
+        raise ValueError
 
     # Prepare the file using M4
     try:
-        f = open(tmpfile, 'w')
         # Add the before SQL
         if pre_sql:
-            f.writelines([pre_sql, '\n\n'])
-            f.flush()
+            output_filehandle.writelines([pre_sql, '\n\n'])
         # Find the madpack dir (platform specific or generic)
         if os.path.isdir(maddir + "/ports/" + portid + "/" + dbver + "/madpack"):
             maddir_madpack = maddir + "/ports/" + portid + "/" + dbver + "/madpack"
@@ -178,24 +181,33 @@ def _run_sql_file(schema, maddir_mod_py, module, sqlfile,
                   sqlfile]
 
         info_(this, "> ... parsing: " + " ".join(m4args), verbose)
-
-        subprocess.call(m4args, stdout=f)
-        f.close()
+        output_filehandle.flush()
+        subprocess.call(m4args, stdout=output_filehandle)
     except:
         error_(this, "Failed executing m4 on %s" % sqlfile, False)
         raise Exception
 
+def _run_install_check_sql(schema, maddir_mod_py, module, sqlfile,
+                           tmpfile, logfile, pre_sql):
+    """
+        Run SQL file
+            @param schema name of the target schema
+            @param maddir_mod_py name of the module dir with Python code
+            @param module  name of the module
+            @param sqlfile name of the file to parse
+            @param tmpfile name of the temp file to run
+            @param logfile name of the log file (stdout)
+            @param pre_sql optional SQL to run before executing the file
+    """
+    try:
+        f = open(tmpfile, 'w')
+        _run_m4_and_append(schema, maddir_mod_py, module, sqlfile, f, pre_sql)
+        f.close()
+    except:
+        error_(this, "Failed to temp m4 processed file %s." % tmpfile, False)
+        raise Exception
     # Only update function definition
     sub_module = ''
-    if upgrade:
-        # get filename from complete path without the extension
-        sub_module = os.path.splitext(os.path.basename(sqlfile))[0]
-        info_(this, sub_module, verbose)
-        if sub_module not in sc.get_change_handler().newmodule:
-            sql = open(tmpfile).read()
-            sql = sc.cleanup(sql)
-            open(tmpfile, 'w').write(sql)
-
     # Run the SQL using DB command-line utility
     if portid in SUPPORTED_PORTS:
         sqlcmd = 'psql'
@@ -238,6 +250,88 @@ def _run_sql_file(schema, maddir_mod_py, module, sqlfile,
     return retval
 # ------------------------------------------------------------------------------
 
+def _run_sql_file(schema, sqlfile):
+    """
+        Run SQL file
+            @param schema name of the target schema
+            @param sqlfile name of the file to parse
+    """
+    # Run the SQL using DB command-line utility
+    if portid in SUPPORTED_PORTS:
+        sqlcmd = 'psql'
+        # Test the DB cmd line utility
+        std, err = subprocess.Popen(['which', sqlcmd], stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE).communicate()
+        if not std:
+            error_(this, "Command not found: %s" % sqlcmd, True)
+
+        runcmd = [sqlcmd, '-a',
+                  '-v', 'ON_ERROR_STOP=1',
+                  '-h', con_args['host'].split(':')[0],
+                  '-p', con_args['host'].split(':')[1],
+                  '-d', con_args['database'],
+                  '-U', con_args['user'],
+                  '--no-password',
+                  '--single-transaction',
+                  '-f', sqlfile]
+        runenv = os.environ
+        if 'password' in con_args:
+            runenv["PGPASSWORD"] = con_args['password']
+        runenv["PGOPTIONS"] = '-c client_min_messages=notice'
+
+    # Open log file
+    logfile = sqlfile + '.log'
+    try:
+        log = open(logfile, 'w')
+    except:
+        error_(this, "Cannot create log file: %s" % logfile, False)
+        raise Exception
+
+    # Run the SQL
+    try:
+        info_(this, "> ... executing " + sqlfile, verbose)
+        info_(this, ' '.join(runcmd), verbose)
+        retval = subprocess.call(runcmd, env=runenv, stdout=log, stderr=log)
+    except:
+        error_(this, "Failed executing %s" % sqlfile, False)
+        raise Exception
+    finally:
+        log.close()
+    # Check the exit status
+    result = _parse_result_logfile(retval, logfile, sqlfile)
+    return result
+# ------------------------------------------------------------------------------
+
+def _parse_result_logfile(retval, logfile, sql_abspath,
+                          sql_filename=None, module=None, milliseconds=None):
+    """
+    Function to parse the logfile and return if its content indicate a failure
+    or success.
+    """
+    is_install_check_logfile = bool(sql_filename and module)
+    # Check the exit status
+    if retval != 0:
+        result = 'FAIL'
+        global keeplogs
+        keeplogs = True
+    # Since every single statement in the test file gets logged,
+    # an empty log file indicates an empty or a failed test
+    elif os.path.isfile(logfile) and os.path.getsize(logfile) > 0:
+        result = 'PASS'
+    # Otherwise
+    else:
+        result = 'ERROR'
+
+    if is_install_check_logfile:
+        # Output result
+        print "TEST CASE RESULT|Module: " + module + \
+            "|" + os.path.basename(sql_filename) + "|" + result + \
+            "|Time: %d milliseconds" % (milliseconds)
+
+    if result == 'FAIL':
+        info_(this, "Failed executing %s" % sql_abspath, True)
+        info_(this, "Check the log at %s" % logfile, True)
+    return result
 
 def _check_db_port(portid):
     """
@@ -259,22 +353,22 @@ def _check_db_port(portid):
 # ------------------------------------------------------------------------------
 
 
-def _print_revs(rev, dbrev, con_args, schema):
+def _print_vers(new_madlib_ver, db_madlib_ver, con_args, schema):
     """
     Print version information
-        @param rev OS-level MADlib version
-        @param dbrev DB-level MADlib version
+        @param new_madlib_ver OS-level MADlib version
+        @param db_madlib_ver DB-level MADlib version
         @param con_args database connection arguments
         @param schema MADlib schema name
     """
-    info_(this, "MADlib tools version    = %s (%s)" % (str(rev), sys.argv[0]), True)
+    info_(this, "MADlib tools version    = %s (%s)" % (str(new_madlib_ver), sys.argv[0]), True)
     if con_args:
         try:
             info_(this, "MADlib database version = %s (host=%s, db=%s, schema=%s)"
-                  % (dbrev, con_args['host'], con_args['database'], schema), True)
+                  % (db_madlib_ver, con_args['host'], con_args['database'], schema), True)
         except:
             info_(this, "MADlib database version = [Unknown] (host=%s, db=%s, schema=%s)"
-                  % (dbrev, con_args['host'], con_args['database'], schema), True)
+                  % (db_madlib_ver, con_args['host'], con_args['database'], schema), True)
     return
 # ------------------------------------------------------------------------------
 
@@ -329,112 +423,49 @@ def _plpy_check(py_min_ver):
 # ------------------------------------------------------------------------------
 
 
-def _db_install(schema, dbrev, testcase):
+def _db_install(schema, is_schema_in_db, filehandle, testcase):
     """
     Install MADlib
         @param schema MADlib schema name
-        @param dbrev DB-level MADlib version
+        @param is_schema_in_db flag to indicate if schema is already present
+        @param filehandle file that contains the sql for installation
         @param testcase command-line args for a subset of modules
     """
-    info_(this, "Installing MADlib into %s schema..." % schema.upper(), True)
-
-    temp_schema = schema + '_v' + ''.join(map(str, get_rev_num(dbrev)))
-    # Check the status of MADlib objects in database
-    madlib_exists = False if dbrev is None else True
-
-    # Test if schema is writable
+    # Create MADlib objects
     try:
-        _internal_run_query("CREATE TABLE %s.__madlib_test_table (A INT);" % schema, False)
-        _internal_run_query("DROP TABLE %s.__madlib_test_table;" % schema, False)
-        schema_writable = True
+        _db_create_schema(schema, is_schema_in_db, filehandle)
+        _db_create_objects(schema, filehandle, testcase=testcase)
     except:
-        schema_writable = False
-    # CASE #1: Target schema exists with MADlib objects:
-    if schema_writable and madlib_exists:
-        schema_overwrite_msg = (
-            "***************************************************************************"
-            "* Schema {0} already exists"
-            "* Installer will rename it to {1}"
-            "***************************************************************************"
-            "Would you like to continue? [Y/N]".
-            format(schema.upper(), temp_schema.upper()))
-        info_(this, schema_overwrite_msg)
-        go = raw_input('>>> ').upper()
-        while go not in ('Y', 'YES', 'N', 'NO'):
-            go = raw_input('Yes or No >>> ').upper()
-        if go in ('N', 'NO'):
-            info_(this, 'Installation stopped.', True)
-            return
+        error_(this, "Building database objects failed. "
+               "Before retrying: drop %s schema OR install MADlib into "
+               "a different schema." % schema, True)
 
-        # Rename MADlib schema
-        _db_rename_schema(schema, temp_schema)
-
-        # Create MADlib schema
-        try:
-            _db_create_schema(schema)
-        except:
-            _db_rollback(schema, temp_schema)
-
-        # Create MADlib objects
-        try:
-            _db_create_objects(schema, temp_schema, testcase=testcase)
-        except:
-            _db_rollback(schema, temp_schema)
-
-    # CASE #2: Target schema exists w/o MADlib objects:
-    elif schema_writable and not madlib_exists:
-            # Create MADlib objects
-            try:
-                _db_create_objects(schema, None, testcase=testcase)
-            except:
-                error_(this, "Building database objects failed. "
-                       "Before retrying: drop %s schema OR install MADlib into "
-                       "a different schema." % schema.upper(), True)
-
-    #
-    # CASE #3: Target schema does not exist:
-    #
-    elif not schema_writable:
-        info_(this, "> Schema %s does not exist" % schema.upper(), verbose)
-
-        # Create MADlib schema
-        try:
-            _db_create_schema(schema)
-        except:
-            _db_rollback(schema, None)
-
-        # Create MADlib objects
-        try:
-            _db_create_objects(schema, None, testcase=testcase)
-        except:
-            _db_rollback(schema, None)
-
-    info_(this, "MADlib %s installed successfully in %s schema." % (str(rev), schema.upper()))
 # ------------------------------------------------------------------------------
 
 
-def _db_upgrade(schema, dbrev):
+def _db_upgrade(schema, filehandle, db_madlib_ver):
     """
     Upgrade MADlib
         @param schema MADlib schema name
-        @param dbrev DB-level MADlib version
+        @param filehandle Handle to output file
+        @param db_madlib_ver DB-level MADlib version
     """
-    if is_rev_gte(get_rev_num(dbrev), get_rev_num(rev)):
+    if is_rev_gte(get_rev_num(db_madlib_ver), get_rev_num(new_madlib_ver)):
         info_(this, "Current MADlib version already up to date.", True)
-        return
+        return 1
 
-    if is_rev_gte(get_rev_num('1.9.1'), get_rev_num(dbrev)):
+    if is_rev_gte(get_rev_num('1.9.1'), get_rev_num(db_madlib_ver)):
         error_(this, """
             MADlib versions prior to v1.10 are not supported for upgrade.
             Please try upgrading to v1.10 and then upgrade to this version.
             """, True)
-        return
+        return 1
 
-    info_(this, "Upgrading MADlib into %s schema..." % schema.upper(), True)
+    info_(this, "Upgrading MADlib into %s schema..." % schema, True)
     info_(this, "\tDetecting dependencies...", True)
 
     info_(this, "\tLoading change list...", True)
-    ch = uu.ChangeHandler(schema, portid, con_args, maddir, dbrev)
+    ch = uu.ChangeHandler(schema, portid, con_args, maddir, db_madlib_ver, filehandle)
 
     info_(this, "\tDetecting table dependencies...", True)
     td = uu.TableDependency(schema, portid, con_args)
@@ -537,9 +568,8 @@ def _db_upgrade(schema, dbrev):
     ch.drop_changed_udf()
     ch.drop_changed_udt()  # assume dependent udf for udt does not change
     ch.drop_traininginfo_4dt()  # used types: oid, text, integer, float
-    _db_create_objects(schema, None, True, sc)
-
-    info_(this, "MADlib %s upgraded successfully in %s schema." % (str(rev), schema.upper()), True)
+    _db_create_objects(schema, filehandle, True, sc)
+    return 0
 # ------------------------------------------------------------------------------
 
 
@@ -550,7 +580,7 @@ def _db_rename_schema(from_schema, to_schema):
         @param to_schema new name for the schema
     """
 
-    info_(this, "> Renaming schema %s to %s" % (from_schema.upper(), to_schema.upper()), True)
+    info_(this, "> Renaming schema %s to %s" % (from_schema, to_schema), True)
     try:
         _internal_run_query("ALTER SCHEMA %s RENAME TO %s;" % (from_schema, to_schema), True)
     except:
@@ -559,71 +589,59 @@ def _db_rename_schema(from_schema, to_schema):
 # ------------------------------------------------------------------------------
 
 
-def _db_create_schema(schema):
+def _db_create_schema(schema, is_schema_in_db, filehandle):
     """
     Create schema
         @param from_schema name of the schema to rename
+        @param is_schema_in_db flag to indicate if schema is already present
         @param to_schema new name for the schema
     """
 
-    info_(this, "> Creating %s schema" % schema.upper(), True)
-    try:
-        _internal_run_query("CREATE SCHEMA %s;" % schema, True)
-    except:
-        info_(this, 'Cannot create new schema. Rolling back installation...', True)
-        pass
+    if not is_schema_in_db:
+        _write_to_file(filehandle, "CREATE SCHEMA %s;" % schema)
 # ------------------------------------------------------------------------------
 
-
-def _db_create_objects(schema, old_schema, upgrade=False, sc=None, testcase=""):
+def _db_create_objects(schema, create_obj_handle,
+                       upgrade=False, sc=None, testcase=""):
     """
     Create MADlib DB objects in the schema
         @param schema Name of the target schema
+        @param create_obj_handle file handle for sql output file
+        @param upgrade flag to indicate if it's an upgrade operation or not
         @param sc ScriptCleaner object
         @param testcase Command-line args for modules to install
     """
     if not upgrade:
         # Create MigrationHistory table
         try:
-            info_(this, "> Creating %s.MigrationHistory table" % schema.upper(), True)
-            _internal_run_query("DROP TABLE IF EXISTS %s.migrationhistory;" % schema, True)
+            _write_to_file(create_obj_handle,
+                           "DROP TABLE IF EXISTS %s.migrationhistory;" % schema)
             sql = """CREATE TABLE %s.migrationhistory
                    (id serial, version varchar(255),
-                    applied timestamp default current_timestamp);""" % schema
-            _internal_run_query(sql, True)
+                    applied timestamp default current_timestamp);
+                  """ % schema
+            _write_to_file(create_obj_handle, sql)
         except:
             error_(this, "Cannot crate MigrationHistory table", False)
             raise Exception
 
-        # Copy MigrationHistory table for record keeping purposes
-        if old_schema:
-            try:
-                info_(this, "> Saving data from %s.MigrationHistory table" % old_schema.upper(), True)
-                sql = """INSERT INTO %s.migrationhistory (version, applied)
-                       SELECT version, applied FROM %s.migrationhistory
-                       ORDER BY id;""" % (schema, old_schema)
-                _internal_run_query(sql, True)
-            except:
-                error_(this, "Cannot copy MigrationHistory table", False)
-                raise Exception
-
     # Stamp the DB installation
     try:
-        info_(this, "> Writing version info in MigrationHistory table", True)
-        _internal_run_query("INSERT INTO %s.migrationhistory(version) "
-                            "VALUES('%s')" % (schema, str(rev)), True)
+        _write_to_file(create_obj_handle,
+                       """INSERT INTO %s.migrationhistory(version)
+                            VALUES('%s');
+                       """ % (schema, str(new_madlib_ver)))
     except:
         error_(this, "Cannot insert data into %s.migrationhistory table" % schema, False)
         raise Exception
 
     # Run migration SQLs
-    if upgrade:
-        info_(this, "> Creating/Updating objects for modules:", True)
-    else:
-        info_(this, "> Creating objects for modules:", True)
+    info_(this, "> Preparing objects for the following modules:", True)
 
-    caseset = (set([test.strip() for test in testcase.split(',')])
-               if testcase != "" else set())
+    if testcase:
+        caseset = set([test.strip() for test in testcase.split(',')])
+    else:
+        caseset = set()
 
     modset = {}
     for case in caseset:
@@ -684,46 +702,18 @@ def _db_create_objects(schema, old_schema, upgrade=False, sc=None, testcase=""):
                     and algoname not in modset[module]:
                 continue
 
-            # Set file names
-            tmpfile = cur_tmpdir + '/' + os.path.basename(sqlfile) + '.tmp'
-            logfile = cur_tmpdir + '/' + os.path.basename(sqlfile) + '.log'
-            retval = _run_sql_file(schema, maddir_mod_py, module, sqlfile,
-                                   tmpfile, logfile, None, upgrade,
-                                   sc)
-            # Check the exit status
-            if retval != 0:
-                error_(this, "TEST CASE RESULTed executing %s" % tmpfile, False)
-                error_(this, "Check the log at %s" % logfile, False)
-                raise Exception
+            if not upgrade:
+                _run_m4_and_append(schema, maddir_mod_py, module, sqlfile,
+                                   create_obj_handle, None)
+            else:
+                tmpfile = cur_tmpdir + '/' + os.path.basename(sqlfile) + '.tmp'
+                with open(tmpfile, 'w+') as tmphandle:
+                    _run_m4_and_append(schema, maddir_mod_py, module, sqlfile,
+                                       tmphandle, None)
+                processed_sql = sc.cleanup(open(tmpfile).read(), algoname)
+                _write_to_file(create_obj_handle, processed_sql)
+
 # ------------------------------------------------------------------------------
-
-
-def _db_rollback(drop_schema, keep_schema):
-    """
-    Rollback installation
-        @param drop_schema name of the schema to drop
-        @param keep_schema name of the schema to rename and keep
-    """
-    info_(this, "Rolling back the installation...", True)
-
-    if not drop_schema:
-        error_(this, 'No schema name to drop. Stopping rollback...', True)
-
-    # Drop the current schema
-    info_(this, "> Dropping schema %s" % drop_schema.upper(), verbose)
-    try:
-        _internal_run_query("DROP SCHEMA %s CASCADE;" % (drop_schema), True)
-    except:
-        error_(this, "Cannot drop schema %s. Stopping rollback..." % drop_schema.upper(), True)
-
-    # Rename old to current schema
-    if keep_schema:
-        _db_rename_schema(keep_schema, drop_schema)
-
-    info_(this, "Rollback finished successfully.", True)
-    raise Exception
-# ------------------------------------------------------------------------------
-
 
 def unescape(string):
     """
@@ -735,7 +725,6 @@ def unescape(string):
     else:
         return re.sub(r'\\(?P<char>[/@:\\])', '\g<char>', string)
 # ------------------------------------------------------------------------------
-
 
 def parseConnectionStr(connectionStr):
     """
@@ -760,11 +749,10 @@ def parseConnectionStr(connectionStr):
         unescape(match.group('database')))
 # ------------------------------------------------------------------------------
 
-
 def parse_arguments():
     parser = argparse.ArgumentParser(
         prog="madpack",
-        description='MADlib package manager (' + str(rev) + ')',
+        description='MADlib package manager (' + str(new_madlib_ver) + ')',
         argument_default=False,
         formatter_class=argparse.RawTextHelpFormatter,
         epilog="""Example:
@@ -824,6 +812,264 @@ def parse_arguments():
     # Get the arguments
     return parser.parse_args()
 
+def run_install_check(args, testcase):
+    schema = args['schema']
+    db_madlib_ver = args['db_madlib_ver']
+    # 1) Compare OS and DB versions. Continue if OS = DB.
+    if get_rev_num(db_madlib_ver) != get_rev_num(new_madlib_ver):
+        _print_vers(new_madlib_ver, db_madlib_ver, con_args, schema)
+        info_(this, "Versions do not match. Install-check stopped.", True)
+        return
+
+    # Create install-check user
+    test_user = ('madlib_' +
+                 new_madlib_ver.replace('.', '').replace('-', '_') +
+                 '_installcheck')
+    try:
+        _internal_run_query("DROP USER IF EXISTS %s;" % (test_user), False)
+    except:
+        _internal_run_query("DROP OWNED BY %s CASCADE;" % (test_user), True)
+        _internal_run_query("DROP USER IF EXISTS %s;" % (test_user), True)
+    _internal_run_query("CREATE USER %s;" % (test_user), True)
+
+    _internal_run_query("GRANT USAGE ON SCHEMA %s TO %s;" % (schema, test_user), True)
+
+    # 2) Run test SQLs
+    info_(this, "> Running test scripts for:", verbose)
+
+    caseset = (set([test.strip() for test in testcase.split(',')])
+               if testcase != "" else set())
+
+    modset = {}
+    for case in caseset:
+        if case.find('/') > -1:
+            [mod, algo] = case.split('/')
+            if mod not in modset:
+                modset[mod] = []
+            if algo not in modset[mod]:
+                modset[mod].append(algo)
+        else:
+            modset[case] = []
+
+    # Loop through all modules
+    for moduleinfo in portspecs['modules']:
+
+        # Get module name
+        module = moduleinfo['name']
+
+        # Skip if doesn't meet specified modules
+        if modset is not None and len(modset) > 0 and module not in modset:
+            continue
+        # JIRA: MADLIB-1078 fix
+        # Skip pmml during install-check (when run without the -t option).
+        # We can still run install-check on pmml with '-t' option.
+        if not modset and module in ['pmml']:
+            continue
+        info_(this, "> - %s" % module, verbose)
+
+        # Make a temp dir for this module (if doesn't exist)
+        cur_tmpdir = tmpdir + '/' + module + '/test'  # tmpdir is a global variable
+        _make_dir(cur_tmpdir)
+
+        # Find the Python module dir (platform specific or generic)
+        if os.path.isdir(maddir + "/ports/" + portid + "/" + dbver + "/modules/" + module):
+            maddir_mod_py = maddir + "/ports/" + portid + "/" + dbver + "/modules"
+        else:
+            maddir_mod_py = maddir + "/modules"
+
+        # Find the SQL module dir (platform specific or generic)
+        if os.path.isdir(maddir + "/ports/" + portid + "/modules/" + module):
+            maddir_mod_sql = maddir + "/ports/" + portid + "/modules"
+        else:
+            maddir_mod_sql = maddir + "/modules"
+
+        # Prepare test schema
+        test_schema = "madlib_installcheck_%s" % (module)
+        _internal_run_query("DROP SCHEMA IF EXISTS %s CASCADE; CREATE SCHEMA %s;" %
+                            (test_schema, test_schema), True)
+        _internal_run_query("GRANT ALL ON SCHEMA %s TO %s;" %
+                            (test_schema, test_user), True)
+
+        # Switch to test user and prepare the search_path
+        pre_sql = '-- Switch to test user:\n' \
+                  'SET ROLE %s;\n' \
+                  '-- Set SEARCH_PATH for install-check:\n' \
+                  'SET search_path=%s,%s;\n' \
+                  % (test_user, test_schema, schema)
+
+        # Loop through all test SQL files for this module
+        sql_files = maddir_mod_sql + '/' + module + '/test/*.sql_in'
+        for sqlfile in sorted(glob.glob(sql_files), reverse=True):
+            algoname = os.path.basename(sqlfile).split('.')[0]
+            # run only algo specified
+            if (module in modset and modset[module] and
+                    algoname not in modset[module]):
+                continue
+
+            # Set file names
+            tmpfile = cur_tmpdir + '/' + os.path.basename(sqlfile) + '.tmp'
+            logfile = cur_tmpdir + '/' + os.path.basename(sqlfile) + '.log'
+
+            # If there is no problem with the SQL file
+            milliseconds = 0
+
+            # Run the SQL
+            run_start = datetime.datetime.now()
+            retval = _run_install_check_sql(schema, maddir_mod_py,
+                                            module, sqlfile, tmpfile,
+                                            logfile, pre_sql)
+            # Runtime evaluation
+            run_end = datetime.datetime.now()
+            milliseconds = round((run_end - run_start).seconds * 1000 +
+                                 (run_end - run_start).microseconds / 1000)
+
+            # Check the exit status
+            result = _parse_result_logfile(retval, logfile, tmpfile, sqlfile,
+                                           module, milliseconds)
+
+        # Cleanup test schema for the module
+        _internal_run_query("DROP SCHEMA IF EXISTS %s CASCADE;" % (test_schema), True)
+
+    # Drop install-check user
+    _internal_run_query("DROP OWNED BY %s CASCADE;" % (test_user), True)
+    _internal_run_query("DROP USER %s;" % (test_user), True)
+
+def _append_uninstall_madlib_sqlfile(schema, db_madlib_ver, is_schema_in_db,
+                                     output_filehandle):
+    if get_rev_num(db_madlib_ver) == [0]:
+        info_(this, "Nothing to uninstall. No version found in schema %s." % schema, True)
+        return 1, is_schema_in_db
+
+    # Find any potential data to lose
+    affected_objects = _internal_run_query("""
+        SELECT
+            n1.nspname AS schema,
+            relname AS relation,
+            attname AS column,
+            typname AS type
+        FROM
+            pg_attribute a,
+            pg_class c,
+            pg_type t,
+            pg_namespace n,
+            pg_namespace n1
+        WHERE
+            n.nspname = '%s'
+            AND t.typnamespace = n.oid
+            AND a.atttypid = t.oid
+            AND c.oid = a.attrelid
+            AND c.relnamespace = n1.oid
+            AND c.relkind = 'r'
+        ORDER BY
+            n1.nspname, relname, attname, typname""" % schema.lower(), True)
+
+    info_(this, "*** Uninstalling MADlib ***", True)
+    info_(this, "***********************************************************************************", True)
+    info_(this, "* Schema %s and all database objects depending on it will be dropped!" % schema, True)
+    if affected_objects:
+        info_(this, "* If you continue the following data will be lost (schema : table.column : type):", True)
+        for ao in affected_objects:
+            info_(this, '* - ' + ao['schema'] + ' : ' + ao['relation'] + '.' +
+                  ao['column'] + ' : ' + ao['type'], True)
+    info_(this, "***********************************************************************************", True)
+    info_(this, "Would you like to continue? [Y/N]", True)
+    go = raw_input('>>> ').upper()
+    while (go not in ('Y', 'N', 'YES', 'NO')):
+        go = raw_input('Yes or No >>> ').upper()
+
+    # 2) Do the uninstall/drop
+    if go in ('N', 'NO'):
+        info_(this, 'No problem. Nothing dropped.', True)
+        return 1, is_schema_in_db
+    elif go in ('Y', 'YES'):
+        try:
+            _write_to_file(output_filehandle,
+                           "DROP SCHEMA %s CASCADE;" % (schema))
+            is_schema_in_db = False
+            return 0, is_schema_in_db
+        except:
+            error_(this, "Cannot drop schema %s." % schema, True)
+
+    else:
+        return 1, is_schema_in_db
+
+def _append_install_madlib_sqlfile(schema, db_madlib_ver, is_schema_in_db,
+                                   madpack_cmd, testcase, output_filehandle):
+    # Refresh MADlib version in DB, None for GP/PG
+    if madpack_cmd == 'reinstall':
+        info_(this, "Setting MADlib database version to be None for reinstall", verbose)
+        db_madlib_ver = None
+
+    info_(this, "*** Installing MADlib ***", True)
+
+    # 1) Compare OS and DB versions.
+    # noop if OS <= DB.
+    _print_vers(new_madlib_ver, db_madlib_ver, con_args, schema)
+
+    if db_madlib_ver is None:
+        # Case when there is no existing MADlib installation, proceed to create
+        # objects if nothing installed in DB
+        pass
+    elif is_rev_gte(get_rev_num(db_madlib_ver), get_rev_num(new_madlib_ver)):
+        # Case when existing MADlib version is the same/higher as the new installation.
+        info_(this, "Current MADlib version already up to date.", True)
+        return 1
+    else:
+        # Case when the existing MADlib installation is lower than the new
+        # installation. Error out and refer to upgrade if OS > DB
+        error_(this, """Aborting installation: existing MADlib version detected in {0} schema
+                To upgrade the {0} schema to MADlib v{1} please run the following command:
+                madpack upgrade -s {0} -p {2} [-c ...]
+                """.format(schema, new_madlib_ver, portid), True)
+
+    # 2) Run installation
+    _plpy_check(py_min_ver)
+    _db_install(schema, is_schema_in_db, output_filehandle,
+                testcase)
+    return 0
+
+def create_install_madlib_sqlfile(args, madpack_cmd, testcase):
+    upgrade = args['upgrade']
+    schema = args['schema']
+    db_madlib_ver = args['db_madlib_ver']
+    is_schema_in_db = args['is_schema_in_db']
+    return_signal = 0
+    with open(args['output_filename'], 'a+') as output_filehandle:
+        # COMMAND: uninstall/reinstall
+        if madpack_cmd in ('uninstall', 'reinstall'):
+            return_signal, is_schema_in_db = _append_uninstall_madlib_sqlfile(
+                schema, db_madlib_ver, is_schema_in_db, output_filehandle)
+
+        # COMMAND: install/reinstall
+        if madpack_cmd in ('install', 'reinstall'):
+            return_signal += _append_install_madlib_sqlfile(schema, db_madlib_ver,
+                is_schema_in_db, madpack_cmd, testcase, output_filehandle)
+
+        # COMMAND: upgrade
+        if madpack_cmd in ('upgrade', 'update'):
+            upgrade = True
+            info_(this, "*** Upgrading MADlib ***", True)
+            db_madlib_ver = get_db_madlib_version(con_args, schema)
+
+            # 1) Check DB version. If None, nothing to upgrade.
+            if not db_madlib_ver:
+                info_(this, "MADlib is not installed in {schema} schema and there "
+                      "is nothing to upgrade. Please use install "
+                      "instead.".format(schema=schema),
+                      True)
+                return_signal += 1
+
+            # 2) Compare OS and DB versions. Continue if OS > DB.
+            _print_vers(new_madlib_ver, db_madlib_ver, con_args, schema)
+            if is_rev_gte(get_rev_num(db_madlib_ver), get_rev_num(new_madlib_ver)):
+                info_(this, "Current MADlib version is already up-to-date.", True)
+                return_signal += 1
+
+            # 3) Run upgrade
+            _plpy_check(py_min_ver)
+            return_signal = _db_upgrade(schema, output_filehandle, db_madlib_ver)
+
+    return 1 if return_signal > 0 else 0
 
 def main(argv):
     args = parse_arguments()
@@ -907,7 +1153,7 @@ def main(argv):
         maddir = _get_relative_maddir(maddir, portid)
 
         # Get MADlib version in DB
-        dbrev = get_madlib_dbrev(con_args, schema)
+        db_madlib_ver = get_db_madlib_version(con_args, schema)
 
         portdir = os.path.join(maddir, "ports", portid)
         supportedVersions = [dirItem for dirItem in os.listdir(portdir)
@@ -974,12 +1220,12 @@ def main(argv):
         portspecs = configyml.get_modules(maddir_conf)
     else:
         con_args = None
-        dbrev = None
+        db_madlib_ver = None
 
     # Parse COMMAND argument and compare with Ports.yml
     # Debugging...
-    # print "OS rev: " + str(rev) + " > " + str(get_rev_num(rev))
-    # print "DB rev: " + str(dbrev) + " > " + str(get_rev_num(dbrev))
+    # print "OS new_madlib_ver: " + str(new_madlib_ver) + " > " + str(get_rev_num(new_madlib_ver))
+    # print "DB new_madlib_ver: " + str(db_madlib_ver) + " > " + str(get_rev_num(db_madlib_ver))
 
     # Make sure we have the necessary parameters to continue
     if args.command[0] != 'version':
@@ -987,275 +1233,45 @@ def main(argv):
             error_(this, "Missing -p/--platform parameter.", True)
         if not con_args:
             error_(this, "Unknown problem with database connection string: %s" % con_args, True)
+    # ---------------- Completed "Get and validate arguments" -----------------
 
     # COMMAND: version
     if args.command[0] == 'version':
-        _print_revs(rev, dbrev, con_args, schema)
-
-    # COMMAND: uninstall/reinstall
-    if args.command[0] in ('uninstall', 'reinstall'):
-        if get_rev_num(dbrev) == [0]:
-            info_(this, "Nothing to uninstall. No version found in schema %s." % schema.upper(), True)
-            return
-
-        # Find any potential data to lose
-        affected_objects = _internal_run_query("""
-            SELECT
-                n1.nspname AS schema,
-                relname AS relation,
-                attname AS column,
-                typname AS type
-            FROM
-                pg_attribute a,
-                pg_class c,
-                pg_type t,
-                pg_namespace n,
-                pg_namespace n1
-            WHERE
-                n.nspname = '%s'
-                AND t.typnamespace = n.oid
-                AND a.atttypid = t.oid
-                AND c.oid = a.attrelid
-                AND c.relnamespace = n1.oid
-                AND c.relkind = 'r'
-            ORDER BY
-                n1.nspname, relname, attname, typname""" % schema.lower(), True)
-
-        info_(this, "*** Uninstalling MADlib ***", True)
-        info_(this, "***********************************************************************************", True)
-        info_(this, "* Schema %s and all database objects depending on it will be dropped!" % schema.upper(), True)
-        if affected_objects:
-            info_(this, "* If you continue the following data will be lost (schema : table.column : type):", True)
-            for ao in affected_objects:
-                info_(this, '* - ' + ao['schema'] + ' : ' + ao['relation'] + '.' +
-                      ao['column'] + ' : ' + ao['type'], True)
-        info_(this, "***********************************************************************************", True)
-        info_(this, "Would you like to continue? [Y/N]", True)
-        go = raw_input('>>> ').upper()
-        while go != 'Y' and go != 'N':
-            go = raw_input('Yes or No >>> ').upper()
-
-        # 2) Do the uninstall/drop
-        if go == 'N':
-            info_(this, 'No problem. Nothing dropped.', True)
-            return
-
-        elif go == 'Y':
-            info_(this, "> dropping schema %s" % schema.upper(), verbose)
-            try:
-                _internal_run_query("DROP SCHEMA %s CASCADE;" % (schema), True)
-            except:
-                error_(this, "Cannot drop schema %s." % schema.upper(), True)
-
-            info_(this, 'Schema %s (and all dependent objects) has been dropped.' % schema.upper(), True)
-            info_(this, 'MADlib uninstalled successfully.', True)
-
-        else:
-            return
-
-    # COMMAND: install/reinstall
-    if args.command[0] in ('install', 'reinstall'):
-        # Refresh MADlib version in DB, None for GP/PG
-        if args.command[0] == 'reinstall':
-            print "Setting MADlib database version to be None for reinstall"
-            dbrev = None
-
-        info_(this, "*** Installing MADlib ***", True)
-
-        # 1) Compare OS and DB versions.
-        # noop if OS <= DB.
-        _print_revs(rev, dbrev, con_args, schema)
-        if is_rev_gte(get_rev_num(dbrev), get_rev_num(rev)):
-            info_(this, "Current MADlib version already up to date.", True)
-            return
-        # proceed to create objects if nothing installed in DB
-        elif dbrev is None:
-            pass
-        # error and refer to upgrade if OS > DB
-        else:
-            error_(this, """Aborting installation: existing MADlib version detected in {0} schema
-                    To upgrade the {0} schema to MADlib v{1} please run the following command:
-                    madpack upgrade -s {0} -p {2} [-c ...]
-                    """.format(schema, rev, portid), True)
-
-        # 2) Run installation
-        try:
-            _plpy_check(py_min_ver)
-            _db_install(schema, dbrev, args.testcase)
-        except:
-            error_(this, "MADlib installation failed.", True)
-
-    # COMMAND: upgrade
-    if args.command[0] in ('upgrade', 'update'):
-        info_(this, "*** Upgrading MADlib ***", True)
-        dbrev = get_madlib_dbrev(con_args, schema)
-
-        # 1) Check DB version. If None, nothing to upgrade.
-        if not dbrev:
-            info_(this, "MADlib is not installed in {schema} schema and there "
-                  "is nothing to upgrade. Please use install "
-                  "instead.".format(schema=schema.upper()),
-                  True)
-            return
-
-        # 2) Compare OS and DB versions. Continue if OS > DB.
-        _print_revs(rev, dbrev, con_args, schema)
-        if is_rev_gte(get_rev_num(dbrev), get_rev_num(rev)):
-            info_(this, "Current MADlib version is already up-to-date.", True)
-            return
-
-        if float('.'.join(dbrev.split('.')[0:2])) < 1.0:
-            info_(this, "The version gap is too large, upgrade is supported only for "
-                  "packages greater than or equal to v1.0.", True)
-            return
-
-        # 3) Run upgrade
-        try:
-            _plpy_check(py_min_ver)
-            _db_upgrade(schema, dbrev)
-        except Exception as e:
-            # Uncomment the following lines when debugging
-            print "Exception: " + str(e)
-            print sys.exc_info()
-            traceback.print_tb(sys.exc_info()[2])
-            error_(this, "MADlib upgrade failed.", True)
+        _print_vers(new_madlib_ver, db_madlib_ver, con_args, schema)
 
     # COMMAND: install-check
     if args.command[0] == 'install-check':
-
-        # 1) Compare OS and DB versions. Continue if OS = DB.
-        if get_rev_num(dbrev) != get_rev_num(rev):
-            _print_revs(rev, dbrev, con_args, schema)
-            info_(this, "Versions do not match. Install-check stopped.", True)
-            return
-
-        # Create install-check user
-        test_user = ('madlib_' +
-                     rev.replace('.', '').replace('-', '_') +
-                     '_installcheck')
+        run_install_check(locals(), args.testcase)
+    else:
         try:
-            _internal_run_query("DROP USER IF EXISTS %s;" % (test_user), False)
+            is_schema_in_db = _internal_run_query("SELECT schema_name FROM information_schema.schemata WHERE schema_name='%s';" % schema, True)
         except:
-            _internal_run_query("DROP OWNED BY %s CASCADE;" % (test_user), True)
-            _internal_run_query("DROP USER IF EXISTS %s;" % (test_user), True)
-        _internal_run_query("CREATE USER %s;" % (test_user), True)
+            error_(this, "Cannot validate if schema already exists.", True)
 
-        _internal_run_query("GRANT USAGE ON SCHEMA %s TO %s;" % (schema, test_user), True)
+        output_filename = tmpdir + "/madlib_{0}.sql".format(args.command[0])
+        upgrade = False
+        return_val = create_install_madlib_sqlfile(locals(), args.command[0], args.testcase)
+        if return_val == 0:
+            op_msg = args.command[0].capitalize()+"ing" if args.command[0] != 'upgrade' \
+                                                        else 'Upgrading'
+            info_(this, "%s MADlib:" % op_msg, True)
+            _cleanup_comments_in_sqlfile(output_filename, upgrade)
+            result = _run_sql_file(schema, output_filename)
 
-        # 2) Run test SQLs
-        info_(this, "> Running test scripts for:", verbose)
-
-        caseset = (set([test.strip() for test in args.testcase.split(',')])
-                   if args.testcase != "" else set())
-
-        modset = {}
-        for case in caseset:
-            if case.find('/') > -1:
-                [mod, algo] = case.split('/')
-                if mod not in modset:
-                    modset[mod] = []
-                if algo not in modset[mod]:
-                    modset[mod].append(algo)
+            if result == 'FAIL':
+                info_(this, "MADlib {0} unsuccessful.".format(args.command[0]), True)
+                info_(this, "All changes are rolled back.", True)
             else:
-                modset[case] = []
-
-        # Loop through all modules
-        for moduleinfo in portspecs['modules']:
-
-            # Get module name
-            module = moduleinfo['name']
-
-            # Skip if doesn't meet specified modules
-            if modset is not None and len(modset) > 0 and module not in modset:
-                continue
-            # JIRA: MADLIB-1078 fix
-            # Skip pmml during install-check (when run without the -t option).
-            # We can still run install-check on pmml with '-t' option.
-            if not modset and module in ['pmml']:
-                continue
-            info_(this, "> - %s" % module, verbose)
-
-            # Make a temp dir for this module (if doesn't exist)
-            cur_tmpdir = tmpdir + '/' + module + '/test'  # tmpdir is a global variable
-            _make_dir(cur_tmpdir)
-
-            # Find the Python module dir (platform specific or generic)
-            if os.path.isdir(maddir + "/ports/" + portid + "/" + dbver + "/modules/" + module):
-                maddir_mod_py = maddir + "/ports/" + portid + "/" + dbver + "/modules"
-            else:
-                maddir_mod_py = maddir + "/modules"
-
-            # Find the SQL module dir (platform specific or generic)
-            if os.path.isdir(maddir + "/ports/" + portid + "/modules/" + module):
-                maddir_mod_sql = maddir + "/ports/" + portid + "/modules"
-            else:
-                maddir_mod_sql = maddir + "/modules"
-
-            # Prepare test schema
-            test_schema = "madlib_installcheck_%s" % (module)
-            _internal_run_query("DROP SCHEMA IF EXISTS %s CASCADE; CREATE SCHEMA %s;" %
-                                (test_schema, test_schema), True)
-            _internal_run_query("GRANT ALL ON SCHEMA %s TO %s;" %
-                                (test_schema, test_user), True)
-
-            # Switch to test user and prepare the search_path
-            pre_sql = '-- Switch to test user:\n' \
-                      'SET ROLE %s;\n' \
-                      '-- Set SEARCH_PATH for install-check:\n' \
-                      'SET search_path=%s,%s;\n' \
-                      % (test_user, test_schema, schema)
-
-            # Loop through all test SQL files for this module
-            sql_files = maddir_mod_sql + '/' + module + '/test/*.sql_in'
-            for sqlfile in sorted(glob.glob(sql_files), reverse=True):
-                algoname = os.path.basename(sqlfile).split('.')[0]
-                # run only algo specified
-                if (module in modset and modset[module] and
-                        algoname not in modset[module]):
-                    continue
-
-                # Set file names
-                tmpfile = cur_tmpdir + '/' + os.path.basename(sqlfile) + '.tmp'
-                logfile = cur_tmpdir + '/' + os.path.basename(sqlfile) + '.log'
-
-                # If there is no problem with the SQL file
-                milliseconds = 0
-
-                # Run the SQL
-                run_start = datetime.datetime.now()
-                retval = _run_sql_file(schema, maddir_mod_py, module,
-                                       sqlfile, tmpfile, logfile, pre_sql)
-                # Runtime evaluation
-                run_end = datetime.datetime.now()
-                milliseconds = round((run_end - run_start).seconds * 1000 +
-                                     (run_end - run_start).microseconds / 1000)
-
-                # Check the exit status
-                if retval != 0:
-                    result = 'FAIL'
-                    keeplogs = True
-                # Since every single statement in the test file gets logged,
-                # an empty log file indicates an empty or a failed test
-                elif os.path.isfile(logfile) and os.path.getsize(logfile) > 0:
-                    result = 'PASS'
-                # Otherwise
-                else:
-                    result = 'ERROR'
-
-                # Output result
-                print "TEST CASE RESULT|Module: " + module + \
-                    "|" + os.path.basename(sqlfile) + "|" + result + \
-                    "|Time: %d milliseconds" % (milliseconds)
-
-                if result == 'FAIL':
-                    error_(this, "Failed executing %s" % tmpfile, False)
-                    error_(this, "Check the log at %s" % logfile, False)
-            # Cleanup test schema for the module
-            _internal_run_query("DROP SCHEMA IF EXISTS %s CASCADE;" % (test_schema), True)
-
-        # Drop install-check user
-        _internal_run_query("DROP OWNED BY %s CASCADE;" % (test_user), True)
-        _internal_run_query("DROP USER %s;" % (test_user), True)
+                if args.command[0] != 'uninstall':
+                    if args.command[0] == 'upgrade':
+                        info_(this, "MADlib %s upgraded successfully in %s schema." % (str(new_madlib_ver), schema), True)
+                    else:
+                        info_(this, "> Created %s schema" % schema, True)
+                        info_(this, "> Created %s.MigrationHistory table" % schema, True)
+                        info_(this, "> Wrote version info in MigrationHistory table", True)
+                        info_(this, "MADlib %s installed successfully in %s schema." % (str(new_madlib_ver), schema))
+                else :
+                    info_(this, "MADlib %s uninstalled successfully from %s schema." % (str(new_madlib_ver), schema))
 
 
 
