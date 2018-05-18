@@ -31,7 +31,7 @@ from utilities.utilities import _assert
 from utilities.utilities import extract_keyvalue_params
 from utilities.utilities import unique_string
 from utilities.utilities import add_postfix
-from utilities.utilities import is_psql_numeric_type
+from utilities.utilities import is_psql_numeric_type, is_psql_boolean_type
 from utilities.utilities import split_quoted_delimited_str
 from utilities.utilities import py_list_to_sql_string
 # ------------------------------------------------------------
@@ -89,6 +89,12 @@ def _tree_validate_args(
                 "Decision tree error: Invalid weights argument.")
     _assert(max_depth >= 0 and max_depth < 100,
             "Decision tree error: maximum tree depth must be positive and less than 100.")
+
+    _assert(not table_is_empty(training_table_name,
+                               _get_filter_str(dependent_variable, grouping_cols)),
+            "Decision tree error: Data table ({0}) is empty "
+            "(after filtering invalid tuples)".
+            format(training_table_name))
 
     _assert(cp >= 0, "Decision tree error: cp must be non-negative.")
     _assert(min_split > 0, "Decision tree error: min_split must be positive.")
@@ -505,8 +511,7 @@ def tree_train(schema_madlib, training_table_name, output_table_name,
 
 
 def _create_output_tables(schema_madlib, training_table_name, output_table_name,
-                          tree_states, bins,
-                          split_criterion, cat_features, con_features,
+                          tree_states, bins, split_criterion,
                           id_col_name, dependent_variable, list_of_features,
                           is_classification, n_all_rows, n_rows, dep_list, cp,
                           all_cols_types, grouping_cols=None,
@@ -514,19 +519,19 @@ def _create_output_tables(schema_madlib, training_table_name, output_table_name,
                           n_folds=0, null_proxy=None, **kwargs):
     if not grouping_cols:
         _create_result_table(schema_madlib, tree_states[0],
-                             bins['cat_origin'], bins['cat_n'], cat_features,
-                             con_features, output_table_name,
+                             bins['cat_origin'], bins['cat_n'], bins['cat_features'],
+                             bins['con_features'], output_table_name,
                              use_existing_tables, running_cv, n_folds)
     else:
         _create_grp_result_table(
-            schema_madlib, tree_states, bins, cat_features,
-            con_features, output_table_name, grouping_cols, training_table_name,
-            use_existing_tables, running_cv, n_folds)
+            schema_madlib, tree_states, bins, bins['cat_features'],
+            bins['con_features'], output_table_name, grouping_cols,
+            training_table_name, use_existing_tables, running_cv, n_folds)
 
     failed_groups = sum(row['finished'] != 1 for row in tree_states)
     _create_summary_table(
         schema_madlib, split_criterion, training_table_name,
-        output_table_name, id_col_name, cat_features, con_features,
+        output_table_name, id_col_name, bins['cat_features'], bins['con_features'],
         dependent_variable, list_of_features,
         failed_groups, is_classification, n_all_rows,
         n_rows, dep_list, all_cols_types, cp, grouping_cols, 1,
@@ -567,10 +572,13 @@ def _is_dep_categorical(training_table_name, dependent_variable):
     @brief Sample the dependent variable to check whether it is
     a categorical variable.
     """
-    sample_dep = plpy.execute("SELECT " + dependent_variable +
-                              " AS dep FROM " +
-                              training_table_name + " LIMIT 1")[0]['dep']
-    return (not isinstance(sample_dep, float), isinstance(sample_dep, bool))
+    sample_dep = get_expr_type(dependent_variable, training_table_name)
+    is_dep_numeric = is_psql_numeric_type(sample_dep,
+                                          exclude=['smallint',
+                                                   'integer',
+                                                   'bigint'])
+    is_dep_bool = is_psql_boolean_type(sample_dep)
+    return (not is_dep_numeric, is_dep_bool)
 # ------------------------------------------------------------
 
 
@@ -739,6 +747,7 @@ def _get_bins(schema_madlib, training_table_name,
 
         return dict(
             con=con_splits['con_splits'],
+            con_features=con_features,
             cat_origin=[level for col in cat_features
                         for level in all_levels[col_to_row[col]]['levels']],
             cat_n=[len(all_levels[col_to_row[col]]['levels'])
@@ -748,6 +757,7 @@ def _get_bins(schema_madlib, training_table_name,
         # categorical part is empty
         return dict(
             con=con_splits['con_splits'],
+            con_features=con_features,
             cat_origin=[],
             cat_n=[],
             cat_features=[])
@@ -1015,6 +1025,7 @@ def _get_bins_grps(
         con = [''] * len(grp_key_con)
 
     return dict(con=con,
+                con_features=con_features,
                 grp_key_con=grp_key_con,
                 cat_origin=cat_origin,
                 cat_n=cat_n,
@@ -1469,6 +1480,8 @@ def _create_summary_table(
         dep_list, all_cols_types, cp, grouping_cols=None, n_groups=1,
         use_existing_tables=False, n_folds=0, null_proxy=None):
 
+    output_table_summary = add_postfix(output_table_name, "_summary")
+
     # dependent variables
     if dep_list:
         dep_list_str = ("$dep_list$" +
@@ -1492,11 +1505,10 @@ def _create_summary_table(
         cp_str = str(cp) + "::double precision"
 
     if use_existing_tables:
-        header = "INSERT INTO {0} ".format(
-            add_postfix(output_table_name, "_summary"))
+        plpy.execute("TRUNCATE " + output_table_summary)
+        header = "INSERT INTO {0} ".format(output_table_summary)
     else:
-        header = "CREATE TABLE {0} AS ".format(
-            add_postfix(output_table_name, "_summary"))
+        header = "CREATE TABLE {0} AS ".format(output_table_summary)
     null_proxy_str="NULL" if null_proxy is None else "'{0}'".format(null_proxy)
     sql = header + """
             SELECT
@@ -1606,7 +1618,8 @@ def tree_predict(schema_madlib, model, source, output, pred_type='response',
     """
     _validate_predict(schema_madlib, model, source, output, use_existing_tables)
     model_summary = add_postfix(model, "_summary")
-    # obtain the cat_features and con_features from model table
+
+    # obtain the cat_features and con_features from model summary table
     summary_elements = plpy.execute("SELECT * FROM {0}".format(model_summary))[0]
 
     list_of_features = split_quoted_delimited_str(summary_elements["independent_varnames"])
@@ -1616,12 +1629,13 @@ def tree_predict(schema_madlib, model, source, output, pred_type='response',
             "Decision tree error: Missing columns in predict data table ({0}) "
             "that were used during training".format(source))
     id_col_name = summary_elements["id_col_name"]
-    grouping_cols_str = summary_elements.get("grouping_cols")  # optional, default = None
     dep_varname = summary_elements["dependent_varname"]
     dep_levels = summary_elements["dependent_var_levels"]
     is_classification = summary_elements["is_classification"]
     dep_type = summary_elements['dependent_var_type']
-    null_proxy = summary_elements.get('null_proxy')  # optional, default = None
+    # optional variables, default value is None
+    grouping_cols_str = summary_elements.get("grouping_cols")
+    null_proxy = summary_elements.get('null_proxy')
 
     # find which columns are of type boolean
     boolean_cats = set([key for key, value in get_cols_and_types(source)
@@ -1656,7 +1670,10 @@ def tree_predict(schema_madlib, model, source, output, pred_type='response',
                         tree,
                         {cat_features_str}::INTEGER[],
                         {con_features_str}::DOUBLE PRECISION[]) as {pred_name}
-            FROM {source} as s {join_str} {model} as m {using_str}
+            FROM {source} as s
+                 {join_str}
+                 {model} as m
+                 {using_str}
             {use_fold}
             """
     else:
