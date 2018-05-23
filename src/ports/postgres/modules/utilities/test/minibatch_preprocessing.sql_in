@@ -292,27 +292,59 @@ SELECT assert
         || ind_var_rows
         ) from (select max(array_upper(o.dependent_varname, 1)) as dep_var_rows, max(array_upper(o.independent_varname, 1)) as ind_var_rows , s1.buffer_size from minibatch_preprocessing_out o, minibatch_preprocessing_out_summary s1 group by buffer_size) s;
 
--- Test special characters in independent_var, dependent_var and grouping_cols
+-- Test default buffer size calculator
 DROP TABLE IF EXISTS minibatch_preprocessing_input;
 CREATE TABLE minibatch_preprocessing_input(
-    "se''x" TEXT,
-    "len'%*()gth" DOUBLE PRECISION[],
-    "rin!#'gs" INTEGER);
+    sex TEXT,
+    length DOUBLE PRECISION[],
+    rings INTEGER);
 
 INSERT INTO minibatch_preprocessing_input VALUES
 ('F',ARRAY[0.66, 0.5],6);
 DROP TABLE IF EXISTS minibatch_preprocessing_out, minibatch_preprocessing_out_standardization, minibatch_preprocessing_out_summary;
-SELECT minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out', '"se''''x"', '"len''%*()gth"', '"rin!#''gs"');
+SELECT minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out', 'sex', 'length', 'rings');
+SELECT assert
+        (
+        source_table        = 'minibatch_preprocessing_input' AND
+        output_table        = 'minibatch_preprocessing_out' AND
+        dependent_varname   = 'sex' AND
+        independent_varname = 'length' AND
+        buffer_size         = 1 AND
+        class_values        = '{F}' AND -- we sort the class values in python
+        num_rows_processed  = 1 AND
+        num_missing_rows_skipped    = 0 AND
+        grouping_cols       = 'rings',
+        'Summary Validation failed for special chars. Actual:' || __to_char(summary)
+        ) from (select * from minibatch_preprocessing_out_summary) summary;
+
+
+-- Test special characters and unicode characters in independent_var, dependent_var and grouping_cols, both for column name and column value
+DROP TABLE IF EXISTS minibatch_preprocessing_input;
+CREATE TABLE minibatch_preprocessing_input(
+    "se''x" TEXT,
+    "len'%*()gth" DOUBLE PRECISION[],
+    "rinЖ!#'gs" INTEGER);
+
+INSERT INTO minibatch_preprocessing_input VALUES
+('M''M',ARRAY[0.66, 0.5],6),
+('M$M',ARRAY[0.66, 0.5],6),
+('M,M',ARRAY[0.66, 0.5],6),
+('M@[}(:*;M',ARRAY[0.66, 0.5],6),
+('M"M',ARRAY[0.66, 0.5],6),
+('MЖM',ARRAY[0.66, 0.5],6);
+DROP TABLE IF EXISTS minibatch_preprocessing_out, minibatch_preprocessing_out_standardization, minibatch_preprocessing_out_summary;
+SELECT minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out', '"se''''x"', '"len''%*()gth"', '"rinЖ!#''gs"', 4);
 SELECT assert
         (
         source_table        = 'minibatch_preprocessing_input' AND
         output_table        = 'minibatch_preprocessing_out' AND
         dependent_varname   = '"se''''x"' AND
         independent_varname = '"len''%*()gth"' AND
-        buffer_size         = 1 AND
-        class_values        = '{F}' AND -- we sort the class values in python
-        num_rows_processed  = 1 AND
+        buffer_size         = 4 AND
+        array_to_string(class_values, ',,,') = $$M"M,,,M$M,,,M'M,,,M,M,,,M@[}(:*;M,,,MЖM$$ AND
+        -- we sort the class values in python
+        num_rows_processed  = 6 AND
         num_missing_rows_skipped    = 0 AND
-        grouping_cols       = '"rin!#''gs"',
+        grouping_cols       = '"rinЖ!#''gs"',
         'Summary Validation failed for special chars. Actual:' || __to_char(summary)
-        ) from (select * from minibatch_preprocessing_out_summary) summary;
+        ) from (select * from minibatch_preprocessing_out_summary order by class_values) summary;
