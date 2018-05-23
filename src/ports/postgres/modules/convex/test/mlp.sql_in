@@ -233,7 +233,7 @@ INSERT INTO iris_data_batch_standardization VALUES
 (ARRAY[5.74893617021,3.02482269504,3.6865248227,1.18014184397],
     ARRAY[0.785472439601,0.396287027644,1.68671151195,0.750245336531]);
 
--- Create preprocessed data that can be used with minibatch MLP:
+-- Create grouping preprocessed data that can be used with minibatch MLP:
 DROP TABLE IF EXISTS iris_data_batch_grp, iris_data_batch_grp_summary, iris_data_batch_grp_standardization;
 CREATE TABLE iris_data_batch_grp(
     grp text,
@@ -270,7 +270,7 @@ CREATE TABLE iris_data_batch_grp_summary(
 -- the preprocessed table.
 INSERT INTO iris_data_batch_grp_summary VALUES
 ('iris_data_does_not_exist', 'iris_data_batch_grp', 'class::TEXT', 'attributes',
-    'text', 30, ARRAY[1,2,3], 141, 0, 'grp');
+    'text', 30, ARRAY['foo','bar','baaz'] , 141, 0, 'grp');
 -- Create the corresponding standardization table for preprocessed data
 CREATE TABLE iris_data_batch_grp_standardization(
     grp text,
@@ -318,7 +318,7 @@ SELECT mlp_classification(
     ARRAY[5],   -- Number of units per layer
     'learning_rate_init=0.1,
     learning_rate_policy=constant,
-    n_iterations=5,
+    n_iterations=1,
     n_tries=3,
     tolerance=0,
     n_epochs=20',
@@ -327,6 +327,28 @@ SELECT mlp_classification(
     False,
     False
 );
+SELECT assert
+        (
+        source_table        = 'iris_data_batch' AND
+        independent_varname = 'independent_varname' AND
+        dependent_varname   = 'dependent_varname' AND
+        original_source_table = 'iris_data_does_not_exist' AND
+        original_independent_varname = 'attributes' AND
+        original_dependent_varname = 'class::TEXT' AND
+        original_dependent_vartype = 'text' AND
+        tolerance         = 0 AND
+        learning_rate_init = 0.1 AND
+        learning_rate_policy = 'constant' AND
+        n_iterations = 1 AND
+        n_tries = 3 AND
+        layer_sizes = ARRAY[4,5,3] AND
+        activation = 'sigmoid' AND
+        is_classification = 't' AND
+        classes     = '{1,2,3}' AND
+        weights  = '1' AND
+        grouping_col    = NULL,
+        'Summary Validation failed for special chars. Actual:' || __to_char(summary)
+        ) from (select * from mlp_class_batch_summary order by classes) summary;
 
 DROP TABLE IF EXISTS mlp_prediction_batch_output, mlp_prediction_batch_output_summary, mlp_prediction_batch_output_standardization;
 SELECT mlp_predict(
@@ -335,6 +357,8 @@ SELECT mlp_predict(
     'id',
     'mlp_prediction_batch_output',
     'output');
+
+
 
 -- minibatch with grouping and without warm_start
 DROP TABLE IF EXISTS mlp_class_batch, mlp_class_batch_summary, mlp_class_batch_standardization;
@@ -1096,3 +1120,160 @@ FROM
 JOIN pg_catalog.pg_namespace n
 ON n.oid=c.relnamespace
 WHERE c.relname = 'lin_housing_wi_batch_standardization' AND c.relkind='r' AND nspname=current_schema();
+
+------------------------ Test special characters --------------------------------
+DROP TABLE IF EXISTS iris_data_special_char;
+CREATE TABLE iris_data_special_char(
+    id INTEGER,
+    "se$$''x" TEXT,
+    "len$$'%*Ж!#'()gth" DOUBLE PRECISION[],
+    "rinЖ!#'gs" INTEGER);
+
+INSERT INTO iris_data_special_char VALUES
+(1, 'M''M',ARRAY[0.66, 0.5],6),
+(2, '''M''M''',ARRAY[0.66, 0.5],6),
+(3, 'M|$$M',ARRAY[0.66, 0.5],6),
+(4, 'M,M',ARRAY[0.66, 0.5],6),
+(5, 'M@[}(:*;M',ARRAY[0.66, 0.5],6),
+(6, 'M"M',ARRAY[0.66, 0.5],6),
+(7, 'MЖM',ARRAY[0.66, 0.5],6);
+
+
+DROP TABLE IF EXISTS mlp_model, mlp_model_summary, mlp_model_standardization;
+-- Set seed so results are reproducible
+SELECT setseed(0);
+SELECT mlp_classification(
+    'iris_data_special_char',      -- Source table
+    'mlp_model_special_char',      -- Destination table
+    '"len$$''%*Ж!#''()gth"',     -- Input features
+    '"se$$''''x"',     -- Dependent variable
+    ARRAY[5],         -- Number of units per layer
+    'learning_rate_init=0.003,
+    n_iterations=10,
+    tolerance=0',     -- Optimizer params
+    'tanh',           -- Activation function
+    NULL,             -- Default weight (1)
+    FALSE,            -- No warm start
+    FALSE             -- Not verbose
+);
+
+SELECT assert
+        (
+        source_table        = 'iris_data_special_char' AND
+        independent_varname = '"len$$''%*Ж!#''()gth"' AND
+        dependent_varname   = '"se$$''''x"' AND
+        tolerance         = 0 AND
+        learning_rate_init = 0.003 AND
+        learning_rate_policy = 'constant' AND
+        n_iterations = 10 AND
+        n_tries = 1 AND
+        layer_sizes = ARRAY[2,5,7] AND
+        activation = 'tanh' AND
+        is_classification = 't' AND
+        classes        = $__madlib__${ 'M'M', M\"M, M'M, "M,M", "M@[}(:*;M", "M|$$M", MЖM }$__madlib__$ AND
+        weights  = '1' AND
+        grouping_col       = NULL,
+        'Summary Validation failed for special chars. Actual:' || __to_char(summary)
+        ) from (select * from mlp_model_special_char_summary order by classes) summary;
+
+
+DROP TABLE IF EXISTS mlp_prediction_batch_output, mlp_prediction_batch_output_summary, mlp_prediction_batch_output_standardization;
+SELECT mlp_predict(
+    'mlp_model_special_char',
+    'iris_data_special_char',
+    'id',
+    'mlp_prediction_batch_output',
+    'output');
+
+
+-- Test special chars with minibatch enabled
+DROP TABLE IF EXISTS iris_data_special_char_batch, iris_data_special_char_batch_summary, iris_data_special_char_batch_standardization;
+CREATE TABLE iris_data_special_char_batch(
+    __id__ integer,
+    dependent_varname double precision[],
+    independent_varname double precision[]
+);
+COPY iris_data_special_char_batch (__id__, dependent_varname, independent_varname) FROM STDIN NULL '?' DELIMITER '|';
+0 | {{0,0,0,1,0,0,0},{0,1,0,0,0,0,0},{0,0,1,0,0,0,0},{0,0,0,0,1,0,0}} | {{0,0},{0,0},{0,0},{0,0}}
+1 | {{0,0,0,0,0,0,1},{1,0,0,0,0,0,0},{0,0,0,0,0,1,0}} | {{0,0},{0,0},{0,0}}
+\.
+
+-- Create the corresponding summary table for preprocessed data
+CREATE TABLE iris_data_special_char_batch_summary(
+    source_table text,
+    output_table text,
+    dependent_varname text,
+    independent_varname text,
+    dependent_vartype text,
+    buffer_size integer,
+    class_values text[],
+    num_rows_processed integer,
+    num_rows_skipped integer,
+    grouping_cols text
+);
+-- The availability of the original source table should not be a condition for
+-- MLP to work correctly. It should work fine even the original source table is
+-- deleted (this basically ensures that all the necessary info is captured in
+-- the summary table). So name the original source table as
+-- 'iris_data_does_not_exist' instead of the original 'iris_data', to mimic the
+-- scenario where the original source table is deleted and MLP is trained with
+-- the preprocessed table.
+INSERT INTO iris_data_special_char_batch_summary VALUES
+('minibatch_preprocessing_input', 'minibatch_preprocessing_out', '"se$$''x"', '"len$$''%*Ж!#''()gth"',
+    'text', 4, $__madlib__${'M'M',"M\"M",M'M,"M,M","M@[}(:*;M",M|$$M,MЖM}$__madlib__$, 7, 0, '');
+-- Create the corresponding standardization table for preprocessed data
+CREATE TABLE iris_data_special_char_batch_standardization(
+    mean double precision[],
+    std double precision[]
+);
+INSERT INTO iris_data_special_char_batch_standardization VALUES
+(ARRAY[0.66,0.5], ARRAY[1,1]);
+
+DROP TABLE IF EXISTS mlp_class_batch, mlp_class_batch_summary, mlp_class_batch_standardization;
+SELECT mlp_classification(
+    'iris_data_special_char_batch',    -- Source table
+    'mlp_class_special_char_batch',    -- Desination table
+    'independent_varname',   -- Input features
+    'dependent_varname',        -- Label
+    ARRAY[5],   -- Number of units per layer
+    'learning_rate_init=0.1,
+    learning_rate_policy=constant,
+    n_iterations=1,
+    n_tries=1,
+    tolerance=0,
+    n_epochs=20',
+    'sigmoid',
+    '',
+    False,
+    False
+);
+SELECT assert
+        (
+        source_table        = 'iris_data_special_char_batch' AND
+        independent_varname = 'independent_varname' AND
+        dependent_varname   = 'dependent_varname' AND
+        original_source_table = 'minibatch_preprocessing_input' AND
+        original_independent_varname = '"len$$''%*Ж!#''()gth"' AND
+        original_dependent_varname = '"se$$''x"' AND
+        original_dependent_vartype = 'text' AND
+        tolerance         = 0 AND
+        learning_rate_init = 0.1 AND
+        learning_rate_policy = 'constant' AND
+        n_iterations = 1 AND
+        n_tries = 1 AND
+        layer_sizes = ARRAY[2,5,7] AND
+        activation = 'sigmoid' AND
+        is_classification = 't' AND
+        classes     = $__madlib__${ 'M'M', M\"M, M'M, "M,M", "M@[}(:*;M", "M|$$M", MЖM }$__madlib__$ AND
+        weights  = '1' AND
+        grouping_col    = NULL,
+        'Summary Validation failed for special chars. Actual:' || __to_char(summary)
+        ) from (select * from mlp_class_special_char_batch_summary order by classes) summary;
+
+DROP TABLE IF EXISTS mlp_prediction_batch_output, mlp_prediction_batch_output_summary, mlp_prediction_batch_output_standardization;
+SELECT mlp_predict(
+    'mlp_class_special_char_batch',
+    'iris_data_special_char',
+    'id',
+    'mlp_prediction_batch_output',
+    'output');

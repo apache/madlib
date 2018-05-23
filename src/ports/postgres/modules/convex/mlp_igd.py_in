@@ -25,13 +25,15 @@
 """
 import math
 import plpy
-from random import random
 
 from convex.utils_regularization import utils_ind_var_scales
 from convex.utils_regularization import utils_ind_var_scales_grouping
 from convex.utils_regularization import __utils_normalize_data
 from convex.utils_regularization import __utils_normalize_data_grouping
 
+from internal.db_utils import get_distinct_col_levels
+from internal.db_utils import get_one_hot_encoded_expr
+from internal.db_utils import quote_literal_python_list
 from utilities.control import MinWarning
 from utilities.in_mem_group_control import GroupIterationController
 from utilities.utilities import _array_to_string
@@ -41,7 +43,9 @@ from utilities.utilities import _string_to_array_with_quotes
 from utilities.utilities import add_postfix
 from utilities.utilities import extract_keyvalue_params
 from utilities.utilities import get_grouping_col_str
-from utilities.utilities import is_psql_numeric_type
+from utilities.utilities import is_valid_psql_type
+from utilities.utilities import NUMERIC, INTEGER, TEXT, BOOLEAN
+from utilities.utilities import INCLUDE_ARRAY, ONLY_ARRAY
 from utilities.utilities import py_list_to_sql_string as PY2SQL
 from utilities.utilities import strip_end_quotes, split_quoted_delimited_str
 from utilities.utilities import unique_string
@@ -53,6 +57,7 @@ from utilities.validate_args import input_tbl_valid
 from utilities.validate_args import is_var_valid
 from utilities.validate_args import output_tbl_valid
 from utilities.validate_args import table_exists
+from utilities.validate_args import quote_ident
 from utilities.minibatch_validation import is_var_one_hot_encoded_for_minibatch
 
 
@@ -137,7 +142,7 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
                                             dim=2)
         if is_classification:
             if pp_summary_dict["class_values"]:
-                classes = pp_summary_dict["class_values"]
+                classes = quote_literal_python_list(pp_summary_dict["class_values"])
                 num_output_nodes = len(classes)
             else:
                 # Assume that the dependent variable is already one-hot-encoded
@@ -172,21 +177,14 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
                 num_output_nodes = get_col_dimension(tbl_data_scaled,
                                                      dependent_varname)
             else:
-                labels = plpy.execute("SELECT DISTINCT {0} FROM {1}".
-                                      format(dependent_varname_backup, source_table))
-                num_output_nodes = len(labels)
-                for label_obj in labels:
-                    label = _format_label(label_obj[dependent_varname_backup])
-                    classes.append(label)
-                classes.sort()
-                level_vals_str = ','.join(["{0}={1}".format(
-                                           col_dep_var_norm_new, str(c))
-                                           for c in classes])
-                # dependent_varname should be replaced with one-hot encoded varname
-                dependent_varname = "ARRAY[{0}]::integer[]".format(level_vals_str)
+                classes = get_distinct_col_levels(
+                    source_table, dependent_varname_backup, dependent_vartype)
+                num_output_nodes = len(classes)
+                dependent_varname = get_one_hot_encoded_expr(dependent_varname,
+                                                             classes)
         else:
             if "[]" not in dependent_vartype:
-                dependent_varname = "ARRAY[" + col_dep_var_norm_new + "]"
+                dependent_varname = "ARRAY[{0}]".format(col_dep_var_norm_new)
             num_output_nodes = get_col_dimension(tbl_data_scaled,
                                                  dependent_varname, dim=1)
 
@@ -479,15 +477,13 @@ def _create_summary_table(args):
         batch_size = args['batch_size']
         n_epochs = args['n_epochs']
         minibatch_summary_col_vals = """
-                '{source_table}',
-                '{independent_varname}',
-                '{dependent_varname}',
+                $__madlib__${source_table}$__madlib__$::TEXT,
+                $__madlib__${independent_varname}$__madlib__$::TEXT,
+                $__madlib__${dependent_varname}$__madlib__$::TEXT,
                 {batch_size},
                 {n_epochs},
             """.format(**locals())
 
-    classes_str = PY2SQL([strip_end_quotes(cl, "'") for cl in args['classes']],
-                         array_type=classes_type)
     summary_table_creation_query = """
         CREATE TABLE {summary_table}(
             source_table TEXT,
@@ -513,8 +509,8 @@ def _create_summary_table(args):
     summary_table_update_query = """
         INSERT INTO {summary_table} VALUES(
             '{source_table}',
-            '{independent_varname}',
-            '{dependent_varname_backup}',
+            $__madlib__${independent_varname}$__madlib__$::TEXT,
+            $__madlib__${dependent_varname_backup}$__madlib__$::TEXT,
             {minibatch_summary_col_vals}
             '{dependent_vartype}',
             {tolerance},
@@ -528,7 +524,8 @@ def _create_summary_table(args):
             {classes_str},
             '{weights}',
             '{grouping_text}'
-        )""".format(classes_str=classes_str,
+        )""".format(classes_str=PY2SQL(args['classes'], array_type=classes_type,
+                                       long_format=True),
                     minibatch_summary_col_vals=minibatch_summary_col_vals,
                     **args)
     plpy.execute(summary_table_creation_query)
@@ -678,33 +675,27 @@ def _validate_warm_start(output_table, summary_table, standardization_table,
 def _validate_dependent_var(source_table, dependent_varname,
                             is_classification, is_minibatch_enabled):
     expr_type = get_expr_type(dependent_varname, source_table)
-    int_types = ['integer', 'smallint', 'bigint']
-    text_types = ['text', 'varchar', 'character varying', 'char', 'character']
-    boolean_types = ['boolean']
-    classification_types = int_types + boolean_types + text_types
+    classification_types = INTEGER | BOOLEAN | TEXT
 
     if is_minibatch_enabled:
-        # With pre-processed data, dep type is always an array
-        _assert("[]" in expr_type,
-                "Dependent variable column should refer to an array.")
         # The dependent variable is always a double precision array in
         # preprocessed data (so check for numeric types)
         # strip out '[]' from expr_type
-        _assert(is_psql_numeric_type(expr_type[:-2]),
-                "Dependent variable column should be of numeric type.")
+        _assert(is_valid_psql_type(expr_type, NUMERIC | ONLY_ARRAY),
+                "Dependent variable column should be a numeric array.")
+
         if is_classification:
             is_var_one_hot_encoded_for_minibatch(source_table,dependent_varname)
     else:
         if is_classification:
-            _assert(("[]" in expr_type \
-                     and is_psql_numeric_type(expr_type[:-2]) \
-                     and not _get_dep_var_second_dim(dependent_varname, source_table) \
-                    ) \
-                    or expr_type in classification_types,
+            _assert((is_valid_psql_type(expr_type, NUMERIC | ONLY_ARRAY)
+                    and not _get_dep_var_second_dim(dependent_varname, source_table)
+                    )
+                    or is_valid_psql_type(expr_type, classification_types),
                     "Dependent variable column should either be a numeric 1-D"
-                    " array, or be of type: {0}".format(classification_types))
+                    " array, or be of type: {0}".format(','.join(classification_types)))
         else:
-            _assert("[]" in expr_type or is_psql_numeric_type(expr_type),
+            _assert(is_valid_psql_type(expr_type, NUMERIC | INCLUDE_ARRAY),
                     "Dependent variable column should be of numeric type.")
 
 def _get_dep_var_second_dim(dependent_varname, source_table):
@@ -735,9 +726,6 @@ def _validate_params_based_on_minibatch(source_table, independent_varname,
         float_types = ['double precision', 'real']
         _assert(get_expr_type(weights, source_table) in int_types + float_types,
                 "MLP error: Weights should be a numeric type")
-        # Validate independent variable
-        _assert("[]" in get_expr_type(independent_varname, source_table),
-                "Independent variable column should refer to an array")
         _assert(array_col_has_same_dimension(source_table, independent_varname),
                 "Independent variable column should refer to arrays of the same length")
 
@@ -761,6 +749,9 @@ def _validate_args(source_table, output_table, summary_table,
             "({source_table})!".format(
                 independent_varname=independent_varname,
                 source_table=source_table))
+    # independent variable should either be a 1D or 2D(minibatch) array
+    _assert("[]" in get_expr_type(independent_varname, source_table),
+            "Independent variable column should refer to an array")
 
     _assert(is_var_valid(source_table, dependent_varname),
             "MLP error: invalid dependent_varname "
@@ -1044,10 +1035,13 @@ def mlp_predict(schema_madlib, model_table, data_table, id_col_name,
         else:
             intermediate_col = unique_string()
             if classes:
+                # we cannot call sql quote_ident on the class value because
+                # aliasing does not support quote_ident. Hence calling our
+                # python implementation of quote_ident
                 score_format = ',\n'.join([
-                    'CAST({interim}[{j}] as DOUBLE PRECISION) as "estimated_prob_{c_str}"'.
-                    format(j=i + 1, c_str=str(c).strip(' "'),
-                           interim=intermediate_col)
+                    'CAST({interim}[{j}] as DOUBLE PRECISION) as "{c_str}"'.
+                    format(j=i + 1, c_str=quote_ident("estimated_prob_{0}".
+                        format(str(c))).strip(' "'), interim=intermediate_col)
                     for i, c in enumerate(classes)])
             else:
                 # Case when the training step did not have to one-hot encode

@@ -18,7 +18,6 @@ import plpy
 
 m4_changequote(`<!', `!>')
 
-
 def has_function_properties():
     """ __HAS_FUNCTION_PROPERTIES__ variable defined during configure """
     return m4_ifdef(<!__HAS_FUNCTION_PROPERTIES__!>, <!True!>, <!False!>)
@@ -41,8 +40,8 @@ def get_seg_number():
             SELECT count(*) from gp_segment_configuration
             WHERE role = 'p' and content != -1
             """)[0]['count']
-        ## in case some weird gpdb configuration happens, always returns
-        ## primary segment number >= 1
+        # in case some weird gpdb configuration happens, always returns
+        # primary segment number >= 1
         return max(1, count)
 # ------------------------------------------------------------------------------
 
@@ -168,6 +167,43 @@ def add_postfix(quoted_string, postfix):
 # -------------------------------------------------------------------------
 
 
+NUMERIC = set(['smallint', 'integer', 'bigint', 'decimal', 'numeric',
+               'real', 'double precision', 'serial', 'bigserial'])
+INTEGER = set(['smallint', 'integer', 'bigint'])
+TEXT = set(['text', 'varchar', 'character varying', 'char', 'character'])
+BOOLEAN = set(['boolean'])
+INCLUDE_ARRAY = set([unique_string('__include_array__')])
+ONLY_ARRAY = set([unique_string('__only_array__')])
+
+def is_valid_psql_type(arg, valid_types):
+    """ Verify if argument is a valid type
+
+    Args:
+        @param arg: str. Name of the Postgres type to validate
+        @param valid_types: set. Set of type names to look into.
+                            This is typically created using the global types
+                            created in this module.
+                            Two non-type flags are provided:
+                                - ONLY_ARRAY: indicates that only array forms
+                                    of the valid types should be checked
+                                - INCLUDE_ARRAY: indicates that array and scalar
+                                    forms of the valid types should be checked
+                            If both ONLY_ARRAY and INCLUDE_ARRAY are present,
+                            then ONLY_ARRAY takes precedence
+
+                Examples: 1. valid_types = BOOLEAN | INTEGER | TEXT
+                          2. valid_types = BOOLEAN | INTEGER | ONLY_ARRAY
+                          3. valid_types = NUMERIC | INCLUDE_ARRAY
+    """
+    if ONLY_ARRAY <= valid_types:
+        return ('[]' in arg and arg.rstrip('[]') in valid_types)
+    if INCLUDE_ARRAY <= valid_types:
+        # Remove the [] from end of the arg type
+        # The single space is needed to ensure trailing white space is stripped
+        arg = arg.rstrip('[] ')
+    return (arg in valid_types)
+
+
 def is_psql_numeric_type(arg, exclude=None):
     """
     Checks if argument is one of the various numeric types in PostgreSQL
@@ -215,11 +251,13 @@ def is_psql_char_type(arg, exclude_list=[]):
     :return: True if it is one of the character types, else False.
 
     """
-    if not isinstance(exclude_list, list) :
+    if not isinstance(exclude_list, list):
         exclude_list = [exclude_list]
 
-    text_types = set(['text', 'varchar', 'character varying', 'char', 'character'])
+    text_types = set(['text', 'varchar', 'character varying',
+                      'char', 'character'])
     return arg in text_types - set(exclude_list)
+
 
 def is_psql_boolean_type(arg):
         """
@@ -229,6 +267,7 @@ def is_psql_boolean_type(arg):
         """
         return arg == 'boolean'
 
+
 def is_string_formatted_as_array_expression(string_to_match):
     """
     Return true if the string is formatted as array[<something>], else false
@@ -236,6 +275,7 @@ def is_string_formatted_as_array_expression(string_to_match):
     """
     matched = re.match(r"(?i)^array\[(.*)\]", string_to_match)
     return matched
+
 
 def _string_to_array(s):
     """
@@ -278,7 +318,19 @@ def _string_to_array_with_quotes(s):
 
 
 def py_list_to_sql_string(array, array_type=None, long_format=None):
-    """Convert a list to SQL array string """
+    """Convert a list to SQL array string
+
+    @note: The long format is recommended with the input values quoted
+    appropriately by 'quote_literal'.
+
+    The short format (e.g. '{1,2,3}') does not take care of escaping the
+    string values in the array. Hence an input like '{ t$}t, test}' will fail due
+    to the unescaped '{'.
+    For eg. following is a valid input for short format:
+        array = ['M'M', M\"M, "M$M,M'M", M, M, M@[\}(:*;M, MM ]
+    Note the double quotes and curly brackets need to be escaped in the input if
+    used with the short format.
+    """
     if long_format is None:
         if (array_type is not None and
                 (any(array_type.startswith(i)
@@ -296,8 +348,15 @@ def py_list_to_sql_string(array, array_type=None, long_format=None):
     if not array:
         return "'{{ }}'::{0}".format(array_type)
     else:
-        array_str = "ARRAY[ {0} ]" if long_format else "'{{ {0} }}'"
-        return (array_str + "::{1}").format(','.join(map(str, array)), array_type)
+        quote_delimiter = "$__madlib__$"
+        # This is a quote delimiter that can be used in lieu of
+        # single quotes and allows the use of single quotes in the
+        # string without escaping
+        array_str = "ARRAY[ {val} ]" if long_format else "{qd}{{ {val} }}{qd}"
+        return (array_str + "::{type}").format(
+            val=','.join(map(str, array)),
+            type=array_type,
+            qd=quote_delimiter)
 # ------------------------------------------------------------------------
 
 

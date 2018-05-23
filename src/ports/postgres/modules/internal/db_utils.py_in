@@ -1,0 +1,74 @@
+# coding=utf-8
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+import plpy
+from utilities.utilities import is_psql_char_type
+from utilities.validate_args import get_expr_type
+
+m4_changequote(`<!', `!>')
+
+QUOTE_DELIMITER="$__madlib__$"
+
+def get_distinct_col_levels(source_table, col_name, col_type=None):
+	"""
+	Add description here
+	:return:
+	"""
+	if not col_type:
+		col_type = get_expr_type(col_name, source_table)
+
+	if is_psql_char_type(col_type):
+		dep_var_text_patched = "quote_literal({0})".format(col_name)
+	else:
+		dep_var_text_patched = col_name
+
+	levels = plpy.execute("""
+                SELECT DISTINCT {dep_var_text_patched} AS levels
+                FROM {source_table}
+                WHERE ({col_name}) is NOT NULL
+                """.format(**locals()))
+
+	levels = sorted(l["levels"] for l in levels)
+	return levels
+
+def get_one_hot_encoded_expr(col_name, col_levels):
+	"""
+	All the values in col_levels should have been quoted and escaped with
+	the sql function `quote_literal`.
+	:param col_name:
+	:param col_levels:
+	:return:
+	"""
+	one_hot_encoded_expr = ["({0}) = {1}".format(col_name, c)
+					for c in col_levels]
+	return 'ARRAY[{0}]::INTEGER[]'.format(', '.join(one_hot_encoded_expr))
+
+def quote_literal_python_list(values):
+	"""
+	This function will sql quote all the values inside a python list
+	:param values:
+	:return:
+	"""
+	quoted_values=[]
+	for value in values:
+		quoted_values.append(plpy.execute(""
+		"select quote_literal({0}{1}{0}) as quoted_value".
+		format(QUOTE_DELIMITER, value))[0]['quoted_value'])
+
+	return quoted_values
