@@ -116,13 +116,11 @@ template <class Container>
 inline
 void
 DecisionTree<Container>::bind(ByteStream_type& inStream) {
-
     inStream >> tree_depth
              >> n_y_labels
              >> max_n_surr
              >> is_regression
              >> impurity_type;
-
     size_t n_nodes = 0;
     size_t n_labels = 0;
     size_t max_surrogates = 0;
@@ -406,8 +404,8 @@ DecisionTree<Container>::impurityGain(const ColumnVector &combined_stats,
     double false_count = statWeightedCount(combined_stats.segment(stats_per_split, stats_per_split));
     double total_count = true_count + false_count;
 
-    if (true_count == 0 || false_count == 0) {
-        // no gain if all fall into one side
+    if (total_count == 0 || true_count == 0 || false_count == 0) {
+        // no gain if no tuples incoming or if all fall into one side
         return 0.;
     }
     double true_weight = true_count / total_count;
@@ -574,7 +572,6 @@ DecisionTree<Container>::expand(const Accumulator &state,
                         max_stats.segment(0, sps),   // true_stats
                         max_stats.segment(sps, sps)  // false_stats
                     );
-
             } else {
                 feature_indices(current) = FINISHED_LEAF;
             }
@@ -619,11 +616,11 @@ DecisionTree<Container>::pickSurrogates(
     // we use the *_agg_matrix to add every two alternate columns of the
     // *_stats matrix to create a forward and reverse agreement metric
     // for each split.
-    // eg. in cat_stats,
-    //      we add columns 1 and 3 to get the <= split agreement for 1st cat split.
-    //      we add columns 2 and 4 to get the > split agreement for 1st cat split.
-    //      we add columns 5 and 7 to get the <= split agreement for 2nd cat split.
-    //      we add columns 6 and 8 to get the > split agreement for 2nd cat split.
+    // eg. For cat_stats,
+    //      add columns 1 and 3 to get the <= split agreement for 1st cat split.
+    //      add columns 2 and 4 to get the > split agreement for 1st cat split.
+    //      add columns 5 and 7 to get the <= split agreement for 2nd cat split.
+    //      add columns 6 and 8 to get the > split agreement for 2nd cat split.
     ColumnVector fwd_agg_vec(4);
     fwd_agg_vec << 1, 0, 1, 0;
     ColumnVector rev_agg_vec(4);
@@ -1453,6 +1450,80 @@ DecisionTree<Container>::encodeIndex(const int &feature_index,
             return feature_index + n_cat_features;
         } else {
             return feature_index;
+        }
+    }
+}
+// -------------------------------------------------------------------------
+
+template <class Container>
+inline
+void
+DecisionTree<Container>::computeVariableImportance(
+        ColumnVector &cat_var_importance,
+        ColumnVector &con_var_importance){
+
+    // stats_per_split
+    uint16_t sps = is_regression ? REGRESS_N_STATS :
+                                   static_cast<uint16_t>(n_y_labels + 1);
+
+    // loop through for each internal node and check the primary split and any
+    // surrogate splits
+    for (Index node_index = 0;
+            node_index < feature_indices.size() / 2;
+            node_index++){
+        if (isInternalNode(node_index)){
+            ColumnVector combined_stats(sps * 2);
+            combined_stats << predictions.row(trueChild(node_index)).transpose(),
+                              predictions.row(falseChild(node_index)).transpose();
+            double split_gain = impurityGain(combined_stats, sps);
+
+            // importance = impurity gain from split +
+            //                  impurity gain * adjusted agreement from
+            //                      surrogate split
+
+            // primary split contribution to importance
+            Index feat_index = feature_indices(node_index);
+            if(is_categorical(node_index)) {
+                assert(feat_index < cat_var_importance.size());
+                cat_var_importance(feat_index) += split_gain;
+            } else {
+                assert(feat_index < con_var_importance.size());
+                con_var_importance(feat_index) += split_gain;
+            }
+
+            // surrogate contribution to importance
+            if (max_n_surr > 0){
+                for (Index surr_count=0; surr_count < max_n_surr; surr_count++){
+                    Index surr_lookup_index = node_index * max_n_surr + surr_count;
+
+                    // surr_status == 0 implies non-existing surrogate
+                    if (surr_status(surr_lookup_index) == 0)
+                        break;
+
+                    uint64_t total_count =
+                        statCount(predictions.row(trueChild(node_index))) +
+                        statCount(predictions.row(falseChild(node_index)));
+
+                    // Adjusted agreement is defined as how much better does
+                    // the surrogate do compared to majority count. This value
+                    // is relative to the number of rows that the majority branch
+                    // would not predict correctly (minority count).
+                    uint64_t node_count = nodeCount(node_index);
+                    uint64_t maj_count = getMajorityCount(node_index);
+                    uint64_t min_count =  node_count - maj_count;
+
+                    double adj_agreement =
+                        (surr_agreement(surr_lookup_index) - maj_count) / min_count;
+                    Index surr_feat_index = surr_indices(surr_lookup_index);
+                    if (std::abs(surr_status(surr_lookup_index)) == 1){
+                        cat_var_importance[surr_feat_index] += split_gain *
+                                                                adj_agreement;
+                    } else {
+                        con_var_importance[surr_feat_index] += split_gain *
+                                                                adj_agreement;
+                    }
+                }
+            }
         }
     }
 }
