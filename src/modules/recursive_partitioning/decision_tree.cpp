@@ -54,7 +54,6 @@ initialize_decision_tree::run(AnyType & args){
     std::string impurity_func_str = args[1].getAs<std::string>();
     uint16_t n_y_labels = args[2].getAs<uint16_t>();
     uint16_t max_n_surr = args[3].getAs<uint16_t>();
-
     if (is_regression_tree)
         n_y_labels = REGRESS_N_STATS;
     dt.rebind(1u, n_y_labels, max_n_surr, is_regression_tree);
@@ -174,10 +173,7 @@ compute_leaf_stats_transition::run(AnyType & args){
             }
         }
 
-        // For classification, we store for each split the number of weighted
-        // tuples for each possible response value and the number of unweighted
-        // tuples landing on that node.
-        // For regression, REGRESS_N_STATS determines the number of stats per split
+        // see DT_proto.hpp for explanation on stats_per_split
         uint16_t stats_per_split = dt.is_regression ?
             REGRESS_N_STATS : static_cast<uint16_t>(n_response_labels + 1);
         const bool weights_as_rows = args[9].getAs<bool>();
@@ -491,6 +487,30 @@ print_decision_tree::run(AnyType &args){
 }
 
 AnyType
+get_variable_importance::run(AnyType &args){
+    Tree dt = args[0].getAs<ByteString>();
+    const int n_cat_features = args[1].getAs<int>();
+    const int n_con_features = args[2].getAs<int>();
+
+    ColumnVector cat_var_importance = ColumnVector::Zero(n_cat_features);
+    ColumnVector con_var_importance = ColumnVector::Zero(n_con_features);
+    dt.computeVariableImportance(cat_var_importance, con_var_importance);
+
+    // Variable importance is scaled to represent a percentage. Even though
+    // the importance values are split between categorical and continuous, the
+    // percentages are relative to the combined set.
+   ColumnVector combined_var_imp(n_cat_features + n_con_features);
+   combined_var_imp << cat_var_importance, con_var_importance;
+
+    // Avoid divide by zero by adding a small number.
+    double total_var_imp = combined_var_imp.sum();
+    double VAR_IMP_EPSILON = 1e-6;
+    combined_var_imp *=  (100.0 / (total_var_imp + VAR_IMP_EPSILON));
+
+    return combined_var_imp;
+}
+
+AnyType
 display_text_tree::run(AnyType &args){
     Tree dt = args[0].getAs<ByteString>();
     ArrayHandle<text*> cat_feature_names = args[1].getAs<ArrayHandle<text*> >();
@@ -511,8 +531,8 @@ display_text_tree::run(AnyType &args){
 void mark_subtree_removal_recur(MutableTree &dt, int me) {
     if (me < dt.predictions.rows() &&
             dt.feature_indices(me) != dt.NODE_NON_EXISTING) {
-        int left = static_cast<int>(dt.trueChild(static_cast<Index>(me))),
-            right = static_cast<int>(dt.falseChild(static_cast<Index>(me)));
+        int left = static_cast<int>(dt.trueChild(static_cast<Index>(me)));
+        int right = static_cast<int>(dt.falseChild(static_cast<Index>(me)));
         mark_subtree_removal_recur(dt, left);
         mark_subtree_removal_recur(dt, right);
         dt.feature_indices(me) = dt.NODE_NON_EXISTING;
@@ -724,6 +744,7 @@ prune_and_cplist::run(AnyType &args){
     std::vector<double> node_complexities(dt.feature_indices.size(), alpha);
 
     prune_tree(dt, 0, alpha, root_risk, node_complexities);
+
     // Get the new tree_depth after pruning
     //  Note: externally, tree_depth starts from 0 but DecisionTree assumes
     //  tree_depth starts from 1
