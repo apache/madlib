@@ -278,7 +278,16 @@ def _string_to_array_with_quotes(s):
 
 
 def py_list_to_sql_string(array, array_type=None, long_format=None):
-    """Convert a list to SQL array string """
+    """Convert a list to SQL array string
+
+       Given a pyton list [ele1, ele2], return:
+       1. If the array is text or character, format it as
+          {'ele1','ele2'}::array_type[]
+       2. If the array is numeric, boolean or other, format it with explicit
+          ARRAY key word (long_format=True), like
+          ARRAY[ele1,ele2]::array_type[]
+    """
+
     if long_format is None:
         if (array_type is not None and
                 (any(array_type.startswith(i)
@@ -296,10 +305,23 @@ def py_list_to_sql_string(array, array_type=None, long_format=None):
     if not array:
         return "'{{ }}'::{0}".format(array_type)
     else:
-        array_str = "ARRAY[ {0} ]" if long_format else "'{{ {0} }}'"
-        return (array_str + "::{1}").format(','.join(map(str, array)), array_type)
+        # For non-character array types:
+        if long_format:
+            array_str = "ARRAY[ {0} ]";
+            return (array_str + "::{1}").format(
+                ','.join(map(str, array)), array_type)
+        else:
+        # For character array types, we have to deal with special characters in
+        # elements an array, i.e, {'ele''one', "ele,two", "ele$three"} :
+        # We firstly use ",,," to join elements in python list and then call
+        # postgres string_to_array with a delimiter ",,," to form the final
+        # psql array, because this sequence of characters will be very
+        # unlikely to show up in a real world use case and some special
+        # case (such as "M,M") will be handled.
+            array_str = "string_to_array($${0}$$, ',,,')"
+            return (array_str + "::{1}").format(
+                ',,,'.join(map(str, array)), array_type)
 # ------------------------------------------------------------------------
-
 
 def _array_to_string(origin):
     """
