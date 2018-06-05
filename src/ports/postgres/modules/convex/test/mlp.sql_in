@@ -1096,3 +1096,58 @@ FROM
 JOIN pg_catalog.pg_namespace n
 ON n.oid=c.relnamespace
 WHERE c.relname = 'lin_housing_wi_batch_standardization' AND c.relkind='r' AND nspname=current_schema();
+
+-- Test special characters both in column name and column values
+DROP TABLE IF EXISTS iris_data_special_char;
+CREATE TABLE iris_data_special_char(
+    id serial,
+    "rinЖ!#'gs" numeric[],
+    "se''x" varchar,
+    class integer,
+    state varchar
+);
+INSERT INTO iris_data_special_char VALUES
+(1,ARRAY[5.0,3.2,1.2,0.2],'M''M',1,'Alaska'),
+(2,ARRAY[5.5,3.5,1.3,0.2],'M@[}(:*;M',1,'Alaska'),
+(3,ARRAY[4.9,3.1,1.5,0.1],'M"M',1,'Alaska'),
+(4,ARRAY[4.4,3.0,1.3,0.2],'MЖM',1,'Alaska'),
+(5,ARRAY[5.1,3.4,1.5,0.2],'M$M',1,'Alaska'),
+(6,ARRAY[5.0,3.5,1.3,0.3],'M,M',1,'Alaska'),
+(7,ARRAY[5.0,3.2,1.2,0.2],'''M''M''',1,'Alaska');
+
+DROP TABLE IF EXISTS mlp_model, mlp_model_summary, mlp_model_standardization;
+-- Set seed so results are reproducible
+SELECT setseed(0);
+SELECT mlp_classification(
+    'iris_data_special_char',      -- Source table
+    'mlp_model',      -- Destination table
+    '"rinЖ!#''gs"',     -- Input features
+    '"se''''x"',     -- Label
+    ARRAY[5],         -- Number of units per layer
+    'learning_rate_init=0.003,
+    n_iterations=10,
+    tolerance=0',     -- Optimizer params
+    'tanh',           -- Activation function
+    NULL,             -- Default weight (1)
+    FALSE,            -- No warm start
+    FALSE             -- Not verbose
+);
+
+SELECT assert
+        (
+        source_table        = 'iris_data_special_char' AND
+        independent_varname = '"rinЖ!#''gs"' AND
+        dependent_varname   = '"se''''x"' AND
+        tolerance         = 0 AND
+        learning_rate_init = 0.003 AND
+        learning_rate_policy = 'constant' AND
+        n_iterations = 10 AND
+        n_tries = 1 AND
+        layer_sizes = ARRAY[4,5,7] AND
+        activation = 'tanh' AND
+        is_classification = 't' AND
+        array_to_string(classes, ',,,') = $$'M'M',,,M"M,,,M$M,,,M'M,,,M,M,,,M@[}(:*;M,,,MЖM$$ AND
+        weights  = '1' AND
+        grouping_col       = NULL,
+        'Summary Validation failed for special chars. Actual:' || __to_char(summary)
+        ) from (select * from mlp_model_summary order by classes) summary;

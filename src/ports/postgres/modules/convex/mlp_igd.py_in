@@ -54,6 +54,7 @@ from utilities.validate_args import is_var_valid
 from utilities.validate_args import output_tbl_valid
 from utilities.validate_args import table_exists
 from utilities.minibatch_validation import is_var_one_hot_encoded_for_minibatch
+from utilities.validate_args import quote_ident
 
 
 @MinWarning("error")
@@ -172,16 +173,19 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
                 num_output_nodes = get_col_dimension(tbl_data_scaled,
                                                      dependent_varname)
             else:
-                labels = plpy.execute("SELECT DISTINCT {0} FROM {1}".
-                                      format(dependent_varname_backup, source_table))
+                labels = plpy.execute("SELECT DISTINCT {0} AS {1} FROM {2}".
+                             format(dependent_varname_backup,
+                                    quote_ident(dependent_varname_backup),
+                                    source_table))
+
                 num_output_nodes = len(labels)
                 for label_obj in labels:
                     label = _format_label(label_obj[dependent_varname_backup])
                     classes.append(label)
                 classes.sort()
-                level_vals_str = ','.join(["{0}={1}".format(
-                                           col_dep_var_norm_new, str(c))
-                                           for c in classes])
+                level_vals_str = ','.join(["{0}=$${1}$$".format(
+                                    col_dep_var_norm_new,
+                                    strip_end_quotes(c,"'")) for c in classes])
                 # dependent_varname should be replaced with one-hot encoded varname
                 dependent_varname = "ARRAY[{0}]::integer[]".format(level_vals_str)
         else:
@@ -513,8 +517,8 @@ def _create_summary_table(args):
     summary_table_update_query = """
         INSERT INTO {summary_table} VALUES(
             '{source_table}',
-            '{independent_varname}',
-            '{dependent_varname_backup}',
+            $${independent_varname}$$,
+            $${dependent_varname_backup}$$,
             {minibatch_summary_col_vals}
             '{dependent_vartype}',
             {tolerance},
