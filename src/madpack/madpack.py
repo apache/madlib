@@ -822,9 +822,10 @@ def run_install_check(args, testcase):
         return
 
     # Create install-check user
+    db_name = args["c_db"].replace('.', '').replace('-', '_')
     test_user = ('madlib_' +
                  new_madlib_ver.replace('.', '').replace('-', '_') +
-                 '_installcheck')
+                 '_installcheck_' + db_name)
     try:
         _internal_run_query("DROP USER IF EXISTS %s;" % (test_user), False)
     except:
@@ -852,87 +853,87 @@ def run_install_check(args, testcase):
             modset[case] = []
 
     # Loop through all modules
-    for moduleinfo in portspecs['modules']:
+    try:
+        for moduleinfo in portspecs['modules']:
 
-        # Get module name
-        module = moduleinfo['name']
+            # Get module name
+            module = moduleinfo['name']
 
-        # Skip if doesn't meet specified modules
-        if modset is not None and len(modset) > 0 and module not in modset:
-            continue
-        # JIRA: MADLIB-1078 fix
-        # Skip pmml during install-check (when run without the -t option).
-        # We can still run install-check on pmml with '-t' option.
-        if not modset and module in ['pmml']:
-            continue
-        info_(this, "> - %s" % module, verbose)
-
-        # Make a temp dir for this module (if doesn't exist)
-        cur_tmpdir = tmpdir + '/' + module + '/test'  # tmpdir is a global variable
-        _make_dir(cur_tmpdir)
-
-        # Find the Python module dir (platform specific or generic)
-        if os.path.isdir(maddir + "/ports/" + portid + "/" + dbver + "/modules/" + module):
-            maddir_mod_py = maddir + "/ports/" + portid + "/" + dbver + "/modules"
-        else:
-            maddir_mod_py = maddir + "/modules"
-
-        # Find the SQL module dir (platform specific or generic)
-        if os.path.isdir(maddir + "/ports/" + portid + "/modules/" + module):
-            maddir_mod_sql = maddir + "/ports/" + portid + "/modules"
-        else:
-            maddir_mod_sql = maddir + "/modules"
-
-        # Prepare test schema
-        test_schema = "madlib_installcheck_%s" % (module)
-        _internal_run_query("DROP SCHEMA IF EXISTS %s CASCADE; CREATE SCHEMA %s;" %
-                            (test_schema, test_schema), True)
-        _internal_run_query("GRANT ALL ON SCHEMA %s TO %s;" %
-                            (test_schema, test_user), True)
-
-        # Switch to test user and prepare the search_path
-        pre_sql = '-- Switch to test user:\n' \
-                  'SET ROLE %s;\n' \
-                  '-- Set SEARCH_PATH for install-check:\n' \
-                  'SET search_path=%s,%s;\n' \
-                  % (test_user, test_schema, schema)
-
-        # Loop through all test SQL files for this module
-        sql_files = maddir_mod_sql + '/' + module + '/test/*.sql_in'
-        for sqlfile in sorted(glob.glob(sql_files), reverse=True):
-            algoname = os.path.basename(sqlfile).split('.')[0]
-            # run only algo specified
-            if (module in modset and modset[module] and
-                    algoname not in modset[module]):
+            # Skip if doesn't meet specified modules
+            if modset is not None and len(modset) > 0 and module not in modset:
                 continue
+            # JIRA: MADLIB-1078 fix
+            # Skip pmml during install-check (when run without the -t option).
+            # We can still run install-check on pmml with '-t' option.
+            if not modset and module in ['pmml']:
+                continue
+            info_(this, "> - %s" % module, verbose)
 
-            # Set file names
-            tmpfile = cur_tmpdir + '/' + os.path.basename(sqlfile) + '.tmp'
-            logfile = cur_tmpdir + '/' + os.path.basename(sqlfile) + '.log'
+            # Make a temp dir for this module (if doesn't exist)
+            cur_tmpdir = tmpdir + '/' + module + '/test'  # tmpdir is a global variable
+            _make_dir(cur_tmpdir)
 
-            # If there is no problem with the SQL file
-            milliseconds = 0
+            # Find the Python module dir (platform specific or generic)
+            if os.path.isdir(maddir + "/ports/" + portid + "/" + dbver + "/modules/" + module):
+                maddir_mod_py = maddir + "/ports/" + portid + "/" + dbver + "/modules"
+            else:
+                maddir_mod_py = maddir + "/modules"
 
-            # Run the SQL
-            run_start = datetime.datetime.now()
-            retval = _run_install_check_sql(schema, maddir_mod_py,
-                                            module, sqlfile, tmpfile,
-                                            logfile, pre_sql)
-            # Runtime evaluation
-            run_end = datetime.datetime.now()
-            milliseconds = round((run_end - run_start).seconds * 1000 +
-                                 (run_end - run_start).microseconds / 1000)
+            # Find the SQL module dir (platform specific or generic)
+            if os.path.isdir(maddir + "/ports/" + portid + "/modules/" + module):
+                maddir_mod_sql = maddir + "/ports/" + portid + "/modules"
+            else:
+                maddir_mod_sql = maddir + "/modules"
 
-            # Check the exit status
-            result = _parse_result_logfile(retval, logfile, tmpfile, sqlfile,
-                                           module, milliseconds)
+            # Prepare test schema
+            test_schema = "madlib_installcheck_%s" % (module)
+            _internal_run_query("DROP SCHEMA IF EXISTS %s CASCADE; CREATE SCHEMA %s;" %
+                                (test_schema, test_schema), True)
+            _internal_run_query("GRANT ALL ON SCHEMA %s TO %s;" %
+                                (test_schema, test_user), True)
 
+            # Switch to test user and prepare the search_path
+            pre_sql = '-- Switch to test user:\n' \
+                      'SET ROLE %s;\n' \
+                      '-- Set SEARCH_PATH for install-check:\n' \
+                      'SET search_path=%s,%s;\n' \
+                      % (test_user, test_schema, schema)
+
+            # Loop through all test SQL files for this module
+            sql_files = maddir_mod_sql + '/' + module + '/test/*.sql_in'
+            for sqlfile in sorted(glob.glob(sql_files), reverse=True):
+                algoname = os.path.basename(sqlfile).split('.')[0]
+                # run only algo specified
+                if (module in modset and modset[module] and
+                        algoname not in modset[module]):
+                    continue
+
+                # Set file names
+                tmpfile = cur_tmpdir + '/' + os.path.basename(sqlfile) + '.tmp'
+                logfile = cur_tmpdir + '/' + os.path.basename(sqlfile) + '.log'
+
+                # If there is no problem with the SQL file
+                milliseconds = 0
+
+                # Run the SQL
+                run_start = datetime.datetime.now()
+                retval = _run_install_check_sql(schema, maddir_mod_py,
+                                                module, sqlfile, tmpfile,
+                                                logfile, pre_sql)
+                # Runtime evaluation
+                run_end = datetime.datetime.now()
+                milliseconds = round((run_end - run_start).seconds * 1000 +
+                                     (run_end - run_start).microseconds / 1000)
+
+                # Check the exit status
+                result = _parse_result_logfile(retval, logfile, tmpfile, sqlfile,
+                                               module, milliseconds)
+    finally:
         # Cleanup test schema for the module
         _internal_run_query("DROP SCHEMA IF EXISTS %s CASCADE;" % (test_schema), True)
-
-    # Drop install-check user
-    _internal_run_query("DROP OWNED BY %s CASCADE;" % (test_user), True)
-    _internal_run_query("DROP USER %s;" % (test_user), True)
+        # Drop install-check user
+        _internal_run_query("DROP OWNED BY %s CASCADE;" % (test_user), True)
+        _internal_run_query("DROP USER %s;" % (test_user), True)
 
 def _append_uninstall_madlib_sqlfile(schema, db_madlib_ver, is_schema_in_db,
                                      output_filehandle):
