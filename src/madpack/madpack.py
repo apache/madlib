@@ -770,10 +770,11 @@ def parse_arguments():
                   uninstall      : run sql scripts to uninstall from DB
                   reinstall      : performs uninstall and install
                   version        : compare and print MADlib version (binaries vs database objects)
-                  install-check  : test all installed modules
+                  install-check  : sanity run of all installed modules
+                  dev-check      : test all installed modules
                   """
     choice_list = ['install', 'update', 'upgrade', 'uninstall',
-                   'reinstall', 'version', 'install-check']
+                   'reinstall', 'version', 'install-check', 'dev-check']
 
     parser.add_argument('command', metavar='COMMAND', nargs=1,
                         choices=choice_list, help=help_msg)
@@ -812,7 +813,8 @@ def parse_arguments():
     # Get the arguments
     return parser.parse_args()
 
-def run_install_check(args, testcase):
+def run_install_check(args, testcase, madpack_cmd):
+    is_install_check = True if madpack_cmd == 'install-check' else False
     schema = args['schema']
     db_madlib_ver = args['db_madlib_ver']
     # 1) Compare OS and DB versions. Continue if OS = DB.
@@ -898,12 +900,18 @@ def run_install_check(args, testcase):
                   % (test_user, test_schema, schema)
 
         # Loop through all test SQL files for this module
-        sql_files = maddir_mod_sql + '/' + module + '/test/*.sql_in'
+        if is_install_check:
+            sql_files = maddir_mod_sql + '/' + module + '/test/*.ic.sql_in'
+        else:
+            sql_files = maddir_mod_sql + '/' + module + '/test/*.sql_in'
         for sqlfile in sorted(glob.glob(sql_files), reverse=True):
             algoname = os.path.basename(sqlfile).split('.')[0]
             # run only algo specified
             if (module in modset and modset[module] and
                     algoname not in modset[module]):
+                continue
+            # Do not run test/*.ic.sql_in files for dev-check.
+            if not is_install_check and os.path.basename(sqlfile).split('.')[-2] == 'ic':
                 continue
 
             # Set file names
@@ -1240,8 +1248,8 @@ def main(argv):
         _print_vers(new_madlib_ver, db_madlib_ver, con_args, schema)
 
     # COMMAND: install-check
-    if args.command[0] == 'install-check':
-        run_install_check(locals(), args.testcase)
+    if args.command[0] in ('install-check', 'dev-check'):
+        run_install_check(locals(), args.testcase, args.command[0])
     else:
         try:
             is_schema_in_db = _internal_run_query("SELECT schema_name FROM information_schema.schemata WHERE schema_name='%s';" % schema, True)
