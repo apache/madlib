@@ -406,7 +406,7 @@ class ChangeHandler(UpgradeBase):
             cascade_str = 'CASCADE' if udt in ('svec', 'bytea8') else ''
             # CASCADE DROP for svec and bytea8 because the recv/send
             # functions and the type depend on each other
-            _write_to_file("DROP TYPE IF EXISTS {0}.{1} {2};".
+            _write_to_file(self.output_filehandle, "DROP TYPE IF EXISTS {0}.{1} {2};".
                                 format(self._schema, udt, cascade_str))
 
     def drop_changed_udf(self):
@@ -420,7 +420,7 @@ class ChangeHandler(UpgradeBase):
                 # so dropping that function needs this extra check.
                 udf_arglist = item['argument'] if 'argument' in item else ''
 
-                _write_to_file("DROP FUNCTION IF EXISTS {schema}.{udf}({arg});".
+                _write_to_file(self.output_filehandle, "DROP FUNCTION IF EXISTS {schema}.{udf}({arg});".
                                     format(schema=self._schema,
                                            udf=udf,
                                            arg=udf_arglist))
@@ -431,7 +431,7 @@ class ChangeHandler(UpgradeBase):
         """
         for uda in self._uda:
             for item in self._uda[uda]:
-                _write_to_file("DROP AGGREGATE IF EXISTS {schema}.{uda}({arg});".
+                _write_to_file(self.output_filehandle, "DROP AGGREGATE IF EXISTS {schema}.{uda}({arg});".
                                     format(schema=self._schema,
                                            uda=uda,
                                            arg=item['argument']))
@@ -442,7 +442,7 @@ class ChangeHandler(UpgradeBase):
         @note We have special treatment for UDCs defined in the svec module
         """
         for udc in self._udc:
-            _write_to_file("DROP CAST IF EXISTS ({sourcetype} AS {targettype});".
+            _write_to_file(self.output_filehandle, "DROP CAST IF EXISTS ({sourcetype} AS {targettype});".
                                 format(sourcetype=self._udc[udc]['sourcetype'],
                                        targettype=self._udc[udc]['targettype']))
 
@@ -451,7 +451,7 @@ class ChangeHandler(UpgradeBase):
         @brief Drop the madlib.training_info table, which should no longer be used since
         the version 1.5
         """
-        _write_to_file("DROP TABLE IF EXISTS {schema}.training_info;".
+        _write_to_file(self.output_filehandle, "DROP TABLE IF EXISTS {schema}.training_info;".
                             format(schema=self._schema))
 
     def drop_changed_udo(self):
@@ -462,7 +462,7 @@ class ChangeHandler(UpgradeBase):
             for value in self._udo[op]:
                 leftarg = value['leftarg'].replace('schema_madlib', self._schema)
                 rightarg = value['rightarg'].replace('schema_madlib', self._schema)
-                _write_to_file("""
+                _write_to_file(self.output_filehandle, """
                     DROP OPERATOR IF EXISTS {schema}.{op} ({leftarg}, {rightarg});
                     """.format(schema=self._schema, **locals()))
 
@@ -473,7 +473,7 @@ class ChangeHandler(UpgradeBase):
         for op_cls in self._udoc:
             for value in self._udoc[op_cls]:
                 index = value['index']
-                _write_to_file("""
+                _write_to_file(self.output_filehandle, """
                     DROP OPERATOR CLASS IF EXISTS {schema}.{op_cls} USING {index};
                     """.format(schema=self._schema, **locals()))
 
