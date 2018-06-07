@@ -1,0 +1,105 @@
+/* ----------------------------------------------------------------------- *//**
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ *
+ *//* ----------------------------------------------------------------------- */
+
+---------------------------------------------------------------------------
+-- Rules:
+-- ------
+-- 1) Any DB objects should be created w/o schema prefix,
+--    since this file is executed in a separate schema context.
+-- 2) There should be no DROP statements in this script, since
+--    all objects created in the default schema will be cleaned-up outside.
+---------------------------------------------------------------------------
+
+---------------------------------------------------------------------------
+-- Setup:
+---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION fill_feature(pre_class INT, p FLOAT, total INT)
+RETURNS FLOAT AS $$
+declare
+	result FLOAT;
+	thres INT;
+begin
+	thres = total*p;
+
+	IF pre_class <= thres THEN
+		result = 1;
+	ELSE
+		result = 0;
+	END IF;
+	RETURN result;
+end
+$$ language plpgsql;
+
+-- ----------------
+-- install_test_1()
+-- ----------------
+CREATE FUNCTION install_test_1() RETURNS VOID AS $$
+declare
+	num1 INT := 10;
+	num2 INT := 10;
+
+	result1 INT;
+	count1 INT;
+	tempvar INT[];
+
+begin
+	-- prepare training data: equal priors
+	--DROP TABLE IF EXISTS data CASCADE;
+	CREATE TABLE data_1( class INT, attrib FLOAT[] );
+	INSERT INTO data_1 SELECT 1, ARRAY[fill_feature(id,0.3,num1),fill_feature(id,0.8,num1)] FROM generate_series(1,num1) as id;
+	INSERT INTO data_1 SELECT 2, ARRAY[fill_feature(id,0.5,num2),fill_feature(id,0.5,num2)] FROM generate_series(1,num2) as id;
+
+	-- prepare testing data
+	--DROP TABLE IF EXISTS data_test CASCADE;
+	CREATE TABLE data_test_1( id INT, attrib INT[], prob FLOAT[] );
+	INSERT INTO data_test_1 VALUES (1,'{0,0}','{0.4,0.6}');
+	INSERT INTO data_test_1 VALUES (2,'{0,1}','{0.66666,0.33333}');
+	INSERT INTO data_test_1 VALUES (3,'{1,0}','{0.25,0.75}');
+	INSERT INTO data_test_1 VALUES (4,'{1,1}','{0.5,0.5}');
+
+	-- prepare true results for testing data
+	--DROP TABLE IF EXISTS data_results;
+	CREATE TABLE data_results_1 AS
+		SELECT
+			id,
+			unnest('{1,2}'::INT[]) as class,
+			unnest(prob) as prob
+		FROM data_test_1;
+
+	-- Process training
+	--DROP TABLE IF EXISTS probs CASCADE;
+	--DROP TABLE IF EXISTS priors CASCADE;
+	PERFORM MADLIB_SCHEMA.create_nb_prepared_data_tables('data_1','class','attrib',2,'probs','priors');
+	-- Classify
+	--DROP VIEW IF EXISTS results;
+	PERFORM MADLIB_SCHEMA.create_nb_classify_view('probs','priors','data_test_1','id','attrib',2,'results_1');
+	-- Compute posteriors
+	--DROP VIEW IF EXISTS probs_view;
+	PERFORM MADLIB_SCHEMA.create_nb_probs_view('probs','priors','data_test_1','id','attrib',2,'probs_view_1');
+
+
+end
+$$ language plpgsql;
+
+---------------------------------------------------------------------------
+-- Test:
+---------------------------------------------------------------------------
+SELECT install_test_1();
