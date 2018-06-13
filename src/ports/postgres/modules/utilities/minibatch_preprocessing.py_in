@@ -293,13 +293,12 @@ class MiniBatchQueryFormatter:
         is_dep_var_int_type = is_psql_int_type(dependent_var_dbtype)
         to_one_hot_encode = (is_psql_char_type(dependent_var_dbtype) or
                              is_psql_boolean_type(dependent_var_dbtype) or
-                                (to_one_hot_encode_int and
-                                    is_dep_var_int_type))
+                             (to_one_hot_encode_int and is_dep_var_int_type))
         if to_one_hot_encode:
             # for encoding, since dependent_varname can also be a logical
             # expression, there is a () around it
             dep_level_sql = """
-                SELECT DISTINCT ({dependent_varname}) AS class
+                SELECT DISTINCT (quote_literal({dependent_varname})) AS class
                 FROM {source_table}
                 WHERE ({dependent_varname}) is NOT NULL
                 """.format(dependent_varname=dependent_varname,
@@ -312,7 +311,8 @@ class MiniBatchQueryFormatter:
                                               to_quote=not is_dep_var_int_type)
             dep_var_class_value_str = \
                 py_list_to_sql_string(dep_var_classes,
-                                      array_type=dependent_var_dbtype)
+                                      array_type=dependent_var_dbtype,
+                                      long_format=True)
         elif "[]" in dependent_var_dbtype:
             dep_var_array_str = dependent_varname
         elif is_psql_numeric_type(dependent_var_dbtype):
@@ -324,10 +324,7 @@ class MiniBatchQueryFormatter:
         return dep_var_array_str, dep_var_class_value_str
 
     def _get_one_hot_encoded_str(self, var_name, var_classes, to_quote=True):
-        def add_quote(c):
-            return "$${0}$$".format(c) if to_quote else c
-
-        one_hot_list = ["({0}) = {1}".format(var_name, add_quote(c))
+        one_hot_list = ["({0}) = {1}".format(var_name, c)
                         for c in var_classes]
         return 'ARRAY[{0}]::INTEGER[]'.format(', '.join(one_hot_list))
 
@@ -432,9 +429,9 @@ class MiniBatchStandardizer:
             ) AS {ind_colname},
             {self.source_table}.{self.grouping_cols}
         FROM
-          {self.source_table} 
-          INNER JOIN 
-          {self.x_mean_table} AS __x__ 
+          {self.source_table}
+          INNER JOIN
+          {self.x_mean_table} AS __x__
           ON  {self.source_table}.{self.grouping_cols} = __x__.{self.grouping_cols}
         """.format(
             self=self,
