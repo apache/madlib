@@ -278,7 +278,19 @@ def _string_to_array_with_quotes(s):
 
 
 def py_list_to_sql_string(array, array_type=None, long_format=None):
-    """Convert a list to SQL array string """
+    """Convert a list to SQL array string
+
+    @note: The long format is recommended with the input values quoted
+    appropriately by 'quote_literal'.
+
+    The short format (e.g. '{1,2,3}') does not take care of escaping the
+    string values in the array. Hence an input like '{ t$}t, test}' will fail due
+    to the unescaped '{'.
+    For eg. following is a valid input for short format:
+        array = ['M'M', M\"M, "M$M,M'M", M, M, M@[\}(:*;M, MM ]
+    Note the double quotes and curly brackets need to be escaped in the input if
+    used with the short format.
+    """
     if long_format is None:
         if (array_type is not None and
                 (any(array_type.startswith(i)
@@ -296,8 +308,15 @@ def py_list_to_sql_string(array, array_type=None, long_format=None):
     if not array:
         return "'{{ }}'::{0}".format(array_type)
     else:
-        array_str = "ARRAY[ {0} ]" if long_format else "'{{ {0} }}'"
-        return (array_str + "::{1}").format(','.join(map(str, array)), array_type)
+        quote_delimiter = "$__madlib__$"
+        # This is a quote delimiter that can be used in lieu of
+        # single quotes and allows the use of single quotes in the
+        # string without escaping
+        array_str = "ARRAY[ {val} ]" if long_format else "{qd}{{ {val} }}{qd}"
+        return (array_str + "::{type}").format(
+            val=','.join(map(str, array)),
+            type=array_type,
+            qd=quote_delimiter)
 # ------------------------------------------------------------------------
 
 
