@@ -60,8 +60,8 @@ class MiniBatchPreProcessor:
     """
     @MinWarning("error")
     def __init__(self, schema_madlib, source_table, output_table,
-                  dependent_varname, independent_varname, grouping_cols,
-                  buffer_size, one_hot_encode_int_dep_var=False, **kwargs):
+                 dependent_varname, independent_varname, grouping_cols,
+                 buffer_size, one_hot_encode_int_dep_var=False, **kwargs):
         self.schema_madlib = schema_madlib
         self.source_table = source_table
         self.output_table = output_table
@@ -81,7 +81,7 @@ class MiniBatchPreProcessor:
     def minibatch_preprocessor(self):
         # Get array expressions for both dep and indep variables from the
         # MiniBatchQueryFormatter class
-        qry_formatter = MiniBatchQueryFormatter(self.source_table)
+        qry_formatter = MiniBatchQueryFormatter(self.schema_madlib, self.source_table)
         dependent_var_dbtype = get_expr_type(self.dependent_varname,
                                              self.source_table)
 
@@ -90,7 +90,7 @@ class MiniBatchPreProcessor:
                                           dependent_var_dbtype,
                                           self.one_hot_encode_int_dep_var)
         indep_var_array_str = qry_formatter.get_indep_var_array_str(
-                                              self.independent_varname)
+            self.independent_varname)
 
         standardizer = MiniBatchStandardizer(self.schema_madlib,
                                              self.source_table,
@@ -236,9 +236,9 @@ class MiniBatchPreProcessor:
                                        if self.grouping_cols else '')
         result = plpy.execute(query)
 
-        ## SUM and AVG both return float, and we have to cast them into int fo
-        ## summary table. For avg_num_rows_processed we need to ceil first so
-        ## that the minimum won't be 0
+        # SUM and AVG both return float, and we have to cast them into int fo
+        # summary table. For avg_num_rows_processed we need to ceil first so
+        # that the minimum won't be 0
         source_table_row_count = int(result[0]['source_table_row_count'])
         total_num_rows_processed = int(result[0]['total_num_rows_processed'])
         avg_num_rows_processed = int(ceil(result[0]['avg_num_rows_processed']))
@@ -258,7 +258,8 @@ class MiniBatchQueryFormatter:
     variables into arrays so that they can be matrix agged by the preprocessor
     class.
     """
-    def __init__(self, source_table):
+    def __init__(self, schema_madlib, source_table):
+        self.schema_madlib = schema_madlib
         self.source_table = source_table
 
     def get_dep_var_array_and_classes(self,
@@ -297,29 +298,34 @@ class MiniBatchQueryFormatter:
         if to_one_hot_encode:
             # for encoding, since dependent_varname can also be a logical
             # expression, there is a () around it
+            if is_psql_boolean_type(dependent_var_dbtype):
+                # GPDB 4.3 does not support bool to text cast
+                dep_var_bool_patched = "{0}.bool_to_text({1})".format(
+                    self.schema_madlib, dependent_varname)
+            else:
+                dep_var_bool_patched = dependent_varname
+
             dep_level_sql = """
-                SELECT DISTINCT (quote_literal({dependent_varname})) AS class
-                FROM {source_table}
+                SELECT DISTINCT quote_literal({dep_var_bool_patched}) AS class
+                FROM {self.source_table}
                 WHERE ({dependent_varname}) is NOT NULL
-                """.format(dependent_varname=dependent_varname,
-                           source_table=self.source_table)
+                """.format(**locals())
             dep_levels = plpy.execute(dep_level_sql)
+
             dep_var_classes = sorted(l["class"] for l in dep_levels)
-            dep_var_array_str = \
-                self._get_one_hot_encoded_str(dependent_varname,
-                                              dep_var_classes,
-                                              to_quote=not is_dep_var_int_type)
-            dep_var_class_value_str = \
-                py_list_to_sql_string(dep_var_classes,
-                                      array_type=dependent_var_dbtype,
-                                      long_format=True)
+            dep_var_array_str = self._get_one_hot_encoded_str(
+                dependent_varname, dep_var_classes,
+                to_quote=not is_dep_var_int_type)
+            dep_var_class_value_str = py_list_to_sql_string(
+                dep_var_classes, array_type=dependent_var_dbtype,
+                long_format=True)
         elif "[]" in dependent_var_dbtype:
             dep_var_array_str = dependent_varname
         elif is_psql_numeric_type(dependent_var_dbtype):
             dep_var_array_str = 'ARRAY[{0}]'.format(dependent_varname)
         else:
-            plpy.error("""Invalid dependent variable type. It should be character,
-                boolean, numeric, or array.""")
+            plpy.error("Invalid dependent variable type. It should be character,"
+                       "boolean, numeric, or array.")
 
         return dep_var_array_str, dep_var_class_value_str
 
