@@ -903,15 +903,12 @@ def run_install_check(args, testcase, madpack_cmd):
         if is_install_check:
             sql_files = maddir_mod_sql + '/' + module + '/test/*.ic.sql_in'
         else:
-            sql_files = maddir_mod_sql + '/' + module + '/test/*.sql_in'
+            sql_files = maddir_mod_sql + '/' + module + '/test/*[!ic].sql_in'
         for sqlfile in sorted(glob.glob(sql_files), reverse=True):
             algoname = os.path.basename(sqlfile).split('.')[0]
             # run only algo specified
             if (module in modset and modset[module] and
                     algoname not in modset[module]):
-                continue
-            # Do not run test/*.ic.sql_in files for dev-check.
-            if not is_install_check and os.path.basename(sqlfile).split('.')[-2] == 'ic':
                 continue
 
             # Set file names
