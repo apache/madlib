@@ -29,6 +29,17 @@ using namespace dbal::eigen_integration;
 using std::vector;
 using std::string;
 
+
+// stats_per_split is the number of statistics needed to accumulate for a split.
+// This differs for classification and regression. Value for classification is a
+// function of number of response values and is computed at runtime whereas
+// value for regression is a constant.
+
+// For classification, accumulate the following:
+//  num of weighted tuples for each possible response and num of unweighted tuples
+
+// For regression, accumulate 4 values for evaulating a split:
+//      weight, weight * response, weight * response^2, num of unweighted rows
 const uint16_t REGRESS_N_STATS = 4u;
 
 template <class Container>
@@ -93,6 +104,13 @@ public:
     }
     Index trueChild(Index current) const { return 2 * current + 1; }
     Index falseChild(Index current) const { return 2 * current + 2; }
+    bool isInternalNode(const Index node_index) const {
+       int split_feat_index = feature_indices(node_index);
+       return (split_feat_index != NODE_NON_EXISTING &&
+                split_feat_index != IN_PROCESS_LEAF &&
+                split_feat_index != FINISHED_LEAF);
+    }
+
     double impurity(const ColumnVector & stats) const;
     double impurityGain(const ColumnVector &combined_stats,
                         const uint16_t &stats_per_split) const;
@@ -149,6 +167,9 @@ public:
                       const int &is_categorical,
                       const int &n_cat_features) const;
 
+    void computeVariableImportance(ColumnVector& cat_var_importance,
+                                   ColumnVector& con_var_importance);
+
     // attributes
     // dimension information
     uint16_type tree_depth; // 1 for root-only tree
@@ -172,6 +193,7 @@ public:
     IntegerVector_type feature_indices;
     // elements are of integer type for categorical
     ColumnVector_type feature_thresholds;
+
     // used as boolean array, 0 means continuous, otherwise categorical
     IntegerVector_type is_categorical;
 
@@ -206,6 +228,7 @@ public:
     //      stats_per_split is set by the accumulator during training of tree
     Matrix_type predictions;   // used as integer if we do classification
 };
+
 
 // ------------------------------------------------------------------------
 // TreeAccumulator is used for collecting statistics during training the nodes

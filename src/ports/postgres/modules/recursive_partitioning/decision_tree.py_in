@@ -28,6 +28,7 @@ from utilities.validate_args import columns_exist_in_table
 from utilities.validate_args import is_var_valid
 from utilities.validate_args import unquote_ident
 from utilities.utilities import _assert
+from utilities.utilities import _array_to_string
 from utilities.utilities import extract_keyvalue_params
 from utilities.utilities import unique_string
 from utilities.utilities import add_postfix
@@ -187,7 +188,6 @@ def _classify_features(feature_to_type, features):
                             if feature_to_type[c] in boolean_types]
 
     # Integer types are not considered continuous
-    con_types = ['real', 'double precision', 'numeric', 'decimal']
     con_features = [c for c in features
                     if is_psql_numeric_type(feature_to_type[c], exclude=int_types)]
 
@@ -331,6 +331,11 @@ def _get_tree_states(schema_madlib, is_classification, split_criterion,
             if 'cp_list' in pruned_tree:
                 tree['cp_list'] = pruned_tree['cp_list']
 
+        importance_vectors = _compute_var_importance(
+            schema_madlib, tree,
+            len(cat_features), len(con_features))
+        tree.update(**importance_vectors)
+
     return tree_states, bins, dep_list, n_rows
 # -------------------------------------------------------------------------
 
@@ -394,7 +399,8 @@ def _build_tree(schema_madlib, is_classification, split_criterion,
         # we need to let it know that right now it is called from CV.
         use_existing_tables = table_exists(output_table_name)  # create tables if it does not exist
         running_cv = True  # flag to indicate that cv fold ID needs to be included
-        _create_output_tables(**locals())
+        _create_output_tables(list_of_features_to_exclude='',
+                              **locals())
 # ------------------------------------------------------------------------------
 
 
@@ -483,6 +489,13 @@ def tree_train(schema_madlib, training_table_name, output_table_name,
         cat_features, ordered_cat_features, boolean_cats, con_features = \
             _classify_features(all_cols_types, features)
 
+        # assert that the continuous and categorical features together
+        # cover all features
+        invalid_features = set(features) - (set(cat_features) | set(con_features))
+        _assert(not invalid_features,
+                "DT error: Some of the features are invalid ({0})".
+                format(invalid_features))
+
         # get all rows
         n_all_rows = plpy.execute("SELECT count(*) FROM {source_table}".
                                   format(source_table=training_table_name)
@@ -513,6 +526,7 @@ def tree_train(schema_madlib, training_table_name, output_table_name,
 def _create_output_tables(schema_madlib, training_table_name, output_table_name,
                           tree_states, bins, split_criterion,
                           id_col_name, dependent_variable, list_of_features,
+                          list_of_features_to_exclude,
                           is_classification, n_all_rows, n_rows, dep_list, cp,
                           all_cols_types, grouping_cols=None,
                           use_existing_tables=False, running_cv=False,
@@ -532,7 +546,7 @@ def _create_output_tables(schema_madlib, training_table_name, output_table_name,
     _create_summary_table(
         schema_madlib, split_criterion, training_table_name,
         output_table_name, id_col_name, bins['cat_features'], bins['con_features'],
-        dependent_variable, list_of_features,
+        dependent_variable, list_of_features, list_of_features_to_exclude,
         failed_groups, is_classification, n_all_rows,
         n_rows, dep_list, all_cols_types, cp, grouping_cols, 1,
         use_existing_tables, n_folds, null_proxy)
@@ -783,35 +797,45 @@ def _create_result_table(schema_madlib, tree_state,
         header = "create table " + output_table_name + " as "
     depth = (tree_state['pruned_depth'] if 'pruned_depth' in tree_state
              else tree_state['tree_depth'])
+
     if len(cat_features) > 0:
         sql = header + """
                 SELECT
-                    {cp} as pruning_cp,
-                    $1 as tree,
-                    $2 as cat_levels_in_text,
-                    $3 as cat_n_levels,
-                    {depth} as tree_depth
+                    {cp} AS pruning_cp,
+                    $1 AS tree,
+                    $2 AS cat_levels_in_text,
+                    $3 AS cat_n_levels,
+                    $4 AS impurity_var_importance,
+                    {depth} AS tree_depth
                     {fold}
             """.format(depth=depth,
                        cp=tree_state['cp'],
                        fold=fold)
         sql_plan = plpy.prepare(sql, ['{0}.bytea8'.format(schema_madlib),
-                                      'text[]', 'integer[]'])
-        plpy.execute(sql_plan, [tree_state['tree_state'], cat_origin, cat_n])
+                                      'text[]',
+                                      'integer[]',
+                                      'double precision[]'])
+        plpy.execute(sql_plan, [tree_state['tree_state'],
+                                cat_origin,
+                                cat_n,
+                                tree_state['impurity_var_importance']])
     else:
         sql = header + """
                 SELECT
-                    {cp} as pruning_cp,
-                    $1 as tree,
-                    NULL::text[] as cat_levels_in_text,
-                    NULL::integer[] as cat_n_levels,
-                    {depth} as tree_depth
+                    {cp} AS pruning_cp,
+                    $1 AS tree,
+                    NULL::text[] AS cat_levels_in_text,
+                    NULL::integer[] AS cat_n_levels,
+                    $2 AS impurity_var_importance,
+                    {depth} AS tree_depth
                     {fold}
             """.format(depth=depth,
                        cp=tree_state['cp'],
                        fold=fold)
-        sql_plan = plpy.prepare(sql, ['{0}.bytea8'.format(schema_madlib)])
-        plpy.execute(sql_plan, [tree_state['tree_state']])
+        sql_plan = plpy.prepare(sql, ['{0}.bytea8'.format(schema_madlib),
+                                      'double precision[]'])
+        plpy.execute(sql_plan, [tree_state['tree_state'],
+                                tree_state['impurity_var_importance']])
 
 # ------------------------------------------------------------
 
@@ -1007,8 +1031,8 @@ def _get_bins_grps(
         #   cat_origin = [0, 1, 4, 6, 8, 0, 1, 4, 6, 0, 1, 4, 6, 8]
         #   grp_key_cat = ['3', '4', '5']
         cat_items_list = [rows[col]
-                            for grp_key, rows in grp_to_col_to_levels
-                            for col in cat_features if col in rows]
+                          for grp_key, rows in grp_to_col_to_levels
+                          for col in cat_features if col in rows]
         cat_n = [len(i) for i in cat_items_list]
         cat_origin = [item for sublist in cat_items_list for item in sublist]
         grp_key_cat = [item[0] for item in grp_to_col_to_levels]
@@ -1097,28 +1121,21 @@ def _one_step(schema_madlib, training_table_name, cat_features,
                                                          "$3", "$2",
                                                          null_proxy)
 
-    # The arguments of the aggregate (in the same order):
-    # 1. current tree state, madlib.bytea8
-    # 2. categorical features (integer format) in a single array
-    # 3. continuous features in a single array
-    # 4. weight value
-    # 5. categorical sorted levels (integer format) in a combined array
-    # 6. continuous splits
-    # 7. number of dependent levels
     train_sql = """
         SELECT (result).* from (
             SELECT
-                {schema_madlib}._dt_apply($1,
+                {schema_madlib}._dt_apply(
+                    $1,
                     {schema_madlib}._compute_leaf_stats(
-                        $1,
-                        {cat_features_str},
-                        {con_features_str},
+                        $1,                  -- current tree state, madlib.bytea8
+                        {cat_features_str},  -- categorical features in an array
+                        {con_features_str},  -- continuous features in an array
                         {dep_var},
-                        {weights},
-                        $2,
-                        $4,
-                        {dep_n_levels}::smallint,
-                        {subsample}::boolean
+                        {weights},           -- weight value
+                        $2,                  -- categorical sorted levels in a combined array
+                        $4,                  -- continuous splits
+                        {dep_n_levels}::smallint, -- number of dependent levels
+                        {subsample}::boolean  -- should we use a subsample of data
                     ),
                     $4,
                     {min_split}::smallint,
@@ -1364,12 +1381,14 @@ def _create_grp_result_table(
         running_cv=False, k=0):
     """ Create the output table for grouping case.
     """
+
     grp_key = unique_string()
     tree_state = unique_string()
     tree_depth = unique_string()
     cp_col = unique_string()
     cat_levels_in_text = unique_string()
     cat_n_levels = unique_string()
+    impurity_var_importance = unique_string()
     cat_levels_val = cat_levels_in_text if cat_features else "NULL::TEXT[]"
     cat_n_levels_val = cat_n_levels if cat_features else "NULL::INTEGER[]"
     grouping_array_str = bins['grouping_array_str']
@@ -1383,25 +1402,28 @@ def _create_grp_result_table(
     sql = header + """
             SELECT
                 {grouping_cols},
-                {tree_state} as tree,
-                {cat_levels_val} as cat_levels_in_text,
-                {cat_n_levels_val} as cat_n_levels,
-                {tree_depth} as tree_depth,
-                {cp_col} as pruning_cp
+                {tree_state} AS tree,
+                {cat_levels_val} AS cat_levels_in_text,
+                {cat_n_levels_val} AS cat_n_levels,
+                string_to_array(trim(both '{{}}' FROM {impurity_var_importance}),
+                                ',')::double precision[] AS impurity_var_importance,
+                {tree_depth} AS tree_depth,
+                {cp_col} AS pruning_cp
                 {fold}
             FROM (
                 SELECT
                     {grouping_cols},
-                    {grouping_array_str} as {grp_key}
+                    {grouping_array_str} AS {grp_key}
                 FROM {training_table_name}
                 group by {grouping_cols}
             ) s1
             JOIN (
                 SELECT
-                    unnest($1) as {grp_key},
-                    unnest($2) as {tree_state},
-                    unnest($3) as {tree_depth},
-                    unnest($4) as {cp_col}
+                    unnest($1) AS {grp_key},
+                    unnest($2) AS {tree_state},
+                    unnest($3) AS {tree_depth},
+                    unnest($4) AS {cp_col},
+                    unnest($5) AS {impurity_var_importance}
             ) s2
             USING ({grp_key})
             """
@@ -1413,41 +1435,30 @@ def _create_grp_result_table(
                         cat_n_levels as {cat_n_levels},
                         cat_levels_in_text as {cat_levels_in_text}
                     FROM
-                        {schema_madlib}._gen_cat_levels_set($5, $6, $7, $8)
-
+                        {schema_madlib}._gen_cat_levels_set($6, $7, $8, $9)
                 ) s3
                 USING ({grp_key})
             """
     sql = sql.format(**locals())
+    prepare_list = ['text[]',
+                    '{schema_madlib}.bytea8[]'.format(schema_madlib=schema_madlib),
+                    'integer[]', 'double precision[]', 'text[]']
+    execute_list = [
+        [t['grp_key'] for t in tree_states],
+        [t['tree_state'] for t in tree_states],
+        [t['pruned_depth'] if 'pruned_depth' in t else t['tree_depth']
+         for t in tree_states],
+        [t['cp'] for t in tree_states],
+        [_array_to_string(t['impurity_var_importance']) for t in tree_states]]
     if cat_features:
-        sql_plan = plpy.prepare(
-            sql, ['text[]',
-                  '{schema_madlib}.bytea8[]'.format(schema_madlib=schema_madlib),
-                  'integer[]', 'double precision[]',
-                  'text[]', 'integer[]', 'integer', 'text[]'])
-        plpy.execute(sql_plan, [
-            [t['grp_key'] for t in tree_states],
-            [t['tree_state'] for t in tree_states],
-            [t['pruned_depth'] if 'pruned_depth' in t else t['tree_depth']
-             for t in tree_states],
-            [t['cp'] for t in tree_states],
+        prepare_list += ['text[]', 'integer[]', 'integer', 'text[]']
+        execute_list += [
             bins['grp_key_cat'],
             bins['cat_n'],
             len(cat_features),
-            bins['cat_origin']])
-    else:
-        sql_plan = plpy.prepare(sql, [
-            'text[]',
-            '{schema_madlib}.bytea8[]'.format(schema_madlib=schema_madlib),
-            'integer[]',
-            'double precision[]'])
-        plpy.execute(sql_plan, [
-            [t['grp_key'] for t in tree_states],
-            [t['tree_state'] for t in tree_states],
-            [t['pruned_depth'] if 'pruned_depth' in t else t['tree_depth']
-             for t in tree_states],
-            [t['cp'] for t in tree_states]
-        ])
+            bins['cat_origin']]
+    sql_plan = plpy.prepare(sql, prepare_list)
+    plpy.execute(sql_plan, execute_list)
 # ------------------------------------------------------------
 
 
@@ -1476,6 +1487,7 @@ def _create_summary_table(
         schema_madlib, split_criterion,
         training_table_name, output_table_name, id_col_name,
         cat_features, con_features, dependent_variable, list_of_features,
+        list_of_features_to_exclude,
         num_failed_groups, is_classification, n_all_rows, n_rows,
         dep_list, all_cols_types, cp, grouping_cols=None, n_groups=1,
         use_existing_tables=False, n_folds=0, null_proxy=None):
@@ -1491,6 +1503,7 @@ def _create_summary_table(
         dep_list_str = "NULL"
     indep_type = ', '.join(all_cols_types[c] for c in cat_features + con_features)
     dep_type = _get_dep_type(training_table_name, dependent_variable)
+    independent_varnames = ','.join(cat_features + con_features)
     cat_features_str = ','.join(cat_features)
     con_features_str = ','.join(con_features)
     if grouping_cols:
@@ -1517,8 +1530,10 @@ def _create_summary_table(
                 '{training_table_name}'::text  AS source_table,
                 '{output_table_name}'::text    AS model_table,
                 '{id_col_name}'::text          AS id_col_name,
+                '{list_of_features}'::text     AS list_of_features,
+                '{list_of_features_to_exclude}'::text     AS list_of_features_to_exclude,
                 '{dependent_variable}'::text   AS dependent_varname,
-                '{list_of_features}'::text     AS independent_varnames,
+                '{independent_varnames}'::text     AS independent_varnames,
                 '{cat_features_str}'::text     AS cat_features,
                 '{con_features_str}'::text     AS con_features,
                 {grouping_cols_str}::text      AS grouping_cols,
@@ -1899,6 +1914,31 @@ def _prune_and_cplist(schema_madlib, tree, cp, compute_cp_list=False):
 # -------------------------------------------------------------------------
 
 
+def _compute_var_importance(schema_madlib, tree,
+                            n_cat_features, n_con_features):
+    """ Compute variable importance for categorical and continuous features
+
+        Args:
+            @param schema_madlib: str, MADlib schema name
+            @param tree: Tree data to prune
+            @param n_cat_features: int, Number of categorical features
+            @param n_con_features: int, Number of continuous features
+
+        Returns:
+            Dictionary containing following keys:
+                impurity_var_importance: Array of importance values
+    """
+    var_imp_sql = """
+        SELECT {schema_madlib}._get_var_importance(
+            $1,    -- trained decision tree
+            {n_cat_features},
+            {n_con_features}) AS impurity_var_importance
+        """.format(**locals())
+    var_imp_plan = plpy.prepare(var_imp_sql, [schema_madlib + '.bytea8'])
+    return plpy.execute(var_imp_plan, [tree['tree_state']])[0]
+# ------------------------------------------------------------------------------
+
+
 def _xvalidate(schema_madlib, tree_states, training_table_name, output_table_name,
                id_col_name, dependent_variable,
                list_of_features, list_of_features_to_exclude,
@@ -2056,6 +2096,10 @@ def _xvalidate(schema_madlib, tree_states, training_table_name, output_table_nam
                 tree['pruned_depth'] = pruned_tree['tree_depth']
             else:
                 tree['pruned_depth'] = 0
+        importance_vectors = _compute_var_importance(
+            schema_madlib, tree,
+            len(cat_features), len(con_features))
+        tree.update(**importance_vectors)
 
     plpy.execute("DROP TABLE {group_to_param_list_table}".format(**locals()))
 # ------------------------------------------------------------
@@ -2157,13 +2201,14 @@ def _tree_train_using_bins(
     tree_state = plpy.execute(
         """
         SELECT {schema_madlib}._initialize_decision_tree(
-            {is_regression_tree},
-            '{split_criterion}'::text,
-            {dep_n_levels}::smallint,
-            {max_n_surr}::smallint)
-            as tree_state, False as finished
+                {is_regression_tree},
+                '{split_criterion}'::text,
+                {dep_n_levels}::smallint,
+                {max_n_surr}::smallint
+                ) AS tree_state,
+            FALSE as finished
         """.format(schema_madlib=schema_madlib,
-                   is_regression_tree=not is_classification,
+                   is_regression_tree=(not is_classification),
                    split_criterion=split_criterion,
                    dep_n_levels=dep_n_levels,
                    max_n_surr=max_n_surr))[0]
@@ -2203,9 +2248,7 @@ def _tree_train_grps_using_bins(
                 {is_regression_tree},
                 '{split_criterion}'::text,
                 {dep_n_levels}::smallint,
-                {max_n_surr}::smallint
-                )
-            AS tree_state,
+                {max_n_surr}::smallint) AS tree_state,
             0 AS finished
         """.format(schema_madlib=schema_madlib,
                    is_regression_tree=not is_classification,
