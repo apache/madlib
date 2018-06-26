@@ -770,10 +770,11 @@ def parse_arguments():
                   uninstall      : run sql scripts to uninstall from DB
                   reinstall      : performs uninstall and install
                   version        : compare and print MADlib version (binaries vs database objects)
-                  install-check  : test all installed modules
+                  install-check  : sanity run of all installed modules
+                  dev-check      : test all installed modules
                   """
     choice_list = ['install', 'update', 'upgrade', 'uninstall',
-                   'reinstall', 'version', 'install-check']
+                   'reinstall', 'version', 'install-check', 'dev-check']
 
     parser.add_argument('command', metavar='COMMAND', nargs=1,
                         choices=choice_list, help=help_msg)
@@ -812,7 +813,8 @@ def parse_arguments():
     # Get the arguments
     return parser.parse_args()
 
-def run_install_check(args, testcase):
+def run_install_check(args, testcase, madpack_cmd):
+    is_install_check = True if madpack_cmd == 'install-check' else False
     schema = args['schema']
     db_madlib_ver = args['db_madlib_ver']
     # 1) Compare OS and DB versions. Continue if OS = DB.
@@ -859,26 +861,6 @@ def run_install_check(args, testcase):
             # Get module name
             module = moduleinfo['name']
 
-            # Skip if doesn't meet specified modules
-            if modset is not None and len(modset) > 0 and module not in modset:
-                continue
-            # JIRA: MADLIB-1078 fix
-            # Skip pmml during install-check (when run without the -t option).
-            # We can still run install-check on pmml with '-t' option.
-            if not modset and module in ['pmml']:
-                continue
-            info_(this, "> - %s" % module, verbose)
-
-            # Make a temp dir for this module (if doesn't exist)
-            cur_tmpdir = tmpdir + '/' + module + '/test'  # tmpdir is a global variable
-            _make_dir(cur_tmpdir)
-
-            # Find the Python module dir (platform specific or generic)
-            if os.path.isdir(maddir + "/ports/" + portid + "/" + dbver + "/modules/" + module):
-                maddir_mod_py = maddir + "/ports/" + portid + "/" + dbver + "/modules"
-            else:
-                maddir_mod_py = maddir + "/modules"
-
             # Find the SQL module dir (platform specific or generic)
             if os.path.isdir(maddir + "/ports/" + portid + "/modules/" + module):
                 maddir_mod_sql = maddir + "/ports/" + portid + "/modules"
@@ -900,8 +882,53 @@ def run_install_check(args, testcase):
                       % (test_user, test_schema, schema)
 
             # Loop through all test SQL files for this module
-            sql_files = maddir_mod_sql + '/' + module + '/test/*.sql_in'
+            if is_install_check:
+                sql_files = maddir_mod_sql + '/' + module + '/test/*.ic.sql_in'
+            else:
+                sql_files = maddir_mod_sql + '/' + module + '/test/*[!ic].sql_in'
             for sqlfile in sorted(glob.glob(sql_files), reverse=True):
+                algoname = os.path.basename(sqlfile).split('.')[0]
+                # run only algo specified
+                if (module in modset and modset[module] and
+                        algoname not in modset[module]):
+                    continue
+                # JIRA: MADLIB-1078 fix
+                # Skip pmml during install-check (when run without the -t option).
+                # We can still run install-check on pmml with '-t' option.
+                if not modset and module in ['pmml']:
+                    continue
+                info_(this, "> - %s" % module, verbose)
+
+                # Make a temp dir for this module (if doesn't exist)
+                cur_tmpdir = tmpdir + '/' + module + '/test'  # tmpdir is a global variable
+                _make_dir(cur_tmpdir)
+
+                # Find the Python module dir (platform specific or generic)
+                if os.path.isdir(maddir + "/ports/" + portid + "/" + dbver + "/modules/" + module):
+                    maddir_mod_py = maddir + "/ports/" + portid + "/" + dbver + "/modules"
+                else:
+                    maddir_mod_py = maddir + "/modules"
+
+                # Find the SQL module dir (platform specific or generic)
+                if os.path.isdir(maddir + "/ports/" + portid + "/modules/" + module):
+                    maddir_mod_sql = maddir + "/ports/" + portid + "/modules"
+                else:
+                    maddir_mod_sql = maddir + "/modules"
+
+                # Prepare test schema
+                test_schema = "madlib_installcheck_%s" % (module)
+                _internal_run_query("DROP SCHEMA IF EXISTS %s CASCADE; CREATE SCHEMA %s;" %
+                                    (test_schema, test_schema), True)
+                _internal_run_query("GRANT ALL ON SCHEMA %s TO %s;" %
+                                    (test_schema, test_user), True)
+
+                # Switch to test user and prepare the search_path
+                pre_sql = '-- Switch to test user:\n' \
+                          'SET ROLE %s;\n' \
+                          '-- Set SEARCH_PATH for install-check:\n' \
+                          'SET search_path=%s,%s;\n' \
+                          % (test_user, test_schema, schema)
+
                 algoname = os.path.basename(sqlfile).split('.')[0]
                 # run only algo specified
                 if (module in modset and modset[module] and
@@ -1241,8 +1268,8 @@ def main(argv):
         _print_vers(new_madlib_ver, db_madlib_ver, con_args, schema)
 
     # COMMAND: install-check
-    if args.command[0] == 'install-check':
-        run_install_check(locals(), args.testcase)
+    if args.command[0] in ('install-check', 'dev-check'):
+        run_install_check(locals(), args.testcase, args.command[0])
     else:
         try:
             is_schema_in_db = _internal_run_query("SELECT schema_name FROM information_schema.schemata WHERE schema_name='%s';" % schema, True)

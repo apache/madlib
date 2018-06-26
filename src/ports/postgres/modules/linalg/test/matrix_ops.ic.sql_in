@@ -1,0 +1,121 @@
+/* ----------------------------------------------------------------------- *//**
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ *
+ *//* ----------------------------------------------------------------------- */
+
+m4_include(`SQLCommon.m4')
+
+CREATE TABLE s(
+    row_id INT8,
+    col_id INT8,
+    val INT4
+)
+m4_ifdef(`__GREENPLUM__',
+`WITH (APPENDONLY=TRUE) DISTRIBUTED BY (row_id)');
+
+INSERT INTO s VALUES(1, 1, 1) , (1, 2, 3) , (2, 1, 4) , (2, 2, 5) , (3, 1, 7) ,
+                    (3, 2, 8), (3, 3, 0);
+
+DROP TABLE IF EXISTS s_t;
+SELECT matrix_trans('s', 'row=row_id, col=col_id, val=val', 's_t', 'row=row_num, col=col_num, val=val');
+
+DROP TABLE IF EXISTS d;
+SELECT matrix_densify('s', 'row=row_id, col=col_id, val=val', 'd');
+
+DROP TABLE IF EXISTS s;
+SELECT matrix_sparsify('d', 'row=row_id', 's', 'row=row_id, col=col_id, val=val');
+
+DROP TABLE IF EXISTS s2;
+SELECT matrix_mult('s', 'row=row_id, col=col_id, val=val, trans=false',
+                   's_t', 'row=row_num, col=col_num, val=val, trans=false', 's2');
+
+DROP TABLE IF EXISTS dd;
+SELECT matrix_max('d', 'row=row_id', 1, 'dd', true);
+
+DROP TABLE IF EXISTS dd;
+SELECT matrix_min('d', 'row=row_id', 2, 'dd', true);
+
+SELECT matrix_extract_col('d', 'row=row_id', 3);
+SELECT matrix_extract_row('s', 'row=row_id, col=col_id, val=val', 1);
+
+DROP TABLE IF EXISTS d_d;
+SELECT matrix_square('d', 'row=row_id', 'd_d');
+
+DROP TABLE IF EXISTS s3;
+SELECT matrix_add('s', 'row=row_id, col=col_id, val=val',
+                  's', 'row=row_id, col=col_id, val=val',
+                  's3');
+
+DROP TABLE IF EXISTS s3;
+SELECT matrix_sub('s', 'row=row_id, col=col_id, val=val',
+                  's', 'row=row_id, col=col_id, val=val',
+                  's3');
+
+DROP TABLE IF EXISTS s3;
+SELECT matrix_elem_mult('s', 'row=row_id, col=col_id, val=val',
+                        's', 'row=row_id, col=col_id, val=val',
+                        's3');
+
+CREATE TABLE b(
+    row_id INT4,
+    col_id INT4,
+    block INT4[]
+)
+m4_ifdef(`__GREENPLUM__',
+`WITH (APPENDONLY=TRUE) DISTRIBUTED BY (row_id)');
+
+INSERT INTO b VALUES(1, 1, array[[1,2], [3,4]]);
+INSERT INTO b VALUES(2, 1, array[[5,6], [7,8]]);
+INSERT INTO b VALUES(3, 1, array[[9,10]]);
+
+
+SELECT matrix_mem_trans(array[[1,2,3], [4,5,6]]);
+SELECT matrix_mem_mult(array[[1,2,3], [4,5,6]], array[[1,4],[2,5],[3,6]]);
+
+DROP TABLE if exists b_t;
+SELECT matrix_block_trans('b', 'row=row_id, col=col_id, val=block', 'b_t', NULL);
+
+DROP TABLE if exists b2;
+SELECT matrix_block_square('b', 'row=row_id, col=col_id, val=block', 'b2', NULL);
+
+DROP TABLE if exists b2;
+SELECT matrix_block_mult('b', 'row=row_id, col=col_id, val=block',
+                         'b_t', 'row=row_id, col=col_id, val=block',
+                         'b2', NULL);
+
+DROP TABLE if exists d_b;
+SELECT matrix_blockize('d', 'row=row_id', 2, 2, 'd_b');
+
+DROP TABLE if exists d_r;
+SELECT matrix_unblockize('d_b', 'row=row_id', 'd_r', NULL);
+
+
+
+CREATE TABLE random_matrix(row_id INTEGER, row_vec DOUBLE PRECISION[]);
+INSERT INTO random_matrix VALUES
+  (1, array[2, 2, 0]), (2, array[15, 2, 0]), (3, array[0, 5, 2]);
+
+SELECT array_to_1d(__matrix_dense_inverse(3, row_id - 1, row_vec)) as result
+FROM random_matrix;
+
+CREATE TABLE random_sparse_matrix(row_id INTEGER, col_id INTEGER, val DOUBLE PRECISION);
+INSERT INTO random_sparse_matrix VALUES
+  (1, 1, 2), (1, 2, 2), (2, 1, 15), (2, 2, 2), (3, 2, 5), (3, 3, 2);
+SELECT array_to_1d(__matrix_sparse_inverse(3, 3, row_id - 1, col_id - 1, val)) as result
+FROM random_sparse_matrix
