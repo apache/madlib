@@ -234,26 +234,40 @@ INSERT INTO train_new_segmenttbl VALUES
 (30, 7, 'years', 13, 31),
 (31, 7, '.', 44, 31);
 
-CREATE TABLE train_new_regex(pattern text,name text); 
+CREATE TABLE train_new_regex(pattern text,name text);
 INSERT INTO train_new_regex VALUES
-('^[A-Z][a-z]+$','InitCapital'), ('^[A-Z]+$','isAllCapital'),
+        ('^[A-Z][a-z]+$','InitCapital'), ('^[A-Z]+$','isAllCapital'),
         ('^.*[0-9]+.*$','containsDigit'),('^.+[.]$','endsWithDot'),
         ('^.+[,]$','endsWithComma'),     ('^.+er$','endsWithER'),
         ('^.+est$','endsWithEst'),       ('^.+ed$','endsWithED'),
         ('^.+s$','endsWithS'),           ('^.+ing$','endsWithIng'),
         ('^.+ly$','endsWithly'),         ('^.+-.+$','isDashSeparatedWords'),
         ('^.*@.*$','isEmailId');
-        analyze train_new_regex;
+analyze train_new_regex;
 
-        SELECT crf_train_fgen('train_new_segmenttbl', 'train_new_regex', 'crf_label', 'train_new_dictionary', 'train_new_featuretbl','train_new_featureset');
+CREATE TABLE crf_label_new (id integer,label character varying);
+INSERT INTO crf_label_new VALUES
+        (0,'CC'),   (1,'CD'),  (2,'DT'),    (3,'EX'),   (4,'FW'),  (5,'IN'),   (6,'JJ'),  (7,'JJR'), (8,'JJS'),
+        (9,'LS'),   (10,'MD'), (11,'NN'),   (12,'NNS'), (13,'NNP'),(14,'NNPS'),(15,'PDT'),(16,'POS'),(17,'PRP'),
+        (18,'PRP$'),(19,'RB'), (20,'RBR'),  (21,'RBS'), (22,'RP'), (23,'SYM'), (24,'TO'), (25,'UH'), (26,'VB'),
+        (27,'VBD'), (28,'VBG'),(29,'VBN'),  (30,'VBP'), (31,'VBZ'),(32,'WDT'), (33,'WP'), (34,'WP$'),(35,'WRB'),
+        (36,'$'),   (37,'#'),  (38,'''''');
+INSERT INTO crf_label_new VALUES
+        (39,<!'``'!>);
+m4_changequote(,)
+INSERT INTO crf_label_new VALUES
+        (40,'('),  (41,')'),   (42,','),  (43,'.'),  (44,':');
+analyze crf_label_new;
 
-        SELECT lincrf_train('train_new_featuretbl', 'train_new_featureset', 'crf_label', 'train_new_stats', 'train_new_crf_feature', 30);
+SELECT crf_train_fgen('train_new_segmenttbl', 'train_new_regex', 'crf_label_new', 'train_new_dictionary', 'train_new_featuretbl','train_new_featureset');
 
-        -- Expected feature table
-        -- The result is produced from Dr. Sunita's CRF java package with the same input
-        CREATE TABLE expected_crf_feature_new(id integer,name text,prev_label integer,label integer,weight float);
+SELECT lincrf_train('train_new_featuretbl', 'train_new_featureset', 'crf_label_new', 'train_new_stats', 'train_new_crf_feature', 30);
 
-	INSERT INTO expected_crf_feature_new VALUES
+-- Expected feature table
+-- The result is produced from Dr. Sunita's CRF java package with the same input
+CREATE TABLE expected_crf_feature_new(id integer,name text,prev_label integer,label integer,weight float);
+
+INSERT INTO expected_crf_feature_new VALUES
 (0, 'S.', -1, 12, 0.5516753522178934),
 (1, 'W_freight', -1, 12, 5.959241076198326),
 (2, 'E.', 12, 13, 2.0789747316372034),
@@ -545,33 +559,33 @@ INSERT INTO train_new_regex VALUES
 (288, 'E.', 27, 13, 0.6748848167259296),
 (289, 'W_past', -1, 7, 2.852378831268221);
 
-	SELECT assert(
-		SUM(abs(c1.weight-c2.weight)) < 0.1,  
-		'Total difference between extracted feature weights and expected feature weights is > 0.1.') 
-	FROM  expected_crf_feature_new c1, train_new_crf_feature c2
-        WHERE c1.name = c2.name AND c1.prev_label = c2.prev_label_id AND c1.label = c2.label_id;;
+SELECT assert(
+	SUM(abs(c1.weight-c2.weight)) < 0.1,
+	'Total difference between extracted feature weights and expected feature weights is > 0.1.')
+FROM  expected_crf_feature_new c1, train_new_crf_feature c2
+WHERE c1.name = c2.name AND c1.prev_label = c2.prev_label_id AND c1.label = c2.label_id;;
 
-	-- Compare the expected features and the extraction features.  It fails
-	-- if the features do not match.
-	SELECT assert(s1.count+s2.count = 0,  'Features extracted do not match expected features.')
-	FROM (
-		SELECT count(*) FROM(
-			SELECT name, prev_label, label
-			FROM expected_crf_feature_new 
-			EXCEPT ALL
-			SELECT name, prev_label_id, label_id
-			FROM train_new_crf_feature
-		) AS U
-	)s1,
-	(
-		SELECT count(*) FROM(
-			SELECT name, prev_label_id, label_id
-			FROM  train_new_crf_feature
-			EXCEPT ALL
-			SELECT name, prev_label, label
-			FROM expected_crf_feature_new 
-		) AS U
-	)s2;
+-- Compare the expected features and the extraction features.  It fails
+-- if the features do not match.
+SELECT assert(s1.count+s2.count = 0,  'Features extracted do not match expected features.')
+FROM (
+	SELECT count(*) FROM(
+		SELECT name, prev_label, label
+		FROM expected_crf_feature_new
+		EXCEPT ALL
+		SELECT name, prev_label_id, label_id
+		FROM train_new_crf_feature
+	) AS U
+)s1,
+(
+	SELECT count(*) FROM(
+		SELECT name, prev_label_id, label_id
+		FROM  train_new_crf_feature
+		EXCEPT ALL
+		SELECT name, prev_label, label
+		FROM expected_crf_feature_new
+	) AS U
+)s2;
 
 !>)
 m4_changequote(<!`!>,<!'!>)
