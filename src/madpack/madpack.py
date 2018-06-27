@@ -601,6 +601,7 @@ def _db_create_schema(schema, is_schema_in_db, filehandle):
         _write_to_file(filehandle, "CREATE SCHEMA %s;" % schema)
 # ------------------------------------------------------------------------------
 
+
 def _db_create_objects(schema, create_obj_handle,
                        upgrade=False, sc=None, testcase=""):
     """
@@ -813,6 +814,7 @@ def parse_arguments():
     # Get the arguments
     return parser.parse_args()
 
+
 def run_install_check(args, testcase, madpack_cmd):
     is_install_check = True if madpack_cmd == 'install-check' else False
     schema = args['schema']
@@ -861,6 +863,10 @@ def run_install_check(args, testcase, madpack_cmd):
             # Get module name
             module = moduleinfo['name']
 
+            # Skip if doesn't meet specified modules
+            if modset and module not in modset:
+                continue
+
             # Find the SQL module dir (platform specific or generic)
             if os.path.isdir(maddir + "/ports/" + portid + "/modules/" + module):
                 maddir_mod_sql = maddir + "/ports/" + portid + "/modules"
@@ -889,9 +895,10 @@ def run_install_check(args, testcase, madpack_cmd):
             for sqlfile in sorted(glob.glob(sql_files), reverse=True):
                 algoname = os.path.basename(sqlfile).split('.')[0]
                 # run only algo specified
-                if (module in modset and modset[module] and
+                if (modset and modset[module] and
                         algoname not in modset[module]):
                     continue
+
                 # JIRA: MADLIB-1078 fix
                 # Skip pmml during install-check (when run without the -t option).
                 # We can still run install-check on pmml with '-t' option.
@@ -1280,8 +1287,9 @@ def main(argv):
         upgrade = False
         return_val = create_install_madlib_sqlfile(locals(), args.command[0], args.testcase)
         if return_val == 0:
-            op_msg = args.command[0].capitalize()+"ing" if args.command[0] != 'upgrade' \
-                                                        else 'Upgrading'
+            op_msg = (args.command[0].capitalize() + "ing"
+                      if args.command[0] != 'upgrade'
+                      else 'Upgrading')
             info_(this, "%s MADlib:" % op_msg, True)
             _cleanup_comments_in_sqlfile(output_filename, upgrade)
             result = _run_sql_file(schema, output_filename)
@@ -1298,9 +1306,8 @@ def main(argv):
                         info_(this, "> Created %s.MigrationHistory table" % schema, True)
                         info_(this, "> Wrote version info in MigrationHistory table", True)
                         info_(this, "MADlib %s installed successfully in %s schema." % (str(new_madlib_ver), schema))
-                else :
+                else:
                     info_(this, "MADlib %s uninstalled successfully from %s schema." % (str(new_madlib_ver), schema))
-
 
 
 # ------------------------------------------------------------------------------
