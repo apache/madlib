@@ -66,8 +66,8 @@ docker exec madlib bash -c 'rm -rf /build; mkdir /build; cd /build; cmake ../mad
 EOF
 docker exec madlib bash -c 'rm -rf /build; mkdir /build; cd /build; cmake ../madlib; make clean; make; make install; make package' | tee $workdir/logs/madlib_compile.log
 
-echo "---------- Installing and running dev-check --------------------"
-# Install MADlib and run dev check
+echo "---------- Installing and running install-check --------------------"
+# Install MADlib and run install check
 cat <<EOF
 docker exec madlib bash -c '/build/src/bin/madpack -s mad -p postgres -c postgres/postgres@localhost:5432/postgres install' | tee $workdir/logs/madlib_install.log
 EOF
@@ -75,11 +75,11 @@ docker exec madlib bash -c '/build/src/bin/madpack -s mad -p postgres -c postgre
 
 cat <<EOF
 docker exec madlib bash -c 'mkdir /tmp'
-docker exec madlib bash -c '/build/src/bin/madpack -s mad -p postgres  -c postgres/postgres@localhost:5432/postgres -d /tmp dev-check' | tee $workdir/logs/madlib_dev_check.log
+docker exec madlib bash -c '/build/src/bin/madpack -s mad -p postgres  -c postgres/postgres@localhost:5432/postgres -d /tmp install-check' | tee $workdir/logs/madlib_install_check.log
 EOF
 
 docker exec madlib bash -c 'mkdir /tmp'
-docker exec madlib bash -c '/build/src/bin/madpack -s mad -p postgres  -c postgres/postgres@localhost:5432/postgres -d /tmp dev-check' | tee $workdir/logs/madlib_dev_check.log
+docker exec madlib bash -c '/build/src/bin/madpack -s mad -p postgres  -c postgres/postgres@localhost:5432/postgres -d /tmp install-check' | tee $workdir/logs/madlib_install_check.log
 
 echo "--------- Copying packages -----------------"
 echo "docker cp madlib:build $workdir"
@@ -95,8 +95,8 @@ echo "ls -la build"
 ls -la build/
 echo "-------------------------------"
 
-# convert dev-check test results to junit format for reporting
+# convert install-check test results to junit format for reporting
 cat <<EOF
-python ${reponame}/tool/jenkins/junit_export.py $workdir/logs/madlib_dev_check.log $workdir/logs/madlib_dev_check.xml
+python ${reponame}/tool/jenkins/junit_export.py $workdir/logs/madlib_install_check.log $workdir/logs/madlib_install_check.xml
 EOF
-python ${reponame}/tool/jenkins/junit_export.py $workdir $workdir/logs/madlib_dev_check.log $workdir/logs/madlib_dev_check.xml
+python ${reponame}/tool/jenkins/junit_export.py $workdir $workdir/logs/madlib_install_check.log $workdir/logs/madlib_install_check.xml
