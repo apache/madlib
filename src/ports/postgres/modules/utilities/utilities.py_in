@@ -7,6 +7,7 @@ from distutils.util import strtobool
 
 from validate_args import _get_table_schema_names
 from validate_args import get_first_schema
+from validate_args import get_cols
 from validate_args import cols_in_tbl_valid
 from validate_args import does_exclude_reserved
 from validate_args import explicit_bool_to_text
@@ -840,8 +841,8 @@ def get_grouping_col_str(schema_madlib, module_name, reserved_cols,
         cols_in_tbl_valid(source_table, grouping_col_array, module_name)
         does_exclude_reserved(grouping_col_array, reserved_cols)
         grp_array_w_cast = explicit_bool_to_text(source_table,
-                                                grouping_col_array,
-                                                schema_madlib)
+                                                 grouping_col_array,
+                                                 schema_madlib)
         grouping_str = ', '.join(i + "::text" for i in grp_array_w_cast)
     else:
         grouping_str = "Null"
@@ -911,3 +912,29 @@ def validate_module_input_params(source_table, output_table, independent_varname
                                            grouping_cols=grouping_cols,
                                            source_table=source_table))
 # ------------------------------------------------------------------------
+
+
+def create_table_drop_cols(source_table, out_table, cols_to_drop, **kwargs):
+    """ Create copy of table while dropping some of the columns
+    Args:
+        @param source_table str. Name of the source table
+        @param out_table str. Name of the output table
+        @param cols_to_drop str. Comma-separated list of columns to drop
+    """
+    input_tbl_valid(source_table, 'Utilities')
+    output_tbl_valid(out_table, 'Utilities')
+
+    source_table_cols = get_cols(source_table)
+    cols_to_drop_list = split_quoted_delimited_str(cols_to_drop)
+    cols_to_retain = [c for c in source_table_cols
+                      if c not in cols_to_drop_list]
+    _assert(cols_to_retain,
+            "Utilities error: No valid columns in the output table")
+    plpy.execute("""
+        CREATE TABLE {out_table} AS
+        SELECT {cols}
+        FROM {source_table}
+        """.format(cols=', '.join(cols_to_retain),
+                   out_table=out_table,
+                   source_table=source_table))
+# ------------------------------------------------------------------------------
