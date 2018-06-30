@@ -91,7 +91,8 @@ mlp_igd_transition::run(AnyType &args) {
             // args[8] is for weighting the input row, which is populated later.
             state.task.lambda = args[10].getAs<double>();
             MLPTask::lambda = state.task.lambda;
-
+            state.task.model.momentum = args[11].getAs<double>();
+            state.task.model.is_nesterov = static_cast<double>(args[12].getAs<bool>());
             if (!args[9].isNull()){
                 // initial coefficients are provided
                 MappedColumnVector warm_start_coeff = args[9].getAs<MappedColumnVector>();
@@ -119,21 +120,15 @@ mlp_igd_transition::run(AnyType &args) {
         state.reset();
     }
 
-    // tuple
-    ColumnVector indVar;
-    MappedColumnVector depVar;
+    MLPTuple tuple;
     try {
-        indVar = args[1].getAs<MappedColumnVector>();
-        MappedColumnVector y = args[2].getAs<MappedColumnVector>();
-        depVar.rebind(y.memoryHandle(), y.size());
+        tuple.indVar = args[1].getAs<MappedColumnVector>();;
+        tuple.depVar = args[2].getAs<MappedColumnVector>();
     } catch (const ArrayWithNullException &e) {
         return args[0];
     }
-    MLPTuple tuple;
-    tuple.indVar = indVar;
-    tuple.depVar.rebind(depVar.memoryHandle(), depVar.size());
-    tuple.weight = args[8].getAs<double>();
 
+    tuple.weight = args[8].getAs<double>();
     MLPIGDAlgorithm::transition(state, tuple);
     // Use the model from the previous iteration to compute the loss (note that
     // it is stored in Task's state, and the Algo's state holds the model from
@@ -211,6 +206,8 @@ mlp_minibatch_transition::run(AnyType &args) {
             state.model.activation = static_cast<double>(args[6].getAs<int>());
             state.model.is_classification = static_cast<double>(args[7].getAs<int>());
             // args[8] is for weighting the input row, which is populated later.
+            state.model.momentum = args[13].getAs<double>();
+            state.model.is_nesterov = static_cast<double>(args[14].getAs<bool>());
             if (!args[9].isNull()){
                 // initial coefficients are provided copy warm start into the model
                 MappedColumnVector warm_start_coeff = args[9].getAs<MappedColumnVector>();
@@ -240,23 +237,19 @@ mlp_minibatch_transition::run(AnyType &args) {
         state.reset();
     }
 
-    // tuple
-    Matrix indVar;
-    Matrix depVar;
+    MiniBatchTuple tuple;
     try {
         // Ideally there should be no NULLs in the pre-processed input data,
         // but keep it in a try block in case the user has modified the
         // pre-processed data in any way.
-        indVar = args[1].getAs<MappedMatrix>();
-        depVar = args[2].getAs<MappedMatrix>();
+        // The matrices are by default read as column-major. We will have to
+        // transpose it to get back the matrix like how it is in the database.
+        tuple.indVar = trans(args[1].getAs<MappedMatrix>());
+        tuple.depVar = trans(args[2].getAs<MappedMatrix>());
     } catch (const ArrayWithNullException &e) {
         return args[0];
     }
-    MiniBatchTuple tuple;
-    // The matrices are by default read as column-major. We will have to
-    // transpose it to get back the matrix like how it is in the database.
-    tuple.indVar = trans(indVar);
-    tuple.depVar = trans(depVar);
+
     tuple.weight = args[8].getAs<double>();
 
     /*
@@ -339,7 +332,7 @@ internal_mlp_igd_result::run(AnyType &args) {
     HandleTraits<ArrayHandle<double> >::ColumnVectorTransparentHandleMap
         flattenU;
     flattenU.rebind(&state.task.model.u[0](0, 0),
-                    state.task.model.arraySize(state.task.numberOfStages,
+                    state.task.model.coeffArraySize(state.task.numberOfStages,
                                                state.task.numbersOfUnits));
     AnyType tuple;
     tuple << flattenU
@@ -355,7 +348,7 @@ internal_mlp_minibatch_result::run(AnyType &args) {
     MLPMiniBatchState<ArrayHandle<double> > state = args[0];
     HandleTraits<ArrayHandle<double> >::ColumnVectorTransparentHandleMap flattenU;
     flattenU.rebind(&state.model.u[0](0, 0),
-                    state.model.arraySize(state.numberOfStages,
+                    state.model.coeffArraySize(state.numberOfStages,
                                           state.numbersOfUnits));
     AnyType tuple;
     tuple << flattenU
@@ -379,7 +372,12 @@ internal_predict_mlp::run(AnyType &args) {
     int is_dep_var_array_for_classification = args[8].getAs<int>();
     bool is_classification_response = is_classification && is_response;
 
-    model.rebind(&is_classification, &activation, &coeff.data()[0],
+    // The model rebind function is called by both predict and train functions.
+    // Since we have to use the same function, we are passing a dummy value for
+    // activation, momentum and nesterov because predict does not care
+    // about the actual values for these params.
+    const double dummy_value = static_cast<double>(-1);
+    model.rebind(&is_classification, &activation, &dummy_value, &dummy_value, &coeff.data()[0],
                  numberOfStages, &layerSizes.data()[0]);
     try {
         indVar = (args[1].getAs<MappedColumnVector>()-x_means).cwiseQuotient(x_stds);

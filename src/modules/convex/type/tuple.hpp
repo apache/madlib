@@ -64,7 +64,7 @@ typedef ExampleTuple<MappedColumnVector, double> GLMTuple;
 // madlib::modules::convex::MatrixIndex
 typedef ExampleTuple<MatrixIndex, double> LMFTuple;
 
-typedef ExampleTuple<ColumnVector, MappedColumnVector> MLPTuple;
+typedef ExampleTuple<ColumnVector, ColumnVector> MLPTuple;
 typedef ExampleTuple<Matrix, Matrix> MiniBatchTuple;
 
 } // namespace convex
