@@ -972,7 +972,8 @@ def run_install_check(args, testcase, madpack_cmd):
 def _append_uninstall_madlib_sqlfile(schema, db_madlib_ver, is_schema_in_db,
                                      output_filehandle):
     if get_rev_num(db_madlib_ver) == [0]:
-        info_(this, "Nothing to uninstall. No version found in schema %s." % schema, True)
+        info_(this, "Nothing to uninstall or reinstall. No version found in schema %s."
+            % schema, True)
         return 1, is_schema_in_db
 
     # Find any potential data to lose
@@ -1074,6 +1075,8 @@ def create_install_madlib_sqlfile(args, madpack_cmd, testcase):
         if madpack_cmd in ('uninstall', 'reinstall'):
             return_signal, is_schema_in_db = _append_uninstall_madlib_sqlfile(
                 schema, db_madlib_ver, is_schema_in_db, output_filehandle)
+            if return_signal == 1:
+                return 1
 
         # COMMAND: install/reinstall
         if madpack_cmd in ('install', 'reinstall'):
