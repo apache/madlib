@@ -1,0 +1,173 @@
+# coding=utf-8
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+import sys
+from os import path
+
+sys.path.append(path.dirname(path.dirname(path.dirname(path.abspath(__file__)))))
+sys.path.append(path.dirname(path.dirname(path.dirname(path.dirname(path.abspath(__file__))))))
+
+import unittest
+from mock import *
+import plpy_mock as plpy
+
+m4_changequote(` <!', `!>')
+
+
+class GetVarImportanceTestCase(unittest.TestCase):
+    def setUp(self):
+        self.plpy_mock = Mock(spec='error')
+        patches = {
+            'plpy': plpy,
+            'validation.cv_utils': Mock(),
+            'validation.cross_validation': Mock()
+        }
+        # we need to use MagicMock() instead of Mock() for the plpy.execute mock
+        # to be able to iterate on the return value
+        self.plpy_mock_execute = MagicMock()
+        plpy.execute = self.plpy_mock_execute
+
+        self.module_patcher = patch.dict('sys.modules', patches)
+        self.module_patcher.start()
+
+        self.default_schema_madlib = "madlib"
+        self.default_model_table = "model"
+        self.default_summary_table = "model_summary"
+        self.default_group_table = "model_group"
+        self.default_output_table = "output"
+
+        import recursive_partitioning.random_forest
+        self.module = recursive_partitioning.random_forest
+        self.module.table_exists = Mock(return_value=True)
+        self.module.columns_exist_in_table = Mock(return_value=True)
+
+    def tearDown(self):
+        self.module_patcher.stop()
+
+    def test_validate_var_importance_input(self):
+        tbl_exists_mock = Mock()
+        tbl_exists_mock.side_effect = [False]
+        self.module.table_exists = tbl_exists_mock
+        # Test for model table does not exist
+        with self.assertRaises(plpy.PLPYException):
+            validate_result = self.module._validate_var_importance_input(
+                self.default_model_table,
+                self.default_summary_table,
+                self.default_output_table)
+
+        # Test for model summary table does not exist
+        tbl_exists_mock.side_effect = [True, False]
+        with self.assertRaises(plpy.PLPYException):
+            validate_result = self.module._validate_var_importance_input(
+                self.default_model_table,
+                self.default_summary_table,
+                self.default_output_table)
+
+        # Test for output table already exists
+        tbl_exists_mock.side_effect = [True, True, True]
+        with self.assertRaises(plpy.PLPYException):
+            validate_result = self.module._validate_var_importance_input(
+                self.default_model_table,
+                self.default_summary_table,
+                self.default_output_table)
+
+        # Test to make sure the summary table is postfixed with "_summary"
+        tbl_exists_mock = Mock()
+        self.module.table_exists = tbl_exists_mock
+        tbl_exists_mock.side_effect = [True, True, False]
+        validate_result = self.module._validate_var_importance_input(
+            self.default_model_table,
+            "wrong_table_name",
+            self.default_output_table)
+        with self.assertRaises(AssertionError):
+            tbl_exists_mock.assert_any_call("model_summary")
+
+        # Positive test case, there should be no error
+        tbl_exists_mock.side_effect = [True, True, False]
+        validate_result = self.module._validate_var_importance_input(
+            self.default_model_table,
+            self.default_summary_table,
+            self.default_output_table)
+        tbl_exists_mock.assert_any_call("model_summary")
+
+    def test_get_var_importance_DT(self):
+        columns_exist_in_table_mock = Mock()
+        _validate_var_importance_input_mock = Mock()
+        self.module.columns_exist_in_table = columns_exist_in_table_mock
+        _is_model_for_RF_mock = Mock()
+        self.module._is_random_forest_model = _is_model_for_RF_mock
+        self.module._validate_var_importance_input = _validate_var_importance_input_mock
+
+        # Test for impurity_var_importance column absent in model_table
+        _is_model_for_RF_mock.side_effect = [False]
+        columns_exist_in_table_mock.side_effect = [False]
+        with self.assertRaises(plpy.PLPYException):
+            validate_result = self.module.get_var_importance(
+                self.default_schema_madlib,
+                self.default_model_table,
+                self.default_output_table)
+
+        # Positive test case, there should be no error
+        _is_model_for_RF_mock.side_effect = [False]
+        columns_exist_in_table_mock.side_effect = [True]
+        validate_result = self.module.get_var_importance(
+            self.default_schema_madlib,
+            self.default_model_table,
+            self.default_output_table)
+
+    def test_is_RF_model_with_imp_pre_1_15(self):
+        tbl_exists_mock = Mock()
+        tbl_exists_mock.side_effect = [False]
+        self.module.table_exists = tbl_exists_mock
+
+        # Test for group table not existing
+        with self.assertRaises(plpy.PLPYException):
+            validate_result = self.module._is_impurity_importance_in_model(
+                self.default_group_table, self.default_summary_table)
+
+        # Check if error is raised if random forest was run with importance = False
+        tbl_exists_mock.side_effect = [True]
+        self.plpy_mock_execute.return_value = [{'importance': False}]
+        with self.assertRaises(plpy.PLPYException):
+            validate_result = self.module._is_impurity_importance_in_model(
+                self.default_group_table,
+                self.default_summary_table,
+                is_RF=True)
+
+        # Assert RF model is < 1.15
+        columns_exist_in_table_mock = Mock()
+        self.module.columns_exist_in_table = columns_exist_in_table_mock
+        tbl_exists_mock.side_effect = [True]
+        self.plpy_mock_execute.return_value = [{'importance': True}]
+        columns_exist_in_table_mock.side_effect = [True]
+        validate_result = self.module._is_impurity_importance_in_model(
+            self.default_group_table, self.default_summary_table)
+        self.assertTrue(validate_result)
+
+        # Assert RF model is >= 1.15
+        tbl_exists_mock.side_effect = [True]
+        self.plpy_mock_execute.return_value = [{'importance': True}]
+        columns_exist_in_table_mock.side_effect = [False]
+        validate_result = self.module._is_impurity_importance_in_model(
+            self.default_group_table, self.default_summary_table)
+        self.assertFalse(validate_result)
+
+
+if __name__ == '__main__':
+    unittest.main()

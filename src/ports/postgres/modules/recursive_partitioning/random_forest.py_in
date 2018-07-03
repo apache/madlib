@@ -24,10 +24,14 @@ from utilities.utilities import split_quoted_delimited_str
 from utilities.utilities import unique_string
 
 from utilities.validate_args import cols_in_tbl_valid
+from utilities.validate_args import cols_in_tbl_valid
+from utilities.validate_args import columns_exist_in_table
+from utilities.validate_args import get_cols_and_types
 from utilities.validate_args import get_expr_type
 from utilities.validate_args import input_tbl_valid
 from utilities.validate_args import is_var_valid
 from utilities.validate_args import output_tbl_valid
+from utilities.validate_args import table_exists
 
 from decision_tree import _tree_train_using_bins
 from decision_tree import _tree_train_grps_using_bins
@@ -1491,15 +1495,136 @@ def _validate_predict(model, source, output, pred_type):
 
     _assert(pred_type in ('response', 'prob'),
             "Random forest error: pred_type should be 'response' or 'prob'")
-# ------------------------------------------------------------
+# ------------------------------------------------------------------------------
+
+
+# ------------------------------------------------------------------------------
+# -- 'get_var_importance' related code below -----------------------------------
+# -- This applies to RF and DT -------------------------------------------------
+# ------------------------------------------------------------------------------
 
 
 def _validate_get_tree(model, gid, sample_id):
     """Validations for input arguments"""
     input_tbl_valid(model, 'Random forest')
     cols_in_tbl_valid(model, ['gid', 'sample_id', 'tree'], 'Random forest')
+# ------------------------------------------------------------------------------
 
-# ------------------------------------------------------------
+
+def _validate_var_importance_input(model_table, summary_table, output_table):
+    _assert(table_exists(model_table),
+            "Recursive Partitioning: Model table does not exist.")
+    _assert(table_exists(summary_table),
+            "Recursive Partitioning: Model summary table does not exist.")
+    _assert(not table_exists(output_table),
+            "Recursive Partitioning: Output table already exists.")
+# ------------------------------------------------------------------------------
+
+
+def _is_random_forest_model(summary_table):
+    method_name = plpy.execute("SELECT method FROM " + summary_table)[0]['method']
+    return method_name == 'forest_train'
+# ------------------------------------------------------------------------------
+
+
+def _is_impurity_importance_in_model(output_table, summary_table, is_RF=False):
+    """ Check if the model has a column named impurity_var_importance
+    """
+    error_header = "Random forest" if is_RF else "Decision tree"
+    _assert(table_exists(output_table),
+            "{0}: Model table ({1}) does not exist.".
+            format(error_header, output_table))
+
+    if is_RF:
+        # importance = True indicates that importance scores were calculated
+        is_importance_set = plpy.execute("SELECT importance FROM {summary_table}".
+                                         format(**locals()))[0]['importance']
+        _assert(is_importance_set,
+                "{0}: The model does not have importance information.".
+                format(error_header))
+    return columns_exist_in_table(output_table, ['impurity_var_importance'])
+# ------------------------------------------------------------------------------
+
+
+@MinWarning("error")
+def get_var_importance(schema_madlib, model_table, output_table, **kwargs):
+    """ Create table capturing importance scores for each feature.
+        For DT, this function will record the impurity importance score if it exists.
+        For RF, this function will record the oob variable importance and impurity
+        importance (if available) for each variable.
+
+        Args:
+            @param schema_madlib: str, MADlib schema name
+            @param model_table: str, Model table name
+            @param output_table: str, Output table name
+
+    """
+    # Validate parameters
+    summary_table = add_postfix(model_table, "_summary")
+    _validate_var_importance_input(model_table,
+                                   summary_table,
+                                   output_table)
+    is_RF = _is_random_forest_model(summary_table)
+
+    # 'importance_model_table' is the table containing variable importance values.
+    # For RF, it is placed in <model_table>_group as opposed to <model_table>
+    # for DT.
+    importance_model_table = (model_table if not is_RF else
+                              add_postfix(model_table, "_group"))
+    grouping_cols = plpy.execute("SELECT grouping_cols FROM {summary_table}".
+                                 format(**locals()))[0]['grouping_cols']
+    if grouping_cols:
+        grouping_cols_comma = add_postfix(grouping_cols, ", ")
+    else:
+        grouping_cols_comma = ''
+    is_impurity_imp_col_present = _is_impurity_importance_in_model(
+        importance_model_table, summary_table, is_RF=is_RF)
+
+    # convert importance to percentages
+    normalization_target = 100.0
+
+    def _unnest_normalize(input_array_str):
+        return ("""
+            unnest({0}.normalize_sum_array({1}::double precision[],
+                                           {2}::double precision))
+            """.format(schema_madlib, input_array_str, normalization_target))
+
+    if is_RF:
+        if is_impurity_imp_col_present:
+            # In versions >= 1.15, the OOB variable importance is captured
+            # in a single column: 'oob_var_importance'.
+            oob_var_importance_str = (
+                "{0} AS oob_var_importance,".
+                format(_unnest_normalize('oob_var_importance')))
+            impurity_var_importance_str = (
+                "{0} AS impurity_var_importance".
+                format(_unnest_normalize('impurity_var_importance')))
+        else:
+            # In versions < 1.15, the OOB variable importance was captured in
+            # two different columns: 'cat_var_importance' and 'con_var_importance'
+            oob_var_importance_str = (
+                "{0} AS oob_var_importance".
+                format(_unnest_normalize(
+                    "array_cat(cat_var_importance, con_var_importance")))
+            impurity_var_importance_str = ''
+    else:
+        # Decision tree models don't have a OOB variable importance
+        _assert(is_impurity_imp_col_present,
+                "Decision tree: Impurity importance not present in output table")
+        oob_var_importance_str = ''
+        impurity_var_importance_str = (
+            "{0} AS impurity_var_importance".
+            format(_unnest_normalize('impurity_var_importance')))
+
+    plpy.execute("""
+        CREATE TABLE {output_table} AS
+            SELECT {grouping_cols_comma}
+                unnest(regexp_split_to_array(independent_varnames, ',')) AS feature,
+                {oob_var_importance_str}
+                {impurity_var_importance_str}
+            FROM {importance_model_table}, {summary_table}
+        """.format(**locals()))
+# ------------------------------------------------------------------------------
 
 
 def forest_predict_help_message(schema_madlib, message, **kwargs):
@@ -1573,3 +1698,61 @@ SELECT {schema_madlib}.forest_predict(
         help_string = "No such option. Use {schema_madlib}.forest_predict('usage')"
 
     return help_string.format(schema_madlib=schema_madlib)
+
+
+def _importance_help_message(schema_madlib, message, **kwargs):
+    """ Help message for Decision Tree get_var_importance
+    """
+    if not message:
+        help_string = """
+------------------------------------------------------------
+                        SUMMARY
+------------------------------------------------------------
+Functionality: Decision Tree/Random Forest Importance Values Display
+
+Create a table to record the importance values for a decision
+tree (trained using {schema_madlib}.tree_train) or a random
+forest (trained using {schema_madlib}.forest_train).
+
+For more details on the function usage:
+    SELECT {schema_madlib}.get_var_importance('usage');
+For an example on using this function:
+    SELECT {schema_madlib}.get_var_importance('example');
+        """
+    elif message.lower().strip() in ['usage', 'help', '?']:
+        help_string = """
+------------------------------------------------------------
+                        USAGE
+------------------------------------------------------------
+SELECT {schema_madlib}.get_var_importance(
+    'model_table',  -- Model table name (output of tree_train/forest_train)
+    'output_table', -- Table name to store the predictions
+);
+
+------------------------------------------------------------
+                        OUTPUT
+------------------------------------------------------------
+The output table ('output_table' above) has three columns.
+    'feature' : The name of the feature
+    'impurity_var_importance' : Impurity importance score for
+    the variable. This column will not be available in random
+    forest models unless the importance parameter is set to True
+    during training.
+    'oob_var_importance' : Out-of-bag variable importance score
+    for the variable. This column will not be available for
+    decision tree models.
+        """
+    elif message.lower().strip() in ['example', 'examples']:
+        help_string = """
+------------------------------------------------------------
+                        EXAMPLE
+------------------------------------------------------------
+-- Assuming the example of tree_train() or forest_train()
+has been run
+SELECT {schema_madlib}.get_var_importance('train_output','imp_output');
+SELECT * FROM imp_output;
+        """
+    else:
+        help_string = "No such option. Use {schema_madlib}.get_var_importance('usage')"
+    return help_string.format(schema_madlib=schema_madlib)
+# ------------------------------------------------------------

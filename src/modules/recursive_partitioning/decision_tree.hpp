@@ -14,7 +14,7 @@ DECLARE_UDF(recursive_partitioning, compute_surr_stats_transition)
 DECLARE_UDF(recursive_partitioning, dt_surr_apply)
 
 DECLARE_UDF(recursive_partitioning, print_decision_tree)
-DECLARE_UDF(recursive_partitioning, get_variable_importance)
+DECLARE_UDF(recursive_partitioning, compute_variable_importance)
 DECLARE_UDF(recursive_partitioning, predict_dt_response)
 DECLARE_UDF(recursive_partitioning, predict_dt_prob)
 

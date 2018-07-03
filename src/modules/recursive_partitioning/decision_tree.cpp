@@ -488,7 +488,7 @@ print_decision_tree::run(AnyType &args){
 }
 
 AnyType
-get_variable_importance::run(AnyType &args){
+compute_variable_importance::run(AnyType &args){
     Tree dt = args[0].getAs<ByteString>();
     const int n_cat_features = args[1].getAs<int>();
     const int n_con_features = args[2].getAs<int>();
@@ -497,18 +497,11 @@ get_variable_importance::run(AnyType &args){
     ColumnVector con_var_importance = ColumnVector::Zero(n_con_features);
     dt.computeVariableImportance(cat_var_importance, con_var_importance);
 
-    // Variable importance is scaled to represent a percentage. Even though
-    // the importance values are split between categorical and continuous, the
-    // percentages are relative to the combined set.
    ColumnVector combined_var_imp(n_cat_features + n_con_features);
    combined_var_imp << cat_var_importance, con_var_importance;
-
-    // Avoid divide by zero by adding a small number
-    double total_var_imp = combined_var_imp.sum();
-    double VAR_IMP_EPSILON = 1e-6;
-    combined_var_imp *=  (100.0 / (total_var_imp + VAR_IMP_EPSILON));
     return combined_var_imp;
 }
+
 
 AnyType
 display_text_tree::run(AnyType &args){

@@ -204,6 +204,21 @@ rf_con_imp_score::run(AnyType &args) {
 // ------------------------------------------------------------
 
 
+AnyType
+normalize_sum_array::run(AnyType &args){
+    const MappedColumnVector input_vector = args[0].getAs<MappedColumnVector>();
+    const double sum_target = args[1].getAs<double>();
+
+    double sum_input_vector = input_vector.sum();
+    // Avoid divide by zero by dividing by a small number if sum is small
+    double VAR_IMP_EPSILON = 1e-6;
+    if (sum_input_vector < VAR_IMP_EPSILON)
+        sum_input_vector = VAR_IMP_EPSILON;
+    ColumnVector output_vector = input_vector * sum_target / sum_input_vector;
+    return output_vector;
+}
+
+
 } // namespace recursive_partitioning
 } // namespace modules
 } // namespace madlib
