@@ -1,9 +1,7 @@
 """
-@file array_utils.py_in
+@file cols2vec.py_in
 
-@brief Utility to convery Columns to array
-
-@namespace ArrayUtils
+@brief Utility to convert Columns to array
 
 """
 
@@ -15,6 +13,7 @@ from utilities.validate_args import columns_exist_in_table
 from utilities.validate_args import is_var_valid
 from utilities.validate_args import get_cols
 from utilities.validate_args import quote_ident
+from utilities.utilities import py_list_to_sql_string
 
 
 m4_changequote(`<!', `!>')
@@ -30,9 +29,11 @@ def validate_cols2vec_args(source_table, output_table,
             plpy.error("Features to include is empty")
 
     if list_of_features.strip() != '*':
-        if not is_var_valid(source_table, list_of_features):
-            plpy.error("Invalid feature list ({0})".
-                       format(list_of_features))
+        if not columns_exist_in_table(
+                source_table, split_quoted_delimited_str(list_of_features)):
+            plpy.error(
+                "Invalid columns to list_of_features ({0})".format(list_of_features))
+
     if cols_to_output and cols_to_output.strip() != '*':
         if not columns_exist_in_table(
                 source_table, _string_to_array(cols_to_output)):
@@ -64,47 +65,46 @@ def cols2vec(schema_madlib, source_table, output_table, list_of_features,
     """
 
     with MinWarning('warning'):
-
         validate_cols2vec_args(source_table, output_table, list_of_features,
                                list_of_features_to_exclude, cols_to_output, **kwargs)
 
-        filtered_list_of_features = ''
+        all_cols = ''
+        feature_cols = ''
         if list_of_features.strip() == '*':
-            all_col_set = set(list(get_cols(source_table, schema_madlib)))
+            all_cols = get_cols(source_table, schema_madlib)
+            all_col_set = set(list(all_cols))
             exclude_set = set(split_quoted_delimited_str(
                 list_of_features_to_exclude))
             feature_set = all_col_set - exclude_set
+            feature_cols = py_list_to_sql_string(
+                list(feature_set), "text", False)
             filtered_list_of_features = ",".join(
                 feat for feat in list(feature_set))
         else:
-            list_of_features = split_quoted_delimited_str(list_of_features)
+            feature_list = split_quoted_delimited_str(list_of_features)
             feature_exclude = split_quoted_delimited_str(
                 list_of_features_to_exclude)
-            return_set = set(list_of_features) - set(feature_exclude)
+            return_set = set(feature_list) - set(feature_exclude)
+            feature_cols = py_list_to_sql_string(
+                list(return_set), "text", False)
             filtered_list_of_features = ",".join(
-                feat for feat in list_of_features if feat in return_set)
+                feat for feat in feature_list if feat in return_set)
 
         output_cols = ''
         if cols_to_output:
             output_cols_list = [', '.join(get_cols(source_table, schema_madlib)) if col == '*' else col
                                 for col in split_quoted_delimited_str(cols_to_output)]
             output_cols = ', '.join(output_cols_list) + ","
-        # if cols_to_output and cols_to_output != '*':
-        #    output_cols_list = split_quoted_delimited_str(cols_to_output)
-        #    output_cols = ",".join(quote_ident(col) for col in output_cols_list)
-        #    output_cols = output_cols + " ,"
 
         plpy.execute("""
     		CREATE TABLE {output_table} AS
     		select {output_cols}
-    		array[{filtered_list_of_features}] as feature_vector
+            array[{filtered_list_of_features}] as feature_vector
     		from {source_table}
     		""".format(**locals()))
 
         plpy.execute("""
-        	CREATE TABLE {output_table}_summary AS
-        	SELECT regexp_split_to_array($${filtered_list_of_features}$$,',')
-        	AS feature_names from  {source_table}
-        	""".format( **locals()))
-
+            CREATE TABLE {output_table}_summary AS
+            SELECT {feature_cols} as feature_names from {source_table} limit 1
+            """.format( **locals()))
         return
