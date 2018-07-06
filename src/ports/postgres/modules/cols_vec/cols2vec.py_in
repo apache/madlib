@@ -9,6 +9,7 @@ import plpy
 from utilities.control import MinWarning
 from utilities.utilities import split_quoted_delimited_str
 from utilities.utilities import _string_to_array
+from utilities.utilities import _assert
 from utilities.validate_args import columns_exist_in_table
 from utilities.validate_args import is_var_valid
 from utilities.validate_args import get_cols
@@ -27,18 +28,16 @@ def validate_cols2vec_args(source_table, output_table,
     if list_of_features.strip() != '*':
         if not (list_of_features and list_of_features.strip()):
             plpy.error("Features to include is empty")
-
-    if list_of_features.strip() != '*':
-        if not columns_exist_in_table(
-                source_table, split_quoted_delimited_str(list_of_features)):
-            plpy.error(
-                "Invalid columns to list_of_features ({0})".format(list_of_features))
+        _assert(
+            columns_exist_in_table(
+                source_table, split_quoted_delimited_str(list_of_features)),
+            "Invalid columns to list of features {0}".format(list_of_features))
 
     if cols_to_output and cols_to_output.strip() != '*':
-        if not columns_exist_in_table(
-                source_table, _string_to_array(cols_to_output)):
-            plpy.error("Invalid columns to output list ({0})".
-                       format(cols_to_output))
+        _assert(
+            columns_exist_in_table(
+                source_table, _string_to_array(cols_to_output)),
+            "Invalid columns to output list {0}".format(cols_to_output))
 
 
 def cols2vec(schema_madlib, source_table, output_table, list_of_features,
@@ -70,25 +69,20 @@ def cols2vec(schema_madlib, source_table, output_table, list_of_features,
 
         all_cols = ''
         feature_cols = ''
+        feature_list = ''
         if list_of_features.strip() == '*':
             all_cols = get_cols(source_table, schema_madlib)
             all_col_set = set(list(all_cols))
             exclude_set = set(split_quoted_delimited_str(
                 list_of_features_to_exclude))
-            feature_set = all_col_set - exclude_set
-            feature_cols = py_list_to_sql_string(
-                list(feature_set), "text", False)
-            filtered_list_of_features = ",".join(
-                feat for feat in list(feature_set))
+            feature_list = list(all_col_set - exclude_set)
         else:
             feature_list = split_quoted_delimited_str(list_of_features)
-            feature_exclude = split_quoted_delimited_str(
-                list_of_features_to_exclude)
-            return_set = set(feature_list) - set(feature_exclude)
-            feature_cols = py_list_to_sql_string(
-                list(return_set), "text", False)
-            filtered_list_of_features = ",".join(
-                feat for feat in feature_list if feat in return_set)
+
+        feature_cols = py_list_to_sql_string(
+            list(feature_list), "text", False)
+        filtered_list_of_features = ",".join(
+            feat for feat in feature_list)
 
         output_cols = ''
         if cols_to_output:
