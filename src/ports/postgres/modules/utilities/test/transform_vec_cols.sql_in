@@ -1,0 +1,414 @@
+/* ----------------------------------------------------------------------- *//**
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ *
+ *//* ----------------------------------------------------------------------- */
+
+-----------------------------------------------------------------------
+-- vec2cols
+-----------------------------------------------------------------------
+
+-- Create testing dataset
+
+DROP TABLE IF EXISTS dt_golf CASCADE;
+CREATE TABLE dt_golf (
+    id integer NOT NULL,
+    "OUTLOOK" text,
+    temperature double precision,
+    humidity double precision,
+    "Temp_Humidity" double precision[],
+    clouds_airquality text[],
+    windy boolean,
+    class text,
+    observation_weight double precision
+);
+INSERT INTO dt_golf VALUES
+(1,'sunny', 85, 85, ARRAY[85, 85],ARRAY['none', 'unhealthy'], 'false','Don''t Play', 5.0),
+(2, 'sunny', 80, 90, ARRAY[80, 90], ARRAY['none', 'moderate'], 'true', 'Don''t Play', 5.0),
+(3, 'overcast', 83, 78, ARRAY[83, 78], ARRAY['low', 'moderate'], 'false', 'Play', 1.5),
+(4, 'rain', 70, 96, ARRAY[70, 96], ARRAY['low', 'moderate'], 'false', 'Play', 1.0),
+(5, 'rain', 68, 80, ARRAY[68, 80], ARRAY['medium', 'good'], 'false', 'Play', 1.0),
+(6, 'rain', 65, 70, ARRAY[65, 70], ARRAY['low', 'unhealthy'], 'true', 'Don''t Play', 1.0),
+(7, 'overcast', 64, 65, ARRAY[64, 65], ARRAY['medium', 'moderate'], 'true', 'Play', 1.5),
+(8, 'sunny', 72, 95, ARRAY[72, 95], ARRAY['high', 'unhealthy'], 'false', 'Don''t Play', 5.0),
+(9, 'sunny', 69, 70, ARRAY[69, 70], ARRAY['high', 'good'], 'false', 'Play', 5.0),
+(10, 'rain', 75, 80, ARRAY[75, 80], ARRAY['medium', 'good'], 'false', 'Play', 1.0),
+(11, 'sunny', 75, 70, ARRAY[75, 70], ARRAY['none', 'good'], 'true', 'Play', 5.0),
+(12, 'overcast', 72, 90, ARRAY[72, 90], ARRAY['medium', 'moderate'], 'true', 'Play', 1.5),
+(13, 'overcast', 81, 75, ARRAY[81, 75], ARRAY['medium', 'moderate'], 'false', 'Play', 1.5),
+(14, 'rain', 71, 80, ARRAY[71, 80], ARRAY['low', 'unhealthy'], 'true', 'Don''t Play', 1.0);
+
+-- Call the vec2cols function with different parameters on the 'clouds_airquality' column, to split it up
+
+DROP TABLE IF EXISTS out_table;
+SELECT vec2cols(
+    'dt_golf',
+    'out_table',
+    'clouds_airquality'
+);
+
+SELECT f1 from out_table;
+SELECT assert ((SELECT count(*) FROM information_schema.columns WHERE table_name='out_table') = 2, 'Number of split columns does not match');
+
+DROP TABLE IF EXISTS out_table;
+SELECT vec2cols(
+    'dt_golf',
+    'out_table',
+    'clouds_airquality',
+    NULL,
+    'id'
+);
+
+SELECT f1 from out_table;
+SELECT assert ((SELECT count(*) FROM information_schema.columns WHERE table_name='out_table') = 3, 'Number of split columns does not match');
+SELECT assert ((SELECT clouds_airquality[1] FROM dt_golf WHERE id = 1) = (SELECT f1 FROM out_table WHERE id = 1), 'Split values do not match up');
+SELECT assert ((SELECT clouds_airquality[2] FROM dt_golf WHERE id = 1) = (SELECT f2 FROM out_table WHERE id = 1), 'Split values do not match up');
+
+DROP TABLE IF EXISTS out_table;
+SELECT vec2cols(
+    'dt_golf',
+    'out_table',
+    'clouds_airquality',
+    ARRAY['clouds', 'air_quality']
+);
+
+SELECT clouds from out_table;
+SELECT assert ((SELECT count(*) FROM information_schema.columns WHERE table_name='out_table') = 2, 'Number of split columns does not match');
+
+DROP TABLE IF EXISTS out_table;
+SELECT vec2cols(
+    'dt_golf',
+    'out_table',
+    'clouds_airquality',
+    ARRAY['clouds', 'air_quality'],
+    '"OUTLOOK", id'
+);
+
+SELECT clouds from out_table;
+SELECT assert ((SELECT count(*) FROM information_schema.columns WHERE table_name='out_table') = 4, 'Number of split columns does not match');
+SELECT assert ((SELECT clouds_airquality[1] FROM dt_golf WHERE id = 1) = (SELECT clouds FROM out_table WHERE id = 1), 'Split values do not match up');
+SELECT assert ((SELECT clouds_airquality[2] FROM dt_golf WHERE id = 1) = (SELECT air_quality FROM out_table WHERE id = 1), 'Split values do not match up');
+
+-- Special character tests
+
+DROP TABLE IF EXISTS special_char_check;
+CREATE TABLE special_char_check(
+    "id" INTEGER,
+    "se$$,''x" TEXT,
+    "len$,,$'%*()gth" TEXT[],
+    "rin,$$Ж!#'gs" INTEGER,
+    ",hel~!@#$%^&*()_+{}|:""<>?`-=[]\;',./'," TEXT,
+    "$$hi//\\*$$" INTEGER,
+    "**" INTEGER,
+    "'~d())" TEXT);
+
+INSERT INTO special_char_check VALUES
+(1,'M''M',ARRAY['sd''f', 'ab,,c'],6,'sd''f',1,2,'ab,,c'),
+(2,'''M''M''',ARRAY['sdf$$sdfk(),', '$$sdlhf$$'],6,'sdf$$sdfk(),',1,2,'$$sdlhf$$'),
+(3,'M|$$M',ARRAY['%~(())Ж"', 'sdf'],6,'%~(())Ж"',1,2,'sdf'),
+(4,'M,M',ARRAY['sdf', 'sdf'],6,'sdf',1,2,'sdf'),
+(5,'M@[}(:*;M',ARRAY['sdf', 'sdf'],6,'sdf',1,2,'sdf'),
+(6,'M"M',ARRAY['sdf', 'sdf'],6,'sdf',1,2,'sdf'),
+(7,'MЖM',ARRAY['sdf', 'sdf'],6,'sdf',1,2,'sdf');
+
+DROP TABLE IF EXISTS out_table;
+SELECT vec2cols(
+    'special_char_check',
+    'out_table',
+    '"len$,,$''%*()gth"',
+    ARRAY['",cl''oЖu,ds,"', '"air_qu""ality"'],
+    '*'
+);
+
+SELECT ",cl'oЖu,ds,", "air_qu""ality", ",hel~!@#$%^&*()_+{}|:""<>?`-=[]\;',./',", "$$hi//\\*$$", "**", "'~d())" from out_table;
+SELECT assert ((SELECT count(*) FROM information_schema.columns WHERE table_name='out_table') = 10, 'Number of split columns does not match');
+SELECT assert ((SELECT "len$,,$'%*()gth"[1] FROM special_char_check WHERE id = 1) = (SELECT ",cl'oЖu,ds," FROM out_table WHERE id = 1), 'Split values do not match up');
+SELECT assert ((SELECT "se$$,''x" FROM special_char_check WHERE id = 6) = 'M"M', 'Incorrect entries in out_table');
+
+DROP TABLE IF EXISTS out_table;
+SELECT vec2cols(
+    'special_char_check',
+    'out_table',
+    '"len$,,$''%*()gth"',
+    ARRAY['",cl''oЖu,ds,"', '"air_qu""ality"'],
+    $__madlib__$id, "rin,$$Ж!#'gs", ",hel~!@#$%^&*()_+{}|:""<>?`-=[]\;',./',", "$$hi//\\*$$", "**"$__madlib__$
+);
+
+SELECT ",cl'oЖu,ds,", "air_qu""ality", id, "rin,$$Ж!#'gs", ",hel~!@#$%^&*()_+{}|:""<>?`-=[]\;',./',", "$$hi//\\*$$", "**" from out_table;
+SELECT assert ((SELECT count(*) FROM information_schema.columns WHERE table_name='out_table') = 7, 'Number of split columns does not match');
+SELECT assert ((SELECT "len$,,$'%*()gth"[1] FROM special_char_check WHERE id = 1) = (SELECT ",cl'oЖu,ds," FROM out_table WHERE id = 1), 'Split values do not match up');
+SELECT assert ((SELECT ",hel~!@#$%^&*()_+{}|:""<>?`-=[]\;',./'," FROM special_char_check WHERE id = 1) = 'sd''f', 'Incorrect entries in out_table');
+
+DROP TABLE IF EXISTS out_table;
+SELECT vec2cols(
+    'special_char_check',
+    'out_table',
+    '"len$,,$''%*()gth"',
+    ARRAY['",cl''oЖu,ds,"', '"air_qu""ality"'],
+    '"**"'
+);
+
+SELECT "**", ",cl'oЖu,ds,", "air_qu""ality" from out_table;
+SELECT assert ((SELECT count(*) FROM information_schema.columns WHERE table_name='out_table') = 3, 'Number of split columns does not match');
+
+-----------------------------------------------------------------------
+-- cols2vec
+-----------------------------------------------------------------------
+
+DROP TABLE IF EXISTS out_table, out_table_summary;
+SELECT cols2vec(
+    'dt_golf',
+    'out_table',
+    'temperature, humidity'
+);
+
+SELECT feature_vector from out_table;
+SELECT assert ((SELECT count(*) FROM information_schema.columns WHERE table_name='out_table') = 1, 'Number of output table columns does not match');
+
+DROP TABLE IF EXISTS out_table, out_table_summary;
+SELECT cols2vec(
+    'dt_golf',
+    'out_table',
+    'temperature, humidity',
+    NULL,
+    'id'
+);
+
+SELECT assert ((SELECT count(*) FROM information_schema.columns WHERE table_name='out_table') = 2, 'Number of output table columns does not match');
+SELECT assert ((SELECT feature_vector from out_table where id = 1) = '{85, 85}', 'Output table values do not match up');
+
+-- All numeric types
+DROP TABLE IF EXISTS out_table, out_table_summary;
+SELECT cols2vec(
+    'dt_golf',
+    'out_table',
+    'id, temperature, humidity, observation_weight',
+    NULL,
+    '*'
+);
+
+SELECT assert ((SELECT count(*) FROM information_schema.columns WHERE table_name='out_table') = 10, 'Number of output table columns does not match');
+SELECT assert ((SELECT feature_vector from out_table where id = 1) = '{1.0, 85.0, 85.0, 5.0}', 'Output table values do not match up');
+
+DROP TABLE IF EXISTS out_table, out_table_summary;
+SELECT cols2vec(
+    'dt_golf',
+    'out_table',
+    'windy, temperature, humidity',
+    'windy',
+    '*'
+);
+
+SELECT assert ((SELECT count(*) FROM information_schema.columns WHERE table_name='out_table') = 10, 'Number of output table columns does not match');
+SELECT assert ((SELECT feature_vector from out_table where id = 1) = '{85, 85}', 'Output table values do not match up');
+
+DROP TABLE IF EXISTS out_table, out_table_summary;
+SELECT cols2vec(
+    'dt_golf',
+    'out_table',
+    '*',
+    '"OUTLOOK", "Temp_Humidity", clouds_airquality, windy, class, id',
+    '*'
+);
+
+SELECT assert ((SELECT count(*) FROM information_schema.columns WHERE table_name='out_table') = 10, 'Number of output table columns does not match');
+SELECT assert ((SELECT feature_vector from out_table where id = 1) = '{85, 85, 5}', 'Output table values do not match up');
+
+DROP TABLE IF EXISTS out_table, out_table_summary;
+SELECT cols2vec(
+    'dt_golf',
+    'out_table',
+    'windy, temperature, humidity',
+    'windy, class',
+    '*'
+);
+
+SELECT assert ((SELECT count(*) FROM information_schema.columns WHERE table_name='out_table') = 10, 'Number of output table columns does not match');
+SELECT assert ((SELECT feature_vector from out_table where id = 1) = '{85, 85}', 'Output table values do not match up');
+
+-- Special character tests
+
+DROP TABLE IF EXISTS cols2vec_spcl;
+CREATE TABLE cols2vec_spcl (
+    "i,Ж!#'d"               bigint,
+    "lab$$''%*Ж!#''()el"    int,
+    "fe''at1"               float,
+    feat2                   float,
+    "fe'%*()at3"            float,
+    other_col               float,
+    "se''x"                 TEXT
+);
+
+INSERT INTO cols2vec_spcl VALUES
+(1, 0, 1, 1, 0.5, 0.9,'M''M'),
+(2, 1, 0, 1, 0.3, 0.3,'M$M'),
+(3, 0, 0, 0, 0.1, 1.1,'M,M'),
+(4, 1, 1, 0, 0.9, 0.4,'M@[}(:*;M'),
+(5, 1, 0, 1, 0.85, 0.34,'M@[}(:*;M'),
+(6, 1, 0, 1, 0.63, 0.12,'M"M'),
+(7, 0, 1, 0, 0.7, 1.4,'MЖM');
+
+DROP TABLE IF EXISTS cols2vec_out, cols2vec_out_summary;
+SELECT cols2vec( 'cols2vec_spcl',  'cols2vec_out','"fe''''at1",feat2,"fe''%*()at3"',
+                NULL, '"i,Ж!#''d","lab$$''''%*Ж!#''''()el"' );
+
+SELECT assert(feature_vector = '{1,1,0.5}', 'Incorrect results for cols2vec')
+FROM cols2vec_out
+WHERE "i,Ж!#'d" = 1;
+
+DROP TABLE IF EXISTS cols2vec_out, cols2vec_out_summary;
+
+SELECT cols2vec('cols2vec_spcl',  'cols2vec_out','*', '"se''''x","i,Ж!#''d","lab$$''''%*Ж!#''''()el"',
+                '"i,Ж!#''d","lab$$''''%*Ж!#''''()el"');
+SELECT assert(feature_vector = '{1,1,0.5,0.9}',
+              'Incorrect results for cols2vec')
+FROM cols2vec_out
+WHERE "i,Ж!#'d" = 1;
+
+-- Type casting tests
+
+DROP TABLE IF EXISTS cols2vec_casting_test;
+CREATE TABLE cols2vec_casting_test (
+    a smallint,
+    b int,
+    c bigint,
+    d decimal,
+    e numeric,
+    f real,
+    g float,
+    h double precision,
+    i serial,
+    j bigserial,
+    k boolean,
+    l boolean,
+    m text,
+    n varchar,
+    o character varying,
+    p char,
+    q character,
+    r smallint,
+    s money,
+    t money
+);
+
+INSERT INTO cols2vec_casting_test VALUES
+(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 'true', 'true', 'hello', 'hello', 'hello', 'h', 'h', 1, 1, 1);
+
+DROP TABLE IF EXISTS out_table, out_table_summary, out_table2;
+SELECT cols2vec(
+    'cols2vec_casting_test',
+    'out_table',
+    'a, b'
+);
+SELECT vec2cols(
+    'out_table',
+    'out_table2',
+    'feature_vector'
+);
+SELECT assert((select data_type from information_schema.columns where table_name = 'out_table2' limit 1) = 'integer', 'Incorrect type casting of features for cols2vec');
+
+DROP TABLE IF EXISTS out_table, out_table_summary, out_table2;
+SELECT cols2vec(
+    'cols2vec_casting_test',
+    'out_table',
+    'a, b, c'
+);
+SELECT vec2cols(
+    'out_table',
+    'out_table2',
+    'feature_vector'
+);
+SELECT assert((select data_type from information_schema.columns where table_name = 'out_table2' limit 1) = 'double precision', 'Incorrect type casting of features for cols2vec');
+
+DROP TABLE IF EXISTS out_table, out_table_summary, out_table2;
+SELECT cols2vec(
+    'cols2vec_casting_test',
+    'out_table',
+    'a, b, c, d, e, f, g, h, i, j'
+);
+SELECT vec2cols(
+    'out_table',
+    'out_table2',
+    'feature_vector'
+);
+SELECT assert((select data_type from information_schema.columns where table_name = 'out_table2' limit 1) = 'double precision', 'Incorrect type casting of features for cols2vec');
+
+DROP TABLE IF EXISTS out_table, out_table_summary, out_table2;
+SELECT cols2vec(
+    'cols2vec_casting_test',
+    'out_table',
+    'k, l'
+);
+SELECT vec2cols(
+    'out_table',
+    'out_table2',
+    'feature_vector'
+);
+SELECT assert((select data_type from information_schema.columns where table_name = 'out_table2' limit 1) = 'boolean', 'Incorrect type casting of features for cols2vec');
+
+DROP TABLE IF EXISTS out_table, out_table_summary, out_table2;
+SELECT cols2vec(
+    'cols2vec_casting_test',
+    'out_table',
+    'm, n, o, p, q'
+);
+SELECT vec2cols(
+    'out_table',
+    'out_table2',
+    'feature_vector'
+);
+SELECT assert((select data_type from information_schema.columns where table_name = 'out_table2' limit 1) = 'text', 'Incorrect type casting of features for cols2vec');
+
+DROP TABLE IF EXISTS out_table, out_table_summary, out_table2;
+SELECT cols2vec(
+    'cols2vec_casting_test',
+    'out_table',
+    'a, r'
+);
+SELECT vec2cols(
+    'out_table',
+    'out_table2',
+    'feature_vector'
+);
+SELECT assert((select data_type from information_schema.columns where table_name = 'out_table2' limit 1) = 'smallint', 'Incorrect type casting of features for cols2vec');
+
+DROP TABLE IF EXISTS out_table, out_table_summary, out_table2;
+SELECT cols2vec(
+    'cols2vec_casting_test',
+    'out_table',
+    's, t'
+);
+SELECT vec2cols(
+    'out_table',
+    'out_table2',
+    'feature_vector'
+);
+SELECT assert((select data_type from information_schema.columns where table_name = 'out_table2' limit 1) = 'money', 'Incorrect type casting of features for cols2vec');
+
+DROP TABLE IF EXISTS out_table, out_table_summary, out_table2;
+SELECT cols2vec(
+    'cols2vec_casting_test',
+    'out_table',
+    's'
+);
+SELECT vec2cols(
+    'out_table',
+    'out_table2',
+    'feature_vector'
+);
+SELECT assert((select data_type from information_schema.columns where table_name = 'out_table2' limit 1) = 'money', 'Incorrect type casting of features for cols2vec');

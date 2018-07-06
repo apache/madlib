@@ -1,0 +1,348 @@
+/* ----------------------------------------------------------------------- */
+/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ *
+ * @file sessionize.sql_in
+ *
+ * @brief SQL functions for sessionization functions
+ * @date May 2016
+ *
+ */
+/* ----------------------------------------------------------------------- */
+
+m4_include(`SQLCommon.m4')
+
+/**
+@addtogroup grp_vec2cols
+
+@brief Converts a feature array in a single column of an output table into multiple columns.
+
+<div class="toc"><b>Contents</b>
+<ul>
+<li class="level1"><a href="#vec2cols_syntax">Syntax</a>
+<li class="level1"><a href="#vec2cols_usage">Usage</a>
+<li class="level1"><a href="#vec2cols_example">Examples</a>
+</ul>
+</div>
+
+@about
+Converts a feature array in a single column into multiple columns.
+This process can be used to reverse the function cols2vec.
+
+Given a table with a column of type array, this function will create an output
+table that splits this array into multiple columns, one per array element.
+It includes the option to name the new feature columns, and to include 
+columns from the original table in the output.
+
+@anchor vec2cols_usage
+@usage
+
+<pre class="syntax">
+vec2cols(
+    source_table,
+    output_table,
+    vector_col,
+    feature_names,
+    cols_to_output
+)
+</pre>
+
+\b Arguments
+<dl class="arglist">
+<dt>source_table</dt>
+<dd>TEXT. Name of the table containing the source data.</tt>.
+
+<dt>output_table</dt>
+<dd>TEXT. Name of the generated table containing the output. If a table with the
+same name already exists, an error will be returned.</tt>
+
+<dt>vector_col</dt>
+<dd>TEXT. Name of the column containing the feature array.  
+Must be a one-dimensional array.</tt>
+
+<dt>feature_names (optional)</dt>
+<dd>TEXT[]. Array of names associated with the feature array.  
+Note that this array exists in the
+summary table created by the function 'cols2vec'.  
+If the 'feature_names' array is not specified,
+column names will be automatically generated of 
+the form 'f1, f2, ...fn'.</tt>
+
+<dt>cols_to_output (optional)</dt>
+<dd>TEXT, default NULL. Comma-separated string of column names 
+from the source table to keep in the
+output table, in addition to the feature columns.  
+To keep all columns from the source table, use '*'.
+Note: total number of columns in a table cannot exceed the 
+PostgreSQL limits.</tt>
+</dd>
+</dl>
+
+<b>Output table</b>
+<br>
+    The output table produced by the vec2cols function contains the following columns:
+    <table class="output">
+      <tr>
+        <th><...></th>
+        <td>Columns from source table, depending on which ones are kept (if any).
+        </td>
+      </tr>
+      <tr>
+        <th>feature columns</th>
+        <td>Columns for each of the features in 'vector_col'.  Column type 
+        will depend on the feature array type in the source table.  Column 
+        naming will depend on whether the parameter 'feature_names' is used.
+      </tr>
+    </table>
+
+
+@anchor vec2cols_example
+@par Examples
+-#  Load sample data:
+<pre class="example">
+DROP TABLE IF EXISTS golf CASCADE;
+CREATE TABLE golf (
+    id integer NOT NULL,
+    "OUTLOOK" text,
+    temperature double precision,
+    humidity double precision,
+    "Temp_Humidity" double precision[],
+    clouds_airquality text[],
+    windy boolean,
+    class text,
+    observation_weight double precision
+);
+INSERT INTO golf VALUES
+(1,'sunny', 85, 85, ARRAY[85, 85],ARRAY['none', 'unhealthy'], 'false','Don''t Play', 5.0),
+(2, 'sunny', 80, 90, ARRAY[80, 90], ARRAY['none', 'moderate'], 'true', 'Don''t Play', 5.0),
+(3, 'overcast', 83, 78, ARRAY[83, 78], ARRAY['low', 'moderate'], 'false', 'Play', 1.5),
+(4, 'rain', 70, 96, ARRAY[70, 96], ARRAY['low', 'moderate'], 'false', 'Play', 1.0),
+(5, 'rain', 68, 80, ARRAY[68, 80], ARRAY['medium', 'good'], 'false', 'Play', 1.0),
+(6, 'rain', 65, 70, ARRAY[65, 70], ARRAY['low', 'unhealthy'], 'true', 'Don''t Play', 1.0),
+(7, 'overcast', 64, 65, ARRAY[64, 65], ARRAY['medium', 'moderate'], 'true', 'Play', 1.5),
+(8, 'sunny', 72, 95, ARRAY[72, 95], ARRAY['high', 'unhealthy'], 'false', 'Don''t Play', 5.0),
+(9, 'sunny', 69, 70, ARRAY[69, 70], ARRAY['high', 'good'], 'false', 'Play', 5.0),
+(10, 'rain', 75, 80, ARRAY[75, 80], ARRAY['medium', 'good'], 'false', 'Play', 1.0),
+(11, 'sunny', 75, 70, ARRAY[75, 70], ARRAY['none', 'good'], 'true', 'Play', 5.0),
+(12, 'overcast', 72, 90, ARRAY[72, 90], ARRAY['medium', 'moderate'], 'true', 'Play', 1.5),
+(13, 'overcast', 81, 75, ARRAY[81, 75], ARRAY['medium', 'moderate'], 'false', 'Play', 1.5),
+(14, 'rain', 71, 80, ARRAY[71, 80], ARRAY['low', 'unhealthy'], 'true', 'Don''t Play', 1.0);
+</pre>
+
+-# Split the column "clouds_airquality" into new columns 
+called "clouds" and "air_quality". Also keep columns id 
+and "OUTLOOK" from the source table 
+<pre class="example">
+DROP TABLE IF EXISTS vec2cols_result;
+SELECT madlib.vec2cols(
+    'golf',                           -- source table
+    'vec2cols_result',                -- output table
+    'clouds_airquality',              -- column with array entries to split
+    ARRAY['clouds', 'air_quality'],   -- feature names
+    'id, "OUTLOOK"'                   -- columns to keep from source table
+);
+SELECT * FROM vec2cols_result ORDER BY id;
+</pre>
+<pre class="result">
+ clouds | air_quality | id | OUTLOOK  
+--------+-------------+----+----------
+ none   | unhealthy   |  1 | sunny
+ none   | moderate    |  2 | sunny
+ low    | moderate    |  3 | overcast
+ low    | moderate    |  4 | rain
+ medium | good        |  5 | rain
+ low    | unhealthy   |  6 | rain
+ medium | moderate    |  7 | overcast
+ high   | unhealthy   |  8 | sunny
+ high   | good        |  9 | sunny
+ medium | good        | 10 | rain
+ none   | good        | 11 | sunny
+ medium | moderate    | 12 | overcast
+ medium | moderate    | 13 | overcast
+ low    | unhealthy   | 14 | rain
+(14 rows)
+</pre>
+
+-# Similar to the previous example, except now
+we keep all columns from source table and do not 
+specify the feature names, so that default names
+are created. 
+<pre class="example">
+DROP TABLE IF EXISTS vec2cols_result;
+SELECT madlib.vec2cols(
+    'golf',                       -- source table
+    'vec2cols_result',            -- output table
+    'clouds_airquality',          -- column with array entries to split
+    NULL,                         -- feature names
+    '*'                           -- columns to keep from source table
+);
+SELECT * FROM vec2cols_result ORDER BY id;
+</pre>
+<pre class="result">
+   f1   |    f2     | id | OUTLOOK  | temperature | humidity | Temp_Humidity | clouds_airquality | windy |   class    | observation_weight 
+--------+-----------+----+----------+-------------+----------+---------------+-------------------+-------+------------+--------------------
+ none   | unhealthy |  1 | sunny    |          85 |       85 | {85,85}       | {none,unhealthy}  | f     | Don't Play |                  5
+ none   | moderate  |  2 | sunny    |          80 |       90 | {80,90}       | {none,moderate}   | t     | Don't Play |                  5
+ low    | moderate  |  3 | overcast |          83 |       78 | {83,78}       | {low,moderate}    | f     | Play       |                1.5
+ low    | moderate  |  4 | rain     |          70 |       96 | {70,96}       | {low,moderate}    | f     | Play       |                  1
+ medium | good      |  5 | rain     |          68 |       80 | {68,80}       | {medium,good}     | f     | Play       |                  1
+ low    | unhealthy |  6 | rain     |          65 |       70 | {65,70}       | {low,unhealthy}   | t     | Don't Play |                  1
+ medium | moderate  |  7 | overcast |          64 |       65 | {64,65}       | {medium,moderate} | t     | Play       |                1.5
+ high   | unhealthy |  8 | sunny    |          72 |       95 | {72,95}       | {high,unhealthy}  | f     | Don't Play |                  5
+ high   | good      |  9 | sunny    |          69 |       70 | {69,70}       | {high,good}       | f     | Play       |                  5
+ medium | good      | 10 | rain     |          75 |       80 | {75,80}       | {medium,good}     | f     | Play       |                  1
+ none   | good      | 11 | sunny    |          75 |       70 | {75,70}       | {none,good}       | t     | Play       |                  5
+ medium | moderate  | 12 | overcast |          72 |       90 | {72,90}       | {medium,moderate} | t     | Play       |                1.5
+ medium | moderate  | 13 | overcast |          81 |       75 | {81,75}       | {medium,moderate} | f     | Play       |                1.5
+ low    | unhealthy | 14 | rain     |          71 |       80 | {71,80}       | {low,unhealthy}   | t     | Don't Play |                  1
+(14 rows)
+</pre>
+
+-# Now let's run cols2vec then reverse it using vec2cols.
+In this case we will get feature names from the cols2vec summary table.
+First run cols2vec:
+<pre class="example">
+DROP TABLE IF EXISTS cols2vec_result, cols2vec_result_summary;
+SELECT madlib.cols2vec(
+    'golf',
+    'cols2vec_result',
+    'temperature, humidity',
+    NULL,
+    'id, temperature, humidity'
+);
+SELECT * FROM cols2vec_result ORDER BY id;
+</pre>
+<pre class="result">
+ id | temperature | humidity | feature_vector 
+----+-------------+----------+----------------
+  1 |          85 |       85 | {85,85}
+  2 |          80 |       90 | {80,90}
+  3 |          83 |       78 | {83,78}
+  4 |          70 |       96 | {70,96}
+  5 |          68 |       80 | {68,80}
+  6 |          65 |       70 | {65,70}
+  7 |          64 |       65 | {64,65}
+  8 |          72 |       95 | {72,95}
+  9 |          69 |       70 | {69,70}
+ 10 |          75 |       80 | {75,80}
+ 11 |          75 |       70 | {75,70}
+ 12 |          72 |       90 | {72,90}
+ 13 |          81 |       75 | {81,75}
+ 14 |          71 |       80 | {71,80}
+(14 rows)
+</pre>
+View the summary table with the feature_names dictionary:
+<pre class="example">
+\\x on
+SELECT * FROM cols2vec_result_summary;
+\\x off
+</pre>
+<pre class="result">
+-[ RECORD 1 ]---------------+-----------------------
+source_table                | golf
+list_of_features            | temperature, humidity
+list_of_features_to_exclude | None
+feature_names               | {temperature,humidity}
+</pre>
+Now use feature_names from the summary table above
+to name the columns of the split array:
+<pre class="example">
+DROP TABLE IF EXISTS vec2cols_result;
+SELECT madlib.vec2cols(
+    'cols2vec_result',          -- source table containing the feature vector
+    'vec2cols_result',          -- output table
+    'feature_vector',           -- column with array entries to split
+    (SELECT feature_names from cols2vec_result_summary),    -- feature_names from summary table of cols2vec
+    'id'                        -- columns to keep from source table
+);
+SELECT * FROM vec2cols_result ORDER BY id;
+</pre>
+<pre class="result">
+ temperature | humidity | id 
+-------------+----------+----
+          85 |       85 |  1
+          80 |       90 |  2
+          83 |       78 |  3
+          70 |       96 |  4
+          68 |       80 |  5
+          65 |       70 |  6
+          64 |       65 |  7
+          72 |       95 |  8
+          69 |       70 |  9
+          75 |       80 | 10
+          75 |       70 | 11
+          72 |       90 | 12
+          81 |       75 | 13
+          71 |       80 | 14
+(14 rows)
+</pre>
+This is the same as the format of the original 'golf' dataset
+that we started with.
+
+*/
+
+-------------------------------------------------------------------------
+-- vec2cols
+-------------------------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.vec2cols(
+    source_table VARCHAR,
+    output_table VARCHAR,
+    vector_col VARCHAR,
+    feature_names TEXT[],
+    cols_to_output VARCHAR
+) RETURNS void AS $$
+    PythonFunctionBodyOnly(utilities, transform_vec_cols)
+    from utilities.control import MinWarning
+    with MinWarning('warning'):
+        vec2cols_obj = transform_vec_cols.vec2cols()
+        return vec2cols_obj.vec2cols(**globals())
+    $$ LANGUAGE plpythonu VOLATILE
+    m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.vec2cols(
+    source_table VARCHAR,
+    output_table VARCHAR,
+    vector_col VARCHAR,
+    feature_names TEXT[]
+) RETURNS void AS $$
+SELECT MADLIB_SCHEMA.vec2cols($1,$2,$3,$4,NULL)
+    $$ LANGUAGE SQL
+    m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.vec2cols(
+    source_table VARCHAR,
+    output_table VARCHAR,
+    vector_col VARCHAR
+) RETURNS void AS $$
+SELECT MADLIB_SCHEMA.vec2cols($1,$2,$3,NULL,NULL)
+    $$ LANGUAGE SQL
+    m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.vec2cols(message TEXT)
+RETURNS text AS $$
+    PythonFunctionBodyOnly(utilities, transform_vec_cols)
+    return transform_vec_cols.vec2cols().vec2cols_help_message(schema_madlib, message)
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `CONTAINS SQL', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.vec2cols()
+RETURNS text AS $$
+    SELECT MADLIB_SCHEMA.vec2cols('');
+$$ language SQL
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `CONTAINS SQL', `');
