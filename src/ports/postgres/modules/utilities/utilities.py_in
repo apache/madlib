@@ -175,34 +175,40 @@ TEXT = set(['text', 'varchar', 'character varying', 'char', 'character'])
 BOOLEAN = set(['boolean'])
 INCLUDE_ARRAY = set([unique_string('__include_array__')])
 ONLY_ARRAY = set([unique_string('__only_array__')])
+ANY_ARRAY = set([unique_string('__any_array__')])
+
 
 def is_valid_psql_type(arg, valid_types):
     """ Verify if argument is a valid type
 
     Args:
         @param arg: str. Name of the Postgres type to validate
-        @param valid_types: set. Set of type names to look into.
-                            This is typically created using the global types
-                            created in this module.
-                            Two non-type flags are provided:
+        @param valid_types: set. Set of valid type names to search.
+                            This is typically created using the global names
+                            in this module.
+                            Three non-type flags are provided
+                            (in descending order of precedence):
+                                - ANY_ARRAY: check if arg is any array type
                                 - ONLY_ARRAY: indicates that only array forms
                                     of the valid types should be checked
                                 - INCLUDE_ARRAY: indicates that array and scalar
                                     forms of the valid types should be checked
-                            If both ONLY_ARRAY and INCLUDE_ARRAY are present,
-                            then ONLY_ARRAY takes precedence
-
                 Examples: 1. valid_types = BOOLEAN | INTEGER | TEXT
                           2. valid_types = BOOLEAN | INTEGER | ONLY_ARRAY
                           3. valid_types = NUMERIC | INCLUDE_ARRAY
     """
+    if not arg or not valid_types:
+        return False
+    if ANY_ARRAY <= valid_types:
+        return arg.rstrip().endswith('[]')
     if ONLY_ARRAY <= valid_types:
-        return ('[]' in arg and arg.rstrip('[]') in valid_types)
+        return (arg.rstrip().endswith('[]') and arg.rstrip('[] ') in valid_types)
     if INCLUDE_ARRAY <= valid_types:
         # Remove the [] from end of the arg type
         # The single space is needed to ensure trailing white space is stripped
         arg = arg.rstrip('[] ')
     return (arg in valid_types)
+# ------------------------------------------------------------------------------
 
 
 def is_psql_numeric_type(arg, exclude=None):
