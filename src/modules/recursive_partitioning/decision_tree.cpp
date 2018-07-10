@@ -502,10 +502,13 @@ get_variable_importance::run(AnyType &args){
    ColumnVector combined_var_imp(n_cat_features + n_con_features);
    combined_var_imp << cat_var_importance, con_var_importance;
 
-    // Avoid divide by zero by adding a small number.
+    // Avoid divide by zero by replacing with a small number if necessary
     double total_var_imp = combined_var_imp.sum();
     double VAR_IMP_EPSILON = 1e-6;
-    combined_var_imp *=  (100.0 / (total_var_imp + VAR_IMP_EPSILON));
+    if (total_var_imp < VAR_IMP_EPSILON){
+        total_var_imp = VAR_IMP_EPSILON;
+    }
+    combined_var_imp *=  (100.0 / total_var_imp);
 
     return combined_var_imp;
 }
