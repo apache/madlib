@@ -59,6 +59,13 @@ echo "-------------------------------"
 ## container to come up, which is required by the docker exec command that follows.
 sleep 5
 
+echo "---------- Install pip, and mock -----------"
+# cmake, make, make install, and make package
+cat <<EOF
+docker exec madlib bash -c 'apt-get update; apt-get install -y python-pip; pip install mock' | tee $workdir/logs/madlib_compile.log
+EOF
+docker exec madlib bash -c 'apt-get update; apt-get install -y python-pip; pip install mock' | tee $workdir/logs/madlib_compile.log
+
 echo "---------- Building package -----------"
 # cmake, make, make install, and make package
 cat <<EOF
@@ -76,10 +83,14 @@ docker exec madlib bash -c '/build/src/bin/madpack -s mad -p postgres -c postgre
 cat <<EOF
 docker exec madlib bash -c 'mkdir /tmp'
 docker exec madlib bash -c '/build/src/bin/madpack -s mad -p postgres  -c postgres/postgres@localhost:5432/postgres -d /tmp dev-check' | tee $workdir/logs/madlib_dev_check.log
+docker exec madlib bash -c '/build/src/bin/madpack -s mad -p postgres  -c postgres/postgres@localhost:5432/postgres -d /tmp unit-test' | tee -a $workdir/logs/madlib_dev_check.log
 EOF
 
 docker exec madlib bash -c 'mkdir /tmp'
+# Run dev check
 docker exec madlib bash -c '/build/src/bin/madpack -s mad -p postgres  -c postgres/postgres@localhost:5432/postgres -d /tmp dev-check' | tee $workdir/logs/madlib_dev_check.log
+# Run unit tests, and append output to dev_check's log file
+docker exec madlib bash -c '/build/src/bin/madpack -s mad -p postgres  -c postgres/postgres@localhost:5432/postgres -d /tmp unit-test' | tee -a $workdir/logs/madlib_dev_check.log
 
 echo "--------- Copying packages -----------------"
 echo "docker cp madlib:build $workdir"

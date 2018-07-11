@@ -773,9 +773,11 @@ def parse_arguments():
                   version        : compare and print MADlib version (binaries vs database objects)
                   install-check  : sanity run of all installed modules
                   dev-check      : test all installed modules
+                  unit-test      : run unit tests on installed modules
                   """
     choice_list = ['install', 'update', 'upgrade', 'uninstall',
-                   'reinstall', 'version', 'install-check', 'dev-check']
+                   'reinstall', 'version', 'install-check',
+                   'dev-check', 'unit-test']
 
     parser.add_argument('command', metavar='COMMAND', nargs=1,
                         choices=choice_list, help=help_msg)
@@ -809,22 +811,100 @@ def parse_arguments():
                         help="Temporary directory location for installation log files.")
 
     parser.add_argument('-t', '--testcase', dest='testcase', default="",
-                        help="Module names to test, comma separated. Effective only for install-check.")
+                        help="Module names to test, comma separated. Effective only for install-check, dev-check and unit-test.")
 
     # Get the arguments
     return parser.parse_args()
+
+def _is_madlib_installation_valid_for_tests(schema, db_madlib_ver):
+    # Compare OS and DB versions. Continue if OS = DB.
+    if get_rev_num(db_madlib_ver) != get_rev_num(new_madlib_ver):
+        _print_vers(new_madlib_ver, db_madlib_ver, con_args, schema)
+        info_(this, "Versions do not match. Unit-test stopped.", True)
+        return False
+    return True
+
+def _get_modset_for_tests(testcase, filename_prefix=''):
+    # Get all module and algo names to run tests for, is specified as a comma
+    # separated list.
+    info_(this, "> Running unit test scripts for:", verbose)
+    caseset = (set([test.strip() for test in testcase.split(',')])
+               if testcase != "" else set())
+    modset = {}
+    for case in caseset:
+        if case.find('/') > -1:
+            [mod, algo] = case.split('/')
+            if mod not in modset:
+                modset[mod] = []
+            if algo not in modset[mod]:
+                modset[mod].append(filename_prefix+algo)
+        else:
+            modset[case] = []
+    return modset
+
+def run_unit_tests(args, testcase):
+    """
+        Run unit tests.
+    """
+    if not _is_madlib_installation_valid_for_tests(args['schema'],
+                                                   args['db_madlib_ver']):
+        return
+    modset = _get_modset_for_tests(testcase, 'test_')
+    # Loop through all modules and run unit tests
+    for moduleinfo in portspecs['modules']:
+        # Get module name
+        module = moduleinfo['name']
+        # Skip if doesn't meet specified modules
+        if modset and module not in modset:
+            continue
+        # Find the module dir (platform specific or generic)
+        # TODO: the unit test python files are copied into the the dbver dir
+        # in the build folder, but install and dev check files are not. This
+        # is a make related thing to debug I guess.
+        maddir_mod_py = maddir + "/ports/" + portid + "/" + dbver + "/modules"
+        py_files = maddir_mod_py + '/' + module + '/test/unit_tests/test_*.py'
+        for pyfile in sorted(glob.glob(py_files), reverse=True):
+            algoname = os.path.basename(pyfile).split('.')[0]
+            # run only algo specified
+            if (modset and modset[module] and
+                    algoname not in modset[module]):
+                continue
+            info_(this, "> - %s" % module, verbose)
+            # Make a temp dir for this module (if doesn't exist)
+            cur_tmpdir = tmpdir + '/' + module + '/test/unit_tests'  # tmpdir is a global variable
+            _make_dir(cur_tmpdir)
+            logfile = cur_tmpdir + '/' + os.path.basename(pyfile) + '.log'
+            try:
+                log = open(logfile, 'w')
+            except:
+                error_(this, "Cannot create log file: %s" % logfile, False)
+                raise Exception
+            info_(this, "> ... executing " + pyfile, verbose)
+            try:
+                milliseconds = 0
+                run_start = datetime.datetime.now()
+                # Run the python unit test file
+                runcmd = ["python", pyfile]
+                runenv = os.environ
+                retval = subprocess.call(runcmd, env=runenv, stdout=log, stderr=log)
+                run_end = datetime.datetime.now()
+                milliseconds = round((run_end - run_start).seconds * 1000 +
+                                     (run_end - run_start).microseconds / 1000)
+            except:
+                error_(this, "Failed executing %s" % pyfile, False)
+                raise Exception
+            finally:
+                log.close()
+            _parse_result_logfile(retval, logfile, pyfile,
+                                  pyfile, module, milliseconds)
 
 
 def run_install_check(args, testcase, madpack_cmd):
     is_install_check = True if madpack_cmd == 'install-check' else False
     schema = args['schema']
     db_madlib_ver = args['db_madlib_ver']
-    # 1) Compare OS and DB versions. Continue if OS = DB.
-    if get_rev_num(db_madlib_ver) != get_rev_num(new_madlib_ver):
-        _print_vers(new_madlib_ver, db_madlib_ver, con_args, schema)
-        info_(this, "Versions do not match. Install-check stopped.", True)
+    if not _is_madlib_installation_valid_for_tests(schema, db_madlib_ver):
         return
-
     # Create install-check user
     db_name = args["c_db"].replace('.', '').replace('-', '_')
     test_user = ('madlib_' +
@@ -840,22 +920,7 @@ def run_install_check(args, testcase, madpack_cmd):
     _internal_run_query("GRANT USAGE ON SCHEMA %s TO %s;" % (schema, test_user), True)
 
     # 2) Run test SQLs
-    info_(this, "> Running test scripts for:", verbose)
-
-    caseset = (set([test.strip() for test in testcase.split(',')])
-               if testcase != "" else set())
-
-    modset = {}
-    for case in caseset:
-        if case.find('/') > -1:
-            [mod, algo] = case.split('/')
-            if mod not in modset:
-                modset[mod] = []
-            if algo not in modset[mod]:
-                modset[mod].append(algo)
-        else:
-            modset[case] = []
-
+    modset = _get_modset_for_tests(testcase)
     # Loop through all modules
     try:
         for moduleinfo in portspecs['modules']:
@@ -1277,9 +1342,11 @@ def main(argv):
     if args.command[0] == 'version':
         _print_vers(new_madlib_ver, db_madlib_ver, con_args, schema)
 
-    # COMMAND: install-check
+    # COMMAND: install-check, dev-check or unit-test
     if args.command[0] in ('install-check', 'dev-check'):
         run_install_check(locals(), args.testcase, args.command[0])
+    elif args.command[0] == 'unit-test':
+        run_unit_tests(locals(), args.testcase)
     else:
         try:
             is_schema_in_db = _internal_run_query("SELECT schema_name FROM information_schema.schemata WHERE schema_name='%s';" % schema, True)
