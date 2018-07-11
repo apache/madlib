@@ -29,7 +29,7 @@ m4_include(`SQLCommon.m4')
 <li class="level1"><a href="#related">Related Topics</a></li>
 </ul></div>
 
-Support Vector Machines (SVMs) are models for regression and classification
+Support vector machines are models for regression and classification
 tasks. SVM models have two particularly desirable features: robustness in the
 presence of noisy data and applicability to a variety of data configurations. At
 its core, a <em>linear</em> SVM model is a hyperplane separating two
@@ -144,7 +144,9 @@ svm_classification(
       </tr>
       <tr>
         <th>loss</th>
-        <td>FLOAT8. Value of the objective function of SVM.  See Technical Background section below for more details.</td>
+        <td>FLOAT8. Value of the objective function of SVM, expressed as an 
+        average loss per row over the \e source_table.  See Technical Background 
+        section below for more details.</td>
       </tr>
       <tr>
         <th>norm_of_gradient</th>
@@ -428,10 +430,14 @@ will use the epsilon value specified in parameter \e epsilon.
 
 <DT>validation_result</dt>
 <DD>Default: NULL.
-Name of the table to store the cross validation results including the values of
-parameters and their averaged error values. For now, simple metric like 0-1 loss
-is used for classification and mean square error is used for regression. The
-table is only created if the name is not NULL.
+Name of the table to store the cross validation scores.  
+This table is only created if the name is not NULL.
+The cross validation scores are the mean and standard deviation
+of the accuracy when predicted on the validation fold, 
+averaged over all folds and all rows.  For classification, the accuracy
+metric used is the ratio of correct classifications.  For regression, the 
+accuracy metric used is the negative of mean squared error (negative to 
+make it a concave problem, thus selecting \e max means the highest accuracy). 
 </DD>
 
 <DT>n_folds</dt>
@@ -507,30 +513,33 @@ table name is already in use, then an error is returned.  Table contains:</DD>
 </table>
 @anchor example
 @par Examples
+
+<h4>Classification</h4>
+
 -#  Create an input data set.
 <pre class="example">
 DROP TABLE IF EXISTS houses;
 CREATE TABLE houses (id INT, tax INT, bedroom INT, bath FLOAT, price INT,
             size INT, lot INT);
-COPY houses FROM STDIN WITH DELIMITER '|';
-  1 |  590 |       2 |    1 |  50000 |  770 | 22100
-  2 | 1050 |       3 |    2 |  85000 | 1410 | 12000
-  3 |   20 |       3 |    1 |  22500 | 1060 |  3500
-  4 |  870 |       2 |    2 |  90000 | 1300 | 17500
-  5 | 1320 |       3 |    2 | 133000 | 1500 | 30000
-  6 | 1350 |       2 |    1 |  90500 |  820 | 25700
-  7 | 2790 |       3 |  2.5 | 260000 | 2130 | 25000
-  8 |  680 |       2 |    1 | 142500 | 1170 | 22000
-  9 | 1840 |       3 |    2 | 160000 | 1500 | 19000
- 10 | 3680 |       4 |    2 | 240000 | 2790 | 20000
- 11 | 1660 |       3 |    1 |  87000 | 1030 | 17500
- 12 | 1620 |       3 |    2 | 118600 | 1250 | 20000
- 13 | 3100 |       3 |    2 | 140000 | 1760 | 38000
- 14 | 2070 |       2 |    3 | 148000 | 1550 | 14000
- 15 |  650 |       3 |  1.5 |  65000 | 1450 | 12000
-\\.
+INSERT INTO houses VALUES   
+  (1 ,  590 ,       2 ,    1 ,  50000 ,  770 , 22100),
+  (2 , 1050 ,       3 ,    2 ,  85000 , 1410 , 12000),
+  (3 ,   20 ,       3 ,    1 ,  22500 , 1060 ,  3500),
+  (4 ,  870 ,       2 ,    2 ,  90000 , 1300 , 17500),
+  (5 , 1320 ,       3 ,    2 , 133000 , 1500 , 30000),
+  (6 , 1350 ,       2 ,    1 ,  90500 ,  820 , 25700),
+  (7 , 2790 ,       3 ,  2.5 , 260000 , 2130 , 25000),
+  (8 ,  680 ,       2 ,    1 , 142500 , 1170 , 22000),
+  (9 , 1840 ,       3 ,    2 , 160000 , 1500 , 19000),
+ (10 , 3680 ,       4 ,    2 , 240000 , 2790 , 20000),
+ (11 , 1660 ,       3 ,    1 ,  87000 , 1030 , 17500),
+ (12 , 1620 ,       3 ,    2 , 118600 , 1250 , 20000),
+ (13 , 3100 ,       3 ,    2 , 140000 , 1760 , 38000),
+ (14 , 2070 ,       2 ,    3 , 148000 , 1550 , 14000),
+ (15 ,  650 ,       3 ,  1.5 ,  65000 , 1450 , 12000);
 </pre>
--#  Train a classification model. First, use a linear model.
+-#  Train linear classification model and view the model.  
+Categorical variable is price < $100,0000.
 <pre class="example">
 DROP TABLE IF EXISTS houses_svm, houses_svm_summary;
 SELECT madlib.svm_classification('houses',
@@ -538,31 +547,70 @@ SELECT madlib.svm_classification('houses',
                                  'price < 100000',
                                  'ARRAY[1, tax, bath, size]'
                            );
-</pre>
--# View the result for the linear classification model.
-<pre class="example">
 -- Set extended display on for easier reading of output
-\\x ON
+\\x on
 SELECT * FROM houses_svm;
 </pre>
-Result:
 <pre class="result">
--[ RECORD 1 ]------+---------------------------------------------------------------
-coef               | {0.152192069515,-0.29631947495,0.0968619000065,0.362682248051}
-loss               | 601.279740124
-norm_of_gradient   | 1300.96615851627
+-[ RECORD 1 ]------+--------------------------------------------------------------------------------
+coef               | {0.103994021495116,-0.00288252192097756,0.0540748706580464,0.00131729978010033}
+loss               | 0.928463796644648
+norm_of_gradient   | 7849.34910604307
 num_iterations     | 100
 num_rows_processed | 15
 num_rows_skipped   | 0
 dep_var_mapping    | {f,t}
 </pre>
--# Next generate a nonlinear model using a Gaussian kernel. This time we specify
+-# Predict using linear model. We want to predict if house price 
+is less than $100,000. We use the training data set for prediction 
+as well, which is not usual but serves to show the syntax. The 
+predicted results are in the \e prediction column and the actual 
+data is in the \e actual column.
+<pre class="example">
+DROP TABLE IF EXISTS houses_pred;
+SELECT madlib.svm_predict('houses_svm', 
+                          'houses', 
+                          'id', 
+                          'houses_pred');
+\\x off
+SELECT *, price < 100000 AS actual FROM houses JOIN houses_pred USING (id) ORDER BY id;
+</pre>
+<pre class="result">
+  id | tax  | bedroom | bath | price  | size |  lot  | prediction | decision_function  | actual 
+----+------+---------+------+--------+------+-------+------------+--------------------+--------
+  1 |  590 |       2 |    1 |  50000 |  770 | 22100 | t          |  0.211310440574799 | t
+  2 | 1050 |       3 |    2 |  85000 | 1410 | 12000 | t          |   0.37546191651855 | t
+  3 |   20 |       3 |    1 |  22500 | 1060 |  3500 | t          |    2.4021783278516 | t
+  4 |  870 |       2 |    2 |  90000 | 1300 | 17500 | t          |   0.63967342411632 | t
+  5 | 1320 |       3 |    2 | 133000 | 1500 | 30000 | f          | -0.179964783767855 | f
+  6 | 1350 |       2 |    1 |  90500 |  820 | 25700 | f          |  -1.78347623159173 | t
+  7 | 2790 |       3 |  2.5 | 260000 | 2130 | 25000 | f          |  -2.86795504439645 | f
+  8 |  680 |       2 |    1 | 142500 | 1170 | 22000 | t          |  0.811108105668757 | f
+  9 | 1840 |       3 |    2 | 160000 | 1500 | 19000 | f          |  -1.61739505790168 | f
+ 10 | 3680 |       4 |    2 | 240000 | 2790 | 20000 | f          |  -3.96700444824078 | f
+ 11 | 1660 |       3 |    1 |  87000 | 1030 | 17500 | f          |  -2.19489938920329 | t
+ 12 | 1620 |       3 |    2 | 118600 | 1250 | 20000 | f          |  -1.53961627668269 | f
+ 13 | 3100 |       3 |    2 | 140000 | 1760 | 38000 | f          |  -4.54881979553637 | f
+ 14 | 2070 |       2 |    3 | 148000 | 1550 | 14000 | f          |  -2.06911803381861 | f
+ 15 |  650 |       3 |  1.5 |  65000 | 1450 | 12000 | t          |   1.52704061329968 | t
+(15 rows)
+</pre>
+Count the miss-classifications:
+<pre class="example">
+SELECT COUNT(*) FROM houses_pred JOIN houses USING (id) 
+WHERE houses_pred.prediction != (houses.price < 100000);
+</pre>
+<pre class="result">
+ count 
+-------+
+     3
+</pre>
+-# Train using Gaussian kernel. This time we specify
 the initial step size and maximum number of iterations to run. As part of the
 kernel parameter, we choose 10 as the dimension of the space where we train
 SVM. A larger number will lead to a more powerful model but run the risk of
 overfitting. As a result, the model will be a 10 dimensional vector, instead
-of 4 as in the case of linear model, which we will verify when we examine the
-models.
+of 4 as in the case of linear model.
 <pre class="example">
 DROP TABLE IF EXISTS houses_svm_gaussian, houses_svm_gaussian_summary, houses_svm_gaussian_random;
 SELECT madlib.svm_classification( 'houses',
@@ -574,46 +622,352 @@ SELECT madlib.svm_classification( 'houses',
                                   '',
                                   'init_stepsize=1, max_iter=200'
                            );
-</pre>
--# View the results from kernel SVM for classification.
-<pre class="example">
--- Set extended display on for easier reading of output
-\\x ON
+\\x on
 SELECT * FROM houses_svm_gaussian;
 </pre>
-Result:
 <pre class="result">
--[ RECORD 1 ]------+--------------------------------------------------------------------------------------------------------------------------------------------------
-coef               | {0.183800813574,-0.78724997813,1.54121854068,1.24432527042,4.01230959334,1.07061097224,-4.92576349408,0.437699542875,0.3128600981,-1.63880635658}
-loss               | 0.998735180388
-norm_of_gradient   | 0.729823950583579
-num_iterations     | 196
+-[ RECORD 1 ]------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+coef               | {-1.67275666209207,1.5191640881642,-0.503066422926727,1.33250956564454,2.23009854231314,-0.0602475029497936,1.97466397155921,2.3668779833279,0.577739846910355,2.81255996089824}
+loss               | 0.0571869097340991
+norm_of_gradient   | 1.18281830047046
+num_iterations     | 177
 num_rows_processed | 15
 num_rows_skipped   | 0
 dep_var_mapping    | {f,t}
 </pre>
--#  The regression models have a similar format (model output not shown). First, for a linear model:
+-# Prediction using the Gaussian model.  The predicted results are 
+in the \e prediction column and the actual data is in the \e actual column.
 <pre class="example">
-DROP TABLE IF EXISTS houses_svm_regression, houses_svm_regression_summary;
-SELECT madlib.svm_regression('houses',
-                             'houses_svm_regression',
-                             'price',
-                             'ARRAY[1, tax, bath, size]'
-                           );
+DROP TABLE IF EXISTS houses_pred_gaussian;
+SELECT madlib.svm_predict('houses_svm_gaussian', 
+                          'houses', 
+                          'id', 
+                          'houses_pred_gaussian');
+\\x off
+SELECT *, price < 100000 AS actual FROM houses JOIN houses_pred_gaussian USING (id) ORDER BY id;
 </pre>
-For a non-linear regression model using a Gaussian kernel:
+<pre class="result">
+ id | tax  | bedroom | bath | price  | size |  lot  | prediction | decision_function  | actual 
+----+------+---------+------+--------+------+-------+------------+--------------------+--------
+  1 |  590 |       2 |    1 |  50000 |  770 | 22100 | t          |   1.89855833083557 | t
+  2 | 1050 |       3 |    2 |  85000 | 1410 | 12000 | t          |   1.47736856649617 | t
+  3 |   20 |       3 |    1 |  22500 | 1060 |  3500 | t          |  0.999999992995691 | t
+  4 |  870 |       2 |    2 |  90000 | 1300 | 17500 | t          |  0.999999989634351 | t
+  5 | 1320 |       3 |    2 | 133000 | 1500 | 30000 | f          |  -1.03645694166465 | f
+  6 | 1350 |       2 |    1 |  90500 |  820 | 25700 | t          |   1.16430515664766 | t
+  7 | 2790 |       3 |  2.5 | 260000 | 2130 | 25000 | f          | -0.545622670134529 | f
+  8 |  680 |       2 |    1 | 142500 | 1170 | 22000 | f          |  -1.00000000207512 | f
+  9 | 1840 |       3 |    2 | 160000 | 1500 | 19000 | f          |   -1.4748622470053 | f
+ 10 | 3680 |       4 |    2 | 240000 | 2790 | 20000 | f          |  -1.00085274698056 | f
+ 11 | 1660 |       3 |    1 |  87000 | 1030 | 17500 | t          |    1.8614251155696 | t
+ 12 | 1620 |       3 |    2 | 118600 | 1250 | 20000 | f          |  -1.77616417509695 | f
+ 13 | 3100 |       3 |    2 | 140000 | 1760 | 38000 | f          |  -1.07759348149549 | f
+ 14 | 2070 |       2 |    3 | 148000 | 1550 | 14000 | f          |  -3.42475835116536 | f
+ 15 |  650 |       3 |  1.5 |  65000 | 1450 | 12000 | t          |   1.00000008401961 | t
+(15 rows)
+</pre>
+Count the miss-classifications. Note this produces a more accurate 
+result than the linear case for this data set:
 <pre class="example">
-DROP TABLE IF EXISTS houses_svm_gaussian_regression, houses_svm_gaussian_regression_summary, houses_svm_gaussian_regression_random;
-SELECT madlib.svm_regression( 'houses',
-                              'houses_svm_gaussian_regression',
-                              'price',
-                              'ARRAY[1, tax, bath, size]',
+SELECT COUNT(*) FROM houses_pred_gaussian JOIN houses USING (id) 
+WHERE houses_pred_gaussian.prediction != (houses.price < 100000);
+</pre>
+<pre class="result">
+ count 
+-------+
+     0
+(1 row)
+</pre>
+-# In the case of an unbalanced class-size dataset, use the 'balanced' 
+parameter to classify when building the model:
+<pre class="example">
+DROP TABLE IF EXISTS houses_svm_gaussian, houses_svm_gaussian_summary, houses_svm_gaussian_random;
+SELECT madlib.svm_classification( 'houses',
+                                  'houses_svm_gaussian',
+                                  'price < 150000',
+                                  'ARRAY[1, tax, bath, size]',
+                                  'gaussian',
+                                  'n_components=10',
+                                  '',
+                                  'init_stepsize=1, max_iter=200, class_weight=balanced'
+                           );
+\\x on
+SELECT * FROM houses_svm_gaussian;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+coef               | {0.891926151039837,0.169282494673541,-2.26539133689874,0.526518499596676,-0.900664505989526,0.508112011288015,-0.355474591147659,1.23127975981665,1.53694964239487,1.46496058633682}
+loss               | 0.56900274445785
+norm_of_gradient   | 0.989597662458527
+num_iterations     | 183
+num_rows_processed | 15
+num_rows_skipped   | 0
+dep_var_mapping    | {f,t}
+</pre>
+
+<h4>Regression</h4>
+
+-# Create input data set.  For regression we use part of the well 
+known abalone data set https://archive.ics.uci.edu/ml/datasets/abalone :
+<pre class="example">
+DROP TABLE IF EXISTS abalone;
+CREATE TABLE abalone (id INT, sex TEXT, length FLOAT, diameter FLOAT, height FLOAT, rings INT);
+INSERT INTO abalone VALUES
+(1,'M',0.455,0.365,0.095,15),
+(2,'M',0.35,0.265,0.09,7),
+(3,'F',0.53,0.42,0.135,9),
+(4,'M',0.44,0.365,0.125,10),
+(5,'I',0.33,0.255,0.08,7),
+(6,'I',0.425,0.3,0.095,8),
+(7,'F',0.53,0.415,0.15,20),
+(8,'F',0.545,0.425,0.125,16),
+(9,'M',0.475,0.37,0.125,9),
+(10,'F',0.55,0.44,0.15,19),
+(11,'F',0.525,0.38,0.14,14),
+(12,'M',0.43,0.35,0.11,10),
+(13,'M',0.49,0.38,0.135,11),
+(14,'F',0.535,0.405,0.145,10),
+(15,'F',0.47,0.355,0.1,10),
+(16,'M',0.5,0.4,0.13,12),
+(17,'I',0.355,0.28,0.085,7),
+(18,'F',0.44,0.34,0.1,10),
+(19,'M',0.365,0.295,0.08,7),
+(20,'M',0.45,0.32,0.1,9);
+</pre>
+-# Train a linear regression model:
+<pre class="example">
+DROP TABLE IF EXISTS abalone_svm_regression, abalone_svm_regression_summary;
+SELECT madlib.svm_regression('abalone',
+                             'abalone_svm_regression',
+                             'rings',
+                             'ARRAY[1, length, diameter, height]'
+                           );
+\\x on
+SELECT * FROM abalone_svm_regression;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]------+-----------------------------------------------------------------------
+coef               | {1.998949892503,0.918517478913099,0.712125856084095,0.229379472956877}
+loss               | 8.29033295818392
+norm_of_gradient   | 23.225177785827
+num_iterations     | 100
+num_rows_processed | 20
+num_rows_skipped   | 0
+dep_var_mapping    | {NULL}
+</pre>
+-# Predict using the linear regression model:
+<pre class="example">
+DROP TABLE IF EXISTS abalone_regr;
+SELECT madlib.svm_predict('abalone_svm_regression',
+                          'abalone', 
+                          'id', 
+                          'abalone_regr');
+\\x off
+SELECT * FROM abalone JOIN abalone_regr USING (id) ORDER BY id;
+</pre>
+<pre class="result">
+ id | sex | length | diameter | height | rings |    prediction    | decision_function 
+----+-----+--------+----------+--------+-------+------------------+-------------------
+  1 | M   |  0.455 |    0.365 |  0.095 |    15 | 2.69859240928376 |  2.69859240928376
+  2 | M   |   0.35 |    0.265 |   0.09 |     7 | 2.52978857282818 |  2.52978857282818
+  3 | F   |   0.53 |     0.42 |  0.135 |     9 | 2.81582333426116 |  2.81582333426116
+  4 | M   |   0.44 |    0.365 |  0.125 |    10 | 2.69169603073001 |  2.69169603073001
+  5 | I   |   0.33 |    0.255 |   0.08 |     7 | 2.50200316683054 |  2.50200316683054
+  6 | I   |  0.425 |      0.3 |  0.095 |     8 | 2.62474869654157 |  2.62474869654157
+  7 | F   |   0.53 |    0.415 |   0.15 |    20 | 2.81570339722408 |  2.81570339722408
+  8 | F   |  0.545 |    0.425 |  0.125 |    16 | 2.83086793257882 |  2.83086793257882
+  9 | M   |  0.475 |     0.37 |  0.125 |     9 | 2.72740477577673 |  2.72740477577673
+ 10 | F   |   0.55 |     0.44 |   0.15 |    19 |  2.8518768970598 |   2.8518768970598
+ 11 | F   |  0.525 |     0.38 |   0.14 |    14 | 2.78389260680315 |  2.78389260680315
+ 12 | M   |   0.43 |     0.35 |   0.11 |    10 | 2.66838827339779 |  2.66838827339779
+ 13 | M   |   0.49 |     0.38 |  0.135 |    11 | 2.75059759385832 |  2.75059759385832
+ 14 | F   |  0.535 |    0.405 |  0.145 |    10 | 2.81202782833915 |  2.81202782833915
+ 15 | F   |   0.47 |    0.355 |    0.1 |    10 | 2.70639581129576 |  2.70639581129576
+ 16 | M   |    0.5 |      0.4 |   0.13 |    12 | 2.77287839069521 |  2.77287839069521
+ 17 | I   |  0.355 |     0.28 |  0.085 |     7 | 2.54391615211472 |  2.54391615211472
+ 18 | F   |   0.44 |     0.34 |    0.1 |    10 | 2.66815839489651 |  2.66815839489651
+ 19 | M   |  0.365 |    0.295 |   0.08 |     7 | 2.56263631931732 |  2.56263631931732
+ 20 | M   |   0.45 |     0.32 |    0.1 |     9 | 2.66310105219146 |  2.66310105219146
+(20 rows)
+</pre>
+RMS error:
+<pre class="example">
+SELECT SQRT(AVG((rings-prediction)*(rings-prediction))) as rms_error FROM abalone 
+JOIN abalone_regr USING (id);
+</pre>
+<pre class="result">
+    rms_error    
+-----------------+
+ 9.0884271818321
+(1 row)
+</pre>
+-# Train a non-linear regression model using a Gaussian kernel:
+<pre class="example">DROP TABLE IF EXISTS abalone_svm_gaussian_regression, abalone_svm_gaussian_regression_summary, abalone_svm_gaussian_regression_random;
+SELECT madlib.svm_regression( 'abalone',
+                              'abalone_svm_gaussian_regression',
+                              'rings',
+                              'ARRAY[1, length, diameter, height]',
                               'gaussian',
                               'n_components=10',
                               '',
                               'init_stepsize=1, max_iter=200'
                            );
+\\x on
+SELECT * FROM abalone_svm_gaussian_regression;
 </pre>
+<pre class="result">
+-[ RECORD 1 ]------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+coef               | {4.49016341280977,2.19062972461334,-2.04673653356154,1.11216153651262,2.83478599238881,-4.23122821845785,4.17684533744501,-5.36892552740644,0.775782561685621,-3.62606941016707}
+loss               | 2.66850539541894
+norm_of_gradient   | 0.97440079536379
+num_iterations     | 163
+num_rows_processed | 20
+num_rows_skipped   | 0
+dep_var_mapping    | {NULL}
+</pre>
+-# Predict using Gaussian regression model:
+<pre class="example">
+DROP TABLE IF EXISTS abalone_gaussian_regr;
+SELECT madlib.svm_predict('abalone_svm_gaussian_regression', 
+                          'abalone', 
+                          'id', 
+                          'abalone_gaussian_regr');
+\\x off
+SELECT * FROM abalone JOIN abalone_gaussian_regr USING (id) ORDER BY id;
+</pre>
+<pre class="result">
+ id | sex | length | diameter | height | rings |    prediction    | decision_function 
+----+-----+--------+----------+--------+-------+------------------+-------------------
+  1 | M   |  0.455 |    0.365 |  0.095 |    15 | 9.92189555675422 |  9.92189555675422
+  2 | M   |   0.35 |    0.265 |   0.09 |     7 | 9.81553107620013 |  9.81553107620013
+  3 | F   |   0.53 |     0.42 |  0.135 |     9 | 10.0847384862759 |  10.0847384862759
+  4 | M   |   0.44 |    0.365 |  0.125 |    10 | 10.0100000075406 |  10.0100000075406
+  5 | I   |   0.33 |    0.255 |   0.08 |     7 | 9.74093262454458 |  9.74093262454458
+  6 | I   |  0.425 |      0.3 |  0.095 |     8 | 9.94807651709641 |  9.94807651709641
+  7 | F   |   0.53 |    0.415 |   0.15 |    20 | 10.1448936105369 |  10.1448936105369
+  8 | F   |  0.545 |    0.425 |  0.125 |    16 | 10.0579420659954 |  10.0579420659954
+  9 | M   |  0.475 |     0.37 |  0.125 |     9 |  10.055724626407 |   10.055724626407
+ 10 | F   |   0.55 |     0.44 |   0.15 |    19 | 10.1225030222559 |  10.1225030222559
+ 11 | F   |  0.525 |     0.38 |   0.14 |    14 |  10.160706707435 |   10.160706707435
+ 12 | M   |   0.43 |     0.35 |   0.11 |    10 | 9.95760174386841 |  9.95760174386841
+ 13 | M   |   0.49 |     0.38 |  0.135 |    11 | 10.0981242315617 |  10.0981242315617
+ 14 | F   |  0.535 |    0.405 |  0.145 |    10 | 10.1501121415596 |  10.1501121415596
+ 15 | F   |   0.47 |    0.355 |    0.1 |    10 | 9.97689437628973 |  9.97689437628973
+ 16 | M   |    0.5 |      0.4 |   0.13 |    12 | 10.0633271219326 |  10.0633271219326
+ 17 | I   |  0.355 |     0.28 |  0.085 |     7 | 9.79492924255328 |  9.79492924255328
+ 18 | F   |   0.44 |     0.34 |    0.1 |    10 | 9.94856833428783 |  9.94856833428783
+ 19 | M   |  0.365 |    0.295 |   0.08 |     7 | 9.78278863173308 |  9.78278863173308
+ 20 | M   |   0.45 |     0.32 |    0.1 |     9 | 9.98822477687532 |  9.98822477687532
+(20 rows)
+</pre>
+Compute the RMS error. Note this produces a more accurate result than 
+the linear case for this data set:
+<pre class="example">
+SELECT SQRT(AVG((rings-prediction)*(rings-prediction))) as rms_error FROM abalone 
+JOIN abalone_gaussian_regr USING (id);
+</pre>
+<pre class="result">
+    rms_error     
+------------------+
+ 3.83678516581768
+(1 row)
+</pre>
+-# Cross validation.  Let's run cross validation for different initial step sizes and lambda values:
+<pre class="example">
+DROP TABLE IF EXISTS abalone_svm_gaussian_regression, abalone_svm_gaussian_regression_summary, 
+abalone_svm_gaussian_regression_random, abalone_svm_gaussian_regression_cv;
+SELECT madlib.svm_regression( 'abalone',
+                              'abalone_svm_gaussian_regression',
+                              'rings',
+                              'ARRAY[1, length, diameter, height]',
+                              'gaussian',
+                              'n_components=10',
+                              '',
+                              'init_stepsize=[0.01,1], n_folds=3, max_iter=200, lambda=[0.01, 0.1, 0.5], 
+                              validation_result=abalone_svm_gaussian_regression_cv'
+                           );
+\\x on
+SELECT * FROM abalone_svm_gaussian_regression;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+coef               | {4.46074154389204,2.19335800415975,-2.14775901092668,1.06805891149535,2.91168496475457,-3.95521278459095,4.20496790233169,-5.28144330907061,0.427743633754918,-3.58999505728692}
+loss               | 2.68317592175908
+norm_of_gradient   | 0.69852112502746
+num_iterations     | 169
+num_rows_processed | 20
+num_rows_skipped   | 0
+dep_var_mapping    | {NULL}
+</pre>
+View the summary table showing the final model parameters are those that produced 
+the lowest error in the cross validation runs:
+<pre class="example">
+SELECT * FROM abalone_svm_gaussian_regression_summary;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]--------+------------------------------------------------------------------------------------
+method               | SVR
+version_number       | 1.15-dev
+source_table         | abalone
+model_table          | abalone_svm_gaussian_regression
+dependent_varname    | rings
+independent_varname  | ARRAY[1, length, diameter, height]
+kernel_func          | gaussian
+kernel_params        | gamma=0.25, n_components=10,random_state=1, fit_intercept=False, fit_in_memory=True
+grouping_col         | NULL
+optim_params         | init_stepsize=1.0,
+                     | decay_factor=0.9,
+                     | max_iter=200,
+                     | tolerance=1e-10,
+                     | epsilon=0.01,
+                     | eps_table=,
+                     | class_weight=               
+reg_params           | lambda=0.01, norm=l2, n_folds=3
+num_all_groups       | 1
+num_failed_groups    | 0
+total_rows_processed | 20
+total_rows_skipped   | 0
+(6 rows)
+</pre>
+View the statistics for the various cross validation values:
+<pre class="example">
+\\x off
+SELECT * FROM abalone_svm_gaussian_regression_cv;
+</pre>
+<pre class="result">
+ init_stepsize | lambda |   mean_score   | std_dev_score  
+---------------+--------+----------------+----------------
+           1.0 |   0.01 | -4.06711568585 | 0.435966381366
+           1.0 |    0.1 | -4.08068428345 |  0.44660797513
+           1.0 |    0.5 | -4.52576046087 |  0.20597876382
+          0.01 |   0.01 | -11.0231044189 | 0.739956548721
+          0.01 |    0.1 | -11.0244799274 | 0.740029346709
+          0.01 |    0.5 | -11.0305445077 | 0.740350338532
+(6 rows)
+</pre>
+-# Predict using the cross-validated Gaussian regression model:
+<pre class="example">
+DROP TABLE IF EXISTS abalone_gaussian_regr;
+SELECT madlib.svm_predict('abalone_svm_gaussian_regression', 
+                          'abalone', 
+                          'id', 
+                          'abalone_gaussian_regr');
+</pre>
+Compute the RMS error. Note this produces a more accurate result than 
+the previous run with the Gaussian kernel:
+<pre class="example">
+SELECT SQRT(AVG((rings-prediction)*(rings-prediction))) as rms_error FROM abalone 
+JOIN abalone_gaussian_regr USING (id);
+</pre>
+<pre class="result">
+    rms_error     
+------------------+
+ 3.84208909699442
+(1 row)
+</pre>
+
+<h4>Novelty Detection</h4>
+
 -# Now train a non-linear one-class SVM for novelty detection, using a Gaussian kernel.
 Note that the dependent variable is not a parameter for one-class:
 <pre class="example">
@@ -626,131 +980,43 @@ select madlib.svm_one_class('houses',
                             NULL,
                             'max_iter=100, init_stepsize=10,lambda=10, tolerance=0'
                             );
-</pre>
--# View the result for the Gaussian novelty detection model.
-<pre class="example">
--- Set extended display on for easier reading of output
-\\x ON
+\\x on
 SELECT * FROM houses_one_class_gaussian;
 </pre>
 Result:
 <pre class="result">
 -[ RECORD 1 ]------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 coef               | {redacted for brevity}
-loss               | 15.1053343738
-norm_of_gradient   | 13.9133653663837
+loss               | 0.944016313708205
+norm_of_gradient   | 14.5271059047443
 num_iterations     | 100
 num_rows_processed | 16
 num_rows_skipped   | -1
 dep_var_mapping    | {-1,1}
 </pre>
--# Now let's look at the prediction functions.  We want to predict if house price
-is less than $100,000.  In the following examples we will 
-use the training data set for prediction as well, which is not usual but serves to
-show the syntax.  The predicted results are in the \e prediction column and the 
-actual data is in the \e target column.
-For the linear model:
-<pre class="example">
-DROP TABLE IF EXISTS houses_pred;
-SELECT madlib.svm_predict('houses_svm', 'houses', 'id', 'houses_pred');
-SELECT *, price < 100000 AS target FROM houses JOIN houses_pred USING (id) ORDER BY id;
-</pre>
-Result:
-<pre class="result">
- id | tax  | bedroom | bath | price  | size |  lot  | prediction | decision_function  | target 
-----+------+---------+------+--------+------+-------+------------+--------------------+--------
-  1 |  590 |       2 |    1 |  50000 |  770 | 22100 | t          |   104.685894748292 | t
-  2 | 1050 |       3 |    2 |  85000 | 1410 | 12000 | t          |   200.592436923938 | t
-  3 |   20 |       3 |    1 |  22500 | 1060 |  3500 | t          |   378.765847404582 | t
-  4 |  870 |       2 |    2 |  90000 | 1300 | 17500 | t          |   214.034895129328 | t
-  5 | 1320 |       3 |    2 | 133000 | 1500 | 30000 | t          |   153.227581012028 | f
-  6 | 1350 |       2 |    1 |  90500 |  820 | 25700 | f          |  -102.382793811158 | t
-  7 | 2790 |       3 |  2.5 | 260000 | 2130 | 25000 | f          |  -53.8237999423388 | f
-  8 |  680 |       2 |    1 | 142500 | 1170 | 22000 | t          |   223.090041223192 | f
-  9 | 1840 |       3 |    2 | 160000 | 1500 | 19000 | f          | -0.858545961972027 | f
- 10 | 3680 |       4 |    2 | 240000 | 2790 | 20000 | f          |   -78.226279884182 | f
- 11 | 1660 |       3 |    1 |  87000 | 1030 | 17500 | f          |  -118.078558954948 | t
- 12 | 1620 |       3 |    2 | 118600 | 1250 | 20000 | f          |  -26.3388234857219 | f
- 13 | 3100 |       3 |    2 | 140000 | 1760 | 38000 | f          |  -279.923699905712 | f
- 14 | 2070 |       2 |    3 | 148000 | 1550 | 14000 | f          |  -50.7810508979155 | f
- 15 |  650 |       3 |  1.5 |  65000 | 1450 | 12000 | t          |   333.579085875975 | t
-</pre>
-Prediction using the Gaussian model:
-<pre class="example">
-DROP TABLE IF EXISTS houses_pred_gaussian;
-SELECT madlib.svm_predict('houses_svm_gaussian', 'houses', 'id', 'houses_pred_gaussian');
-SELECT *, price < 100000 AS target FROM houses JOIN houses_pred_gaussian USING (id) ORDER BY id;
-</pre>
-This produces a more accurate result than the linear case for this small data set:
-<pre class="result">
- id | tax  | bedroom | bath | price  | size |  lot  | prediction | decision_function | target 
-----+------+---------+------+--------+------+-------+------------+-------------------+--------
-  1 |  590 |       2 |    1 |  50000 |  770 | 22100 | t          |  1.00338548176312 | t
-  2 | 1050 |       3 |    2 |  85000 | 1410 | 12000 | t          |  1.00000000098154 | t
-  3 |   20 |       3 |    1 |  22500 | 1060 |  3500 | t          | 0.246566699635389 | t
-  4 |  870 |       2 |    2 |  90000 | 1300 | 17500 | t          |   1.0000000003367 | t
-  5 | 1320 |       3 |    2 | 133000 | 1500 | 30000 | f          | -1.98940593324397 | f
-  6 | 1350 |       2 |    1 |  90500 |  820 | 25700 | t          |  3.74336995109761 | t
-  7 | 2790 |       3 |  2.5 | 260000 | 2130 | 25000 | f          | -1.01574407296086 | f
-  8 |  680 |       2 |    1 | 142500 | 1170 | 22000 | f          |  -1.0000000002071 | f
-  9 | 1840 |       3 |    2 | 160000 | 1500 | 19000 | f          | -3.88267069310101 | f
- 10 | 3680 |       4 |    2 | 240000 | 2790 | 20000 | f          | -3.44507576539002 | f
- 11 | 1660 |       3 |    1 |  87000 | 1030 | 17500 | t          |   2.3409866081761 | t
- 12 | 1620 |       3 |    2 | 118600 | 1250 | 20000 | f          | -3.51563221173085 | f
- 13 | 3100 |       3 |    2 | 140000 | 1760 | 38000 | f          | -1.00000000011163 | f
- 14 | 2070 |       2 |    3 | 148000 | 1550 | 14000 | f          | -1.87710363254055 | f
- 15 |  650 |       3 |  1.5 |  65000 | 1450 | 12000 | t          |  1.34334834982263 | t
-</pre>
--# Prediction using the linear regression model:
-<pre class="example">
-DROP TABLE IF EXISTS houses_regr;
-SELECT madlib.svm_predict('houses_svm_regression', 'houses', 'id', 'houses_regr');
-SELECT * FROM houses JOIN houses_regr USING (id) ORDER BY id;
-</pre>
-Result for the linear regression model:
-<pre class="result">
-  id | tax  | bedroom | bath | price  | size |  lot  |    prediction    | decision_function 
-----+------+---------+------+--------+------+-------+------------------+-------------------
-  1 |  590 |       2 |    1 |  50000 |  770 | 22100 | 55288.6992755623 |  55288.6992755623
-  2 | 1050 |       3 |    2 |  85000 | 1410 | 12000 | 99978.8137019119 |  99978.8137019119
-  3 |   20 |       3 |    1 |  22500 | 1060 |  3500 | 43157.5130381023 |  43157.5130381023
-  4 |  870 |       2 |    2 |  90000 | 1300 | 17500 | 88098.9557296729 |  88098.9557296729
-  5 | 1320 |       3 |    2 | 133000 | 1500 | 30000 | 114803.884262468 |  114803.884262468
-  6 | 1350 |       2 |    1 |  90500 |  820 | 25700 | 88899.5186193813 |  88899.5186193813
-  7 | 2790 |       3 |  2.5 | 260000 | 2130 | 25000 | 201108.397013076 |  201108.397013076
-  8 |  680 |       2 |    1 | 142500 | 1170 | 22000 | 75004.3236915733 |  75004.3236915733
-  9 | 1840 |       3 |    2 | 160000 | 1500 | 19000 | 136434.749667136 |  136434.749667136
- 10 | 3680 |       4 |    2 | 240000 | 2790 | 20000 | 264483.856987395 |  264483.856987395
- 11 | 1660 |       3 |    1 |  87000 | 1030 | 17500 | 110180.048139857 |  110180.048139857
- 12 | 1620 |       3 |    2 | 118600 | 1250 | 20000 | 117300.841695563 |  117300.841695563
- 13 | 3100 |       3 |    2 | 140000 | 1760 | 38000 | 199229.683967752 |  199229.683967752
- 14 | 2070 |       2 |    3 | 148000 | 1550 | 14000 | 147998.930271016 |  147998.930271016
- 15 |  650 |       3 |  1.5 |  65000 | 1450 | 12000 | 84936.7661235861 |  84936.7661235861
-</pre>
-For the non-linear Gaussian regression model (output not shown):
-<pre class="example">
-DROP TABLE IF EXISTS houses_gaussian_regr;
-SELECT madlib.svm_predict('houses_svm_gaussian_regression', 'houses', 'id', 'houses_gaussian_regr');
-SELECT * FROM houses JOIN houses_gaussian_regr USING (id) ORDER BY id;
-</pre>
--#  For the novelty detection using one-class, let's create a test data set using 
-the last 3 values from the training set plus an outlier at the end (10x price):
+-#  For the novelty detection using one-class, let's create a test data 
+set using the last 3 values from the training set plus an outlier at 
+the end (10x price):
 <pre class="example">
 DROP TABLE IF EXISTS houses_one_class_test;
 CREATE TABLE houses_one_class_test (id INT, tax INT, bedroom INT, bath FLOAT, price INT,
             size INT, lot INT);
-COPY houses_one_class_test FROM STDIN WITH DELIMITER '|';
- 1 | 3100 |       3 |    2 | 140000 | 1760 | 38000
- 2 | 2070 |       2 |    3 | 148000 | 1550 | 14000
- 3 |  650 |       3 |  1.5 |  65000 | 1450 | 12000
- 4 |  650 |       3 |  1.5 |  650000 | 1450 | 12000
-\\.
+INSERT INTO houses_one_class_test VALUES   
+ (1 , 3100 ,       3 ,    2 , 140000 , 1760 , 38000),
+ (2 , 2070 ,       2 ,    3 , 148000 , 1550 , 14000),
+ (3 ,  650 ,       3 ,  1.5 ,  65000 , 1450 , 12000),
+ (4 ,  650 ,       3 ,  1.5 ,  650000 , 1450 , 12000);      
 </pre>
-Now run prediction on the Gaussian one-class novelty detection model:
+Now run prediction on the Gaussian one-class novelty detection model.
+Result shows the last row predicted to be novel:
 <pre class="example">
-DROP TABLE IF EXISTS houses_once_class_pred;
-SELECT madlib.svm_predict('houses_one_class_gaussian', 'houses_one_class_test', 'id', 'houses_one_class_pred');
-SELECT * FROM houses_one_class_test JOIN houses_one_class_pred USING (id) ORDER BY id;
+DROP TABLE IF EXISTS houses_pred;
+SELECT madlib.svm_predict('houses_one_class_gaussian', 
+                          'houses_one_class_test', 
+                          'id', 
+                          'houses_pred');
+\\x off
+SELECT * FROM houses_one_class_test JOIN houses_pred USING (id) ORDER BY id;
 </pre>
 Result showing the last row predicted to be novel:
 <pre class="result">
@@ -761,32 +1027,6 @@ Result showing the last row predicted to be novel:
   3 |  650 |       3 |  1.5 |  65000 | 1450 | 12000 |          1 |  0.0435064008756942
   4 |  650 |       3 |  1.5 | 650000 | 1450 | 12000 |         -1 | -0.0168967845338403
 </pre>
--# Create a model for an unbalanced class-size dataset, then use the 'balanced' parameter
-to classify:
-<pre class="example">
-DROP TABLE IF EXISTS houses_svm_gaussian, houses_svm_gaussian_summary, houses_svm_gaussian_random;
-SELECT madlib.svm_classification( 'houses',
-                                  'houses_svm_gaussian',
-                                  'price < 150000',
-                                  'ARRAY[1, tax, bath, size]',
-                                  'gaussian',
-                                  'n_components=10',
-                                  '',
-                                  'init_stepsize=1, max_iter=200, class_weight=balanced'
-                           );
-SELECT * FROM houses_svm_gaussian;
-</pre>
-<pre class="result">
--[ RECORD 1 ]------+----------------------------------------------------------------------------------------------------------------------------------------------------
-coef               | {-0.621843913637,2.4166374426,-1.54726833725,-1.74512599505,1.16231799548,-0.54019307285,-4.14373293694,-0.623069170717,3.59669949057,-1.005501237}
-loss               | 1.87657250199
-norm_of_gradient   | 1.41148000266816
-num_iterations     | 174
-num_rows_processed | 15
-num_rows_skipped   | 0
-dep_var_mapping    | {f,t}
-</pre>
-Note that the results you get for all examples may vary with the platform you are using.
 
 @anchor background
 @par Technical Background
