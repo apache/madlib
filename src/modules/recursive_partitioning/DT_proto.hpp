@@ -105,10 +105,9 @@ public:
     Index trueChild(Index current) const { return 2 * current + 1; }
     Index falseChild(Index current) const { return 2 * current + 2; }
     bool isInternalNode(const Index node_index) const {
-       int split_feat_index = feature_indices(node_index);
-       return (split_feat_index != NODE_NON_EXISTING &&
-                split_feat_index != IN_PROCESS_LEAF &&
-                split_feat_index != FINISHED_LEAF);
+        // Internal nodes have a valid index pointing to the feature
+        // used in the split of the node.
+        return feature_indices(node_index) >= 0;
     }
 
     double impurity(const ColumnVector & stats) const;

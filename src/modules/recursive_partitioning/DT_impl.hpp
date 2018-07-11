@@ -234,8 +234,8 @@ DecisionTree<Container>::getMajorityCount(Index node_index) const {
     // value for the primary split of the node.
     if (feature_indices(node_index) < 0)
         throw std::runtime_error("Requested count for a leaf/non-existing node");
-    uint64_t true_count = static_cast<uint64_t>(nonnull_split_count(node_index*2));
-    uint64_t false_count = static_cast<uint64_t>(nonnull_split_count(node_index*2 + 1));
+    uint64_t true_count = static_cast<uint64_t>(nonnull_split_count(trueChild(node_index)));
+    uint64_t false_count = static_cast<uint64_t>(nonnull_split_count(falseChild(node_index)));
     return true_count >= false_count ? true_count : false_count;
 }
 
@@ -248,8 +248,8 @@ DecisionTree<Container>::getMajoritySplit(Index node_index) const {
     // value for the primary split of the node.
     if (feature_indices(node_index) < 0)
         throw std::runtime_error("Requested count for a leaf/non-existing node");
-    uint64_t true_count = static_cast<uint64_t>(nonnull_split_count(node_index*2));
-    uint64_t false_count = static_cast<uint64_t>(nonnull_split_count(node_index*2 + 1));
+    uint64_t true_count = static_cast<uint64_t>(nonnull_split_count(trueChild(node_index)));
+    uint64_t false_count = static_cast<uint64_t>(nonnull_split_count(falseChild(node_index)));
     return (true_count >= false_count);
 }
 // -------------------------------------------------------------------------
