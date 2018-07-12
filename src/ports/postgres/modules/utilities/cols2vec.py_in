@@ -6,15 +6,17 @@
 """
 
 import plpy
-from utilities.control import MinWarning
-from utilities.utilities import split_quoted_delimited_str
-from utilities.utilities import _string_to_array
-from utilities.utilities import _assert
-from utilities.validate_args import columns_exist_in_table
-from utilities.validate_args import is_var_valid
-from utilities.validate_args import get_cols
-from utilities.validate_args import quote_ident
-from utilities.utilities import py_list_to_sql_string
+from control import MinWarning
+from internal.db_utils import quote_literal
+from utilities import split_quoted_delimited_str
+from utilities import _string_to_array
+from utilities import _assert
+from utilities import add_postfix
+from validate_args import columns_exist_in_table
+from validate_args import is_var_valid
+from validate_args import get_cols
+from validate_args import quote_ident
+from utilities import py_list_to_sql_string
 
 
 m4_changequote(`<!', `!>')
@@ -31,12 +33,12 @@ def validate_cols2vec_args(source_table, output_table,
         _assert(
             columns_exist_in_table(
                 source_table, split_quoted_delimited_str(list_of_features)),
-            "Invalid columns to list of features {0}".format(list_of_features))
+            "Invalid columns in list_of_features {0}".format(list_of_features))
 
     if cols_to_output and cols_to_output.strip() != '*':
         _assert(
             columns_exist_in_table(
-                source_table, _string_to_array(cols_to_output)),
+                source_table, split_quoted_delimited_str(cols_to_output)),
             "Invalid columns to output list {0}".format(cols_to_output))
 
 
@@ -44,68 +46,64 @@ def cols2vec(schema_madlib, source_table, output_table, list_of_features,
              list_of_features_to_exclude=None, cols_to_output=None, **kwargs):
     """
     Args:
-        @param schema_madlib:               Name of MADlib schema
-        @param model:                       Name of table containing the tree model
-        @param source_table:                Name of table containing prediction data
-        @param output_table:                Name of table to output the results
-        @param list_of_features:            Comma-separated string of column names or
-                                            expressions to put into feature array.
-                                            Can also be a '*' implying all columns
-                                            are to be put into feature array.
+        @param schema_madlib: Name of MADlib schema
+        @param model: Name of table containing the tree model
+        @param source_table: Name of table containing prediction data
+        @param output_table: Name of table to output the results
+        @param list_of_features: Comma-separated string of column names or
+                                 expressions to put into feature array.
+                                 Can also be a '*' implying all columns
+                                 are to be put into feature array.
         @param list_of_features_to_exclude: Comma-separated string of column names
                                             to exclude from the feature array
-        @param cols_to_output:              Comma-separated string of column names
-                                            from the source table to keep in the output table,
-                                            in addition to the feature array.
+        @param cols_to_output: Comma-separated string of column names
+                               from the source table to keep in the output table,
+                               in addition to the feature array.
 
     Returns:
         None
 
     """
-
     with MinWarning('warning'):
         validate_cols2vec_args(source_table, output_table, list_of_features,
-                               list_of_features_to_exclude, cols_to_output, **kwargs)
+                               list_of_features_to_exclude,
+                               cols_to_output, **kwargs)
 
+        all_cols = get_cols(source_table, schema_madlib)
         if list_of_features.strip() == '*':
-            all_cols = get_cols(source_table, schema_madlib)
-            exclude_set = set(split_quoted_delimited_str(
-                list_of_features_to_exclude))
-            feature_list = [col for col in all_cols if col not in exclude_set]
-
+            exclude_set = set(split_quoted_delimited_str(list_of_features_to_exclude))
+            feature_list = [c for c in all_cols if c not in exclude_set]
         else:
             feature_list = split_quoted_delimited_str(list_of_features)
 
-        feature_cols = py_list_to_sql_string(
-            list(feature_list), "text", False)
-        filtered_list_of_features = ",".join(feature_list)
-
-        output_cols = ''
         if cols_to_output:
-            output_cols_list = [', '.join(get_cols(source_table, schema_madlib)) if col == '*' else col
-                                for col in split_quoted_delimited_str(cols_to_output)]
-            output_cols = ', '.join(output_cols_list) + ","
+            additional_cols = (all_cols if cols_to_output == '*' else
+                               split_quoted_delimited_str(cols_to_output))
+            additional_cols_str = ', '.join(additional_cols) + ","
+        else:
+            additional_cols_str = ''
 
+        feature_list_str = py_list_to_sql_string(feature_list, "TEXT[]", True)
         plpy.execute("""
-    		CREATE TABLE {output_table} AS
-    		select {output_cols}
-            array[{filtered_list_of_features}] as feature_vector
-    		from {source_table}
-    		""".format(**locals()))
+            CREATE TABLE {output_table} AS
+                SELECT {additional_cols_str}
+                       {feature_list_str} AS feature_vector
+                FROM {source_table}
+            """.format(**locals()))
 
-        plpy.execute("""
-            CREATE TABLE {output_table}_summary
-            (
-            source_table TEXT,
-            list_of_features TEXT,
-            list_of_features_to_exclude TEXT,
-            feature_cols TEXT[]
-            )""".format(output_table=output_table))
+        feature_cols = py_list_to_sql_string(
+            [quote_literal(f) for f in feature_list], "TEXT", True)
 
+        output_table_summary = add_postfix(output_table, "_summary")
+        # Dollar-quote the text to allow single-quotes without escaping
+        dq = "$__MADLIB_OUTER__$"
+        feature_exclude_str = ("NULL" if not list_of_features_to_exclude else
+                               list_of_features_to_exclude)
         plpy.execute("""
-            INSERT INTO {output_table}_summary
-            VALUES ('{source_table}','{list_of_features}',
-            '{list_of_features_to_exclude}',
-            (SELECT {feature_cols} as feature_names from {source_table} limit 1))
-            """.format( **locals()))
-        return
+            CREATE TABLE {output_table_summary} AS
+            SELECT
+                {dq}{source_table}{dq}::TEXT AS source_table,
+                {dq}{list_of_features}{dq}::TEXT AS list_of_features,
+                {dq}{feature_exclude_str}{dq}::TEXT AS list_of_features_to_exclude,
+                {feature_cols} AS feature_names
+            """.format(**locals()))
