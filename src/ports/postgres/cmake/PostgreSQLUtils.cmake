@@ -6,10 +6,6 @@ function(define_postgresql_features IN_VERSION OUT_FEATURES)
         list(APPEND ${OUT_FEATURES} __HAS_BOOL_TO_TEXT_CAST__)
     endif()
 
-    if(NOT ${IN_VERSION} VERSION_LESS "9.1")
-        list(APPEND ${OUT_FEATURES} __HAS_PLPY_QUOTE_FUNCTIONS__)
-    endif()
-
     # Pass values to caller
     set(${OUT_FEATURES} "${${OUT_FEATURES}}" PARENT_SCOPE)
 endfunction(define_postgresql_features)
