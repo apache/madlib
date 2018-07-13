@@ -329,9 +329,10 @@ def _parse_result_logfile(retval, logfile, sql_abspath,
             "|Time: %d milliseconds" % (milliseconds)
 
     if result == 'FAIL':
-        info_(this, "Failed executing %s" % sql_abspath, True)
-        info_(this, "Check the log at %s" % logfile, True)
+        error_(this, "Failed executing %s" % sql_abspath, stop=False)
+        error_(this, "Check the log at %s" % logfile, stop=False)
     return result
+
 
 def _check_db_port(portid):
     """
@@ -888,11 +889,13 @@ def run_install_check(args, testcase, madpack_cmd):
                       % (test_user, test_schema, schema)
 
             # Loop through all test SQL files for this module
+            ic_sql_files = set(glob.glob(maddir_mod_sql + '/' + module + '/test/*.ic.sql_in'))
             if is_install_check:
-                sql_files = maddir_mod_sql + '/' + module + '/test/*.ic.sql_in'
+                sql_files = ic_sql_files
             else:
-                sql_files = maddir_mod_sql + '/' + module + '/test/*[!ic].sql_in'
-            for sqlfile in sorted(glob.glob(sql_files), reverse=True):
+                all_sql_files = set(glob.glob(maddir_mod_sql + '/' + module + '/test/*.sql_in'))
+                sql_files = all_sql_files - ic_sql_files
+            for sqlfile in sorted(sql_files):
                 algoname = os.path.basename(sqlfile).split('.')[0]
                 # run only algo specified
                 if (modset and modset[module] and
