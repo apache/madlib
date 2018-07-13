@@ -9,8 +9,9 @@ function(define_greenplum_features IN_VERSION OUT_FEATURES)
         list(APPEND ${OUT_FEATURES} __HAS_FUNCTION_PROPERTIES__)
     endif()
 
-    if(${IN_VERSION} VERSION_GREATER "4.3")
+    if(NOT ${IN_VERSION} VERSION_LESS "6.0")
         list(APPEND ${OUT_FEATURES} __HAS_BOOL_TO_TEXT_CAST__)
+        list(APPEND ${OUT_FEATURES} __HAS_PLPY_QUOTE_FUNCTIONS__)
     endif()
 
     # Pass values to caller

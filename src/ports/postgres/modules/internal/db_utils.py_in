@@ -24,51 +24,58 @@ from utilities.validate_args import get_expr_type
 m4_changequote(`<!', `!>')
 
 QUOTE_DELIMITER="$__madlib__$"
+HAS_PLPY_QUOTE_FUNCTIONS = m4_ifdef(<!__HAS_PLPY_QUOTE_FUNCTIONS__!>,
+                                    <!True!>, <!False!>);
+
 
 def get_distinct_col_levels(source_table, col_name, col_type=None):
-	"""
-	Add description here
-	:return:
-	"""
-	if not col_type:
-		col_type = get_expr_type(col_name, source_table)
+    """
+    Add description here
+    :return:
+    """
+    if not col_type:
+        col_type = get_expr_type(col_name, source_table)
 
-	if is_psql_char_type(col_type):
-		dep_var_text_patched = "quote_literal({0})".format(col_name)
-	else:
-		dep_var_text_patched = col_name
+    if is_psql_char_type(col_type):
+        dep_var_text_patched = "quote_literal({0})".format(col_name)
+    else:
+        dep_var_text_patched = col_name
 
-	levels = plpy.execute("""
+    levels = plpy.execute("""
                 SELECT DISTINCT {dep_var_text_patched} AS levels
                 FROM {source_table}
                 WHERE ({col_name}) is NOT NULL
                 """.format(**locals()))
 
-	levels = sorted(l["levels"] for l in levels)
-	return levels
+    levels = sorted(l["levels"] for l in levels)
+    return levels
+
 
 def get_one_hot_encoded_expr(col_name, col_levels):
-	"""
-	All the values in col_levels should have been quoted and escaped with
-	the sql function `quote_literal`.
-	:param col_name:
-	:param col_levels:
-	:return:
-	"""
-	one_hot_encoded_expr = ["({0}) = {1}".format(col_name, c)
-					for c in col_levels]
-	return 'ARRAY[{0}]::INTEGER[]'.format(', '.join(one_hot_encoded_expr))
+    """
+    All the values in col_levels should have been quoted and escaped with
+    the sql function `quote_literal`.
+    :param col_name:
+    :param col_levels:
+    :return:
+    """
+    one_hot_encoded_expr = ["({0}) = {1}".format(col_name, c)
+                            for c in col_levels]
+    return 'ARRAY[{0}]::INTEGER[]'.format(', '.join(one_hot_encoded_expr))
+# ------------------------------------------------------------------------------
 
-def quote_literal_python_list(values):
-	"""
-	This function will sql quote all the values inside a python list
-	:param values:
-	:return:
-	"""
-	quoted_values=[]
-	for value in values:
-		quoted_values.append(plpy.execute(""
-		"select quote_literal({0}{1}{0}) as quoted_value".
-		format(QUOTE_DELIMITER, value))[0]['quoted_value'])
 
-	return quoted_values
+def quote_literal(input_str):
+    """ Return the given string suitably quoted to be used as a string literal
+        in an SQL statement string.
+
+        The plpy.quote_literal is not available in GPDB 4.3 - this function is
+        provided as a proxy for that platform. For all other platforms this
+        function, forwards the argument to plpy.quote_literal.
+    """
+    if HAS_PLPY_QUOTE_FUNCTIONS:
+        return plpy.quote_literal(input_str)
+    else:
+        return "{qd}{input_str}{qd}".format(qd=QUOTE_DELIMITER,
+                                            input_str=input_str)
+# ------------------------------------------------------------------------------
