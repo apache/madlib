@@ -1511,10 +1511,8 @@ DecisionTree<Container>::computeVariableImportance(
                     uint64_t node_count = nodeCount(node_index);
                     uint64_t maj_count = getMajorityCount(node_index);
                     uint64_t min_count =  node_count - maj_count;
+                    assert(min_count > 0);
 
-                    if (min_count == 0) {
-                        min_count = 1;
-                    }
                     double adj_agreement =
                         (surr_agreement(surr_lookup_index) - maj_count) / min_count;
                     Index surr_feat_index = surr_indices(surr_lookup_index);
