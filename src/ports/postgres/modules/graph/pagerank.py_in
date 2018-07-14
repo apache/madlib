@@ -455,6 +455,7 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args, out_
                             WHERE __t1__.{src}=__t2__.{dest}
                             AND {where_group_clause}
                         ) {vpg_where_clause_ins}
+                        GROUP BY {select_group_cols}, {vertex_id}, pagerank
                     """.format(
                     select_group_cols=get_table_qualified_col_str(
                         '__t1__', grouping_cols_list),
@@ -526,6 +527,7 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args, out_
                 # This is used only when grouping is set. This essentially will have
                 # the condition that will help skip the PageRank computation on groups
                 # that have converged.
+
                 plpy.execute("""
                         CREATE TABLE {message} AS
                         SELECT {grouping_cols_select_pr}
@@ -543,6 +545,7 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args, out_
                     """.format(ignore_group_clause=ignore_group_clause_pr
                                if iteration_num > 0 else ignore_group_clause_first,
                                **locals()))
+
                 # If there are nodes that have no incoming edges, they are not
                 # captured in the message table. Insert entries for such nodes,
                 # with random_prob.
@@ -564,7 +567,19 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args, out_
                     # If no grouping columns are specified, then we check if there is
                     # at least one unconverged node (limit 1 is used in the
                     # query).
-                    plpy.execute("""
+                    if iteration_num == 0 and grouping_cols:
+                        # Hack to address corner case:
+                        # With grouping, if there was a graph that converged in
+                        # the very first iteration (a complete graph is an eg.
+                        # of such a graph), then the pagerank scores for that
+                        # group was not showing up in the output. The following
+                        # code just prevents convergence in the first iteration.
+                        plpy.execute("""
+                            CREATE TEMP TABLE {message_unconv} AS
+                            SELECT * FROM {distinct_grp_table}
+                        """.format(**locals()))
+                    else:
+                        plpy.execute("""
                             CREATE TEMP TABLE {message_unconv} AS
                             SELECT {grouping_cols_select_conv}
                             FROM {message}
@@ -578,19 +593,23 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args, out_
                         """.format(ignore_group_clause=ignore_group_clause_ins
                                    if iteration_num > 0 else ignore_group_clause_conv,
                                    **locals()))
+
                     unconverged = plpy.execute("""SELECT COUNT(*) AS cnt FROM {0}
                         """.format(message_unconv))[0]["cnt"]
                     if iteration_num > 0 and grouping_cols:
                         # Update result and summary tables for groups that have
                         # converged
                         # since the last iteration.
-                        update_output_grouping_tables_for_link_analysis(temp_summary_table,
-                                                                        iteration_num,
-                                                                        summary_table,
-                                                                        out_table, message,
-                                                                        grouping_cols_list,
-                                                                        cur_unconv,
-                                                                        message_unconv)
+                        update_output_grouping_tables_for_link_analysis(
+                            temp_summary_table,
+                            iteration_num,
+                            summary_table,
+                            out_table,
+                            message,
+                            grouping_cols_list,
+                            cur_unconv,
+                            message_unconv)
+
                     plpy.execute("DROP TABLE IF EXISTS {0}".format(cur_unconv))
                     plpy.execute("""ALTER TABLE {message_unconv} RENAME TO
                         {cur_unconv} """.format(**locals()))
@@ -613,21 +632,24 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args, out_
                         # We completed max_iters, but there are still some unconverged
                         # groups # Update the result and summary tables for unconverged
                         # groups.
-                        update_output_grouping_tables_for_link_analysis(temp_summary_table,
-                                                                        iteration_num,
-                                                                        summary_table,
-                                                                        out_table, cur,
-                                                                        grouping_cols_list,
-                                                                        cur_unconv)
+                        update_output_grouping_tables_for_link_analysis(
+                            temp_summary_table,
+                            iteration_num,
+                            summary_table,
+                            out_table,
+                            cur,
+                            grouping_cols_list,
+                            cur_unconv)
                     else:
                         # No group has converged. List of all group values are in
                         # distinct_grp_table.
-                        update_output_grouping_tables_for_link_analysis(temp_summary_table,
-                                                                        iteration_num,
-                                                                        summary_table,
-                                                                        out_table, cur,
-                                                                        grouping_cols_list,
-                                                                        distinct_grp_table)
+                        update_output_grouping_tables_for_link_analysis(
+                            temp_summary_table,
+                            iteration_num,
+                            summary_table,
+                            out_table, cur,
+                            grouping_cols_list,
+                            distinct_grp_table)
 
                 # updating the calculated pagerank value in case of
                 # Personalized Page Rank.
@@ -639,15 +661,16 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args, out_
                                     """.format(out_table=out_table,
                                                total_ppr_nodes=total_ppr_nodes))
             else:
-                    # updating the calculated pagerank value in case of
-                    # Personalized Page Rank.
-                    # Ref :
-                    # https://docs.oracle.com/cd/E56133_01/latest/reference/algorithms/pagerank.html
+                # updating the calculated pagerank value in case of
+                # Personalized Page Rank.
+                # Ref :
+                # https://docs.oracle.com/cd/E56133_01/latest/reference/algorithms/pagerank.html
                 if total_ppr_nodes > 1:
                     plpy.execute("""UPDATE {table_name} set pagerank =
                                     pagerank / {total_ppr_nodes}::DOUBLE PRECISION
                                  """.format(table_name=cur,
                                             total_ppr_nodes=total_ppr_nodes))
+
                 plpy.execute("""
                         ALTER TABLE {table_name}
                         RENAME TO {out_table}
