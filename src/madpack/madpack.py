@@ -904,25 +904,25 @@ def parse_arguments():
   $ madpack dev-check
 
   This will run dev-check on all the installed modules in MADlib. Another
-  similar, but a light-weight check is called install-check.
+  similar, but light-weight check, is called install-check.
 
   $ madpack unit-test -t convex,recursive_partitioning/decision_tree
 
   This will run all the unit tests that are defined in the convex module, and
   for decision trees in the recursive partitioning module.
-  The -t option to run tests only for required modules can be used similarly
-  for both install-check and dev-check too.
+  The -t option runs tests only for required modules, and can be used similarly
+  for both install-check and dev-check.
   """)
 
     help_msg = """One of the following options:
-                  install        : run sql scripts to load into DB
-                  upgrade        : run sql scripts to upgrade
-                  uninstall      : run sql scripts to uninstall from DB
-                  reinstall      : performs uninstall and install
+                  install        : load MADlib into DB
+                  upgrade        : upgrade MADlib
+                  uninstall      : uninstall MADlib from DB
+                  reinstall      : perform uninstall and install
                   version        : compare and print MADlib version (binaries vs database objects)
-                  install-check  : sanity run of all installed modules
-                  dev-check      : test all installed modules
-                  unit-test      : run unit tests on installed modules
+                  install-check  : quick test of installed modules
+                  dev-check      : more detailed test of installed modules
+                  unit-test      : unit tests of installed modules
                   """
     choice_list = ['install', 'update', 'upgrade', 'uninstall',
                    'reinstall', 'version', 'install-check',
@@ -960,7 +960,7 @@ def parse_arguments():
                         help="Temporary directory location for installation log files.")
 
     parser.add_argument('-t', '--testcase', dest='testcase', default="",
-                        help="Module names to test, comma separated. Effective only for install-check, dev-check and unit-test.")
+                        help="Module names to test, comma separated. Applies to install-check, dev-check and unit-test.")
 
     # Get the arguments
     return parser.parse_args()
