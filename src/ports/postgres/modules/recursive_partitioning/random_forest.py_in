@@ -516,9 +516,11 @@ def forest_train(
                         """.format(**locals())
                 plpy.notice("sql_create_oob_view:\n" + sql_create_oob_view)
                 plpy.execute(sql_create_oob_view)
-
+                temp_output_table = ''
+                if importance:
+                    temp_output_table = unique_string(desp='temp_out')
                 _create_empty_result_table(schema_madlib, output_table_name,
-                    importance)
+                    temp_output_table, importance)
 
                 ##################################################################
                 # training random forest
@@ -600,7 +602,6 @@ def forest_train(
                                     tree_terminated[item['grp_key']] = item['finished']
                                 elif item['finished'] == 2:
                                     tree_terminated[item['grp_key']] = 2
-
                     if importance:
                         for tree in tree_states:
                             importance_vectors = _compute_var_importance(
@@ -609,7 +610,7 @@ def forest_train(
                             tree.update(**importance_vectors)
 
                     _insert_into_result_table(
-                        schema_madlib, tree_states, output_table_name,
+                        schema_madlib, tree_states, output_table_name, temp_output_table,
                         grp_key_to_grp_cols, sample_id, importance, grouping_cols)
 
                     _calculate_oob_prediction(
@@ -635,10 +636,15 @@ def forest_train(
                 else:
                     importance_table = ''
 
-                _create_group_table(schema_madlib, output_table_name,
-                                    oob_error_table, importance_table,
-                                    cat_features_info_table, grp_key_to_grp_cols,
-                                    grouping_cols, tree_terminated)
+                _create_group_table(schema_madlib,
+                                    output_table_name,
+                                    temp_output_table,
+                                    oob_error_table,
+                                    importance_table,
+                                    cat_features_info_table,
+                                    grp_key_to_grp_cols,
+                                    grouping_cols,
+                                    tree_terminated)
 
                 num_failed_groups = sum(1 for v in tree_terminated.values() if v != 1)
                 _create_summary_table(**locals())
@@ -647,6 +653,7 @@ def forest_train(
                         DROP TABLE IF EXISTS {training_pois_cnt_table} CASCADE;
                         DROP TABLE IF EXISTS {oob_prediction_table} CASCADE;
                         DROP TABLE IF EXISTS {importance_table} CASCADE;
+                        DROP TABLE IF EXISTS {temp_output_table} CASCADE;
                         DROP TABLE IF EXISTS {oob_error_table} CASCADE;
                         DROP TABLE IF EXISTS {cat_features_info_table} CASCADE;
                         DROP TABLE IF EXISTS {con_splits_table} CASCADE;
@@ -1294,7 +1301,7 @@ def _create_summary_table(**kwargs):
 
 
 def _create_group_table(
-        schema_madlib, output_table_name, oob_error_table,
+        schema_madlib, output_table_name, temp_output_table, oob_error_table,
         importance_table, cat_features_info_table, grp_key_to_grp_cols,
         grouping_cols, tree_terminated):
     """ Create the group table for random forest"""
@@ -1303,7 +1310,7 @@ def _create_group_table(
             SELECT
                 gid,
                 {schema_madlib}.array_avg(impurity_var_importance, False) AS impurity_var_importance
-            FROM {output_table_name}
+            FROM {temp_output_table}
             GROUP BY gid
             """.format(**locals())
         oob_var_importance_str = (", array_cat(oob_cat_var_importance, "
@@ -1358,39 +1365,30 @@ def _create_group_table(
 # -------------------------------------------------------------------------
 
 
-def _create_empty_result_table(schema_madlib, output_table_name, importance):
+def _create_empty_result_table(schema_madlib, output_table_name,
+                               temp_output_table, importance):
     """Create the result table for all trees in the forest"""
-    impurity_var_imp_str = """, impurity_var_importance double precision[]);""" if importance else ");"
-
     sql_create_empty_result_table = """
             CREATE TABLE {output_table_name} (
                 gid         integer,
                 sample_id   integer,
-                tree        {schema_madlib}.bytea8
-                {impurity_var_imp_str}
+                tree        {schema_madlib}.bytea8)
             """.format(**locals())
     plpy.notice("sql_create_empty_result_table:\n" + sql_create_empty_result_table)
     plpy.execute(sql_create_empty_result_table)
+    if importance:
+        plpy.execute("""
+                CREATE TABLE {temp_output_table} (
+                gid         integer,
+                sample_id   integer,
+                impurity_var_importance double precision[])
+            """.format(**locals()))
 # ------------------------------------------------------------
 
 
 def _insert_into_result_table(schema_madlib, tree_states, output_table_name,
-                              grp_key_to_grp_cols, sample_id,
-                              importance, grouping_cols):
-    if importance:
-        impurity_var_imp_str = ', impurity_var_importance'
-        importance_results = [tree_state['impurity_var_importance']
-                              for tree_state in tree_states]
-        importance_results = py_list_to_sql_string(importance_results,
-                                                   'DOUBLE PRECISION[]',
-                                                   True)
-        importance_query = """, ({schema_madlib}.array_unnest_2d_to_1d(
-                                    {importance_results})).unnest_result AS
-                                 impurity_var_importance""".format(**locals())
-    else:
-        impurity_var_imp_str = ''
-        importance_query = ''
-
+                              temp_output_table, grp_key_to_grp_cols,
+                              sample_id, importance, grouping_cols):
     if grouping_cols:
         grp_join_sql = """JOIN {0} USING (grp_key)""".format(grp_key_to_grp_cols)
         gid_str = "gid"
@@ -1409,17 +1407,38 @@ def _insert_into_result_table(schema_madlib, tree_states, output_table_name,
             {gid_str},
             {sample_id} AS sample_id,
             tree
-            {impurity_var_imp_str}
         FROM (
             SELECT
                 {grp_key_sql}
                 unnest($1) AS tree
-                {importance_query}
         ) grp_key_to_tree
         {grp_join_sql}
         """.format(**locals())
     sql_plan = plpy.prepare(sql, ['{0}.bytea8[]'.format(schema_madlib)])
     plpy.execute(sql_plan, [[tree_state['tree_state'] for tree_state in tree_states]])
+    if importance:
+        importance_results = [tree_state['impurity_var_importance']
+                              for tree_state in tree_states]
+        importance_results = py_list_to_sql_string(importance_results,
+                                                   'DOUBLE PRECISION[]',
+                                                   True)
+        importance_query = """({schema_madlib}.array_unnest_2d_to_1d(
+                                    {importance_results})).unnest_result AS
+                                 impurity_var_importance""".format(**locals())
+        plpy.execute("""
+        INSERT INTO {temp_output_table}
+        SELECT
+            {gid_str},
+            {sample_id} AS sample_id,
+            impurity_var_importance
+        FROM (
+            SELECT
+                {grp_key_sql}
+                {importance_query}
+        ) grp_key_to_tree
+        {grp_join_sql}
+        """.format(**locals()))
+
 # ------------------------------------------------------------------------------
 
 
