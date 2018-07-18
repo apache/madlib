@@ -14,17 +14,18 @@ from utilities.control import MinWarning
 from utilities.control import OptimizerControl
 from utilities.control import HashaggControl
 from utilities.utilities import _assert
-from utilities.utilities import unique_string
 from utilities.utilities import add_postfix
-from utilities.utilities import split_quoted_delimited_str
 from utilities.utilities import extract_keyvalue_params
 from utilities.utilities import py_list_to_sql_string
-from utilities.validate_args import get_cols_and_types
-from utilities.validate_args import is_var_valid
-from utilities.validate_args import input_tbl_valid
-from utilities.validate_args import output_tbl_valid
+from utilities.utilities import split_quoted_delimited_str
+from utilities.utilities import unique_string
+
 from utilities.validate_args import cols_in_tbl_valid
+from utilities.validate_args import get_cols_and_types
 from utilities.validate_args import get_expr_type
+from utilities.validate_args import input_tbl_valid
+from utilities.validate_args import is_var_valid
+from utilities.validate_args import output_tbl_valid
 
 from decision_tree import _tree_train_using_bins
 from decision_tree import _tree_train_grps_using_bins
@@ -39,6 +40,7 @@ from decision_tree import _get_filter_str
 from decision_tree import _get_display_header
 from decision_tree import get_feature_str
 from decision_tree import _compute_var_importance
+from decision_tree import _create_cat_features_info_table
 # ------------------------------------------------------------
 
 
@@ -265,8 +267,7 @@ def forest_train(
         @param verbose: str, Verbosity of output messages
         @param sample_ratio: float, subsampling ratio for generating src_view
     """
-    msg_level = "'notice'" if verbose else "'warning'"
-
+    msg_level = "notice" if verbose else "warning"
     with MinWarning(msg_level):
         with OptimizerControl(False):
             # we disable optimizer (ORCA) for platforms that use it
@@ -430,31 +431,9 @@ def forest_train(
                                           is_classification, dep_n_levels, filter_null, null_proxy)
                     cat_features = bins['cat_features']
 
-                # a table for converting cat_features to integers
+                # a table for getting information of cat features for each group
                 cat_features_info_table = unique_string()
-                sql_cat_features_info = """
-                        CREATE TEMP TABLE {cat_features_info_table} AS
-                        SELECT
-                            gid,
-                            cat_n_levels,
-                            cat_levels_in_text
-                        FROM
-                        (
-                            SELECT *
-                            FROM {schema_madlib}._gen_cat_levels_set($1, $2, $3, $4)
-                        ) subq
-                        JOIN
-                            {grp_key_to_grp_cols}
-                        USING (grp_key)
-                        """.format(**locals())
-                plpy.notice("sql_cat_features_info:\n" + sql_cat_features_info)
-                plan_cat_features_info = plpy.prepare(
-                    sql_cat_features_info, ['text[]', 'integer[]', 'integer', 'text[]'])
-                plpy.execute(plan_cat_features_info, [
-                    bins['grp_key_cat'],
-                              bins['cat_n'],
-                              len(cat_features),
-                              bins['cat_origin']])
+                _create_cat_features_info_table(cat_features_info_table, bins)
 
                 con_splits_table = unique_string()
                 _create_con_splits_table(schema_madlib, con_splits_table,
@@ -587,8 +566,11 @@ def forest_train(
                             boolean_cats, num_bins, 'poisson_count', grouping_cols,
                             grouping_array_str, dep, min_split, min_bucket,
                             max_tree_depth, filter_null, dep_n_levels,
-                            is_classification, split_criterion, True,
-                            num_random_features, tree_terminated=tree_terminated,
+                            is_classification, split_criterion,
+                            cat_features_info_table,
+                            subsample=True,
+                            n_random_features=num_random_features,
+                            tree_terminated=tree_terminated,
                             max_n_surr=max_n_surr, null_proxy=null_proxy)
 
                         # If a tree for a group is terminated (not finished properly),
@@ -966,7 +948,7 @@ def _calculate_oob_prediction(
                         1 -- -1 shifted to 0 for null values
                     ),
                     {schema_madlib}.array_scalar_add(
-                        cat_n_levels,
+                        cat_n_levels::integer[],
                         1 -- -1 shifted to 0 for null values
                     )
                 ) AS cat_feature_distributions,
@@ -1024,7 +1006,7 @@ def _calculate_oob_prediction(
                     tree,
                     {cat_features_str}::integer[],
                     {con_features_str}::double precision[],
-                    cat_info.cat_n_levels,
+                    cat_info.cat_n_levels::integer[],
                     {num_permutations},
                     {dep},
                     {is_classification},
