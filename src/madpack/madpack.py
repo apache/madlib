@@ -965,11 +965,11 @@ def parse_arguments():
     # Get the arguments
     return parser.parse_args()
 
-def _is_madlib_installation_valid_for_tests(schema, db_madlib_ver):
+def _is_madlib_installation_valid_for_tests(schema, db_madlib_ver, test_type):
     # Compare OS and DB versions. Continue if OS = DB.
     if get_rev_num(db_madlib_ver) != get_rev_num(new_madlib_ver):
         _print_vers(new_madlib_ver, db_madlib_ver, con_args, schema)
-        info_(this, "Versions do not match. Unit-test stopped.", True)
+        info_(this, "Versions do not match. {0} stopped.".format(test_type.capitalize()), True)
         return False
     return True
 
@@ -995,19 +995,20 @@ def run_unit_tests(args, testcase):
         Run unit tests.
     """
     if not _is_madlib_installation_valid_for_tests(args['schema'],
-                                                   args['db_madlib_ver']):
+                                                   args['db_madlib_ver'],
+                                                   'unit-tests'):
         return
     info_(this, "> Running unit-test scripts for:", verbose)
     modset = _get_modset_for_tests(testcase, 'test_')
     # Loop through all modules and run unit tests
-    _process_py_sql_files_in_modules(modset, {'madpack_cmd':'unit-test'})
+    _process_py_sql_files_in_modules(modset, {'madpack_cmd':'Unit-test'})
 
 
 def run_install_check(args, testcase, madpack_cmd):
     is_install_check = True if madpack_cmd == 'install-check' else False
     schema = args['schema']
     db_madlib_ver = args['db_madlib_ver']
-    if not _is_madlib_installation_valid_for_tests(schema, db_madlib_ver):
+    if not _is_madlib_installation_valid_for_tests(schema, db_madlib_ver, madpack_cmd):
         return
     # Create install-check user
     db_name = args["c_db"].replace('.', '').replace('-', '_')
@@ -1165,14 +1166,15 @@ def create_install_madlib_sqlfile(args, madpack_cmd):
                 return_signal += 1
 
             # 2) Compare OS and DB versions. Continue if OS > DB.
-            _print_vers(new_madlib_ver, db_madlib_ver, con_args, schema)
-            if is_rev_gte(get_rev_num(db_madlib_ver), get_rev_num(new_madlib_ver)):
-                info_(this, "Current MADlib version is already up-to-date.", True)
-                return_signal += 1
+            else:
+                _print_vers(new_madlib_ver, db_madlib_ver, con_args, schema)
+                if is_rev_gte(get_rev_num(db_madlib_ver), get_rev_num(new_madlib_ver)):
+                    info_(this, "Current MADlib version is already up-to-date.", True)
+                    return_signal += 1
 
-            # 3) Run upgrade
-            _plpy_check(py_min_ver)
-            return_signal = _db_upgrade(schema, output_filehandle, db_madlib_ver)
+                # 3) Run upgrade
+                _plpy_check(py_min_ver)
+                return_signal = _db_upgrade(schema, output_filehandle, db_madlib_ver)
 
     return 1 if return_signal > 0 else 0
 
@@ -1340,15 +1342,14 @@ def main(argv):
             error_(this, "Unknown problem with database connection string: %s" % con_args, True)
     # ---------------- Completed "Get and validate arguments" -----------------
 
-    # COMMAND: version
-    if args.command[0] == 'version':
-        _print_vers(new_madlib_ver, db_madlib_ver, con_args, schema)
 
     # COMMAND: install-check, dev-check or unit-test
     if args.command[0] in ('install-check', 'dev-check'):
         run_install_check(locals(), args.testcase, args.command[0])
     elif args.command[0] == 'unit-test':
         run_unit_tests(locals(), args.testcase)
+    elif args.command[0] == 'version':
+        _print_vers(new_madlib_ver, db_madlib_ver, con_args, schema)
     else:
         if args.testcase:
             error_(this,
