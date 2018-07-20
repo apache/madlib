@@ -712,6 +712,7 @@ def _process_py_sql_files_in_modules(modset, args_dict):
                     cur_tmpdir)
             else:
                 error_(this, "Something is wrong, shouldn't be here: %s" % src_file, True)
+        shutil.rmtree(cur_tmpdir)
 
 # ------------------------------------------------------------------------------
 def _execute_per_module_db_create_obj_algo(schema, maddir_mod_py, module,
@@ -911,7 +912,7 @@ def parse_arguments():
   This will run all the unit tests that are defined in the convex module, and
   for decision trees in the recursive partitioning module.
   The -t option runs tests only for required modules, and can be used similarly
-  for both install-check and dev-check.
+  for install-check, dev-check and unit-test.
   """)
 
     help_msg = """One of the following options:
@@ -1171,10 +1172,10 @@ def create_install_madlib_sqlfile(args, madpack_cmd):
                 if is_rev_gte(get_rev_num(db_madlib_ver), get_rev_num(new_madlib_ver)):
                     info_(this, "Current MADlib version is already up-to-date.", True)
                     return_signal += 1
-
-                # 3) Run upgrade
-                _plpy_check(py_min_ver)
-                return_signal = _db_upgrade(schema, output_filehandle, db_madlib_ver)
+                else:
+                    # 3) Run upgrade
+                    _plpy_check(py_min_ver)
+                    return_signal = _db_upgrade(schema, output_filehandle, db_madlib_ver)
 
     return 1 if return_signal > 0 else 0
 
