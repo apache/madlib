@@ -22,13 +22,11 @@ from internal.db_utils import quote_literal
 from utilities import _assert
 from utilities import add_postfix
 from utilities import ANY_ARRAY
-from utilities import is_psql_boolean_type
-from utilities import is_psql_char_type
-from utilities import is_psql_numeric_type
 from utilities import is_valid_psql_type
 from utilities import py_list_to_sql_string
 from utilities import split_quoted_delimited_str
 from validate_args import is_var_valid
+from validate_args import explicit_bool_to_text
 from validate_args import get_cols
 from validate_args import get_cols_and_types
 from validate_args import get_expr_type
@@ -65,14 +63,6 @@ class vec_cols_helper:
             return [col for col in self.all_cols
                     if col not in split_quoted_delimited_str(exclude_cols)]
         return []
-
-    def get_type_class(self, arg):
-        if is_psql_numeric_type(arg):
-            return "double precision"
-        elif is_psql_char_type(arg):
-            return "text"
-        else:
-            return arg
 
 class vec2cols:
     def __init__(self):
@@ -318,32 +308,23 @@ class cols2vec:
         is_var_valid(source_table, list_of_features_to_exclude)
         is_var_valid(source_table, cols_to_output)
 
-    def get_and_validate_feature_types(self, source_table, features_to_nest):
+    def get_and_validate_feature_types(self, source_table):
         """
-            This function will validate and return the appropriate type to cast
-            the final SQL array. Will fail if feature types do not belong to the
-            same group (numeric, text, etc.) or if any type is an array.
-
-            If all features to nest are of the same type, we just return that type
-            and do not cast. Else, if they only constitute integers and smallints,
-            we cast everything to an integer. Else, if they are all part of the same
-            type group, we return the most comprehensive type in that group. Else, throw an error.
+            This function validates the types of all of the features_to_nest,
+            disallowing any features of type array. Lets underlying platform
+            decide whether to allow 2 elements of different types be put into
+            an array together (ex. integer and text features, if put together,
+            will yield error by the underlying platform)
         """
         all_cols_and_types = get_cols_and_types(source_table)
         distinct_types = set([col_type[1] for col_type in all_cols_and_types
-            if col_type[0] in features_to_nest])
+            if col_type[0] in self.features_to_nest])
         for expr_type in distinct_types:
             _assert(not is_valid_psql_type(expr_type, ANY_ARRAY),
                 "{0}: Feature columns to nest cannot be of type array"
                 .format(self.module_name))
-        if len(distinct_types) > 1:
-            if distinct_types == {'integer', 'smallint'}:
-                return 'integer'
-            distinct_types = set([self.get_cols_helper.get_type_class(elem)
-                for elem in distinct_types])
-        _assert(len(distinct_types) == 1, "{0}: Feature columns must be of the "
-            "same type or type group (numeric, text, etc.)".format(self.module_name))
-        return list(distinct_types)[0]
+        if len(distinct_types) != 1 and 'boolean' in distinct_types:
+            self.features_to_nest = explicit_bool_to_text(source_table, self.features_to_nest, self.schema_madlib, True)
 
     def cols2vec(self, schema_madlib, source_table, output_table, list_of_features,
                  list_of_features_to_exclude=None, cols_to_output=None, **kwargs):
@@ -362,17 +343,18 @@ class cols2vec:
                                    from the source table to keep in the output table,
                                    in addition to the feature array
         """
+        self.schema_madlib = schema_madlib
         self.validate_args(source_table, output_table, list_of_features,
                            list_of_features_to_exclude, cols_to_output)
 
-        features_to_nest = self.get_cols_helper.get_cols_as_list(list_of_features,
+        self.features_to_nest = self.get_cols_helper.get_cols_as_list(list_of_features,
                                 source_table, list_of_features_to_exclude)
-        expr_type = self.get_and_validate_feature_types(source_table, features_to_nest)
+        self.get_and_validate_feature_types(source_table)
 
         cols_to_keep = ', '.join(self.get_cols_helper.get_cols_as_list(cols_to_output,
                        source_table))+", " if cols_to_output else ''
 
-        feature_list_str = py_list_to_sql_string(features_to_nest, expr_type, True)
+        feature_list_str = "ARRAY[ {val} ]".format(val=','.join(map(str, self.features_to_nest)))
         plpy.execute("""
                 CREATE TABLE {output_table} AS
                     SELECT {cols_to_keep}
@@ -381,7 +363,7 @@ class cols2vec:
                 """.format(**locals()))
 
         feature_cols = py_list_to_sql_string(
-                [quote_literal(f) for f in features_to_nest], "TEXT", True)
+                [quote_literal(f) for f in self.features_to_nest], "TEXT", True)
 
         output_table_summary = add_postfix(output_table, "_summary")
         # Dollar-quote the text to allow single-quotes without escaping
