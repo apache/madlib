@@ -10,3 +10,37 @@ macro(rh_version OUT_VERSION)
     endif(EXISTS "/etc/redhat-release")
 endmacro(rh_version)
 
+# Get the Debian version
+# DEB_OUT_VERSION will have a number if /etc/issue exists, with an entry for Debian.
+# DEB_OUT_VERSION will have 'DEB_OUT_VERSION-NOTFOUND' if /etc/issue does not exist.
+# DEB_OUT_VERSION will be empty if some distribution which has /etc/issue, but not Debian in it. 
+macro(debian_version DEB_OUT_VERSION)
+    if(EXISTS "/etc/issue")
+        file(READ "/etc/issue" _DEB_RELEASE_CONTENT)
+        string(REGEX REPLACE "Debian[^0-9.]*([0-9.]+)[^0-9.]*\$" "\\1"
+        ${DEB_OUT_VERSION}
+            "${_DEB_RELEASE_CONTENT}"
+        )
+    else(EXISTS "/etc/issue")
+        set(${DEB_OUT_VERSION} "${DEB_OUT_VERSION}-NOTFOUND")
+    endif(EXISTS "/etc/issue")
+endmacro(debian_version)
+        
+#macro(debian_version DEB_OUT_VERSION)
+#    if(EXISTS "/etc/issue")
+#        file(READ "/tmp/issue" _RELEASE_CONTENT)
+#        string(REGEX REPLACE "[^0-9.]*([0-9.]+)[^0-9.]*\$" "\\1" ${OUT_VERSION}
+#            "${_RELEASE_CONTENT}"
+#        )
+#        #string(REGEX REPLACE "(Debian).*" "\\1"
+#        #"${TEMP_OS}"
+#        #    "${_RELEASE_CONTENT}"
+        #)
+#        message(STATUS TEMP_OS="${OUT_VERSION}")
+#        if(TEMP_OS EQUAL "Debian")
+#            set(${DEB_OUT_VERSION} "Debian")
+#        endif(TEMP_OS EQUAL "Debian")
+#    else(EXISTS "/etc/redhat-release")
+#        set(${DEB_OUT_VERSION} "${DEB_OUT_VERSION}-NOTFOUND")
+#    endif(EXISTS "/etc/issue")
+#endmacro(debian_version)

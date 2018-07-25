@@ -10,13 +10,29 @@ if(APPLE)
         PackageMaker
     )
 elseif(UNIX)
-    list(APPEND CPACK_GENERATOR
-        RPM
-    )
+    debian_version(DEB_VERSION)
+    if(NOT (DEB_VERSION STREQUAL "DEB_VERSION-NOTFOUND"))
+      set(IS_DEBIAN "True")
+    endif()
+    rh_version(REDHAT)
+    if(NOT (RH_VERSION STREQUAL "RH_VERSION-NOTFOUND"))
+      set(IS_REDHAT "True")
+    endif()
+    if(IS_REDHAT)
+        message(STATUS "Detected RH version ${RH_VERSION}")
+        list(APPEND CPACK_GENERATOR
+            RPM
+        )
+    elseif(IS_DEBIAN)
+        message(STATUS "Detected Debian version ${DEB_VERSION}")
+        list(APPEND CPACK_GENERATOR
+            DEB
+        )
+    endif()
 endif()
 
 
-# -- General settings for all/multiple packages generators ---------------------
+# -- General settings for ll/multiple packages generators ---------------------
 
 if(PACKAGE_SUFFIX)
     set(_PACKAGE_SUFFIX "-${PACKAGE_SUFFIX}")
@@ -47,17 +63,22 @@ set(CPACK_RPM_USER_BINARY_SPECFILE ${CMAKE_CURRENT_SOURCE_DIR}/madlib.spec.in)
 add_subdirectory(PackageMaker)
 add_subdirectory(PGXN)
 add_subdirectory(RPM)
+add_subdirectory(DEB)
 # gppkg depends on macros from RPM!
 add_subdirectory(gppkg)
 
 
 # -- Finally do the packaging! -------------------------------------------------
-
-set(CPACK_RPM_POST_INSTALL_SCRIPT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/rpm_post.sh")
-set(CPACK_RPM_POST_UNINSTALL_SCRIPT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/rpm_post_uninstall.sh")
-set(CPACK_PREFLIGHT_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/preflight.sh)
-set(CPACK_POSTFLIGHT_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/postflight.sh)
-set(CPACK_MONOLITHIC_INSTALL 1)
+if(IS_REDHAT)
+  set(CPACK_RPM_POST_INSTALL_SCRIPT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/rpm_post.sh")
+  set(CPACK_RPM_POST_UNINSTALL_SCRIPT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/rpm_post_uninstall.sh")
+  set(CPACK_PREFLIGHT_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/preflight.sh)
+  set(CPACK_POSTFLIGHT_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/postflight.sh)
+  set(CPACK_MONOLITHIC_INSTALL 1)
+elseif(IS_DEBIAN)
+  set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA "${CMAKE_CURRENT_SOURCE_DIR}/DEB/config;${CMAKE_CURRENT_SOURCE_DIR}/DEB/templates;${CMAKE_CURRENT_SOURCE_DIR}/DEB/preinst;${CMAKE_CURRENT_SOURCE_DIR}/DEB/postinst;${CMAKE_CURRENT_SOURCE_DIR}/DEB/postrm")
+  set(CPACK_PACKAGE_VERSION ${MADLIB_VERSION_STRING})
+endif()
 include(CPack)
 
 
