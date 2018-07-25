@@ -968,6 +968,9 @@ def parse_arguments():
 
 def _is_madlib_installation_valid_for_tests(schema, db_madlib_ver, test_type):
     # Compare OS and DB versions. Continue if OS = DB.
+    if not db_madlib_ver:
+        info_(this, "MADlib is not installed in the schema {0}. {1} stopped.".format(schema, test_type.capitalize()), True)
+        return False
     if get_rev_num(db_madlib_ver) != get_rev_num(new_madlib_ver):
         _print_vers(new_madlib_ver, db_madlib_ver, con_args, schema)
         info_(this, "Versions do not match. {0} stopped.".format(test_type.capitalize()), True)
