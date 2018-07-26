@@ -1,6 +1,8 @@
+from collections import Iterable
 import plpy
 import re
 import string
+from types import StringTypes
 
 # Postgresql naming restrictions
 """
@@ -361,8 +363,8 @@ def get_cols_and_types(tbl):
 # -------------------------------------------------------------------------
 
 
-def get_expr_type(expr, tbl):
-    """ Return the type of an expression run on a given table
+def get_expr_type(expressions, tbl):
+    """ Return the type of a multiple expressions run on a given table
 
     Note: this
     Args:
@@ -371,17 +373,33 @@ def get_expr_type(expr, tbl):
     Returns:
         str
     """
-    expr_type = plpy.execute("""
-        SELECT pg_typeof({0}) AS type
+    # FIXME: Below transformation exist to ensure backwards compatibility
+    # Remove this when all callers have been modified to pass an Iterable 'expressions'
+    if (isinstance(expressions, StringTypes) or
+            not isinstance(expressions, Iterable)):
+        expressions = [expressions]
+        input_was_scalar = True
+    else:
+        input_was_scalar = False
+
+    pg_type_expressions = ["pg_typeof({0})".format(e) for e in expressions]
+    expr_types = plpy.execute("""
+        SELECT {0} as all_types
         FROM {1}
         LIMIT 1
-        """.format(expr, tbl))
-    if not expr_type:
-        plpy.error("Unable to get type of expression ({0}). "
+        """.format("ARRAY[{0}]".format(','.join(pg_type_expressions)),
+                   tbl))
+    if not expr_types:
+        plpy.error("Unable toget type of expression ({0}). "
                    "Table {1} may not contain any valid tuples".
-                   format(expr, tbl))
-    return expr_type[0]['type'].lower()
-# -------------------------------------------------------------------------
+                   format(expressions, tbl))
+    expr_types = expr_types[0]["all_types"]
+    if input_was_scalar:
+        # output should be same form as input
+        return expr_types[0]
+    else:
+        return expr_types
+# # -------------------------------------------------------------------------
 
 
 def columns_exist_in_table(tbl, cols, schema_madlib="madlib"):
@@ -518,14 +536,11 @@ def explicit_bool_to_text(tbl, cols, schema_madlib):
     Patch madlib.bool_to_text for columns that are of type boolean.
     """
     m4_ifdef(<!__HAS_BOOL_TO_TEXT_CAST__!>, <!return cols!>, <!!>)
-    col_to_type = dict(get_cols_and_types(tbl))
     patched = []
-    for col in cols:
-        if col not in col_to_type:
-            plpy.error("Column ({col}) does not exist "
-                       "in table ({tbl})".format(col=col, tbl=tbl))
-        if col_to_type[col] == 'boolean':
-            patched.append(schema_madlib + ".bool_to_text(" + col + ")")
+    col_types = get_expr_type(cols, tbl)
+    for col, col_type in zip(cols, col_types):
+        if col_type == 'boolean':
+            patched.append("{0}.bool_to_text({1})".format(schema_madlib, col))
         else:
             patched.append(col)
     return patched

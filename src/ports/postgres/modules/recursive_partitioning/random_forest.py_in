@@ -18,12 +18,12 @@ from utilities.control import HashaggControl
 from utilities.utilities import _assert
 from utilities.utilities import add_postfix
 from utilities.utilities import extract_keyvalue_params
+from utilities.utilities import is_psql_boolean_type
 from utilities.utilities import py_list_to_sql_string
 from utilities.utilities import split_quoted_delimited_str
 from utilities.utilities import unique_string
 
 from utilities.validate_args import cols_in_tbl_valid
-from utilities.validate_args import get_cols_and_types
 from utilities.validate_args import get_expr_type
 from utilities.validate_args import input_tbl_valid
 from utilities.validate_args import is_var_valid
@@ -34,13 +34,13 @@ from decision_tree import _tree_train_grps_using_bins
 from decision_tree import _get_bins
 from decision_tree import _get_bins_grps
 from decision_tree import _get_features_to_use
-from decision_tree import _get_dep_type
 from decision_tree import _is_dep_categorical
 from decision_tree import _get_n_and_deplist
 from decision_tree import _classify_features
 from decision_tree import _get_filter_str
 from decision_tree import _get_display_header
 from decision_tree import get_feature_str
+from decision_tree import get_grouping_array_str
 from decision_tree import _compute_var_importance
 from decision_tree import _create_cat_features_info_table
 # ------------------------------------------------------------
@@ -324,7 +324,7 @@ def forest_train(
                 _assert(bool(features),
                         "Random forest error: No feature is selected for the model.")
 
-                is_classification, is_bool = _is_dep_categorical(
+                is_classification, dep_is_bool = _is_dep_categorical(
                     training_table_name, dependent_variable)
                 split_criterion = 'gini' if is_classification else 'mse'
 
@@ -352,24 +352,26 @@ def forest_train(
                     n_rows, dep_list = _get_n_and_deplist(training_table_name,
                                                           dependent_variable,
                                                           filter_null)
+                    dep_n_levels = len(dep_list)
                     _assert(n_rows > 0,
                             "Random forest error: There should be at least one "
                             "data point for each class where all features are non NULL")
-                    dep_list.sort()
-                    dep_col_str = ("CASE WHEN " + dependent_variable +
-                                   " THEN 'True' ELSE 'False' END") if is_bool else dependent_variable
-                    dep = ("(CASE " +
-                           "\n               ".
-                           join(["WHEN ({dep_col})::text = $${c}$$ THEN {i}".
-                                format(dep_col=dep_col_str, c=c, i=i)
-                                 for i, c in enumerate(dep_list)]) +
-                           "\nEND)")
-                    dep_n_levels = len(dep_list)
+                    if dep_is_bool:
+                        # false = 0, true = 1
+                        # This order is maintained in dep_list since
+                        # _get_n_and_deplist returns a sorted list
+                        dep = ("(CASE WHEN {0} THEN 1 ELSE 0 END)".
+                               format(dependent_variable))
+                    else:
+                        dep = ("(CASE " +
+                               "\n\t\t".join(["WHEN ({0})::text = $${1}$$ THEN {2}".
+                                               format(dependent_variable, c, i)
+                                              for i, c in enumerate(dep_list)]) +
+                               "\nEND)")
                 else:
                     n_rows = plpy.execute(
-                        "SELECT count(*) FROM {source_table} where {filter_null}".
-                        format(source_table=training_table_name,
-                               filter_null=filter_null))[0]['count']
+                        "SELECT count(*) FROM {0} WHERE {1}".
+                        format(training_table_name, filter_null))[0]['count']
                     dep = dependent_variable
                     dep_n_levels = 1
                     dep_list = None
@@ -397,15 +399,8 @@ def forest_train(
                     cat_features = bins['cat_features']
                     bins['grp_key_cat'] = ['']
                 else:
-                    grouping_cols_list = [col.strip() for col in grouping_cols.split(',')]
-                    grouping_cols_and_types = [(col, get_expr_type(col, training_table_name))
-                                               for col in grouping_cols_list]
-                    grouping_array_str = (
-                        "array_to_string(array[" +
-                        ','.join("(case when " + col + " then 'True' else 'False' end)::text"
-                                 if col_type.lower() == 'boolean' else '(' + col + ')::text'
-                                 for col, col_type in grouping_cols_and_types) +
-                        "], ',')")
+                    grouping_array_str = get_grouping_array_str(
+                        training_table_name, grouping_cols)
                     grouping_cols_str = ('' if grouping_cols is None
                                          else grouping_cols + ",")
                     sql_grp_key_to_grp_cols = """
@@ -430,7 +425,8 @@ def forest_train(
                                           con_features, num_bins, dep,
                                           boolean_cats, grouping_cols,
                                           grouping_array_str, n_rows,
-                                          is_classification, dep_n_levels, filter_null, null_proxy)
+                                          is_classification, dep_n_levels,
+                                          filter_null, null_proxy)
                     cat_features = bins['cat_features']
 
                 # a table for getting information of cat features for each group
@@ -558,8 +554,6 @@ def forest_train(
                             num_random_features, max_n_surr, null_proxy)
 
                         tree['grp_key'] = ''
-                        tree['cat_features'] = cat_features
-                        tree['con_features'] = con_features
                         if importance:
                             tree.update(_compute_var_importance(
                                 schema_madlib, tree,
@@ -584,14 +578,12 @@ def forest_train(
                         # stop calculating that group further.
                         for tree in tree_states:
                             grp_key = tree['grp_key']
-                            tree['cat_features'] = bins['grp_to_cat_features'][grp_key]
-                            tree['con_features'] = bins['con_features']
                             tree_terminated[grp_key] = tree['finished']
                             if importance:
                                 importance_vectors = _compute_var_importance(
                                     schema_madlib, tree,
-                                    len(tree['cat_features']),
-                                    len(tree['con_features']))
+                                    len(cat_features),
+                                    len(con_features))
                                 tree.update(**importance_vectors)
 
                     _insert_into_result_table(
@@ -602,7 +594,7 @@ def forest_train(
                         schema_madlib, output_table_name, cat_features_info_table,
                         con_splits_table, oob_prediction_table, oob_view,
                         sample_id, id_col_name, cat_features, con_features,
-                        boolean_cats, grouping_cols, grp_key_to_grp_cols, dep,
+                        training_table_name, grouping_cols, grp_key_to_grp_cols, dep,
                         num_permutations, is_classification, importance,
                         num_bins, filter_null, null_proxy)
 
@@ -686,7 +678,7 @@ def forest_predict(schema_madlib, model, source, output,
     id_col_name = summary_elements["id_col_name"]
     grouping_cols = summary_elements.get("grouping_cols")  # optional, default = None
     dep_varname = summary_elements["dependent_varname"]
-    dep_levels = summary_elements["dependent_var_levels"]
+    dep_levels = split_quoted_delimited_str(summary_elements["dependent_var_levels"])
     is_classification = summary_elements["is_classification"]
     dep_type = summary_elements['dependent_var_type']
     null_proxy = summary_elements.get('null_proxy')  # optional, default = None
@@ -695,12 +687,8 @@ def forest_predict(schema_madlib, model, source, output,
     _assert(is_classification or pred_type == 'response',
             "Random forest error: pred_type cannot be 'prob' for regression model.")
 
-    # find which columns are of type boolean
-    boolean_cats = set([key for key, value in get_cols_and_types(source)
-                        if value == 'boolean'])
-
     cat_features_str, con_features_str = get_feature_str(
-        schema_madlib, boolean_cats, cat_features, con_features,
+        schema_madlib, source, cat_features, con_features,
         "cat_levels_in_text", "cat_n_levels", null_proxy)
 
     pred_name = ('"prob_{0}"' if pred_type == "prob" else
@@ -712,17 +700,21 @@ def forest_predict(schema_madlib, model, source, output,
     if not is_classification:
         majority_pred_expression = "AVG(aggregated_prediction)"
     else:
-        majority_pred_expression = """($sql${{ {dep_levels} }}$sql$::varchar[])[
-                                    {schema_madlib}.mode(aggregated_prediction + 1)]::TEXT
-                                    """.format(**locals())
+        dep_levels_array_str = py_list_to_sql_string(map(quote_literal, dep_levels),
+                                                     'TEXT',
+                                                     long_format=True)
+        majority_pred_expression = (
+            "({0})[{1}.mode(aggregated_prediction + 1)]::TEXT".
+            format(dep_levels_array_str, schema_madlib))
 
-    if dep_type.lower() == "boolean":
+    if is_psql_boolean_type(dep_type):
         # some platforms don't have text to boolean cast. We manually check the string.
-        majority_pred_cast_str = ("(case {majority_pred_expression} when 'True' then "
-                                  "True else False end)::BOOLEAN as {pred_name}")
+        majority_pred_cast_str = ("(case {majority_pred_expression} "
+                                  " when 'true' then true "
+                                  " when 'false' then false "
+                                  " end)::BOOLEAN AS {pred_name}")
     else:
-        majority_pred_cast_str = "{majority_pred_expression}::{dep_type} as {pred_name}"
-
+        majority_pred_cast_str = "({majority_pred_expression})::{dep_type} AS {pred_name}"
     majority_pred_cast_str = majority_pred_cast_str.format(**locals())
     num_trees_grown = plpy.execute(
         "SELECT count(DISTINCT sample_id) FROM {0}".format(model))[0]['count']
@@ -733,8 +725,7 @@ def forest_predict(schema_madlib, model, source, output,
             SELECT
                 {id_col_name},
                 {majority_pred_cast_str}
-            FROM
-            (
+            FROM (
                 SELECT
                     {id_col_name},
                     {schema_madlib}._predict_dt_response(
@@ -753,12 +744,12 @@ def forest_predict(schema_madlib, model, source, output,
             GROUP BY {id_col_name}
         """.format(**locals())
     else:
-        len_dep_levels = len(split_quoted_delimited_str(dep_levels))
+        len_dep_levels = len(dep_levels)
         normalized_majority_pred = unique_string()
         score_format = ', \n'.join([
             '{temp}[{j}] as "estimated_prob_{c}"'.
             format(j=i+1, c=c.strip(' "'), temp=normalized_majority_pred)
-            for i, c in enumerate(split_quoted_delimited_str(dep_levels))])
+            for i, c in enumerate(dep_levels)])
 
         sql_prediction = """
             CREATE TABLE {output} AS
@@ -922,12 +913,12 @@ def get_tree(schema_madlib, model_table, gid, sample_id,
 def _calculate_oob_prediction(
         schema_madlib, model_table, cat_features_info_table, con_splits_table,
         oob_prediction_table, oob_view, sample_id, id_col_name, cat_features,
-        con_features, boolean_cats, grouping_cols, grp_key_to_grp_cols, dep,
+        con_features, source_table, grouping_cols, grp_key_to_grp_cols, dep,
         num_permutations, is_classification, importance, num_bins, filter_null, null_proxy=None):
     """Calculate predication for out-of-bag sample"""
 
     cat_features_str, con_features_str = get_feature_str(
-        schema_madlib, boolean_cats, cat_features, con_features,
+        schema_madlib, source_table, cat_features, con_features,
         "cat_levels_in_text", "cat_n_levels", null_proxy)
 
     join_str = "," if grouping_cols is None else "JOIN"
@@ -1227,19 +1218,22 @@ def _calculate_oob_error(schema_madlib, oob_prediction_table, oob_error_table,
 
 def _create_summary_table(**kwargs):
     kwargs['features'] = ','.join(kwargs['cat_features'] + kwargs['con_features'])
+    kwargs['dep_type'] = get_expr_type(kwargs['dependent_variable'],
+                                       kwargs['training_table_name'])
     if kwargs['dep_list']:
-        kwargs['dep_list_str'] = (
-            "$dep_list$" +
-            ','.join('"{0}"'.format(str(dep)) for dep in kwargs['dep_list']) +
-            "$dep_list$")
+        if is_psql_boolean_type(kwargs['dep_type']):
+            # Special handling for boolean since Python booleans start with
+            # capitals (i.e False instead of false)
+            # Note:  dep_list is sorted, hence 'false' will be first
+            kwargs['dep_list_str'] = "'false, true'"
+        else:
+            kwargs['dep_list_str'] = '$__dep_list__${0}$__dep_list__$'.format(
+                ','.join(map(str, kwargs['dep_list'])))
     else:
         kwargs['dep_list_str'] = "NULL"
-
     kwargs['indep_type'] = ', '.join(kwargs['all_cols_types'][col]
-                                     for col in kwargs['cat_features'] +
-                                                kwargs['con_features'])
-    kwargs['dep_type'] = _get_dep_type(kwargs['training_table_name'],
-                                       kwargs['dependent_variable'])
+                                     for col in (kwargs['cat_features'] +
+                                                 kwargs['con_features']))
     kwargs['cat_features_str'] = ','.join(kwargs['cat_features'])
     kwargs['con_features_str'] = ','.join(kwargs['con_features'])
     if kwargs['grouping_cols']:
