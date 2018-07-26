@@ -712,8 +712,8 @@ def _process_py_sql_files_in_modules(modset, args_dict):
                     cur_tmpdir)
             else:
                 error_(this, "Something is wrong, shouldn't be here: %s" % src_file, True)
-        shutil.rmtree(cur_tmpdir)
-
+        if calling_operation == DB_CREATE_OBJECTS:
+            shutil.rmtree(cur_tmpdir)
 # ------------------------------------------------------------------------------
 def _execute_per_module_db_create_obj_algo(schema, maddir_mod_py, module,
                                            sqlfile, algoname, cur_tmpdir,
