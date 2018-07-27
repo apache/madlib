@@ -1,8 +1,8 @@
-import collections
+from collections import Iterable
 import plpy
 import re
 import string
-
+from types import StringTypes
 
 # Postgresql naming restrictions
 """
@@ -373,8 +373,15 @@ def get_expr_type(expressions, tbl):
     Returns:
         str
     """
-    if not isinstance(expressions, collections.Iterable):
+    # FIXME: Below transformation exist to ensure backwards compatibility
+    # Remove this when all callers have been modified to pass an Iterable 'expressions'
+    if (isinstance(expressions, types.StringTypes) or
+            not isinstance(expressions, collections.Iterable)):
         expressions = [expressions]
+        input_was_scalar = True
+    else:
+        input_was_scalar = False
+
     pg_type_expressions = ["pg_typeof({0})".format(e) for e in expressions]
     expr_types = plpy.execute("""
         SELECT {0} as all_types
@@ -387,7 +394,8 @@ def get_expr_type(expressions, tbl):
                    "Table {1} may not contain any valid tuples".
                    format(expressions, tbl))
     expr_types = expr_types[0]["all_types"]
-    if len(expr_types) == 1:
+    if input_was_scalar:
+        # output should be same form as input
         return expr_types[0]
     else:
         return expr_types
