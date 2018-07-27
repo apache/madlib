@@ -30,6 +30,7 @@ from utilities.utilities import unique_string
 
 from utilities.validate_args import _get_table_schema_names
 from utilities.validate_args import columns_exist_in_table
+from utilities.validate_args import explicit_bool_to_text
 from utilities.validate_args import get_cols
 from utilities.validate_args import get_cols_and_types
 from utilities.validate_args import get_expr_type
@@ -1132,7 +1133,7 @@ def _create_cat_features_info_table(cat_features_info_table, bins):
 # ------------------------------------------------------------------------------
 
 
-def get_feature_str(schema_madlib, boolean_cats,
+def get_feature_str(schema_madlib, source_table,
                     cat_features, con_features,
                     levels_str, n_levels_str,
                     null_proxy=None):
@@ -1144,13 +1145,16 @@ def get_feature_str(schema_madlib, boolean_cats,
         # (1 to N). The unique value will be mapped to -1 indicating an
         # unknown/missing value in the underlying layers.
         null_val = unique_string() if null_proxy is None else null_proxy
+
+        # Cast boolean column to text: requires a special cast expression for
+        # platforms where __HAS_BOOL_TO_TEXT_CAST__ is not enabled
+        patched_cat_features = explicit_bool_to_text(source_table,
+                                                     cat_features,
+                                                     schema_madlib)
         cat_features_cast = []
-        for col in cat_features:
-            if col in boolean_cats:
-                cat_features_cast.append(
-                    "(CASE WHEN " + col + " THEN 'True' ELSE 'False' END)")
+        for col in patched_cat_features:
             cat_features_cast.append(
-                "(coalesce({0}::text, '{1}'))::text".format(col, null_val))
+                "(coalesce(({0})::text, '{1}'))::text".format(col, null_val))
 
         cat_features_str = ("{0}._map_catlevel_to_int(array[" +
                             ", ".join(cat_features_cast) + "], {1}, {2}, {3})"
@@ -1187,7 +1191,7 @@ def _one_step(schema_madlib, training_table_name, cat_features,
     # XXX cat_feature_str contains $5 and $2, and a SQL function
     bytea8 = schema_madlib + '.bytea8'
     cat_features_str, con_features_str = get_feature_str(schema_madlib,
-                                                         boolean_cats,
+                                                         training_table_name,
                                                          cat_features,
                                                          con_features,
                                                          "$3", "$2",
@@ -1283,7 +1287,7 @@ def _one_step_for_grps(
     cat_levels_in_text = unique_string()
 
     cat_features_str, con_features_str = get_feature_str(
-        schema_madlib, boolean_cats, cat_features, con_features,
+        schema_madlib, training_table_name, cat_features, con_features,
         cat_levels_in_text, cat_n_levels, null_proxy)
 
     train_apply_func = """
@@ -1720,7 +1724,7 @@ def tree_predict(schema_madlib, model, source, output, pred_type='response',
                         if value == 'boolean'])
 
     cat_features_str, con_features_str = get_feature_str(
-        schema_madlib, boolean_cats, cat_features, con_features,
+        schema_madlib, source, cat_features, con_features,
         "m.cat_levels_in_text", "m.cat_n_levels", null_proxy)
 
     if use_existing_tables and table_exists(output):
