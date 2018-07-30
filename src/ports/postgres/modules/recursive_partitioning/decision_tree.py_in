@@ -247,15 +247,15 @@ def _get_tree_states(schema_madlib, is_classification, split_criterion,
                                               filter_dep)
         dep_list.sort()
         if dep_is_bool:
-            dep_col_str = ("CASE WHEN {0} THEN 'True' ELSE 'False' END".
+            dep_var_str = ("CASE WHEN {0} THEN 0 ELSE 1 END".
                            format(dependent_variable))
+
         else:
-            dep_col_str = dependent_variable
-        dep_var_str = ("(CASE " +
-                       "\n\t\t".join(["WHEN ({dep_col})::text = $${c}$$ THEN {i}".
-                                      format(dep_col=dep_col_str, c=c, i=i)
-                                      for i, c in enumerate(dep_list)]) +
-                       "\nEND)")
+            dep_var_str = ("(CASE " +
+                           "\n\t\t".join(["WHEN ({0})::text = $${1}$$ THEN {2}".
+                                          format(dep_col_str, str(c), i)
+                                          for i, c in enumerate(dep_list)]) +
+                           "\nEND)")
     else:
         if split_criterion.lower().strip() != "mse":
             plpy.warning("Decision tree: Using MSE as split criterion as it "
@@ -354,18 +354,18 @@ def get_grouping_array_str(table_name, grouping_cols, qualifier=None):
     Args:
         @param grouping_cols: list, List of columns used as grouping columns
     """
-    if qualifier:
-        qualifier_str = qualifier + "."
-    else:
-        qualifier_str = ''
+    def _col_to_text(col, col_type):
+        qualifier_str = qualifier + "." if qualifier else ''
+        if col_type.lower() == 'boolean':
+            return "(case when {0} then 'true' else 'false' end)::text".format(col)
+        else:
+            return '({0}{1})::text'.format(qualifier_str, col)
 
     grouping_cols_list = [col.strip() for col in grouping_cols.split(',')]
     grouping_cols_and_types = [(c, get_expr_type(c, table_name))
                                for c in grouping_cols_list]
-    grouping_array_str = 'array_to_string(array[' + \
-        ','.join("(case when " + col + " then 'True' else 'False' end)::text"
-                 if col_type.lower() == 'boolean' else '(' + qualifier_str + col + ')::text'
-                 for col, col_type in grouping_cols_and_types) + "]::text[], ',')"
+    grouping_array_str = "array_to_string(array[{0}]::text[], ',')".format(
+        ','.join(_col_to_text(col, col_type) for col, col_type in grouping_cols_and_types))
     return grouping_array_str
 # ------------------------------------------------------------------------------
 
@@ -697,7 +697,7 @@ def _get_bins(schema_madlib, training_table_name,
     # variable levels to integers, and keep this mapping in the memory.
     if len(cat_features) > 0:
         if is_classification:
-            # For classifications
+            # For classification the dependent variable is encoded as an integer
             order_fun = ("{madlib}._dst_compute_entropy({dep}, {n})".
                          format(madlib=schema_madlib,
                                 dep=dependent_variable,
@@ -746,13 +746,8 @@ def _get_bins(schema_madlib, training_table_name,
                        filter_str=filter_str,
                        union_null_proxy=union_null_proxy)
 
-        all_col_expressions = {}
-        for col in cat_features:
-            if col in boolean_cats:
-                all_col_expressions[col] = ("(CASE WHEN " + col +
-                                            " THEN 'True' ELSE 'False' END)")
-            else:
-                all_col_expressions[col] = col
+        all_col_expressions = dict(zip(cat_features, explicit_bool_to_text(
+            training_table_name, cat_features, schema_madlib)))
 
         sql_all_cats = ' UNION '.join(
             sql_cat_levels.format(
@@ -982,18 +977,8 @@ def _get_bins_grps(
                 ) s1
                 """.format(**locals())
 
-        all_col_expressions = {}
-        for col in cat_features:
-            if col in boolean_cats:
-                all_col_expressions[col] = ("(CASE WHEN " + col +
-                                            " THEN 'True' ELSE 'False' END)")
-            else:
-                if null_proxy is not None:
-                    all_col_expressions[col] = ("COALESCE({0}::TEXT, '{1}')".
-                                                format(col, null_proxy))
-                else:
-                    all_col_expressions[col] = col
-
+        all_col_expressions = dict(zip(cat_features, explicit_bool_to_text(
+            training_table_name, cat_features, schema_madlib)))
         sql_all_cats = ' UNION ALL '.join(
             sql_cat_levels.format(
                 col=expr,
@@ -1761,8 +1746,8 @@ def tree_predict(schema_madlib, model, source, output, pred_type='response',
     else:
         if dep_type.lower() == "boolean":
             # some platforms don't have text to boolean cast. We manually check the string.
-            dep_cast_str = ("(case {pred_name} when 'True' then "
-                            "True else False end)::BOOLEAN as {pred_name}")
+            dep_cast_str = ("(case {pred_name} when 'true' then true "
+                            "else false end)::BOOLEAN as {pred_name}")
         else:
             dep_cast_str = "{pred_name}::{dep_type}"
         if pred_type == "response":

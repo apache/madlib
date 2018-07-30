@@ -131,12 +131,13 @@ compute_leaf_stats_transition::run(AnyType & args){
     else {
         MutableNativeIntegerVector n_levels_per_cat =
             args[6].getAs<MutableNativeIntegerVector>();
-        for (Index i = 0; i < n_levels_per_cat.size(); i++)
+        for (Index i = 0; i < n_levels_per_cat.size(); i++){
             n_levels_per_cat[i] -= 1;
                 // ignore the last level since a split
                 // like 'var <= last level' would move all rows to
                 // a one side. Such a split will always be ignored
                 // when selecting the best split.
+        }
         cat_levels.rebind(n_levels_per_cat.memoryHandle(), n_levels_per_cat.size());
     }
 

@@ -518,6 +518,7 @@ DecisionTree<Container>::expand(const Accumulator &state,
                     double gain = impurityGain(
                         state.cat_stats.row(stats_i).
                             segment(fv_index, sps * 2), sps);
+
                     if (gain > max_impurity_gain){
                         max_impurity_gain = gain;
                         max_feat = f;
@@ -677,10 +678,10 @@ DecisionTree<Container>::pickSurrogates(
                     (cat_stats_counts.row(stats_i).segment(
                         prev_cum_levels * 2, n_levels * 2)).maxCoeff(&max_label);
 
-                    // For each split, there are two stats => max_label / 2
-                    // gives the split index. There isn't a need to do a floor
-                    // operation, since the threshold will yield the same results
-                    // for n and n+0.5.
+                    // For each split, there are two stats =>
+                    //  max_label / 2 gives the split index. A floor
+                    // operation is unnecessary since the threshold will yield
+                    // the same results for n and n+0.5.
                     cat_max_thres(each_cat) = static_cast<double>(max_label / 2);
                     cat_max_count(each_cat) =
                             cat_stats_counts(stats_i, prev_cum_levels*2 + max_label);

@@ -269,6 +269,7 @@ update dt_golf set id_2 = id % 2;
 -------------------------------------------------------------------------
 
 -- no grouping, with cross_validation
+-- also adding a categorical with just a single level (windy2)
 DROP TABLE IF EXISTS train_output, train_output_summary, train_output_cv;
 SELECT tree_train('dt_golf'::text,         -- source table
                          'train_output'::text,    -- output model table
@@ -290,7 +291,6 @@ SELECT tree_train('dt_golf'::text,         -- source table
 SELECT _print_decision_tree(tree) from train_output;
 SELECT tree_display('train_output', False);
 SELECT impurity_var_importance FROM train_output;
-SELECT cat_levels_in_text, cat_n_levels, impurity_var_importance FROM train_output;
 SELECT * FROM train_output_cv;
 SELECT * FROM train_output_summary;
 -------------------------------------------------------------------------
@@ -298,25 +298,32 @@ SELECT * FROM train_output_summary;
 -- grouping
 DROP TABLE IF EXISTS train_output, train_output_summary, predict_output;
 SELECT tree_train('dt_golf'::text,         -- source table
-                         'train_output'::text,    -- output model table
-                         'id'::text,              -- id column
-                         'temperature::double precision'::text,           -- response
-                         '"OUTLOOK", humidity, windy, cat_features'::text,   -- features
-                         NULL::text,        -- exclude columns
-                         'gini'::text,      -- split criterion
-                         'class'::text,     -- grouping
-                         NULL::text,        -- no weights
-                         10::integer,       -- max depth
-                         2::integer,        -- min split
-                         1::integer,        -- min bucket
-                         3::integer,        -- number of bins per continuous variable
-                         'cp=0',          -- cost-complexity pruning parameter
-                         'max_surrogates=2'
-                         );
+                  'train_output'::text,    -- output model table
+                  'id'::text,              -- id column
+                  'temperature::double precision'::text,       -- response
+                  '"OUTLOOK", humidity, windy, cat_features'::text, -- features
+                  NULL::text,        -- exclude columns
+                  'gini'::text,      -- split criterion
+                  'class'::text,     -- grouping
+                  NULL::text,        -- no weights
+                  10::integer,       -- max depth
+                  2::integer,        -- min split
+                  1::integer,        -- min bucket
+                  3::integer,        -- number of bins per contvariable
+                  'cp=0',          -- cost-complexity pruning parameter
+                  'max_surrogates=2'
+                  );
 
 SELECT _print_decision_tree(tree) from train_output;
 SELECT tree_display('train_output', FALSE);
-SELECT * FROM train_output;
+
+-- cat_features[2] has a single level. The cat_n_levels is in order of the
+-- input categorical features.
+-- In this case "OUTLOOL" = 1, windy = 2, cat_features[1] = 3, cat_features[2] = 4
+SELECT assert(cat_n_levels[4] = 1,
+              'Categorical features with single level not being retained.')
+FROM train_output
+WHERE class = E'Don\'t Play';
 
 -- testing tree_predict with a category not present in training table
 CREATE TABLE dt_golf2 as
@@ -335,7 +342,6 @@ JOIN
     dt_golf2
 USING (id);
 \x on
-select * from train_output;
 select * from train_output_summary;
 -------------------------------------------------------------------------
 
