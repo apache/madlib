@@ -700,10 +700,12 @@ def forest_predict(schema_madlib, model, source, output,
     if not is_classification:
         majority_pred_expression = "AVG(aggregated_prediction)"
     else:
+        dep_levels_array_str = py_list_to_sql_string(map(quote_literal, dep_levels),
+                                                     'TEXT',
+                                                     long_format=True)
         majority_pred_expression = (
             "({0})[{1}.mode(aggregated_prediction + 1)]::TEXT".
-            format(py_list_to_sql_string(dep_levels, 'TEXT', long_format=True),
-                   schema_madlib))
+            format(dep_levels_array_str, schema_madlib))
 
     if is_psql_boolean_type(dep_type):
         # some platforms don't have text to boolean cast. We manually check the string.
@@ -1216,19 +1218,22 @@ def _calculate_oob_error(schema_madlib, oob_prediction_table, oob_error_table,
 
 def _create_summary_table(**kwargs):
     kwargs['features'] = ','.join(kwargs['cat_features'] + kwargs['con_features'])
+    kwargs['dep_type'] = get_expr_type(kwargs['dependent_variable'],
+                                       kwargs['training_table_name'])
     if kwargs['dep_list']:
-        kwargs['dep_list_str'] = (
-            "$dep_list$" +
-            ','.join('"{0}"'.format(str(dep)) for dep in kwargs['dep_list']) +
-            "$dep_list$")
+        if is_psql_boolean_type(kwargs['dep_type']):
+            # Special handling for boolean since Python booleans start with
+            # capitals (i.e False instead of false)
+            # Note:  dep_list is sorted, hence 'false' will be first
+            kwargs['dep_list_str'] = "'false, true'"
+        else:
+            kwargs['dep_list_str'] = '$__dep_list__${0}$__dep_list__$'.format(
+                ','.join(map(str, kwargs['dep_list'])))
     else:
         kwargs['dep_list_str'] = "NULL"
-
     kwargs['indep_type'] = ', '.join(kwargs['all_cols_types'][col]
                                      for col in (kwargs['cat_features'] +
                                                  kwargs['con_features']))
-    kwargs['dep_type'] = get_expr_type(kwargs['dependent_variable'],
-                                       kwargs['training_table_name'])
     kwargs['cat_features_str'] = ','.join(kwargs['cat_features'])
     kwargs['con_features_str'] = ','.join(kwargs['con_features'])
     if kwargs['grouping_cols']:
