@@ -252,9 +252,11 @@ def _get_tree_states(schema_madlib, is_classification, split_criterion,
         n_rows, dep_list = _get_n_and_deplist(training_table_name,
                                               dependent_variable,
                                               filter_dep)
-        dep_list.sort()
         if dep_is_bool:
-            dep_var_str = ("CASE WHEN {0} THEN 0 ELSE 1 END".
+            # false = 0, true = 1
+            # This order is maintained in dep_list since
+            # _get_n_and_deplist returns a sorted list
+            dep_var_str = ("CASE WHEN {0} THEN 1 ELSE 0 END".
                            format(dependent_variable))
 
         else:
@@ -573,11 +575,14 @@ def _get_n_and_deplist(training_table_name, dependent_variable, filter_null):
     @brief Query the database for the total number of rows and
     levels of dependent variable if the dependent variable is
     categorical.
+
+    Note: The deplist is sorted in the array_agg which is necessary to ensure
+    false = 0 and true = 1 for boolean dependent variable.
     """
     sql = """
         SELECT
             sum(n_rows) as n_rows,
-            array_agg(dep) as dep
+            array_agg(dep ORDER BY dep ASC) as dep
         FROM (
             SELECT
                 count(*) as n_rows,
@@ -1549,14 +1554,19 @@ def _create_summary_table(
     output_table_summary = add_postfix(output_table_name, "_summary")
 
     # dependent variables
+    dep_type = _get_dep_type(training_table_name, dependent_variable)
     if dep_list:
-        dep_list_str = ("$dep_list$" +
-                        ','.join('"{0}"'.format(str(dep)) for dep in dep_list) +
-                        "$dep_list$")
+        if is_psql_boolean_type(dep_type):
+            # Special handling for boolean since Python booleans start with
+            # capitals (i.e False instead of false)
+            # Note:  dep_list is sorted, hence 'false' will be first
+            dep_list_str = "'false, true'"
+        else:
+            dep_list_str = '$__dep_list__$"{0}"$__dep_list__$'.format(
+                ','.join(map(str, dep_list)))
     else:
         dep_list_str = "NULL"
     indep_type = ', '.join(all_cols_types[c] for c in cat_features + con_features)
-    dep_type = _get_dep_type(training_table_name, dependent_variable)
     independent_varnames = ','.join(cat_features + con_features)
     cat_features_str = ','.join(cat_features)
     con_features_str = ','.join(con_features)
@@ -1597,8 +1607,8 @@ def _create_summary_table(
                 {n_rows_skipped}::integer      AS total_rows_skipped,
                 {dep_list_str}::text           AS dependent_var_levels,
                 '{dep_type}'::text             AS dependent_var_type,
-                {cp_str}                       AS input_cp,
                 '{indep_type}'::text           AS independent_var_types,
+                {cp_str}                       AS input_cp,
                 {n_folds}::integer             AS n_folds,
                 {null_proxy_str}::text         AS null_proxy
             """.format(**locals())
@@ -1675,7 +1685,6 @@ def tree_predict(schema_madlib, model, source, output, pred_type='response',
                             'prob' gives the probability of the classes in a
                              classification tree.
                           For regression tree, only type='response' is defined.
-
     Returns:
         None
 
@@ -1699,9 +1708,9 @@ def tree_predict(schema_madlib, model, source, output, pred_type='response',
             "that were used during training".format(source))
     id_col_name = summary_elements["id_col_name"]
     dep_varname = summary_elements["dependent_varname"]
-    dep_levels = summary_elements["dependent_var_levels"]
-    is_classification = summary_elements["is_classification"]
+    dep_levels = split_quoted_delimited_str(summary_elements["dependent_var_levels"])
     dep_type = summary_elements['dependent_var_type']
+    is_classification = summary_elements["is_classification"]
     # optional variables, default value is None
     grouping_cols_str = summary_elements.get("grouping_cols")
     null_proxy = summary_elements.get('null_proxy')
@@ -1715,8 +1724,8 @@ def tree_predict(schema_madlib, model, source, output, pred_type='response',
         "m.cat_levels_in_text", "m.cat_n_levels", null_proxy)
 
     if use_existing_tables and table_exists(output):
-        plpy.execute("truncate " + output)
-        header = "INSERT INTO " + output + " "
+        plpy.execute("TRUNCATE " + output)
+        header = "INSERT INTO " + output
         use_fold = 'WHERE k = ' + str(k)
     else:
         header = "CREATE TABLE " + output + " AS "
@@ -1746,23 +1755,26 @@ def tree_predict(schema_madlib, model, source, output, pred_type='response',
             {use_fold}
             """
     else:
-        if dep_type.lower() == "boolean":
+        if is_psql_boolean_type(dep_type):
             # some platforms don't have text to boolean cast. We manually check the string.
             dep_cast_str = ("(case {pred_name} when 'true' then true "
-                            "else false end)::BOOLEAN as {pred_name}")
+                            " when 'false' then false "
+                            "end)::BOOLEAN as {pred_name}")
         else:
             dep_cast_str = "{pred_name}::{dep_type}"
+        dep_levels_array_str = py_list_to_sql_string(dep_levels, 'TEXT', long_format=True)
+        plpy.info(dep_levels_array_str)
         if pred_type == "response":
             sql = header + """
                     SELECT
-                        {id_col_name}
-                       , %s
+                        {id_col_name},
+                        %s
                     FROM (
                          SELECT
-                            {id_col_name}
-                           ,
-                           ($sql${{ {dep_levels} }}$sql$::varchar[])[
-                               {schema_madlib}._predict_dt_response (
+                            {id_col_name},
+                           -- _predict_dt_response returns 0-based indexing.
+                           -- Hence the "+ 1" (DB by default uses 1-based indexing)
+                           (%s)[{schema_madlib}._predict_dt_response (
                                    tree,
                                    {cat_features_str}::INTEGER[],
                                    {con_features_str}::DOUBLE PRECISION[]) + 1]::TEXT
@@ -1770,27 +1782,26 @@ def tree_predict(schema_madlib, model, source, output, pred_type='response',
                         FROM {source} as s {join_str} {model} as m {using_str}
                         {use_fold}
                     ) q
-                """ % (dep_cast_str)
+                """ % (dep_cast_str, dep_levels_array_str)
         else:
-            intermediate_col = unique_string()
+            temp_col = unique_string()
             score_format = ', \n'.join([
-                '{interim}[{j}] as "estimated_prob_{c}"'.
-                format(j=i+1, c=c.strip(' "'), interim=intermediate_col)
-                for i, c in enumerate(split_quoted_delimited_str(dep_levels))])
+                '{0}[{1}] as "estimated_prob_{2}"'.format(temp_col, i, c.strip(' "'))
+                for i, c in enumerate(dep_levels, start=1)])
             sql = header + """
                 SELECT
                     {id_col_name},
-                    {score_format}
+                    %s
                     FROM (
                         SELECT {id_col_name},
                                {schema_madlib}._predict_dt_prob(tree,
                                     {cat_features_str}::INTEGER[],
                                     {con_features_str}::DOUBLE PRECISION[])
-                                        AS {intermediate_col}
+                                        AS {temp_col}
                         FROM {source} as s {join_str} {model} as m {using_str}
                         {use_fold}
                     ) q
-                """
+                """ % (score_format)
     sql = sql.format(**locals())
     with MinWarning('warning'):
         with OptimizerControl(False):
