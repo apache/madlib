@@ -18,6 +18,7 @@ from utilities.control import HashaggControl
 from utilities.utilities import _assert
 from utilities.utilities import add_postfix
 from utilities.utilities import extract_keyvalue_params
+from utilities.utilities import is_psql_boolean_type
 from utilities.utilities import py_list_to_sql_string
 from utilities.utilities import split_quoted_delimited_str
 from utilities.utilities import unique_string
@@ -39,6 +40,7 @@ from decision_tree import _classify_features
 from decision_tree import _get_filter_str
 from decision_tree import _get_display_header
 from decision_tree import get_feature_str
+from decision_tree import get_grouping_array_str
 from decision_tree import _compute_var_importance
 from decision_tree import _create_cat_features_info_table
 # ------------------------------------------------------------
@@ -322,7 +324,7 @@ def forest_train(
                 _assert(bool(features),
                         "Random forest error: No feature is selected for the model.")
 
-                is_classification, is_bool = _is_dep_categorical(
+                is_classification, dep_is_bool = _is_dep_categorical(
                     training_table_name, dependent_variable)
                 split_criterion = 'gini' if is_classification else 'mse'
 
@@ -350,23 +352,26 @@ def forest_train(
                     n_rows, dep_list = _get_n_and_deplist(training_table_name,
                                                           dependent_variable,
                                                           filter_null)
+                    dep_n_levels = len(dep_list)
                     _assert(n_rows > 0,
                             "Random forest error: There should be at least one "
                             "data point for each class where all features are non NULL")
-                    dep_col_str = ("CASE WHEN " + dependent_variable +
-                                   " THEN 'True' ELSE 'False' END") if is_bool else dependent_variable
-                    dep = ("(CASE " +
-                           "\n               ".
-                           join(["WHEN ({dep_col})::text = $${c}$$ THEN {i}".
-                                format(dep_col=dep_col_str, c=c, i=i)
-                                 for i, c in enumerate(dep_list)]) +
-                           "\nEND)")
-                    dep_n_levels = len(dep_list)
+                    if dep_is_bool:
+                        # false = 0, true = 1
+                        # This order is maintained in dep_list since
+                        # _get_n_and_deplist returns a sorted list
+                        dep = ("(CASE WHEN {0} THEN 1 ELSE 0 END)".
+                               format(dependent_variable))
+                    else:
+                        dep = ("(CASE " +
+                               "\n\t\t".join(["WHEN ({0})::text = $${1}$$ THEN {2}".
+                                               format(dependent_variable, c, i)
+                                              for i, c in enumerate(dep_list)]) +
+                               "\nEND)")
                 else:
                     n_rows = plpy.execute(
-                        "SELECT count(*) FROM {source_table} where {filter_null}".
-                        format(source_table=training_table_name,
-                               filter_null=filter_null))[0]['count']
+                        "SELECT count(*) FROM {0} WHERE {1}".
+                        format(training_table_name, filter_null))[0]['count']
                     dep = dependent_variable
                     dep_n_levels = 1
                     dep_list = None
@@ -394,15 +399,8 @@ def forest_train(
                     cat_features = bins['cat_features']
                     bins['grp_key_cat'] = ['']
                 else:
-                    grouping_cols_list = [col.strip() for col in grouping_cols.split(',')]
-                    grouping_cols_and_types = [(col, get_expr_type(col, training_table_name))
-                                               for col in grouping_cols_list]
-                    grouping_array_str = (
-                        "array_to_string(array[" +
-                        ','.join("(case when " + col + " then 'True' else 'False' end)::text"
-                                 if col_type.lower() == 'boolean' else '(' + col + ')::text'
-                                 for col, col_type in grouping_cols_and_types) +
-                        "], ',')")
+                    grouping_array_str = get_grouping_array_str(
+                        training_table_name, grouping_cols)
                     grouping_cols_str = ('' if grouping_cols is None
                                          else grouping_cols + ",")
                     sql_grp_key_to_grp_cols = """
@@ -427,7 +425,8 @@ def forest_train(
                                           con_features, num_bins, dep,
                                           boolean_cats, grouping_cols,
                                           grouping_array_str, n_rows,
-                                          is_classification, dep_n_levels, filter_null, null_proxy)
+                                          is_classification, dep_n_levels,
+                                          filter_null, null_proxy)
                     cat_features = bins['cat_features']
 
                 # a table for getting information of cat features for each group
@@ -679,7 +678,7 @@ def forest_predict(schema_madlib, model, source, output,
     id_col_name = summary_elements["id_col_name"]
     grouping_cols = summary_elements.get("grouping_cols")  # optional, default = None
     dep_varname = summary_elements["dependent_varname"]
-    dep_levels = summary_elements["dependent_var_levels"]
+    dep_levels = split_quoted_delimited_str(summary_elements["dependent_var_levels"])
     is_classification = summary_elements["is_classification"]
     dep_type = summary_elements['dependent_var_type']
     null_proxy = summary_elements.get('null_proxy')  # optional, default = None
@@ -701,17 +700,19 @@ def forest_predict(schema_madlib, model, source, output,
     if not is_classification:
         majority_pred_expression = "AVG(aggregated_prediction)"
     else:
-        majority_pred_expression = """($sql${{ {dep_levels} }}$sql$::varchar[])[
-                                    {schema_madlib}.mode(aggregated_prediction + 1)]::TEXT
-                                    """.format(**locals())
+        majority_pred_expression = (
+            "({0})[{1}.mode(aggregated_prediction + 1)]::TEXT".
+            format(py_list_to_sql_string(dep_levels, 'TEXT', long_format=True),
+                   schema_madlib))
 
-    if dep_type.lower() == "boolean":
+    if is_psql_boolean_type(dep_type):
         # some platforms don't have text to boolean cast. We manually check the string.
-        majority_pred_cast_str = ("(case {majority_pred_expression} when 'True' then "
-                                  "True else False end)::BOOLEAN as {pred_name}")
+        majority_pred_cast_str = ("(case {majority_pred_expression} "
+                                  " when 'true' then true "
+                                  " when 'false' then false "
+                                  " end)::BOOLEAN AS {pred_name}")
     else:
-        majority_pred_cast_str = "{majority_pred_expression}::{dep_type} as {pred_name}"
-
+        majority_pred_cast_str = "({majority_pred_expression})::{dep_type} AS {pred_name}"
     majority_pred_cast_str = majority_pred_cast_str.format(**locals())
     num_trees_grown = plpy.execute(
         "SELECT count(DISTINCT sample_id) FROM {0}".format(model))[0]['count']
@@ -722,8 +723,7 @@ def forest_predict(schema_madlib, model, source, output,
             SELECT
                 {id_col_name},
                 {majority_pred_cast_str}
-            FROM
-            (
+            FROM (
                 SELECT
                     {id_col_name},
                     {schema_madlib}._predict_dt_response(
@@ -742,12 +742,12 @@ def forest_predict(schema_madlib, model, source, output,
             GROUP BY {id_col_name}
         """.format(**locals())
     else:
-        len_dep_levels = len(split_quoted_delimited_str(dep_levels))
+        len_dep_levels = len(dep_levels)
         normalized_majority_pred = unique_string()
         score_format = ', \n'.join([
             '{temp}[{j}] as "estimated_prob_{c}"'.
             format(j=i+1, c=c.strip(' "'), temp=normalized_majority_pred)
-            for i, c in enumerate(split_quoted_delimited_str(dep_levels))])
+            for i, c in enumerate(dep_levels)])
 
         sql_prediction = """
             CREATE TABLE {output} AS
