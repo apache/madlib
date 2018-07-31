@@ -50,13 +50,6 @@ def _tree_validate_args(
         min_split, min_bucket, n_bins, cp, n_folds, **kwargs):
     """ Validate the arguments
     """
-    if not split_criterion:
-        split_criterion = 'gini'
-    _assert(split_criterion.lower().strip() in ['mse', 'gini', 'cross-entropy',
-                                                'entropy', 'misclass',
-                                                'misclassification'],
-            "Decision tree error: Invalid split_criterion.")
-
     _assert(training_table_name and
             training_table_name.strip().lower() not in ('null', ''),
             "Decision tree error: Invalid data table.")
@@ -109,6 +102,24 @@ def _tree_validate_args(
     _assert(n_folds >= 0, "Decision tree error: number of cross-validation "
                           "folds must be non-negative.")
 # ------------------------------------------------------------
+
+
+def _validate_split_criterion(split_criterion, is_classification):
+    _assert(split_criterion.lower().strip() in ['mse', 'gini', 'cross-entropy',
+                                                'entropy', 'misclass',
+                                                'misclassification'],
+            "Decision tree error: Invalid split_criterion.")
+    if is_classification:
+        if split_criterion.lower().strip() == "mse":
+            plpy.error("Decision tree error: MSE is not a valid "
+                       "split criterion for classification.")
+    else:
+        if split_criterion.lower().strip() != "mse":
+            plpy.warning("Decision tree: Using MSE as split criterion as it "
+                         "is the only one supported for regression trees.")
+        split_criterion = "mse"
+    return split_criterion
+# ------------------------------------------------------------------------------
 
 
 def _get_features_to_use(schema_madlib, training_table_name,
@@ -236,11 +247,7 @@ def _get_tree_states(schema_madlib, is_classification, split_criterion,
                             key is ''
     """
     filter_dep = _get_filter_str(dependent_variable, grouping_cols)
-    # 3)
     if is_classification:
-        if split_criterion.lower().strip() == "mse":
-            plpy.error("Decision tree error: MSE is not a valid "
-                       "split criterion for classification.")
         # For classifications, we also need to map dependent_variable to integers
         n_rows, dep_list = _get_n_and_deplist(training_table_name,
                                               dependent_variable,
@@ -253,13 +260,10 @@ def _get_tree_states(schema_madlib, is_classification, split_criterion,
         else:
             dep_var_str = ("(CASE " +
                            "\n\t\t".join(["WHEN ({0})::text = $${1}$$ THEN {2}".
-                                          format(dep_col_str, str(c), i)
+                                          format(dependent_variable, str(c), i)
                                           for i, c in enumerate(dep_list)]) +
                            "\nEND)")
     else:
-        if split_criterion.lower().strip() != "mse":
-            plpy.warning("Decision tree: Using MSE as split criterion as it "
-                         "is the only one supported for regression trees.")
         n_rows = long(plpy.execute("SELECT count(*)::bigint "
                                    "FROM {src} "
                                    "WHERE {filter}".
@@ -269,7 +273,6 @@ def _get_tree_states(schema_madlib, is_classification, split_criterion,
         dep_list = []
 
     dep_n_levels = len(dep_list) if dep_list else 1
-
     cat_features_info_table = unique_string()
     if not grouping_cols:   # non-grouping case
         # 3)  Find the splitting bins, one dict containing two arrays:
@@ -292,7 +295,6 @@ def _get_tree_states(schema_madlib, is_classification, split_criterion,
         tree_states = [tree]
     else:
         grouping_array_str = get_grouping_array_str(training_table_name, grouping_cols)
-
         with OptimizerControl(False):
             # we disable optimizer (ORCA) for platforms that use it
             #  since ORCA doesn't provide an easy way to disable hashagg
@@ -344,7 +346,6 @@ def _get_tree_states(schema_madlib, is_classification, split_criterion,
             schema_madlib, tree,
             len(cat_features), len(con_features))
         tree.update(**importance_vectors)
-
     return tree_states, bins, dep_list, n_rows, cat_features_info_table
 # -------------------------------------------------------------------------
 
@@ -513,6 +514,7 @@ def tree_train(schema_madlib, training_table_name, output_table_name,
 
         is_classification, dep_is_bool = _is_dep_categorical(
             training_table_name, dependent_variable)
+        split_criterion = _validate_split_criterion(split_criterion, is_classification)
 
         # 4) Build the tree with provided cp value
         compute_cp_list = (n_folds > 1)
