@@ -518,6 +518,7 @@ DecisionTree<Container>::expand(const Accumulator &state,
                     double gain = impurityGain(
                         state.cat_stats.row(stats_i).
                             segment(fv_index, sps * 2), sps);
+
                     if (gain > max_impurity_gain){
                         max_impurity_gain = gain;
                         max_feat = f;
@@ -665,21 +666,29 @@ DecisionTree<Container>::pickSurrogates(
 
             // 1. Compute the max count and corresponding split threshold for
             // each categorical and continuous feature
+
             ColumnVector cat_max_thres = ColumnVector::Zero(n_cats);
             ColumnVector cat_max_count = ColumnVector::Zero(n_cats);
             IntegerVector cat_max_is_reverse = IntegerVector::Zero(n_cats);
             Index prev_cum_levels = 0;
             for (Index each_cat=0; each_cat < n_cats; each_cat++){
                 Index n_levels = state.cat_levels_cumsum(each_cat) - prev_cum_levels;
-                Index max_label;
-                (cat_stats_counts.row(stats_i).segment(
-                    prev_cum_levels * 2, n_levels * 2)).maxCoeff(&max_label);
-                cat_max_thres(each_cat) = static_cast<double>(max_label / 2);
-                cat_max_count(each_cat) =
-                        cat_stats_counts(stats_i, prev_cum_levels*2 + max_label);
-                // every odd col is for reverse, hence i % 2 == 1 for reverse index i
-                cat_max_is_reverse(each_cat) = (max_label % 2 == 1) ? 1 : 0;
-                prev_cum_levels = state.cat_levels_cumsum(each_cat);
+                if (n_levels > 0){
+                    Index max_label;
+                    (cat_stats_counts.row(stats_i).segment(
+                        prev_cum_levels * 2, n_levels * 2)).maxCoeff(&max_label);
+
+                    // For each split, there are two stats =>
+                    //  max_label / 2 gives the split index. A floor
+                    // operation is unnecessary since the threshold will yield
+                    // the same results for n and n+0.5.
+                    cat_max_thres(each_cat) = static_cast<double>(max_label / 2);
+                    cat_max_count(each_cat) =
+                            cat_stats_counts(stats_i, prev_cum_levels*2 + max_label);
+                    // every odd col is for reverse, hence i % 2 == 1 for reverse index i
+                    cat_max_is_reverse(each_cat) = max_label % 2;
+                    prev_cum_levels = state.cat_levels_cumsum(each_cat);
+                }
             }
 
             ColumnVector con_max_thres = ColumnVector::Zero(n_cons);
@@ -800,7 +809,7 @@ DecisionTree<Container>::expand_by_sampling(const Accumulator &state,
             std::random_shuffle(cat_con_feature_indices,
                     cat_con_feature_indices + total_cat_con_features, rvt);
             // if a leaf node exists, compute the gain in impurity for each split
-            // pick split  with maximum gain and update node with split value
+            // pick split with maximum gain and update node with split value
             int max_feat = -1;
             Index max_bin = -1;
             bool max_is_cat = false;
@@ -831,7 +840,6 @@ DecisionTree<Container>::expand_by_sampling(const Accumulator &state,
                         }
                     }
 
-
                 } else { //f >= state.n_cat.features
                     //continuous feature
                     f -= state.n_cat_features;
@@ -854,40 +862,41 @@ DecisionTree<Container>::expand_by_sampling(const Accumulator &state,
                 }
             }
 
-            // Create and update child nodes if splitting current
-            uint64_t true_count = statCount(max_stats.segment(0, sps));
-            uint64_t false_count = statCount(max_stats.segment(sps, sps));
-            uint64_t total_count = statCount(predictions.row(current));
-
-            if (max_impurity_gain > 0 &&
-                    shouldSplit(total_count, true_count, false_count,
+            bool is_leaf_split = FALSE;
+            if (max_impurity_gain > 0){
+                // Create and update child nodes if splitting current
+                uint64_t true_count = statCount(max_stats.segment(0, sps));
+                uint64_t false_count = statCount(max_stats.segment(sps, sps));
+                uint64_t total_count = statCount(predictions.row(current));
+                if (shouldSplit(total_count, true_count, false_count,
                                 min_split, min_bucket, max_depth)) {
 
-                double max_threshold;
-                if (max_is_cat)
-                    max_threshold = static_cast<double>(max_bin);
-                else
-                    max_threshold = con_splits(max_feat, max_bin);
+                    is_leaf_split = TRUE;
+                    double max_threshold;
+                    if (max_is_cat)
+                        max_threshold = static_cast<double>(max_bin);
+                    else
+                        max_threshold = con_splits(max_feat, max_bin);
 
-                if (children_not_allocated) {
-                    // allocate the memory for child nodes if not allocated already
-                    incrementInPlace();
-                    children_not_allocated = false;
-                }
+                    if (children_not_allocated) {
+                        // allocate the memory for child nodes if not allocated already
+                        incrementInPlace();
+                        children_not_allocated = false;
+                    }
 
-                children_wont_split &=
-                    updatePrimarySplit(
-                        current, static_cast<int>(max_feat),
-                        max_threshold, max_is_cat,
-                        min_split,
-                        max_stats.segment(0, sps),   // true_stats
-                        max_stats.segment(sps, sps)  // false_stats
-                    );
-
-            } else {
+                    children_wont_split &=
+                        updatePrimarySplit(
+                            current, static_cast<int>(max_feat),
+                            max_threshold, max_is_cat,
+                            min_split,
+                            max_stats.segment(0, sps),   // true_stats
+                            max_stats.segment(sps, sps)  // false_stats
+                        );
+                } // if shouldSplit
+            } //if max_impurity_gain > 0
+            if (not is_leaf_split)
                 feature_indices(current) = FINISHED_LEAF;
-            }
-        } // if leaf exists
+        } // if leaf is in_process
     } // for each leaf
 
     // return true if tree expansion is finished

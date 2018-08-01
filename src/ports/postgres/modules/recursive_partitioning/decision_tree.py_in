@@ -30,6 +30,7 @@ from utilities.utilities import unique_string
 
 from utilities.validate_args import _get_table_schema_names
 from utilities.validate_args import columns_exist_in_table
+from utilities.validate_args import explicit_bool_to_text
 from utilities.validate_args import get_cols
 from utilities.validate_args import get_cols_and_types
 from utilities.validate_args import get_expr_type
@@ -49,13 +50,6 @@ def _tree_validate_args(
         min_split, min_bucket, n_bins, cp, n_folds, **kwargs):
     """ Validate the arguments
     """
-    if not split_criterion:
-        split_criterion = 'gini'
-    _assert(split_criterion.lower().strip() in ['mse', 'gini', 'cross-entropy',
-                                                'entropy', 'misclass',
-                                                'misclassification'],
-            "Decision tree error: Invalid split_criterion.")
-
     _assert(training_table_name and
             training_table_name.strip().lower() not in ('null', ''),
             "Decision tree error: Invalid data table.")
@@ -108,6 +102,24 @@ def _tree_validate_args(
     _assert(n_folds >= 0, "Decision tree error: number of cross-validation "
                           "folds must be non-negative.")
 # ------------------------------------------------------------
+
+
+def _validate_split_criterion(split_criterion, is_classification):
+    _assert(split_criterion.lower().strip() in ['mse', 'gini', 'cross-entropy',
+                                                'entropy', 'misclass',
+                                                'misclassification'],
+            "Decision tree error: Invalid split_criterion.")
+    if is_classification:
+        if split_criterion.lower().strip() == "mse":
+            plpy.error("Decision tree error: MSE is not a valid "
+                       "split criterion for classification.")
+    else:
+        if split_criterion.lower().strip() != "mse":
+            plpy.warning("Decision tree: Using MSE as split criterion as it "
+                         "is the only one supported for regression trees.")
+        split_criterion = "mse"
+    return split_criterion
+# ------------------------------------------------------------------------------
 
 
 def _get_features_to_use(schema_madlib, training_table_name,
@@ -235,30 +247,25 @@ def _get_tree_states(schema_madlib, is_classification, split_criterion,
                             key is ''
     """
     filter_dep = _get_filter_str(dependent_variable, grouping_cols)
-    # 3)
     if is_classification:
-        if split_criterion.lower().strip() == "mse":
-            plpy.error("Decision tree error: MSE is not a valid "
-                       "split criterion for classification.")
         # For classifications, we also need to map dependent_variable to integers
         n_rows, dep_list = _get_n_and_deplist(training_table_name,
                                               dependent_variable,
                                               filter_dep)
-        dep_list.sort()
         if dep_is_bool:
-            dep_col_str = ("CASE WHEN {0} THEN 'True' ELSE 'False' END".
+            # false = 0, true = 1
+            # This order is maintained in dep_list since
+            # _get_n_and_deplist returns a sorted list
+            dep_var_str = ("(CASE WHEN {0} THEN 1 ELSE 0 END)".
                            format(dependent_variable))
+
         else:
-            dep_col_str = dependent_variable
-        dep_var_str = ("(CASE " +
-                       "\n\t\t".join(["WHEN ({dep_col})::text = $${c}$$ THEN {i}".
-                                      format(dep_col=dep_col_str, c=c, i=i)
-                                      for i, c in enumerate(dep_list)]) +
-                       "\nEND)")
+            dep_var_str = ("(CASE " +
+                           "\n\t\t".join(["WHEN ({0})::text = $${1}$$ THEN {2}".
+                                          format(dependent_variable, str(c), i)
+                                          for i, c in enumerate(dep_list)]) +
+                           "\nEND)")
     else:
-        if split_criterion.lower().strip() != "mse":
-            plpy.warning("Decision tree: Using MSE as split criterion as it "
-                         "is the only one supported for regression trees.")
         n_rows = long(plpy.execute("SELECT count(*)::bigint "
                                    "FROM {src} "
                                    "WHERE {filter}".
@@ -268,7 +275,6 @@ def _get_tree_states(schema_madlib, is_classification, split_criterion,
         dep_list = []
 
     dep_n_levels = len(dep_list) if dep_list else 1
-
     cat_features_info_table = unique_string()
     if not grouping_cols:   # non-grouping case
         # 3)  Find the splitting bins, one dict containing two arrays:
@@ -288,12 +294,9 @@ def _get_tree_states(schema_madlib, is_classification, split_criterion,
         tree = _tree_train_using_bins(**locals())
         tree['grp_key'] = ''
         tree['cp'] = grp_key_to_cp[tree['grp_key']]
-        tree['cat_features'] = cat_features
-        tree['con_features'] = con_features
         tree_states = [tree]
     else:
         grouping_array_str = get_grouping_array_str(training_table_name, grouping_cols)
-
         with OptimizerControl(False):
             # we disable optimizer (ORCA) for platforms that use it
             #  since ORCA doesn't provide an easy way to disable hashagg
@@ -325,8 +328,6 @@ def _get_tree_states(schema_madlib, is_classification, split_criterion,
                         tree['cp'] = grp_key_to_cp.values()[0]
                     else:
                         tree['cp'] = grp_key_to_cp[grp_key]
-                    tree['cat_features'] = bins['grp_to_cat_features'][grp_key]
-                    tree['con_features'] = bins['con_features']
 
     # 5) prune the tree using provided 'cp' value and produce a list of
     #   cp values if cross-validation is required (cp_list = [] if not)
@@ -345,9 +346,8 @@ def _get_tree_states(schema_madlib, is_classification, split_criterion,
 
         importance_vectors = _compute_var_importance(
             schema_madlib, tree,
-            len(tree['cat_features']), len(tree['con_features']))
+            len(cat_features), len(con_features))
         tree.update(**importance_vectors)
-
     return tree_states, bins, dep_list, n_rows, cat_features_info_table
 # -------------------------------------------------------------------------
 
@@ -357,18 +357,18 @@ def get_grouping_array_str(table_name, grouping_cols, qualifier=None):
     Args:
         @param grouping_cols: list, List of columns used as grouping columns
     """
-    if qualifier:
-        qualifier_str = qualifier + "."
-    else:
-        qualifier_str = ''
+    def _col_to_text(col, col_type):
+        qualifier_str = qualifier + "." if qualifier else ''
+        if is_psql_boolean_type(col_type):
+            return "(case when {0} then 'true' else 'false' end)::text".format(col)
+        else:
+            return '({0}{1})::text'.format(qualifier_str, col)
 
     grouping_cols_list = [col.strip() for col in grouping_cols.split(',')]
     grouping_cols_and_types = [(c, get_expr_type(c, table_name))
                                for c in grouping_cols_list]
-    grouping_array_str = 'array_to_string(array[' + \
-        ','.join("(case when " + col + " then 'True' else 'False' end)::text"
-                 if col_type.lower() == 'boolean' else '(' + qualifier_str + col + ')::text'
-                 for col, col_type in grouping_cols_and_types) + "]::text[], ',')"
+    grouping_array_str = "array_to_string(array[{0}]::text[], ',')".format(
+        ','.join(_col_to_text(col, col_type) for col, col_type in grouping_cols_and_types))
     return grouping_array_str
 # ------------------------------------------------------------------------------
 
@@ -516,6 +516,7 @@ def tree_train(schema_madlib, training_table_name, output_table_name,
 
         is_classification, dep_is_bool = _is_dep_categorical(
             training_table_name, dependent_variable)
+        split_criterion = _validate_split_criterion(split_criterion, is_classification)
 
         # 4) Build the tree with provided cp value
         compute_cp_list = (n_folds > 1)
@@ -574,11 +575,14 @@ def _get_n_and_deplist(training_table_name, dependent_variable, filter_null):
     @brief Query the database for the total number of rows and
     levels of dependent variable if the dependent variable is
     categorical.
+
+    Note: The deplist is sorted in the array_agg which is necessary to ensure
+    false = 0 and true = 1 for boolean dependent variable.
     """
     sql = """
         SELECT
             sum(n_rows) as n_rows,
-            array_agg(dep) as dep
+            array_agg(dep ORDER BY dep) as dep
         FROM (
             SELECT
                 count(*) as n_rows,
@@ -700,7 +704,7 @@ def _get_bins(schema_madlib, training_table_name,
     # variable levels to integers, and keep this mapping in the memory.
     if len(cat_features) > 0:
         if is_classification:
-            # For classifications
+            # For classification the dependent variable is encoded as an integer
             order_fun = ("{madlib}._dst_compute_entropy({dep}, {n})".
                          format(madlib=schema_madlib,
                                 dep=dependent_variable,
@@ -745,18 +749,12 @@ def _get_bins(schema_madlib, training_table_name,
                     {union_null_proxy}
                 ) s
             ) s1
-            WHERE array_upper(levels, 1) > 1
             """.format(training_table_name=training_table_name,
                        filter_str=filter_str,
                        union_null_proxy=union_null_proxy)
 
-        all_col_expressions = {}
-        for col in cat_features:
-            if col in boolean_cats:
-                all_col_expressions[col] = ("(CASE WHEN " + col +
-                                            " THEN 'True' ELSE 'False' END)")
-            else:
-                all_col_expressions[col] = col
+        all_col_expressions = dict(zip(cat_features, explicit_bool_to_text(
+            training_table_name, cat_features, schema_madlib)))
 
         sql_all_cats = ' UNION '.join(
             sql_cat_levels.format(
@@ -765,14 +763,6 @@ def _get_bins(schema_madlib, training_table_name,
                 order_fun=expr if col_name in ordered_cat_features else order_fun)
             for col_name, expr in all_col_expressions.items())
         all_levels = plpy.execute(sql_all_cats)
-
-        if len(all_levels) != len(cat_features):
-            use_cat_features = [row['colname'] for row in all_levels]
-            cat_features = [feature for feature in cat_features
-                            if feature in use_cat_features]
-            plpy.warning("Decision tree warning: Categorical columns with only "
-                         "one value are dropped from the tree model.")
-
         col_to_row = dict((row['colname'], i) for i, row in enumerate(all_levels))
 
         return dict(
@@ -992,21 +982,10 @@ def _get_bins_grps(
                     ) s
                     GROUP BY grp_key
                 ) s1
-                where array_upper(levels, 1) > 1
                 """.format(**locals())
 
-        all_col_expressions = {}
-        for col in cat_features:
-            if col in boolean_cats:
-                all_col_expressions[col] = ("(CASE WHEN " + col +
-                                            " THEN 'True' ELSE 'False' END)")
-            else:
-                if null_proxy is not None:
-                    all_col_expressions[col] = ("COALESCE({0}::TEXT, '{1}')".
-                                                format(col, null_proxy))
-                else:
-                    all_col_expressions[col] = col
-
+        all_col_expressions = dict(zip(cat_features, explicit_bool_to_text(
+            training_table_name, cat_features, schema_madlib)))
         sql_all_cats = ' UNION ALL '.join(
             sql_cat_levels.format(
                 col=expr,
@@ -1016,13 +995,6 @@ def _get_bins_grps(
 
         all_levels = list(plpy.execute(sql_all_cats))
         all_levels.sort(key=itemgetter('grp_key'))
-
-        use_cat_features = set([row['colname'] for row in all_levels])
-        if len(use_cat_features) != len(cat_features):
-            plpy.warning("Decision tree warning: Categorical columns with only "
-                         "one value are dropped from the tree model.")
-            cat_features = [feature for feature in cat_features
-                            if feature in use_cat_features]
 
         # grp_col_to_levels is a list of tuples (pairs) with
         #   first value = group value,
@@ -1079,7 +1051,7 @@ def _get_bins_grps(
                 grp_key_cat=grp_key_cat,
                 grouping_array_str=grouping_array_str,
                 grp_to_col_to_levels=grp_to_col_to_levels,
-                grp_to_cat_features=grp_to_cat_features)
+                )
 # ------------------------------------------------------------
 
 
@@ -1115,7 +1087,9 @@ def _create_cat_features_info_table(cat_features_info_table, bins):
                 cat_levels = [quote_literal(each_level)
                               for sublist in cat_levels
                               for each_level in sublist]
-                cat_levels_str = py_list_to_sql_string(cat_levels, 'text', long_format=True)
+                cat_levels_str = py_list_to_sql_string(cat_levels,
+                                                       'text',
+                                                       long_format=True)
             else:
                 # this is the case if no categorical features present
                 cat_names_str = cat_n_levels_str = cat_levels_str = "NULL"
@@ -1151,7 +1125,7 @@ def _create_cat_features_info_table(cat_features_info_table, bins):
 # ------------------------------------------------------------------------------
 
 
-def get_feature_str(schema_madlib, boolean_cats,
+def get_feature_str(schema_madlib, source_table,
                     cat_features, con_features,
                     levels_str, n_levels_str,
                     null_proxy=None):
@@ -1163,14 +1137,16 @@ def get_feature_str(schema_madlib, boolean_cats,
         # (1 to N). The unique value will be mapped to -1 indicating an
         # unknown/missing value in the underlying layers.
         null_val = unique_string() if null_proxy is None else null_proxy
+
+        # Cast boolean column to text: requires a special cast expression for
+        # platforms where __HAS_BOOL_TO_TEXT_CAST__ is not enabled
+        patched_cat_features = explicit_bool_to_text(source_table,
+                                                     cat_features,
+                                                     schema_madlib)
         cat_features_cast = []
-        for col in cat_features:
-            if col in boolean_cats:
-                cat_features_cast.append(
-                    "(CASE WHEN " + col + " THEN 'True' ELSE 'False' END)::text")
-            else:
-                cat_features_cast.append(
-                    "(coalesce({0}::text, '{1}'))::text".format(col, null_val))
+        for col in patched_cat_features:
+            cat_features_cast.append(
+                "(coalesce(({0})::text, '{1}'))::text".format(col, null_val))
 
         cat_features_str = ("{0}._map_catlevel_to_int(array[" +
                             ", ".join(cat_features_cast) + "], {1}, {2}, {3})"
@@ -1207,7 +1183,7 @@ def _one_step(schema_madlib, training_table_name, cat_features,
     # XXX cat_feature_str contains $5 and $2, and a SQL function
     bytea8 = schema_madlib + '.bytea8'
     cat_features_str, con_features_str = get_feature_str(schema_madlib,
-                                                         boolean_cats,
+                                                         training_table_name,
                                                          cat_features,
                                                          con_features,
                                                          "$3", "$2",
@@ -1303,7 +1279,7 @@ def _one_step_for_grps(
     cat_levels_in_text = unique_string()
 
     cat_features_str, con_features_str = get_feature_str(
-        schema_madlib, boolean_cats, cat_features, con_features,
+        schema_madlib, training_table_name, cat_features, con_features,
         cat_levels_in_text, cat_n_levels, null_proxy)
 
     train_apply_func = """
@@ -1578,14 +1554,19 @@ def _create_summary_table(
     output_table_summary = add_postfix(output_table_name, "_summary")
 
     # dependent variables
+    dep_type = _get_dep_type(training_table_name, dependent_variable)
     if dep_list:
-        dep_list_str = ("$dep_list$" +
-                        ','.join('"{0}"'.format(str(dep)) for dep in dep_list) +
-                        "$dep_list$")
+        if is_psql_boolean_type(dep_type):
+            # Special handling for boolean since Python booleans start with
+            # capitals (i.e False instead of false)
+            # Note:  dep_list is sorted, hence 'false' will be first
+            dep_list_str = "'false, true'"
+        else:
+            dep_list_str = '$__dep_list__${0}$__dep_list__$'.format(
+                ','.join(map(str, dep_list)))
     else:
         dep_list_str = "NULL"
     indep_type = ', '.join(all_cols_types[c] for c in cat_features + con_features)
-    dep_type = _get_dep_type(training_table_name, dependent_variable)
     independent_varnames = ','.join(cat_features + con_features)
     cat_features_str = ','.join(cat_features)
     con_features_str = ','.join(con_features)
@@ -1626,8 +1607,8 @@ def _create_summary_table(
                 {n_rows_skipped}::integer      AS total_rows_skipped,
                 {dep_list_str}::text           AS dependent_var_levels,
                 '{dep_type}'::text             AS dependent_var_type,
-                {cp_str}                       AS input_cp,
                 '{indep_type}'::text           AS independent_var_types,
+                {cp_str}                       AS input_cp,
                 {n_folds}::integer             AS n_folds,
                 {null_proxy_str}::text         AS null_proxy
             """.format(**locals())
@@ -1704,7 +1685,6 @@ def tree_predict(schema_madlib, model, source, output, pred_type='response',
                             'prob' gives the probability of the classes in a
                              classification tree.
                           For regression tree, only type='response' is defined.
-
     Returns:
         None
 
@@ -1728,9 +1708,9 @@ def tree_predict(schema_madlib, model, source, output, pred_type='response',
             "that were used during training".format(source))
     id_col_name = summary_elements["id_col_name"]
     dep_varname = summary_elements["dependent_varname"]
-    dep_levels = summary_elements["dependent_var_levels"]
-    is_classification = summary_elements["is_classification"]
+    dep_levels = split_quoted_delimited_str(summary_elements["dependent_var_levels"])
     dep_type = summary_elements['dependent_var_type']
+    is_classification = summary_elements["is_classification"]
     # optional variables, default value is None
     grouping_cols_str = summary_elements.get("grouping_cols")
     null_proxy = summary_elements.get('null_proxy')
@@ -1740,12 +1720,12 @@ def tree_predict(schema_madlib, model, source, output, pred_type='response',
                         if value == 'boolean'])
 
     cat_features_str, con_features_str = get_feature_str(
-        schema_madlib, boolean_cats, cat_features, con_features,
+        schema_madlib, source, cat_features, con_features,
         "m.cat_levels_in_text", "m.cat_n_levels", null_proxy)
 
     if use_existing_tables and table_exists(output):
-        plpy.execute("truncate " + output)
-        header = "INSERT INTO " + output + " "
+        plpy.execute("TRUNCATE " + output)
+        header = "INSERT INTO " + output
         use_fold = 'WHERE k = ' + str(k)
     else:
         header = "CREATE TABLE " + output + " AS "
@@ -1775,23 +1755,27 @@ def tree_predict(schema_madlib, model, source, output, pred_type='response',
             {use_fold}
             """
     else:
-        if dep_type.lower() == "boolean":
+        if is_psql_boolean_type(dep_type):
             # some platforms don't have text to boolean cast. We manually check the string.
-            dep_cast_str = ("(case {pred_name} when 'True' then "
-                            "True else False end)::BOOLEAN as {pred_name}")
+            dep_cast_str = ("(case {pred_name} when 'true' then true "
+                            " when 'false' then false "
+                            "end)::BOOLEAN as {pred_name}")
         else:
             dep_cast_str = "{pred_name}::{dep_type}"
+        dep_levels_array_str = py_list_to_sql_string(map(quote_literal, dep_levels),
+                                                     'TEXT',
+                                                     long_format=True)
         if pred_type == "response":
             sql = header + """
                     SELECT
-                        {id_col_name}
-                       , %s
+                        {id_col_name},
+                        %s
                     FROM (
                          SELECT
-                            {id_col_name}
-                           ,
-                           ($sql${{ {dep_levels} }}$sql$::varchar[])[
-                               {schema_madlib}._predict_dt_response (
+                            {id_col_name},
+                           -- _predict_dt_response returns 0-based indexing.
+                           -- Hence the "+ 1" (DB by default uses 1-based indexing)
+                           (%s)[{schema_madlib}._predict_dt_response (
                                    tree,
                                    {cat_features_str}::INTEGER[],
                                    {con_features_str}::DOUBLE PRECISION[]) + 1]::TEXT
@@ -1799,27 +1783,26 @@ def tree_predict(schema_madlib, model, source, output, pred_type='response',
                         FROM {source} as s {join_str} {model} as m {using_str}
                         {use_fold}
                     ) q
-                """ % (dep_cast_str)
+                """ % (dep_cast_str, dep_levels_array_str)
         else:
-            intermediate_col = unique_string()
+            temp_col = unique_string()
             score_format = ', \n'.join([
-                '{interim}[{j}] as "estimated_prob_{c}"'.
-                format(j=i+1, c=c.strip(' "'), interim=intermediate_col)
-                for i, c in enumerate(split_quoted_delimited_str(dep_levels))])
+                '{0}[{1}] as "estimated_prob_{2}"'.format(temp_col, i, c.strip(' "'))
+                for i, c in enumerate(dep_levels, start=1)])
             sql = header + """
                 SELECT
                     {id_col_name},
-                    {score_format}
+                    %s
                     FROM (
                         SELECT {id_col_name},
                                {schema_madlib}._predict_dt_prob(tree,
                                     {cat_features_str}::INTEGER[],
                                     {con_features_str}::DOUBLE PRECISION[])
-                                        AS {intermediate_col}
+                                        AS {temp_col}
                         FROM {source} as s {join_str} {model} as m {using_str}
                         {use_fold}
                     ) q
-                """
+                """ % (score_format)
     sql = sql.format(**locals())
     with MinWarning('warning'):
         with OptimizerControl(False):
@@ -2181,7 +2164,7 @@ def _xvalidate(schema_madlib, tree_states, training_table_name, output_table_nam
                 tree['pruned_depth'] = 0
         importance_vectors = _compute_var_importance(
             schema_madlib, tree,
-            len(tree['cat_features']), len(tree['con_features']))
+            len(cat_features), len(con_features))
         tree.update(**importance_vectors)
 
     plpy.execute("DROP TABLE {group_to_param_list_table}".format(**locals()))
