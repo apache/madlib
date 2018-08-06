@@ -384,9 +384,9 @@ def svm_one_class(schema_madlib, source_table, model_table, independent_varname,
         _verify_table(source_table, model_table,
                       dependent_varname, independent_varname, verify_dep=False)
         reserved_cols =['coef', 'random_feature_data',
-                     'random_feature_data', 'loss'
-                     'num_rows_processed', 'num_rows_skipped',
-                     'norm_of_gradient', 'num_iterations']
+                        'random_feature_data', 'loss'
+                        'num_rows_processed', 'num_rows_skipped',
+                        'norm_of_gradient', 'num_iterations']
         grouping_str, grouping_col = get_grouping_col_str(schema_madlib, 'SVM',
                                                           reserved_cols,
                                                           source_table,
@@ -403,15 +403,16 @@ def svm_one_class(schema_madlib, source_table, model_table, independent_varname,
                                           dependent_varname, independent_varname,
                                           kernel_func, kernel_params,
                                           grouping_col, override_fit_intercept=True)
-        params_dict = _extract_params(schema_madlib, params)
-        if not params_dict['class_weight']:
-            params_dict['class_weight'] = 'balanced'
 
         source_table = transformer.transformed_table['source_table']
         independent_varname = transformer.transformed_table['independent_varname']
         dependent_varname = transformer.transformed_table['dependent_varname']
         update_source_for_one_class = True
         args = locals()
+
+        args.update(_extract_params(schema_madlib, params))
+        if not args['class_weight']:
+            args['class_weight'] = 'balanced'
         _cross_validate_svm(args)
         _svm_parsed_params(use_transformer_for_output=True, **args)
         transformer.clear()
@@ -952,9 +953,9 @@ def svm(schema_madlib, source_table, model_table,
         _verify_table(source_table, model_table,
                       dependent_varname, independent_varname)
         reserved_cols =['coef', 'random_feature_data',
-                     'random_feature_data', 'loss'
-                     'num_rows_processed', 'num_rows_skipped',
-                     'norm_of_gradient', 'num_iterations']
+                        'random_feature_data', 'loss'
+                        'num_rows_processed', 'num_rows_skipped',
+                        'norm_of_gradient', 'num_iterations']
         grouping_str, grouping_col = \
             get_grouping_col_str(schema_madlib, 'SVM', reserved_cols,
                                  source_table, grouping_col)
@@ -963,11 +964,10 @@ def svm(schema_madlib, source_table, model_table,
                                           dependent_varname, independent_varname,
                                           kernel_func, kernel_params,
                                           grouping_col)
-        params_dict = _extract_params(schema_madlib, params)
         args = locals()
+        args.update(_extract_params(schema_madlib, params))
         if transformer.transformed_table:
             args.update(transformer.transformed_table)
-
         _cross_validate_svm(args)
         _svm_parsed_params(use_transformer_for_output=True, **args)
         transformer.clear()
@@ -976,7 +976,7 @@ def svm(schema_madlib, source_table, model_table,
 
 def _cross_validate_svm(args):
     # updating params_dict will also update args['params_dict']
-    params_dict = args['params_dict']
+    params_dict = args
 
     if params_dict['n_folds'] > 1 and args['grouping_col']:
         plpy.error('SVM Error: cross validation '
@@ -1018,10 +1018,9 @@ def _cross_validate_svm(args):
         return
 
     scorer = 'classification' if args['is_svc'] else 'regression'
-    sub_args = {'params_dict': cv_params}
-    # we want svm in cross validation to not transform the data again,
+    # svm in cross validation should not transform the data,
     # since test data in cross validation comes from the transformed source table.
-    # A linear transformer without adding intercept is a no-op transformer.
+    # A linear transformer without intercept is a no-op transformer.
     no_op_kernel = create_kernel(args['schema_madlib'], 0,
                                  'linear', {'fit_intercept': False})
     no_op_transformer = no_op_kernel.transform(args['source_table'],
@@ -1030,9 +1029,9 @@ def _cross_validate_svm(args):
     transformer = args.get('transformer', no_op_transformer)
     args.update(dict(transformer=no_op_transformer))
     cv = CrossValidator(_svm_parsed_params, svm_predict, scorer, args)
-    val_res = cv.validate(sub_args, params_dict['n_folds']).sorted()
+    val_res = cv.validate(cv_params, params_dict['n_folds'])
     val_res.output_tbl(params_dict['validation_result'])
-    params_dict.update(val_res.first('sub_args')['params_dict'])
+    params_dict.update(val_res.top('sub_args'))
     args.update(dict(transformer=transformer))
 # ------------------------------------------------------------------------------
 
@@ -1129,8 +1128,9 @@ def _compute_class_weight_sql(source_table, dependent_varname,
 
 
 def _svm_parsed_params(schema_madlib, source_table, model_table,
-                       dependent_varname, independent_varname, transformer,
-                       grouping_str, grouping_col, params_dict, is_svc,
+                       dependent_varname, independent_varname,
+                       transformer, grouping_str,
+                       grouping_col, is_svc,
                        use_transformer_for_output=False,
                        update_source_for_one_class=False,
                        verbose=False, **kwargs):
@@ -1186,7 +1186,7 @@ def _svm_parsed_params(schema_madlib, source_table, model_table,
     class_weight_sql = _compute_class_weight_sql(source_table,
                                                  dependent_varname,
                                                  is_svc,
-                                                 params_dict['class_weight'])
+                                                 kwargs['class_weight'])
 
     args = locals()
     args.update({
@@ -1202,7 +1202,7 @@ def _svm_parsed_params(schema_madlib, source_table, model_table,
         'col_dep_var': args['dependent_varname'],
     })
 
-    args.update(_verify_get_params_dict(params_dict))
+    args.update(_verify_get_params_dict(kwargs))
     args.update(_process_epsilon(is_svc, args))
     args.update(_svc_or_svr(is_svc, source_table, dependent_varname))
 
@@ -1254,13 +1254,12 @@ def svm_predict(schema_madlib, model_table, new_data_table, id_col_name,
 
         input_tbl_valid(new_data_table, 'SVM')
         reserved_cols =['coef', 'random_feature_data',
-                     'random_feature_data', 'loss'
-                     'num_rows_processed', 'num_rows_skipped',
-                     'norm_of_gradient', 'num_iterations']
-        grouping_str, grouping_col = get_grouping_col_str(schema_madlib,
-                                                           'SVM', reserved_cols,
-                                                           new_data_table,
-                                                           grouping_col)
+                        'random_feature_data', 'loss'
+                        'num_rows_processed', 'num_rows_skipped',
+                        'norm_of_gradient', 'num_iterations']
+        grouping_str, grouping_col = get_grouping_col_str(
+            schema_madlib, 'SVM', reserved_cols,
+            new_data_table, grouping_col)
         _assert(is_var_valid(new_data_table, independent_varname),
                 "SVM Error: independent_varname ('" + independent_varname +
                 "') is invalid for new_data_table (" + new_data_table + ")!")
