@@ -16,13 +16,12 @@
 # under the License.
 
 import plpy
-from validation.cv_utils import __cv_produce_col_name_string as _cv_col_string
-from validation.cv_utils import __cv_validation_rows as _cv_validation_rows
 from utilities.utilities import __mad_version
 from utilities.utilities import unique_string
 from utilities.utilities import num_samples
-
-from utilities.validate_args import get_cols_and_types
+from utilities.utilities import add_postfix
+from validation.cv_utils import __cv_produce_col_name_string as _cv_col_string
+from validation.cv_utils import __cv_validation_rows as _cv_validation_rows
 
 from math import sqrt
 from collections import namedtuple
@@ -103,7 +102,9 @@ class ValidationResult(object):
 
     def sorted(self):
         """Sort the history w.r.t. mean value and return a new ValidationResult object"""
-        ch = sorted(self._cv_history, reverse=True, key=itemgetter('mean_score'))
+        ch = sorted(self._cv_history,
+                    reverse=True,
+                    key=itemgetter('mean_score'))
         return ValidationResult(ch)
 
     def first(self, attr=None):
@@ -138,8 +139,7 @@ class ValidationResult(object):
         """
         if not tbl_name or not str(tbl_name).strip():
             return
-
-        header = (self._cv_history[0]['sub_args']['params_dict'].keys() +
+        header = (self._cv_history[0]['sub_args'].keys() +
                   ['mean_score', 'std_dev_score'])
         header_str = ','.join(map(str, header))
 
@@ -163,7 +163,7 @@ class _ValidationArgs(object):
 
     @classmethod
     def grid(cls, sub_args):
-        def comb_dict(dicts):
+        def combine_dict(dicts):
             # same as dict((k, v) for d in dicts for k, v in d.iteritems())
             return dict(chain.from_iterable(d.iteritems() for d in dicts))
 
@@ -177,7 +177,7 @@ class _ValidationArgs(object):
             elif isinstance(v, dict):
                 a.append(make_dicts(k, cls.grid(v)))
         tuples = product(*a)
-        return map(comb_dict, tuples)
+        return map(combine_dict, tuples)
 
     def make_from(self, **kwargs):
         def _update_dict(d1, d2):
@@ -186,7 +186,9 @@ class _ValidationArgs(object):
             if not isinstance(d2, dict):
                 raise TypeError("{0} is not dict".format(type(d2)))
             for k, v in d2.iteritems():
-                if isinstance(v, dict) and isinstance(d1[k], dict):
+                if (isinstance(v, dict) and
+                        k in d1 and
+                        isinstance(d1[k], dict)):
                     _update_dict(d1[k], v)
                 else:
                     d1[k] = v
@@ -233,14 +235,14 @@ def _cv_split_data(rel_source, col_data, col_id, row_num,
     # which corresponds to rows outside of [start_row, end_row).
     # Extract the validation part of data,
     # which corresponds to rows inside of [start_row, end_row).
-    plpy.execute("drop view if exists {rel_train}".format(**kwargs))
+    plpy.execute("drop view if exists {0}".format(rel_train))
     plpy.execute("""
         create temp view {rel_train} as
             select {col_id}, {col_string} from {rel_source}
             where {col_id} < {start_row}
                  or {col_id} >= {end_row}
         """.format(**kwargs))
-    plpy.execute("drop view if exists {rel_valid}".format(**kwargs))
+    plpy.execute("drop view if exists {0}".format(rel_valid))
     plpy.execute("""
         create temp view {rel_valid} as
             select {col_id}, {col_string} from {rel_source}
@@ -248,6 +250,12 @@ def _cv_split_data(rel_source, col_data, col_id, row_num,
                  and {col_id} < {end_row}
     """.format(**kwargs))
     return None
+# ------------------------------------------------------------------------------
+
+
+def _cv_del_split_data(rel_train, rel_valid):
+    plpy.execute("drop view if exists {0} cascade".format(rel_train))
+    plpy.execute("drop view if exists {0} cascade".format(rel_valid))
 # ------------------------------------------------------------------------------
 
 
@@ -325,7 +333,6 @@ class CrossValidator(object):
         scorer = self._scorer
         rel_train = split_data.rel_train
         rel_valid = split_data.rel_valid
-
         args = self._cv_args.make_from(source_table=rel_train,
                                        dependent_varname=self._target_col,
                                        independent_varname=self._features_col,
@@ -339,10 +346,9 @@ class CrossValidator(object):
         predictor(schema_madlib, model_table, rel_valid, col_id, output_table)
 
         score = self._score(output_table, rel_valid, scorer)
-        plpy.execute("DROP TABLE IF EXISTS {model_table}, {model_table}_summary;".
-                     format(model_table=model_table))
-        plpy.execute("DROP TABLE IF EXISTS {output_table};".
-                     format(output_table=output_table))
+        plpy.execute("DROP TABLE IF EXISTS {0}, {1}".
+                     format(model_table, add_postfix(model_table, "_summary")))
+        plpy.execute("DROP TABLE IF EXISTS {0}".format(output_table))
         return score
 
     def _score(self, pred, orig, method):
@@ -390,11 +396,8 @@ class CrossValidator(object):
                    Arguments to be validated. Multiple values are provided in a list, e.g.,
 
                    sub_args = {
-                                'params_dict':
-                                              {
-                                               'lambda': [0.1, 1, 10],
-                                               'epsilon': [0.1, 1, 10]
-                                              }
+                                   'lambda': [0.1, 1, 10],
+                                   'epsilon': [0.1, 1, 10]
                                }
 
                    Before running estimator, sub_args_single is generated from sub_args replacing the lists with single value for each argument and args is updated recursively using sub_args_single.
@@ -417,7 +420,6 @@ class CrossValidator(object):
 
         if not sub_args:
             return []
-
         cv_history = ValidationResult()
         all_split_data = list(self._gen_split_data(n_folds))
         tof = self._test_one_fold
@@ -425,4 +427,6 @@ class CrossValidator(object):
             scores = [tof(i, sub_args=sa) for i in all_split_data]
             a, s = _stats(scores)
             cv_history.add_one(mean=a, std=s, sub_args=sa)
+        for each_split in all_split_data:
+            _cv_del_split_data(each_split.rel_train, each_split.rel_valid)
         return cv_history
