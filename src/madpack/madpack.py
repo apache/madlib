@@ -1005,7 +1005,7 @@ def run_unit_tests(args, testcase):
     info_(this, "> Running unit-test scripts for:", verbose)
     modset = _get_modset_for_tests(testcase, 'test_')
     # Loop through all modules and run unit tests
-    _process_py_sql_files_in_modules(modset, {'madpack_cmd':'unit-test'})
+    _process_py_sql_files_in_modules(modset, {'madpack_cmd': 'unit-test'})
 
 
 def run_install_check(args, testcase, madpack_cmd):
@@ -1021,11 +1021,11 @@ def run_install_check(args, testcase, madpack_cmd):
                  '_installcheck_' + db_name)
     try:
         _internal_run_query("DROP USER IF EXISTS %s;" % (test_user), False)
-    except:
+    except Exception as e:
         _internal_run_query("DROP OWNED BY %s CASCADE;" % (test_user), True)
         _internal_run_query("DROP USER IF EXISTS %s;" % (test_user), True)
-    _internal_run_query("CREATE USER %s;" % (test_user), True)
 
+    _internal_run_query("CREATE USER %s;" % (test_user), True)
     _internal_run_query("GRANT USAGE ON SCHEMA %s TO %s;" % (schema, test_user), True)
 
     # 2) Run test SQLs
@@ -1035,18 +1035,31 @@ def run_install_check(args, testcase, madpack_cmd):
     try:
         modset = _get_modset_for_tests(testcase)
         # Execute relevant sql files in each module for IC/DC
-        _process_py_sql_files_in_modules(modset,locals())
+        _process_py_sql_files_in_modules(modset, locals())
     finally:
         # Drop install-check user
-        _internal_run_query("DROP OWNED BY %s CASCADE;" % (test_user), True)
+        _internal_run_query("REVOKE USAGE ON SCHEMA %s FROM %s;" % (schema, test_user), True)
+        try:
+            _internal_run_query("DROP OWNED BY %s CASCADE;" % (test_user), show_error=False)
+        except Exception as e:
+            # We've intermittently noticed a "cache lookup failure" due to this
+            # "DROP OWNED BY". This could be related to an error on
+            # Stack Exchange: https://dba.stackexchange.com/questions/173815/redshift-internalerror-cache-lookup-failed-for-relation
+            # Summary: Sometimes with too many drop statements the cache is
+            # out-of-sync and takes a few seconds to resync. Repeat the same
+            # command after a time gap.
+            from time import sleep
+            sleep(1)
+            _internal_run_query("DROP OWNED BY %s CASCADE;" % (test_user), show_error=True)
         _internal_run_query("DROP USER %s;" % (test_user), True)
 
 
 def _append_uninstall_madlib_sqlfile(schema, db_madlib_ver, is_schema_in_db,
                                      output_filehandle):
     if get_rev_num(db_madlib_ver) == [0]:
-        info_(this, "Nothing to uninstall or reinstall. No version found in schema %s."
-            % schema, True)
+        info_(this,
+              "Nothing to uninstall or reinstall. "
+              "No version found in schema %s."% schema, True)
         return 1, is_schema_in_db
 
     # Find any potential data to lose
