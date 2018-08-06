@@ -10,6 +10,7 @@ if(APPLE)
         PackageMaker
     )
 elseif(UNIX)
+
     debian_version(DEB_VERSION)
     if(NOT (DEB_VERSION STREQUAL "DEB_VERSION-NOTFOUND"))
       set(IS_DEBIAN "True")
@@ -18,6 +19,7 @@ elseif(UNIX)
     if(NOT (RH_VERSION STREQUAL "RH_VERSION-NOTFOUND"))
       set(IS_REDHAT "True")
     endif()
+
     if(IS_REDHAT)
         message(STATUS "Detected RH version ${RH_VERSION}")
         list(APPEND CPACK_GENERATOR
@@ -32,7 +34,7 @@ elseif(UNIX)
 endif()
 
 
-# -- General settings for ll/multiple packages generators ---------------------
+# -- General settings for all/multiple packages generators ---------------------
 
 if(PACKAGE_SUFFIX)
     set(_PACKAGE_SUFFIX "-${PACKAGE_SUFFIX}")
@@ -76,8 +78,10 @@ if(IS_REDHAT)
   set(CPACK_POSTFLIGHT_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/postflight.sh)
   set(CPACK_MONOLITHIC_INSTALL 1)
 elseif(IS_DEBIAN)
-  set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA "${CMAKE_CURRENT_SOURCE_DIR}/DEB/config;${CMAKE_CURRENT_SOURCE_DIR}/DEB/templates;${CMAKE_CURRENT_SOURCE_DIR}/DEB/preinst;${CMAKE_CURRENT_SOURCE_DIR}/DEB/postinst;${CMAKE_CURRENT_SOURCE_DIR}/DEB/postrm")
+  set(CPACK_PACKAGE_FILE_NAME
+    "madlib${_PACKAGE_SUFFIX}-${MADLIB_VERSION_STRING}-${CMAKE_SYSTEM_NAME}")
   set(CPACK_PACKAGE_VERSION ${MADLIB_VERSION_STRING})
+  set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA "${CMAKE_CURRENT_SOURCE_DIR}/DEB/config;${CMAKE_CURRENT_SOURCE_DIR}/DEB/templates;${CMAKE_CURRENT_SOURCE_DIR}/DEB/preinst;${CMAKE_CURRENT_SOURCE_DIR}/DEB/postinst;${CMAKE_CURRENT_SOURCE_DIR}/DEB/postrm")
 endif()
 include(CPack)
 
