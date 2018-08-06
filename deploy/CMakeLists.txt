@@ -10,12 +10,11 @@ if(APPLE)
         PackageMaker
     )
 elseif(UNIX)
-
     debian_version(DEB_VERSION)
     if(DEB_VERSION AND NOT (DEB_VERSION STREQUAL "DEB_VERSION-NOTFOUND"))
       set(IS_DEBIAN "True")
     endif()
-    rh_version(IS_REDHAT)
+    rh_version(RH_VERSION)
     if(RH_VERSION AND NOT (RH_VERSION STREQUAL "RH_VERSION-NOTFOUND"))
       set(IS_REDHAT "True")
     endif()
@@ -27,9 +26,25 @@ elseif(UNIX)
         )
     elseif(IS_DEBIAN)
         message(STATUS "Detected Debian version ${DEB_VERSION}")
-        list(APPEND CPACK_GENERATOR
-            DEB
-        )
+        # By default, the cmake flag -DCREATE_RPM_FOR_UBUNTU is not
+        # set to any value. The default behavior is to create a .deb
+        # artifact when MADlib is compiled on Ubuntu.
+        # If we instead want to create an RPM artifact for MADlib
+        # on Ubuntu, then the cmake flag -DCREATE_RPM_FOR_UBUNTU can
+        # be set to some value (say True), and we will only create
+        # an RPM artifact on Ubuntu (i.e., we create an rpm instead
+        # of the default .deb).
+        # Note that package alien must already be installed for
+        # building an RPM on Ubuntu.
+        if(CREATE_RPM_FOR_UBUNTU)
+          list(APPEND CPACK_GENERATOR
+              RPM
+          )
+        else(CREATE_RPM_FOR_UBUNTU)
+          list(APPEND CPACK_GENERATOR
+              DEB
+          )
+        endif(CREATE_RPM_FOR_UBUNTU)
     endif()
 endif()
 
@@ -78,8 +93,10 @@ if(IS_REDHAT)
   set(CPACK_POSTFLIGHT_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/postflight.sh)
   set(CPACK_MONOLITHIC_INSTALL 1)
 elseif(IS_DEBIAN)
-  set(CPACK_PACKAGE_FILE_NAME
-    "madlib${_PACKAGE_SUFFIX}-${MADLIB_VERSION_STRING}-${CMAKE_SYSTEM_NAME}")
+  if(NOT CREATE_RPM_FOR_UBUNTU)
+    set(CPACK_PACKAGE_FILE_NAME
+      "madlib${_PACKAGE_SUFFIX}-${MADLIB_VERSION_STRING}-${CMAKE_SYSTEM_NAME}")
+  endif(NOT CREATE_RPM_FOR_UBUNTU)
   set(CPACK_PACKAGE_VERSION ${MADLIB_VERSION_STRING})
   set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA "${CMAKE_CURRENT_SOURCE_DIR}/DEB/config;${CMAKE_CURRENT_SOURCE_DIR}/DEB/templates;${CMAKE_CURRENT_SOURCE_DIR}/DEB/preinst;${CMAKE_CURRENT_SOURCE_DIR}/DEB/postinst;${CMAKE_CURRENT_SOURCE_DIR}/DEB/postrm")
 endif()
