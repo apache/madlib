@@ -103,21 +103,30 @@ set(MAD_MODULE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/modules)
 # -- Third-party dependencies: Find or download Boost --------------------------
 
 find_package(Boost 1.47)
-
-# We use BOOST_ASSERT_MSG, which only exists in Boost 1.47 and later.
-# Unfortunately, the FindBoost module seems to be broken with respect to version
-# checking, so we will set Boost_FOUND to FALSE if the version is too old.
 if(Boost_FOUND)
+    # We use BOOST_ASSERT_MSG, which only exists in Boost 1.47 and later.
+    # Unfortunately, the FindBoost module seems to be broken with respect to
+    # version checking, so we will set Boost_FOUND to FALSE if the version is
+    # too old.
     if(Boost_VERSION LESS 104600)
+        message(STATUS "No sufficiently recent version (>= 1.47) of Boost was found. Will download.")
         set(Boost_FOUND FALSE)
-    endif(Boost_VERSION LESS 104600 )
+    endif(Boost_VERSION LESS 104600)
+
+    # BOOST 1.65.0 removed the TR1 library which is required by MADlib till
+    # C++11 is completely supported. Hence, we force download of a compatible
+    # version if existing Boost is 1.65 or greater. FIXME: This should be
+    # removed when TR1 dependency is removed.
+    if(NOT Boost_VERSION LESS 106500)
+        message(STATUS
+                "Incompatible Boost version (>= 1.65) found. Will download a compatible version.")
+        set(Boost_FOUND FALSE)
+    endif(NOT Boost_VERSION LESS 106500)
 endif(Boost_FOUND)
 
 if(Boost_FOUND)
     include_directories(${Boost_INCLUDE_DIRS})
 else(Boost_FOUND)
-    message(STATUS "No sufficiently recent version (>= 1.47) of Boost was found. Will download.")
-
     ExternalProject_Add(EP_boost
         PREFIX ${MAD_THIRD_PARTY}
         DOWNLOAD_DIR ${MAD_THIRD_PARTY}/downloads
