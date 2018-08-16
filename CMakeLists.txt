@@ -124,10 +124,25 @@ else()
 set(M4_ARGUMENTS "--prefix-builtins")
 endif()
 
+# -- Local includes ------------------------------------------------------------
+
+list(APPEND CMAKE_MODULE_PATH
+    "${MAD_BUILD_TOOLS}")
+
+# -- Include all parts ---------------------------------------------------------
+
+include(Utils)
+include(LinuxUtils)
+include(OSXUtils)
+include(Options)
+
+# -- Get madlib version info ----------------------------------------------------
 # Read and parse Version.yml file
 file(READ "${MADLIB_VERSION_YML}" _MADLIB_VERSION_CONTENTS)
 string(REGEX REPLACE "^.*version:[ \t]*([^\n]*)\n.*" "\\1" MADLIB_VERSION_STRING "${_MADLIB_VERSION_CONTENTS}")
+
 string(REPLACE "-" "_" MADLIB_VERSION_STRING_NO_HYPHEN "${MADLIB_VERSION_STRING}")
+
 string(REGEX REPLACE "([0-9]+).*" "\\1" MADLIB_VERSION_MAJOR "${MADLIB_VERSION_STRING}")
 string(REGEX REPLACE "[0-9]+\\.([0-9]+).*" "\\1" MADLIB_VERSION_MINOR "${MADLIB_VERSION_STRING}")
 if("${MADLIB_VERSION_STRING}" MATCHES "[0-9]+\\.[0-9]+\\.([0-9]+).*")
@@ -205,18 +220,6 @@ install(
     COMPONENT core
 )
 
-# -- Local includes ------------------------------------------------------------
-
-list(APPEND CMAKE_MODULE_PATH
-    "${MAD_BUILD_TOOLS}")
-
-include(Utils)
-include(LinuxUtils)
-include(OSXUtils)
-include(Options)
-
-
-# -- Include all parts ---------------------------------------------------------
 
 # -- Add subdirectories --------------------------------------------------------
 
