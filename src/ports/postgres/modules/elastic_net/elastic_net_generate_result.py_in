@@ -2,7 +2,10 @@ import plpy
 from elastic_net_utils import _process_results
 from elastic_net_utils import _compute_log_likelihood
 from utilities.validate_args import get_cols_and_types
+from utilities.validate_args import quote_ident
 from utilities.utilities import split_quoted_delimited_str
+from internal.db_utils import quote_literal
+
 
 def _elastic_net_generate_result(optimizer, iteration_run, **args):
     """
@@ -33,26 +36,30 @@ def _elastic_net_generate_result(optimizer, iteration_run, **args):
         col_grp_key = args['col_grp_key']
         grouping_str = args['grouping_str']
         cols_types = dict(get_cols_and_types(args["tbl_source"]))
-        grouping_str1 = grouping_column + ","
+        grouping_cols_list = split_quoted_delimited_str(grouping_column)
+        grouping_str1 = ','.join(['{0} AS {1}'.format(g, quote_ident(g))
+                                 for g in grouping_cols_list])
 
         select_mean_and_std = ''
         inner_join_x = ''
         inner_join_y = ''
-        grouping_cols_list = split_quoted_delimited_str(grouping_column)
-        select_grp = ','.join(['n_tuples_including_nulls_subq.'+str(grp)
-                        for grp in grouping_cols_list]) + ','
-        select_grouping_info = ','.join([grp_col+"\t"+cols_types[grp_col]
+        select_grp = ','.join(['n_tuples_including_nulls_subq.' + str(quote_ident(grp))
+                              for grp in grouping_cols_list]) + ','
+        select_grouping_info = ','.join([grp_col + "\t" + cols_types[grp_col]
                                         for grp_col in grouping_cols_list]) + ","
         if data_scaled:
             x_grp_cols = ' AND '.join([
-                    'n_tuples_including_nulls_subq.{0}={1}.{2}'.format(grp,
-                    args["x_mean_table"], grp) for grp in grouping_cols_list])
+                '{0} = {1}.{2}'.format('n_tuples_including_nulls_subq.' + str(quote_ident(grp)),
+                                       args["x_mean_table"], grp)
+                for grp in grouping_cols_list])
             y_grp_cols = ' AND '.join([
-                    'n_tuples_including_nulls_subq.{0}={1}.{2}'.format(grp,
-                    args["y_mean_table"], grp) for grp in grouping_cols_list])
-            select_mean_and_std = ' {0}.mean AS x_mean, '.format(args["x_mean_table"]) +\
-                ' {0}.mean AS y_mean, '.format(args["y_mean_table"]) +\
-                ' {0}.std AS x_std, '.format(args["x_mean_table"])
+                '{0}={1}.{2}'.format('n_tuples_including_nulls_subq.' + str(quote_ident(grp)),
+                                     args["y_mean_table"], grp)
+                for grp in grouping_cols_list])
+            select_mean_and_std = (
+                ' {0}.mean AS x_mean, '.format(args["x_mean_table"]) +
+                ' {0}.mean AS y_mean, '.format(args["y_mean_table"]) +
+                ' {0}.std AS x_std, '.format(args["x_mean_table"]))
             inner_join_x = ' INNER JOIN {0} ON {1} '.format(
                 args["x_mean_table"], x_grp_cols)
             inner_join_y = ' INNER JOIN {0} ON {1} '.format(
@@ -66,7 +73,7 @@ def _elastic_net_generate_result(optimizer, iteration_run, **args):
             FROM
                 (
                     SELECT
-                        {grouping_str1}
+                        {grouping_str1},
                         array_to_string(ARRAY[{grouping_str}], ',') AS {col_grp_key}
                     FROM {source_table}
                     GROUP BY {grouping_column}, {col_grp_key}
@@ -83,7 +90,7 @@ def _elastic_net_generate_result(optimizer, iteration_run, **args):
                        col_grp_iteration=args["col_grp_iteration"], **locals())
     else:
         # It's a much simpler query when there is no grouping.
-        grouping_str1 = ""
+        grouping_cols_list = []
         select_grouping_info = ""
         out_table_qstr = """
             SELECT
@@ -117,13 +124,15 @@ def _elastic_net_generate_result(optimizer, iteration_run, **args):
 
     result = plpy.execute(out_table_qstr)
     for res in result:
-        build_output_table(res, grouping_column, grouping_str1,
+        build_output_table(res, grouping_column, grouping_cols_list,
                            standardize_flag, iteration_run, **args)
 
     # Create summary table, listing the grouping columns used.
     grouping_text = "NULL" if not grouping_column else grouping_column
     failed_groups = plpy.execute("""
-        SELECT count(*) AS num_failed_groups FROM {0} WHERE coef_all IS NULL
+        SELECT count(*) AS num_failed_groups
+        FROM {0}
+        WHERE coef_all IS NULL
         """.format(args['tbl_result']))[0]
     all_groups = plpy.execute("SELECT count(*) AS num_all_groups FROM {0} ".
                               format(args['tbl_result']))[0]
@@ -142,7 +151,8 @@ def _elastic_net_generate_result(optimizer, iteration_run, **args):
             '{family}'::varchar                 AS family,
             {alpha}::float                      AS alpha,
             {lambda_value}::float               AS lambda_value,
-            '{grouping_text}'::varchar          AS grouping_col,
+            $madlib_super_quote${grouping_text}$madlib_super_quote$::varchar
+                                                AS grouping_col,
             {num_all_groups}::integer           AS num_all_groups,
             {num_failed_groups}::integer        AS num_failed_groups
         """.format(grouping_text=grouping_text,
@@ -150,7 +160,7 @@ def _elastic_net_generate_result(optimizer, iteration_run, **args):
     return None
 
 
-def build_output_table(res, grouping_column, grouping_str1,
+def build_output_table(res, grouping_column, grouping_col_list,
                        standardize_flag, iteration_run, **args):
     """
     Insert model captured in "res" into the output table
@@ -160,10 +170,11 @@ def build_output_table(res, grouping_column, grouping_str1,
         if args["normalization"]:
             if grouping_column:
                 (coef, intercept) = _restore_scale(r_coef, res["intercept"],
-                    args, res["x_mean"], res["x_std"], res["y_mean"])
+                                                   args, res["x_mean"],
+                                                   res["x_std"], res["y_mean"])
             else:
                 (coef, intercept) = _restore_scale(r_coef,
-                    res["intercept"], args)
+                                                   res["intercept"], args)
         else:
             coef = r_coef
             intercept = res["intercept"]
@@ -173,11 +184,13 @@ def build_output_table(res, grouping_column, grouping_str1,
 
         log_likelihood = _compute_log_likelihood(r_coef, res["intercept"], **args)
         if grouping_column:
-            grouping_info = ','.join([str(res[grp_col.strip()])
-                                      for grp_col in grouping_str1.split(',')
-                                      if grp_col.strip() in res.keys()]) + ","
+            grouping_info = ",".join([quote_literal(str(res[grp_col.strip()]))
+                                      for grp_col in grouping_col_list
+                                      if grp_col.strip() in res.keys()])
         else:
             grouping_info = ""
+        if grouping_info:
+            grouping_info += ', '
         fquery = """
             INSERT INTO {tbl_result} VALUES
                 ({grouping_info} '{family}', '{features}'::text[], '{features_selected}'::text[],
@@ -191,8 +204,10 @@ def build_output_table(res, grouping_column, grouping_str1,
                        **args)
         plpy.execute(fquery)
 # ------------------------------------------------------------------------
+
+
 def _restore_scale(coef, intercept, args,
-    x_mean=None, x_std=None, y_mean=None):
+                   x_mean=None, x_std=None, y_mean=None):
     """
     Restore the original scales
     """
