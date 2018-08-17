@@ -83,7 +83,7 @@ class vec2cols:
         _assert(is_col_1d_array(source_table, vector_col),
             "{0}: vector_col must be a 1-dimensional array.".format(self.module_name))
 
-    def get_names_for_split_output_cols(self, source_table, vector_col, feature_names):
+    def get_names_for_split_output_cols(self, source_table, vector_col):
         """
             Get list of names for the newly-split columns to include in the
             output table.
@@ -94,24 +94,15 @@ class vec2cols:
                     use for the split elements in the vector_col array
         """
         query = """
-            SELECT array_upper({0}, 1) AS n_x
+            SELECT max(array_upper({0}, 1)) AS n_x
             FROM {1}
-            LIMIT 1
         """.format(vector_col, source_table)
-        result = plpy.execute(query)[0]["n_x"]
-        if not result:
+        max_array_length = plpy.execute(query)[0]["n_x"]
+        if not max_array_length:
             plpy.error('{0}: Column to split ({1}) must not be an empty array'
                 .format(self.module_name, vector_col))
-        if not feature_names:
-            # Create custom col names for output columns, with prefix "f".
-            feature_names = ["f{0}".format(i+1) for i in range(result)]
-        else:
-            # Check if the array dimension is equal to the number of col names
-            # specified in feature_names.
-            _assert(result == len(feature_names),
-                    "{0}: Mismatch between size of vector_col and number of "
-                    "cols in feature_names.".format(self.module_name))
-        return feature_names
+        # Create custom col names for output columns, with prefix "f".
+        return ["f{0}".format(i+1) for i in range(max_array_length)]
 
     def validate_output_cols(self, features_to_unnest, cols_to_keep):
         # If there are more than 1600 columns for the output table, we give a
@@ -146,8 +137,13 @@ class vec2cols:
                            cols_to_output)
 
         # Get names of columns to use for the split vector_col
-        features_to_unnest = self.get_names_for_split_output_cols(source_table,
-                             vector_col, feature_names)
+        if not feature_names:
+            features_to_unnest = self.get_names_for_split_output_cols(
+                source_table, vector_col)
+        else:
+            features_to_unnest = feature_names
+
+        # Get the columns to keep from the source table
         cols_to_keep = self.get_cols_helper.get_cols_as_list(cols_to_output,
                        source_table)
 
@@ -155,8 +151,8 @@ class vec2cols:
 
         # Construct the output query and populate the output table with all the
         # correct parameters
-        select_new_cols = ', '.join(["{0}[{1}] AS {2}".format(vector_col,
-            i+1, features_to_unnest[i]) for i in range(len(features_to_unnest))])
+        select_new_cols = (', '.join(["{0}[{1}] AS {2}".format(vector_col, i + 1, f)
+                                     for i, f in enumerate(features_to_unnest)]))
         cols_from_src_table = ', '.join(cols_to_keep)+', ' if cols_to_keep else ''
         query = """
         CREATE TABLE {output_table} AS
