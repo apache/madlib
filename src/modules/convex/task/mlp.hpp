@@ -158,9 +158,6 @@ MLP<Model, Tuple>::getLossAndUpdateModel(
         const double         &stepsize) {
 
     double total_loss = 0.;
-    // model is updated with the momentum step (i.e. velocity vector)
-    // if Nesterov Accelerated Gradient is enabled
-    model.nesterovUpdatePosition();
 
     // initialize gradient vector
     std::vector<Matrix> total_gradient_per_layer(model.num_layers);
@@ -188,22 +185,37 @@ MLP<Model, Tuple>::getLossAndUpdateModel(
         total_loss += getLoss(y_true, o.back(), model.is_classification);
     }
 
-    // convert gradient to a gradient update vector
-    //  1. normalize to per row update
-    //  2. discount by stepsize
-    //  3. add regularization
-    //  4. make negative
     for (Index k=0; k < model.num_layers; k++){
+        // convert gradient to a gradient update vector
+        //  1. normalize to per row update
+        //  2. discount by stepsize
+        //  3. add regularization
+        //  4. make negative for descent
         Matrix regularization = MLP<Model, Tuple>::lambda * model.u[k];
         regularization.row(0).setZero(); // Do not update bias
-        total_gradient_per_layer[k] = -stepsize * (total_gradient_per_layer[k] / static_cast<double>(num_rows_in_batch) +
-                                                  regularization);
-        model.updateVelocity(total_gradient_per_layer[k], k);
-        model.updatePosition(total_gradient_per_layer[k], k);
+        total_gradient_per_layer[k] = -stepsize *
+            (total_gradient_per_layer[k] / static_cast<double>(num_rows_in_batch) +
+             regularization);
+
+        // total_gradient_per_layer is now the update vector
+        if (model.momentum > 0){
+            model.velocity[k] = model.momentum * model.velocity[k] + total_gradient_per_layer[k];
+            if (model.is_nesterov){
+                // Below equation ensures that Nesterov updates are half step
+                // ahead of regular momentum updates i.e. next step's discounted
+                // velocity update is already added in the current step.
+                model.u[k] += model.momentum * model.velocity[k] + total_gradient_per_layer[k];
+            }
+            else{
+                model.u[k] += model.velocity[k];
+            }
+        } else {
+            // no momentum
+            model.u[k] += total_gradient_per_layer[k];
+        }
     }
 
     return total_loss;
-
 }
 
 
@@ -215,8 +227,6 @@ MLP<Model, Tuple>::gradientInPlace(
         const dependent_variable_type       &y_true,
         const double                        &stepsize)
 {
-    model.nesterovUpdatePosition();
-
     std::vector<ColumnVector> net, o, delta;
 
     feedForward(model, x, net, o);
@@ -225,15 +235,18 @@ MLP<Model, Tuple>::gradientInPlace(
     for (Index k=0; k < model.num_layers; k++){
         Matrix regularization = MLP<Model, Tuple>::lambda*model.u[k];
         regularization.row(0).setZero(); // Do not update bias
+
         if (model.momentum > 0){
             Matrix gradient = -stepsize * (o[k] * delta[k].transpose() + regularization);
-            model.updateVelocity(gradient, k);
-            model.updatePosition(gradient, k);
+            model.velocity[k] = model.momentum * model.velocity[k] + gradient;
+            if (model.is_nesterov)
+                model.u[k] += model.momentum * model.velocity[k] + gradient;
+            else
+                model.u[k] += model.velocity[k];
         }
         else {
-            // Updating model inline instead of using updatePosition because
-            // we suspect that updatePosition ends up creating a copy of the
-            // gradient even if it is passed by reference and hence making it slower.
+            // Updating model inline as a special case to avoid a copy of the
+            // gradient matrix to velocity.
             model.u[k] -= stepsize * (o[k] * delta[k].transpose() + regularization);
         }
     }

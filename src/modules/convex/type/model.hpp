@@ -152,12 +152,12 @@ struct MLPModel {
     }
 
     size_t rebind(const double *is_classification_in,
-                    const double *activation_in,
-                    const double *momentum_in,
-                    const double *is_nesterov_in,
-                    const double *data,
-                    const uint16_t &inNumberOfStages,
-                    const double *inNumbersOfUnits) {
+                  const double *activation_in,
+                  const double *momentum_in,
+                  const double *is_nesterov_in,
+                  const double *data,
+                  const uint16_t &inNumberOfStages,
+                  const double *inNumbersOfUnits) {
         const double *n = inNumbersOfUnits;
         size_t k;
 
@@ -178,7 +178,8 @@ struct MLPModel {
         }
         for (k = 0; k < num_layers; k ++) {
             velocity.push_back(MutableMappedMatrix());
-            velocity[k].rebind(const_cast<double *>(data + sizeOfU), n[k] + 1, n[k+1]);
+            velocity[k].rebind(const_cast<double *>(data + sizeOfU),
+                               n[k] + 1, n[k+1]);
             sizeOfU += (n[k] + 1) * (n[k+1]);
         }
         return sizeOfU;
@@ -187,38 +188,12 @@ struct MLPModel {
     void initialize(const uint16_t &inNumberOfStages,
                     const double *inNumbersOfUnits) {
         num_layers = inNumberOfStages;
-
         for (size_t k =0; k < num_layers; ++k){
             // Initalize according to Glorot and Bengio (2010)
             // See design doc for more info
             double span = 0.5 * sqrt(6.0 / (inNumbersOfUnits[k] + inNumbersOfUnits[k+1]));
             u[k] << span * Matrix::Random(u[k].rows(), u[k].cols());
             velocity[k].setZero();
-        }
-    }
-
-    void updateVelocity(const Matrix &gradient, const Index layer_index){
-        if (momentum > 0.){
-            // if momentum is enabled
-            velocity[layer_index] = momentum * velocity[layer_index] + gradient;
-        }
-    }
-
-    void updatePosition(const Matrix &gradient, const Index layer_index){
-        if (momentum > 0 and not is_nesterov){
-            u[layer_index] += velocity[layer_index];
-        }
-        else {
-            // update is same for non momentum and nesterov
-            u[layer_index] += gradient;
-        }
-    }
-
-    void nesterovUpdatePosition(){
-        if (momentum > 0 and is_nesterov){
-            for (size_t k = 0; k < u.size(); k++){
-                u[k] += momentum * velocity[k];
-            }
         }
     }
 
@@ -243,8 +218,7 @@ struct MLPModel {
      *  Some operator wrappers for u.
      */
     MLPModel& operator*=(const double &c) {
-        // Note that when scaling the model, you should
-        // not update the bias.
+        // Note that when scaling the model, don't update the bias.
         size_t k;
         for (k = 0; k < u.size(); k ++) {
            u[k] *= c;
