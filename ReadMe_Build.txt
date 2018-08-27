@@ -173,6 +173,11 @@ root directory) for more options, after having run `cmake` the first time.
     with `-DPYXB_TAR_SOURCE=/path/to/pyxb_x.tar.gz`, in which case
     this tarball is used.
 
+- `CREATE_RPM_FOR_UBUNTU` (default: *empty*)
+
+    By default, we create a .deb madlib installer on Ubuntu. If this
+    flag is set to 'True', we will create an RPM instead. Note that
+    package alien must be installed for this to work.
 
 Debugging
 =========
