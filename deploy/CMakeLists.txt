@@ -26,10 +26,14 @@ elseif(UNIX)
         )
     elseif(IS_DEBIAN)
         message(STATUS "Detected Debian version ${DEB_VERSION}")
-        # -- If cmake flag -DCREATE_RPM_FOR_UBUNTU is set to some
-        # value, then we will create an RPM on Ubuntu. If that
-        # flag is not set to any value in cmake, then we create
-        # only .deb artifact on Ubuntu.
+        # By default, the cmake flag -DCREATE_RPM_FOR_UBUNTU is not
+        # set to any value. The default behavior is to create a .deb
+        # artifact when MADlib is compiled on Ubuntu.
+        # If we instead want to create an RPM artifact for MADlib
+        # on Ubuntu, then the cmake flag -DCREATE_RPM_FOR_UBUNTU can
+        # be set to some value (say True), and we will only create
+        # an RPM artifact on Ubuntu (i.e., we create an rpm instead
+        # of the default .deb).
         # Note that package alien must already be installed for
         # building an RPM on Ubuntu.
         if(CREATE_RPM_FOR_UBUNTU)
