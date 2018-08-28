@@ -35,6 +35,10 @@ from utilities.validate_args import get_expr_type
 from utilities.utilities import _assert
 from utilities.utilities import unique_string
 from utilities.control import MinWarning
+from utilities.validate_args import quote_ident
+from utilities.validate_args import is_var_valid
+from utilities.utilities import NUMERIC, ONLY_ARRAY
+from utilities.utilities import is_valid_psql_type
 
 MAX_WEIGHT_ZERO_DIST = 1e6
 
@@ -53,15 +57,23 @@ def knn_validate_src(schema_madlib, point_source, point_column_name, point_id,
 
     if label_column_name and label_column_name.strip():
         cols_in_tbl_valid(point_source, [label_column_name], 'kNN')
-    cols_in_tbl_valid(point_source, (point_column_name, point_id), 'kNN')
-    cols_in_tbl_valid(test_source, (test_column_name, test_id), 'kNN')
 
-    if not is_col_array(point_source, point_column_name):
-        plpy.error("kNN Error: Feature column '{0}' in train table is not"
-                   " an array.".format(point_column_name))
-    if not is_col_array(test_source, test_column_name):
-        plpy.error("kNN Error: Feature column '{0}' in test table is not"
-                   " an array.".format(test_column_name))
+    _assert(is_var_valid(point_source, point_column_name),
+            "kNN error: {0} is an invalid column name or expression for point_column_name param".format(point_column_name))
+    point_col_type = get_expr_type(point_column_name, point_source)
+    _assert(is_valid_psql_type(point_col_type, NUMERIC | ONLY_ARRAY),
+            "kNN Error: Feature column or expression '{0}' in train table is not"
+            " an array.".format(point_column_name))
+
+    _assert(is_var_valid(test_source, test_column_name),
+            "kNN error: {0} is an invalid column name or expression for test_column_name param".format(test_column_name))
+    test_col_type = get_expr_type(test_column_name, test_source)
+    _assert(is_valid_psql_type(test_col_type, NUMERIC | ONLY_ARRAY),
+            "kNN Error: Feature column or expression '{0}' in test table is not"
+            " an array.".format(test_column_name))
+
+    cols_in_tbl_valid(point_source, [point_id], 'kNN')
+    cols_in_tbl_valid(test_source, [test_id], 'kNN')
 
     if not array_col_has_no_null(point_source, point_column_name):
         plpy.error("kNN Error: Feature column '{0}' in train table has some"
@@ -124,6 +136,8 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
             @param schema_madlib        Name of the Madlib Schema
             @param point_source         Training data table
             @param point_column_name    Name of the column with training data
+                                        or expression that evaluates to a
+                                        numeric array
             @param point_id             Name of the column having ids of data
                                         point in train data table
                                         points.
@@ -132,7 +146,8 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
             @param test_source          Name of the table containing the test
                                         data points.
             @param test_column_name     Name of the column with testing data
-                                        points.
+                                        points or expression that evaluates to a
+                                        numeric array
             @param test_id              Name of the column having ids of data
                                         points in test data table.
             @param output_table         Name of the table to store final
@@ -160,10 +175,19 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
                          test_source, test_column_name, test_id,
                          output_table, k, output_neighbors, fn_dist)
 
+        # Unique Strings
         x_temp_table = unique_string(desp='x_temp_table')
         y_temp_table = unique_string(desp='y_temp_table')
         label_col_temp = unique_string(desp='label_col_temp')
         test_id_temp = unique_string(desp='test_id_temp')
+        train = unique_string(desp='train')
+        test = unique_string(desp='test')
+        p_col_name = unique_string(desp='p_col_name')
+        t_col_name = unique_string(desp='t_col_name')
+        dist = unique_string(desp='dist')
+        train_id = unique_string(desp='train_id')
+        dist_inverse = unique_string(desp='dist_inverse')
+        r = unique_string(desp='r')
 
         if not fn_dist:
             fn_dist = '{0}.squared_dist_norm2'.format(schema_madlib)
@@ -211,7 +235,7 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
                                 SELECT
                                     {test_id_temp},
                                     {label_col_temp},
-                                    sum(dist_inverse) data_sum
+                                    sum({dist_inverse}) data_sum
                                 FROM pg_temp.{interim_table}
                                 GROUP BY {test_id_temp},
                                          {label_col_temp}
@@ -226,53 +250,63 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
                     view_grp_by = ", vw.{0}".format(label_col_temp)
                     pred_out = ", vw.{0}".format(label_col_temp)
                 else:
-                    pred_out = ", {0}.mode({1})".format(schema_madlib, label_col_temp)
+                    pred_out = ", {0}.mode({1})".format(
+                        schema_madlib, label_col_temp)
             else:
                 if weighted_avg:
-                    pred_out = (", sum({0} * dist_inverse) / sum(dist_inverse)".
-                                format(label_col_temp))
+                    pred_out = (", sum({0} * {dist_inverse}) / sum({dist_inverse})".
+                                format(label_col_temp, dist_inverse=dist_inverse))
                 else:
                     pred_out = ", avg({0})".format(label_col_temp)
 
             pred_out += " AS prediction"
-            label_out = (", train.{label_column_name}{cast_to_int}"
+            label_out = (", {train}.{label_column_name}{cast_to_int}"
                          " AS {label_col_temp}").format(**locals())
             comma_label_out_alias = ', ' + label_col_temp
+            label_name = ", {label_column_name}".format(
+                label_column_name=label_column_name)
+
         else:
             pred_out = ""
             label_out = ""
             comma_label_out_alias = ""
+            label_name = ""
 
         # interim_table picks the 'k' nearest neighbors for each test point
         if output_neighbors:
-            knn_neighbors = (", array_agg(knn_temp.train_id ORDER BY "
-                             "knn_temp.dist_inverse DESC) AS k_nearest_neighbours ")
+            knn_neighbors = (", array_agg(knn_temp.{train_id} ORDER BY "
+                             "knn_temp.{dist_inverse} DESC) AS k_nearest_neighbours ").format(**locals())
         else:
             knn_neighbors = ''
         plpy.execute("""
             CREATE TEMP TABLE {interim_table} AS
                 SELECT * FROM (
                     SELECT row_number() over
-                            (partition by {test_id_temp} order by dist) AS r,
+                            (partition by {test_id_temp} order by {dist}) AS {r},
                             {test_id_temp},
-                            train_id,
-                            CASE WHEN dist = 0.0 THEN {max_weight_zero_dist}
-                                 ELSE 1.0 / dist
-                            END AS dist_inverse
+                            {train_id},
+                            CASE WHEN {dist} = 0.0 THEN {max_weight_zero_dist}
+                                 ELSE 1.0 / {dist}
+                            END AS {dist_inverse}
                             {comma_label_out_alias}
                     FROM (
-                        SELECT test.{test_id} AS {test_id_temp},
-                            train.{point_id} as train_id,
+                        SELECT {test}.{test_id} AS {test_id_temp},
+                            {train}.{point_id} as {train_id},
                             {fn_dist}(
-                                train.{point_column_name},
-                                test.{test_column_name})
-                            AS dist
+                                {p_col_name},
+                                {t_col_name})
+                            AS {dist}
                             {label_out}
-                            FROM {point_source} AS train,
-                                 {test_source} AS test
+                            FROM
+                            (
+                            SELECT {point_id} , {point_column_name} as {p_col_name} {label_name} from {point_source}
+                            ) {train},
+                            (
+                            SELECT {test_id} ,{test_column_name} as {t_col_name} from {test_source}
+                            ) {test}
                         ) {x_temp_table}
                     ) {y_temp_table}
-            WHERE {y_temp_table}.r <= {k}
+            WHERE {y_temp_table}.{r} <= {k}
             """.format(max_weight_zero_dist=MAX_WEIGHT_ZERO_DIST, **locals()))
 
         sql = """
@@ -280,7 +314,7 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
                 {view_def}
                 SELECT
                     knn_temp.{test_id_temp} AS id,
-                    knn_test.{test_column_name}
+                    {test_column_name} as "{test_column_name}"
                     {pred_out}
                     {knn_neighbors}
                 FROM
@@ -290,7 +324,7 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
                 ON knn_temp.{test_id_temp} = knn_test.{test_id}
                     {view_join}
                 GROUP BY knn_temp.{test_id_temp},
-                         knn_test.{test_column_name}
+                    {test_column_name}
                          {view_grp_by}
             """
         plpy.execute(sql.format(**locals()))
