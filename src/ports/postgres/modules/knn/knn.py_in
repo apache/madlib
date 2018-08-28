@@ -35,6 +35,8 @@ from utilities.validate_args import get_expr_type
 from utilities.utilities import _assert
 from utilities.utilities import unique_string
 from utilities.control import MinWarning
+from utilities.validate_args import quote_ident
+
 
 MAX_WEIGHT_ZERO_DIST = 1e6
 
@@ -53,22 +55,10 @@ def knn_validate_src(schema_madlib, point_source, point_column_name, point_id,
 
     if label_column_name and label_column_name.strip():
         cols_in_tbl_valid(point_source, [label_column_name], 'kNN')
-    cols_in_tbl_valid(point_source, (point_column_name, point_id), 'kNN')
-    cols_in_tbl_valid(test_source, (test_column_name, test_id), 'kNN')
 
-    if not is_col_array(point_source, point_column_name):
-        plpy.error("kNN Error: Feature column '{0}' in train table is not"
-                   " an array.".format(point_column_name))
-    if not is_col_array(test_source, test_column_name):
-        plpy.error("kNN Error: Feature column '{0}' in test table is not"
-                   " an array.".format(test_column_name))
+    _assert(point_column_name, "KNN error: Invalid point_column_name expression")
 
-    if not array_col_has_no_null(point_source, point_column_name):
-        plpy.error("kNN Error: Feature column '{0}' in train table has some"
-                   " NULL values.".format(point_column_name))
-    if not array_col_has_no_null(test_source, test_column_name):
-        plpy.error("kNN Error: Feature column '{0}' in test table has some"
-                   " NULL values.".format(test_column_name))
+    _assert(test_column_name, "KNN error: Invalid test_column_name expression")
 
     if k <= 0:
         plpy.error("kNN Error: k={0} is an invalid value, must be greater "
@@ -124,6 +114,8 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
             @param schema_madlib        Name of the Madlib Schema
             @param point_source         Training data table
             @param point_column_name    Name of the column with training data
+                                        or expression that evaluates to a
+                                        numeric array
             @param point_id             Name of the column having ids of data
                                         point in train data table
                                         points.
@@ -132,7 +124,8 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
             @param test_source          Name of the table containing the test
                                         data points.
             @param test_column_name     Name of the column with testing data
-                                        points.
+                                        points or expression that evaluates to a
+                                        numeric array
             @param test_id              Name of the column having ids of data
                                         points in test data table.
             @param output_table         Name of the table to store final
@@ -226,7 +219,8 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
                     view_grp_by = ", vw.{0}".format(label_col_temp)
                     pred_out = ", vw.{0}".format(label_col_temp)
                 else:
-                    pred_out = ", {0}.mode({1})".format(schema_madlib, label_col_temp)
+                    pred_out = ", {0}.mode({1})".format(
+                        schema_madlib, label_col_temp)
             else:
                 if weighted_avg:
                     pred_out = (", sum({0} * dist_inverse) / sum(dist_inverse)".
@@ -242,6 +236,23 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
             pred_out = ""
             label_out = ""
             comma_label_out_alias = ""
+
+        # CTAS temporary table from the main table(s) to select the
+        # given expression from.
+
+        point_source_temp_table = unique_string(desp='point_source')
+        test_source_temp_table = unique_string(desp='test_source')
+        point_col_name_temp = unique_string(desp='point_col_name_temp')
+        test_col_name_temp = unique_string(desp='test_col_name_temp')
+
+        plpy.execute("""
+            create table {point_source_temp_table} as
+            (select {point_id} , {point_column_name} as {point_col_name_temp} , {label_column_name} from {point_source})"""
+                     .format(**locals()))
+        plpy.execute("""
+                create table {test_source_temp_table} as
+                (select {test_id}, {test_column_name} as {test_col_name_temp} from {test_source})"""
+                     .format(**locals()))
 
         # interim_table picks the 'k' nearest neighbors for each test point
         if output_neighbors:
@@ -264,12 +275,14 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
                         SELECT test.{test_id} AS {test_id_temp},
                             train.{point_id} as train_id,
                             {fn_dist}(
-                                train.{point_column_name},
-                                test.{test_column_name})
+                                train.{point_col_name_temp},
+                                test.{test_col_name_temp})
                             AS dist
                             {label_out}
-                            FROM {point_source} AS train,
-                                 {test_source} AS test
+                            FROM
+                                 {point_source_temp_table} as train,
+                                 {test_source_temp_table} as test
+
                         ) {x_temp_table}
                     ) {y_temp_table}
             WHERE {y_temp_table}.r <= {k}
@@ -280,7 +293,7 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
                 {view_def}
                 SELECT
                     knn_temp.{test_id_temp} AS id,
-                    knn_test.{test_column_name}
+                    {test_column_name} as "{test_column_name}"
                     {pred_out}
                     {knn_neighbors}
                 FROM
@@ -290,11 +303,11 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
                 ON knn_temp.{test_id_temp} = knn_test.{test_id}
                     {view_join}
                 GROUP BY knn_temp.{test_id_temp},
-                         knn_test.{test_column_name}
+                    {test_column_name}
                          {view_grp_by}
             """
         plpy.execute(sql.format(**locals()))
-        plpy.execute("DROP TABLE IF EXISTS {0}".format(interim_table))
+        # plpy.execute("DROP TABLE IF EXISTS {0}".format(interim_table))
         return
 
 
