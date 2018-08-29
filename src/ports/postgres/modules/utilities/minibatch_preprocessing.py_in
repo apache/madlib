@@ -269,8 +269,15 @@ class MiniBatchPreProcessor:
             grouping_cols_select_col = ''
             grouping_cols_group_by = ''
 
+        if is_platform_pg():
+            distributed_by_clause = with_append_only_true = ''
+        else:
+            distributed_by_clause= 'DISTRIBUTED RANDOMLY'
+            with_append_only_true= 'WITH (APPENDONLY=TRUE)'
         sql = """
-            CREATE TABLE {self.output_table} AS
+            CREATE TABLE {self.output_table}
+            {with_append_only_true}
+            AS
             SELECT {row_id},
                    {grouping_cols_select_col}
                    {self.schema_madlib}.matrix_agg({dep_colname}) as {dep_colname},
@@ -291,11 +298,8 @@ class MiniBatchPreProcessor:
                        dep_colname=MINIBATCH_OUTPUT_DEPENDENT_COLNAME,
                        ind_colname=MINIBATCH_OUTPUT_INDEPENDENT_COLNAME,
                        row_id=unique_row_id,
-                       distributed_by_clause='' if is_platform_pg() else
-                       'DISTRIBUTED RANDOMLY',
                        **locals())
         plpy.execute(sql)
-
 
     def create_output_summary_table(self,
                                     buffer_size,
@@ -313,7 +317,8 @@ class MiniBatchPreProcessor:
             class_level_str=py_list_to_sql_string(
                 self.dependent_levels, array_type=self.dependent_vartype,
                 long_format=True)
-
+        grouping_cols_str=("$__madlib__${0}$__madlib__$".format(self.grouping_cols)
+                           if self.grouping_cols else "NULL")
         query = """
             CREATE TABLE {self.output_summary_table} AS
             SELECT
@@ -327,10 +332,9 @@ class MiniBatchPreProcessor:
                 {total_num_rows_processed} AS num_rows_processed,
                 {num_missing_rows_skipped} AS num_missing_rows_skipped,
                 {grouping_cols_str}::TEXT AS grouping_cols
-        """.format(grouping_cols_str="$__madlib__$" + self.grouping_cols + "$__madlib__$"
-                    if self.grouping_cols else "NULL",
-                   **locals())
+        """.format(**locals())
         plpy.execute(query)
+
 
 class MiniBatchStandardizer:
     """

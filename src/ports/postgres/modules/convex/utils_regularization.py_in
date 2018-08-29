@@ -67,8 +67,8 @@ def utils_ind_var_scales(tbl_data, col_ind_var, dimension, schema_madlib,
     x_scaled_vals["mean"] = mad_vec(x_scales[0]["mean"], text=False)
     x_scaled_vals["std"] = mad_vec(x_scales[0]["std"], text=False)
     return x_scaled_vals
-
 # ========================================================================
+
 
 def utils_ind_var_scales_grouping(tbl_data, col_ind_var, dimension,
                                   schema_madlib, grouping_col, x_mean_table,
@@ -123,6 +123,7 @@ def utils_ind_var_scales_grouping(tbl_data, col_ind_var, dimension,
         """.format(**locals()))
 # ========================================================================
 
+
 def __utils_dep_var_scale(schema_madlib, tbl_data, col_ind_var,
                           col_dep_var):
     """
@@ -140,12 +141,14 @@ def __utils_dep_var_scale(schema_madlib, tbl_data, col_ind_var,
     y_scale = plpy.execute(
         """
         SELECT
-            avg(CASE WHEN NOT {schema_madlib}.array_contains_null({col_ind_var}) THEN {col_dep_var} END) AS mean,
+            avg(CASE WHEN NOT {schema_madlib}.array_contains_null({col_ind_var})
+                     THEN {col_dep_var} END) AS mean,
             1 AS std
         FROM {tbl_data}
         """.format(**locals()))[0]
     return y_scale
 # ========================================================================
+
 
 def __utils_dep_var_scale_grouping(y_mean_table, tbl_data, grouping_col,
                                    family, schema_madlib=None,
@@ -178,8 +181,8 @@ def __utils_dep_var_scale_grouping(y_mean_table, tbl_data, grouping_col,
         # col_dep_var must be passed along.
         if schema_madlib is None or col_ind_var is None or col_dep_var is None:
             plpy.error("Schema name, indpendent column and dependent column names required.")
-        mean_str = ' avg(CASE WHEN NOT {0}.array_contains_null({1}) THEN {2} END) '.format(
-                schema_madlib, col_ind_var, col_dep_var)
+        mean_str = (' avg(CASE WHEN NOT {0}.array_contains_null({1}) THEN {2} END) '.
+                    format(schema_madlib, col_ind_var, col_dep_var))
     plpy.execute(
         """
         CREATE TEMP TABLE {y_mean_table} AS
@@ -190,6 +193,7 @@ def __utils_dep_var_scale_grouping(y_mean_table, tbl_data, grouping_col,
         GROUP BY {group_col}
         """.format(**locals()))
 # ========================================================================
+
 
 def __utils_normalize_data_grouping(y_decenter=True, **kwargs):
     """
@@ -228,15 +232,17 @@ def __utils_normalize_data_grouping(y_decenter=True, **kwargs):
         group_where_x = _check_groups(kwargs.get('tbl_data'), '__x__',
                                       group_col_list)
         x_mean_join_clause = "INNER JOIN {0} AS __x__ ON {1}".format(
-                                kwargs.get('x_mean_table'), group_where_x)
+            kwargs.get('x_mean_table'), group_where_x)
     if kwargs.get('y_mean_table'):
         group_where_y = _check_groups(kwargs.get('tbl_data'), '__y__',
                                       group_col_list)
         y_mean_join_clause = "INNER JOIN {0} AS __y__ ON {1}".format(
-                                kwargs.get('y_mean_table'), group_where_y)
+            kwargs.get('y_mean_table'), group_where_y)
     ydecenter_str = "- __y__.mean".format(**kwargs) if y_decenter else ""
     plpy.execute("""
-            CREATE TEMP TABLE {tbl_data_scaled} AS
+            CREATE TEMP TABLE {tbl_data_scaled}
+            m4_ifdef(`__POSTGRESQL__', `', `WITH (appendonly=true)')
+            AS
             SELECT
                 ({schema_madlib}.utils_normalize_data({col_ind_var},
                                             __x__.mean::double precision[],
@@ -248,12 +254,13 @@ def __utils_normalize_data_grouping(y_decenter=True, **kwargs):
             {x_mean_join_clause}
             {y_mean_join_clause}
         """.format(ydecenter_str=ydecenter_str, group_col=group_col,
-                    x_mean_join_clause=x_mean_join_clause,
-                    y_mean_join_clause=y_mean_join_clause,
-                    select_grouping_cols=select_grouping_cols,
-                    **kwargs))
+                   x_mean_join_clause=x_mean_join_clause,
+                   y_mean_join_clause=y_mean_join_clause,
+                   select_grouping_cols=select_grouping_cols,
+                   **kwargs))
     return None
 # ========================================================================
+
 
 def __utils_normalize_data(y_decenter=True, **kwargs):
     """
@@ -281,11 +288,14 @@ def __utils_normalize_data(y_decenter=True, **kwargs):
     ydecenter_str = "- {y_mean}".format(**kwargs) if y_decenter else ""
     plpy.execute(
         """
-            CREATE TEMP TABLE {tbl_data_scaled} AS
+            CREATE TEMP TABLE {tbl_data_scaled}
+            m4_ifdef(`__POSTGRESQL__', `', `WITH (appendonly=true)')
+            AS
             SELECT
-                ({schema_madlib}.utils_normalize_data({col_ind_var},
-                                            '{x_mean_str}'::double precision[],
-                                            '{x_std_str}'::double precision[]))
+                ({schema_madlib}.utils_normalize_data(
+                        {col_ind_var},
+                        '{x_mean_str}'::double precision[],
+                        '{x_std_str}'::double precision[]))
                     AS {col_ind_var_norm_new},
                 ({col_dep_var} {ydecenter_str})  AS {col_dep_var_norm_new}
             FROM {tbl_data}
@@ -293,6 +303,7 @@ def __utils_normalize_data(y_decenter=True, **kwargs):
 
     return None
 # ========================================================================
+
 
 def __utils_cv_preprocess(kwargs):
     """
@@ -350,20 +361,20 @@ def __utils_cv_preprocess(kwargs):
     col_ind_var_cv_new = unique_string()
     # new name for independent column due to normalization
     col_ind_var_norm_new = unique_string()
-    kwargs.update(dict(tbl_accum_error = tbl_accum_error,
-                       tbl_all_data = tbl_all_data,
-                       tbl_inter = tbl_inter,
-                       tbl_train = tbl_train,
-                       tbl_valid = tbl_valid,
-                       tbl_random_id = tbl_random_id,
-                       col_random_id = col_random_id,
-                       tbl_ind_scales = tbl_ind_scales,
-                       tbl_dep_scale = tbl_dep_scale,
-                       col_ind_var_cv_new = col_ind_var_cv_new,
-                       col_ind_var_norm_new = col_ind_var_norm_new,
-                       col_dep_var_cv_new = col_dep_var_cv_new,
-                       col_dep_var_norm_new = col_dep_var_norm_new,
-                       tbl_coef = tbl_coef))
+    kwargs.update(dict(tbl_accum_error=tbl_accum_error,
+                       tbl_all_data=tbl_all_data,
+                       tbl_inter=tbl_inter,
+                       tbl_train=tbl_train,
+                       tbl_valid=tbl_valid,
+                       tbl_random_id=tbl_random_id,
+                       col_random_id=col_random_id,
+                       tbl_ind_scales=tbl_ind_scales,
+                       tbl_dep_scale=tbl_dep_scale,
+                       col_ind_var_cv_new=col_ind_var_cv_new,
+                       col_ind_var_norm_new=col_ind_var_norm_new,
+                       col_dep_var_cv_new=col_dep_var_cv_new,
+                       col_dep_var_norm_new=col_dep_var_norm_new,
+                       tbl_coef=tbl_coef))
 
     # data_cols = [col_ind_var, col_dep_var]
     if data_id is None:
@@ -394,7 +405,7 @@ def __utils_cv_preprocess(kwargs):
     # length of the independent variable array
     dimension = plpy.execute("select max(array_upper({col_ind_var},1)) as dimension from {data_tbl}".format(**kwargs))[0]["dimension"]
 
-    kwargs.update(dict(tbl_used = tbl_used, row_num = row_num, dimension = dimension))
+    kwargs.update(dict(tbl_use=tbl_used, row_num=row_num, dimension=dimension))
 
     # table to append all fitting results
     # which are distinguished by id
@@ -403,8 +414,8 @@ def __utils_cv_preprocess(kwargs):
         create temp table {tbl_coef} (id integer, coef double precision[], intercept double precision)
     """.format(**kwargs))
     return None
+# ========================================================================
 
-## ========================================================================
 
 def __utils_accumulate_error(accum_count, tbl_accum_error, param_value, error):
     """
@@ -413,12 +424,16 @@ def __utils_accumulate_error(accum_count, tbl_accum_error, param_value, error):
     accumulate measured errors from each validation for each lambda value.
     """
     if accum_count == 1:
-        plpy.execute("create temp table {tbl_accum_error} (lambda double precision, mean_squared_error double precision)".format(tbl_accum_error = tbl_accum_error))
-    plpy.execute("insert into {tbl_accum_error} values ({param_value}, {error})".format(
-        tbl_accum_error = tbl_accum_error,
-        param_value = param_value, error = error))
+        plpy.execute("""
+            CREATE TEMP TABLE {tbl_accum_error} (
+                lambda double precision,
+                mean_squared_error double precision)
+            """.format(tbl_accum_error=tbl_accum_error))
+    plpy.execute("insert into {tbl_accum_error} values ({param_value}, {error})".
+                 format(tbl_accum_error=tbl_accum_error,
+                        param_value=param_value, error=error))
+# ========================================================================
 
-## ========================================================================
 
 def __utils_cv_produce_col_name_string(col_dep_var, col_dep_var_cv_new,
                                        col_ind_var, col_ind_var_cv_new):
@@ -436,12 +451,12 @@ def __utils_cv_produce_col_name_string(col_dep_var, col_dep_var_cv_new,
     """
     return col_dep_var + " as " + col_dep_var_cv_new + ", "
     + col_ind_var + " as " + col_ind_var_cv_new
-
 # ========================================================================
 
-def __utils_cv_copy_data_with_id (rel_origin, col_dep_var, col_dep_var_cv_new,
-                                  col_ind_var, col_ind_var_cv_new, rel_copied,
-                                  random_id):
+
+def __utils_cv_copy_data_with_id(rel_origin, col_dep_var, col_dep_var_cv_new,
+                                 col_ind_var, col_ind_var_cv_new, rel_copied,
+                                 random_id):
     """
     If the user does not provide a ID column, the data table has to be
     copied and at the same time create a random ID column with it.
@@ -458,15 +473,15 @@ def __utils_cv_copy_data_with_id (rel_origin, col_dep_var, col_dep_var_cv_new,
     # We want to select only the columns that will be used in the computation.
     col_string = __utils_cv_produce_col_name_string(col_dep_var, col_dep_var_cv_new,
                                                     col_ind_var, col_ind_var_cv_new)
-    __cv_copy_data_with_id_compute (rel_origin, col_string, rel_copied, random_id)
+    __cv_copy_data_with_id_compute(rel_origin, col_string, rel_copied, random_id)
     return None
-
 # ========================================================================
 
-def __utils_cv_split_data_using_id_col (rel_source, col_dep_var, col_dep_var_cv_new,
-                                        col_ind_var,
-                                        col_ind_var_cv_new, col_id, row_num,
-                                        rel_train, rel_valid, fold_num, which_fold):
+
+def __utils_cv_split_data_using_id_col(rel_source, col_dep_var, col_dep_var_cv_new,
+                                       col_ind_var,
+                                       col_ind_var_cv_new, col_id, row_num,
+                                       rel_train, rel_valid, fold_num, which_fold):
     """
     A random ID column exists (originally exists or was created during copying),
     split the data into training and validation.
@@ -484,17 +499,17 @@ def __utils_cv_split_data_using_id_col (rel_source, col_dep_var, col_dep_var_cv_
     @param which_fold Which fold will be used as validation part?
     """
     col_string = __utils_cv_produce_col_name_string(col_dep_var, col_dep_var_cv_new, col_ind_var, col_ind_var_cv_new)
-    __cv_split_data_using_id_col_compute (rel_source, col_string, col_id, row_num,
-                                          rel_train, rel_valid, fold_num, which_fold)
+    __cv_split_data_using_id_col_compute(rel_source, col_string, col_id, row_num,
+                                         rel_train, rel_valid, fold_num, which_fold)
     return None
-
 # ========================================================================
 
-def __utils_cv_split_data_using_id_tbl (rel_origin, col_dep_var, col_dep_var_cv_new,
-                                        col_ind_var,
-                                        col_ind_var_cv_new, rel_random_id,
-                                        random_id, origin_id, row_num, rel_train,
-                                        rel_valid, fold_num, which_fold):
+
+def __utils_cv_split_data_using_id_tbl(rel_origin, col_dep_var, col_dep_var_cv_new,
+                                       col_ind_var,
+                                       col_ind_var_cv_new, rel_random_id,
+                                       random_id, origin_id, row_num, rel_train,
+                                       rel_valid, fold_num, which_fold):
     """
     Split the data table using a random ID mapping table
 
@@ -518,7 +533,7 @@ def __utils_cv_split_data_using_id_tbl (rel_origin, col_dep_var, col_dep_var_cv_
     """
     col_string = __utils_cv_produce_col_name_string(col_dep_var, col_dep_var_cv_new,
                                                     col_ind_var, col_ind_var_cv_new)
-    __cv_split_data_using_id_tbl_compute (rel_origin, col_string, rel_random_id,
-                                          random_id, origin_id, row_num, rel_train,
-                                          rel_valid, fold_num, which_fold)
+    __cv_split_data_using_id_tbl_compute(rel_origin, col_string, rel_random_id,
+                                         random_id, origin_id, row_num, rel_train,
+                                         rel_valid, fold_num, which_fold)
     return None
