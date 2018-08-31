@@ -36,7 +36,7 @@ from utilities.utilities import _assert
 from utilities.utilities import unique_string
 from utilities.control import MinWarning
 from utilities.validate_args import quote_ident
-
+from utilities.validate_args import is_var_valid
 
 MAX_WEIGHT_ZERO_DIST = 1e6
 
@@ -56,9 +56,11 @@ def knn_validate_src(schema_madlib, point_source, point_column_name, point_id,
     if label_column_name and label_column_name.strip():
         cols_in_tbl_valid(point_source, [label_column_name], 'kNN')
 
-    _assert(point_column_name, "KNN error: Invalid point_column_name expression")
+    _assert(is_var_valid(point_source, point_column_name),
+            "kNN error: Invalid point_column_name expression")
 
-    _assert(test_column_name, "KNN error: Invalid test_column_name expression")
+    _assert(is_var_valid(test_source, test_column_name),
+            "kNN error: Invalid test_column_name expression")
 
     if k <= 0:
         plpy.error("kNN Error: k={0} is an invalid value, must be greater "
@@ -237,23 +239,6 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
             label_out = ""
             comma_label_out_alias = ""
 
-        # CTAS temporary table from the main table(s) to select the
-        # given expression from.
-
-        point_source_temp_table = unique_string(desp='point_source')
-        test_source_temp_table = unique_string(desp='test_source')
-        point_col_name_temp = unique_string(desp='point_col_name_temp')
-        test_col_name_temp = unique_string(desp='test_col_name_temp')
-
-        plpy.execute("""
-            create table {point_source_temp_table} as
-            (select {point_id} , {point_column_name} as {point_col_name_temp} , {label_column_name} from {point_source})"""
-                     .format(**locals()))
-        plpy.execute("""
-                create table {test_source_temp_table} as
-                (select {test_id}, {test_column_name} as {test_col_name_temp} from {test_source})"""
-                     .format(**locals()))
-
         # interim_table picks the 'k' nearest neighbors for each test point
         if output_neighbors:
             knn_neighbors = (", array_agg(knn_temp.train_id ORDER BY "
@@ -275,14 +260,17 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
                         SELECT test.{test_id} AS {test_id_temp},
                             train.{point_id} as train_id,
                             {fn_dist}(
-                                train.{point_col_name_temp},
-                                test.{test_col_name_temp})
+                                p_col_name,
+                                t_col_name)
                             AS dist
                             {label_out}
                             FROM
-                                 {point_source_temp_table} as train,
-                                 {test_source_temp_table} as test
-
+                            (
+                            SELECT {point_id} , {point_column_name} as p_col_name , {label_column_name} from {point_source}
+                            ) train,
+                            (
+                            SELECT {test_id} ,{test_column_name} as t_col_name from {test_source}
+                            ) test
                         ) {x_temp_table}
                     ) {y_temp_table}
             WHERE {y_temp_table}.r <= {k}
@@ -307,7 +295,7 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
                          {view_grp_by}
             """
         plpy.execute(sql.format(**locals()))
-        # plpy.execute("DROP TABLE IF EXISTS {0}".format(interim_table))
+        plpy.execute("DROP TABLE IF EXISTS {0}".format(interim_table))
         return
 
 
