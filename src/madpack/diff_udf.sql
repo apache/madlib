@@ -142,9 +142,12 @@ DROP TABLE IF EXISTS functions_madlib_new_version;
 SELECT get_functions('madlib_old_vers');
 
 SELECT
+    type,
     --'\t-' || name || ':' || '\n\t\t-rettype: ' || retype || '\n\t\t-argument: ' || argtypes
-    '    - ' || name || ':' || '\n        rettype: ' || retype || '\n        argument: ' || argtypes AS "Dropped UDFs"
-    , type
+    '    - ' || name || ':' AS "Dropped UDF part1",
+    '        rettype: ' || retype AS "Dropped UDF part2",
+    '        argument: ' || argtypes AS "Dropped UDF part3"
+
 FROM
 (
 SELECT
@@ -156,14 +159,16 @@ FROM
     USING (name, retype, argtypes)
 WHERE new_version.name IS NULL
 ) q
-ORDER by type, "Dropped UDFs";
+ORDER by type DESC, "Dropped UDF part1", "Dropped UDF part2", "Dropped UDF part3";
 
 ----------------------------------------
 
 SELECT
+    type,
     --'\t-' || name || ':' || '\n\t\t-rettype: ' || retype || '\n\t\t-argument: ' || argtypes
-    '    - ' || name || ':' || '\n        rettype: ' || retype || '\n        argument: ' || argtypes AS "Changed UDFs"
---    , type
+    '    - ' || name || ':' AS "Changed UDF part1",
+    '        rettype: ' || retype AS "Changed UDF part2",
+    '        argument: ' || argtypes AS "Changed UDF part3"
 FROM
 (
 SELECT
@@ -176,14 +181,16 @@ FROM
 -- WHERE FALSE
 WHERE old_version.retype in ('') -- '__logregr_result', 'summary_result', 'linregr_result', 'mlogregr_result', 'marginal_logregr_result', 'marginal_mlogregr_result', 'intermediate_cox_prop_hazards_result', '__utils_scaled_data')
 ) q
-ORDER by type, "Changed UDFs";
+ORDER by type DESC, "Changed UDF part1", "Changed UDF part2", "Changed UDF part3";
 
 ----------------------------------------
 
 SELECT
+    type,
     --'\t-' || name || ':' || '\n\t\t-rettype: ' || retype || '\n\t\t-argument: ' || argtypes
-    '    - ' || name || ':' || '\n        rettype: ' || retype || '\n        argument: ' || argtypes AS "Suspected UDFs"
---    , type
+    '    - ' || name || ':' AS "Suspected UDF part1",
+    '        rettype: ' || retype AS "Suspected UDF part2",
+    '        argument: ' || argtypes AS "Suspected UDF part3"
 FROM
 (
 SELECT
@@ -195,4 +202,4 @@ FROM
     USING (name, retype, argtypes)
 WHERE old_version.argtypes SIMILAR TO 'NOT-A-TYPE' -- '%(__logregr_result|summary_result|linregr_result|mlogregr_result|marginal_logregr_result|marginal_mlogregr_result|intermediate_cox_prop_hazards_result|__utils_scaled_data)%'
 ) q
-ORDER by type, "Suspected UDFs";
+ORDER by type DESC, "Suspected UDF part1", "Suspected UDF part2", "Suspected UDF part3";
