@@ -18,14 +18,14 @@
 # under the License.
 # ------------------------------------------------------------------------------
 
-# Create changelist for any two branches
+# Create changelist for any two branches/tags
 
 # Prequisites:
 # The old version has to be installed in the "madlib_old_vers" schema
 # The new version has to be installed in the "madlib" (default) schema
-# Two branches must exist locally (run 'git fetch' to ensure you have the latest version)
+# Two branches/tags must exist locally (run 'git fetch' to ensure you have the latest version)
 
-# Usage:
+# Usage (must be executed in the src/madpack directory):
 # python create_changelist.py <changelist filename> <old version branch> <new version branch>
 
 # Example (should be equivalent to changelist_1.13_1.14.yaml):
@@ -37,10 +37,30 @@ import os
 ch_filename = sys.argv[1]
 old_vers = sys.argv[2]
 new_vers = sys.argv[3]
+database = sys.argv[4]
 
 if os.path.exists(ch_filename):
     print "{0} already exists".format(ch_filename)
     raise SystemExit
+
+err1 = os.system("""psql {database} -l
+                 """.format(**locals()))
+if err1 != 0:
+    print "Database {0} does not exist".format(old_vers)
+    raise SystemExit
+
+err1 = os.system("""psql {database} -c "select {old_vers}.version()"
+                 """.format(**locals()))
+if err1 != 0:
+    print "Schema {0} does not exist".format(old_vers)
+    raise SystemExit
+
+err1 = os.system("""psql {database} -c "select {new_vers}.version()"
+                 """.format(**locals()))
+if err1 != 0:
+    print "Schema {0} does not exist".format(new_vers)
+    raise SystemExit
+
 print "Creating changelist {0}".format(ch_filename)
 os.system("rm -f /tmp/madlib_tmp_nm.txt /tmp/madlib_tmp_udf.txt /tmp/madlib_tmp_udt.txt")
 f = open(ch_filename, "w")
@@ -87,8 +107,8 @@ with open('/tmp/madlib_tmp_nm.txt') as fp:
         if 'sql_in' in line and '/test/' not in line:
              f.write('    ' + line.split('/')[5].split('.')[0]+':\n')
 
-os.system("psql madlib -f diff_udf.sql > /tmp/madlib_tmp_udf.txt")
-os.system("psql madlib -f diff_udt.sql > /tmp/madlib_tmp_udt.txt")
+os.system("psql {database} -f diff_udf.sql > /tmp/madlib_tmp_udf.txt")
+os.system("psql {database} -f diff_udt.sql > /tmp/madlib_tmp_udt.txt")
 
 f.write("\n# Changes in the types (UDT) including removal and modification\n")
 f.write("udt:\n")
