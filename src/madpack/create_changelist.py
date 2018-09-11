@@ -24,20 +24,21 @@
 # The old version has to be installed in the "madlib_old_vers" schema
 # The new version has to be installed in the "madlib" (default) schema
 # Two branches/tags must exist locally (run 'git fetch' to ensure you have the latest version)
+# The current branch does not matter
 
 # Usage (must be executed in the src/madpack directory):
-# python create_changelist.py <changelist filename> <old version branch> <new version branch>
+# python create_changelist.py <database name> <old version branch> <new version branch> <changelist filename>
 
 # Example (should be equivalent to changelist_1.13_1.14.yaml):
-# python create_changelist.py chtest1.yaml rel/v1.13 rel/v1.14
+# python create_changelist.py madlib rel/v1.13 rel/v1.14 chtest1.yaml
 
 import sys
 import os
 
-ch_filename = sys.argv[1]
+database = sys.argv[1]
 old_vers = sys.argv[2]
 new_vers = sys.argv[3]
-database = sys.argv[4]
+ch_filename = sys.argv[4]
 
 if os.path.exists(ch_filename):
     print "{0} already exists".format(ch_filename)
@@ -63,6 +64,12 @@ if err1 != 0:
 print "Creating changelist {0}".format(ch_filename)
 os.system("rm -f /tmp/madlib_tmp_nm.txt /tmp/madlib_tmp_udf.txt /tmp/madlib_tmp_udt.txt")
 try:
+    # Find the new modules using the git diff
+    err1 = os.system("git diff {old_vers} {new_vers} --name-only --diff-filter=A > /tmp/madlib_tmp_nm.txt".format(**locals()))
+    if err1 != 0:
+        print "Git diff failed. Please ensure that branches/tags are fetched."
+        raise SystemExit
+
     f = open("/tmp/madlib_tmp_cl.yaml", "w")
     f.write(
 """# ------------------------------------------------------------------------------
@@ -98,9 +105,6 @@ try:
 # file installed on the upgrade version. All other files (that don't have
 # updates), are cleaned up to remove object replacements
 """.format(**locals()))
-
-    # Find the new modules using the git diff
-    os.system("git diff {old_vers} {new_vers} --name-only --diff-filter=A > /tmp/madlib_tmp_nm.txt".format(**locals()))
 
     f.write("new module:\n")
     with open('/tmp/madlib_tmp_nm.txt') as fp:
@@ -140,36 +144,29 @@ try:
             if 'type' in line:
                 if 'agg' in line:
                     current_list = uda_list
-
             if 'UDF' in line:
                 current_list.append('    ' + line.split('|')[1].strip()+"\n")
-                #f.write('    ' + line.split('|')[1].strip()+"\n")
 
     current_list = udf_list
 
-    # Find the function that depend on changed types
+    # Find the function that return a changed type
+    # Note that we already ran the diff_udf.sql file
+    # This means the get_functions() function is already defined in the database
     if os.path.exists("/tmp/madlib_tmp_typedep.txt"):
         os.system("rm /tmp/madlib_tmp_typedep.txt")
     os.system("touch /tmp/madlib_tmp_typedep.txt")
     for t in udt_list:
-        print "type {0}".format(t)
-        call = """psql {database} -c "DROP TABLE IF EXISTS __tmp__madlib__ " """.format(**locals())
-        print call
-        os.system(call)
-        call = """psql {database} -c "SELECT get_functions('__tmp__madlib__', 'madlib_old_vers', 'madlib_old_vers.{t}')" """.format(**locals())
-        print call
-        os.system(call)
-        print "here"
-        call = """psql {database} -x -c "SELECT type, name, retype, argtypes FROM __tmp__madlib__ ORDER BY type DESC" > /tmp/madlib_tmp_typedep.txt """.format(**locals())
-        print call
-        os.system(call)
+
+        os.system("""psql {database} -c "DROP TABLE IF EXISTS __tmp__madlib__ " > /dev/null """.format(**locals()))
+
+        os.system("""psql {database} -c "SELECT get_functions('__tmp__madlib__', 'madlib_old_vers', 'madlib_old_vers.{t}')" > /dev/null """.format(**locals()))
+
+        os.system("""psql {database} -x -c "SELECT type, name, retype, argtypes FROM __tmp__madlib__ ORDER BY type DESC" > /tmp/madlib_tmp_typedep.txt """.format(**locals()))
 
         with open('/tmp/madlib_tmp_typedep.txt') as fp:
             for line in fp:
-                # print line
                 if '|' in line:
                     sp = line.split('|')
-                    # print sp
 
                     # Type is only used for normal/agg switch
                     if sp[0].strip() == 'type':
@@ -180,13 +177,11 @@ try:
                     elif sp[0].strip() == 'name':
                         current_list.append('    - ' + sp[1].strip() + ":\n")
                     elif sp[0].strip() == 'retype':
-                        current_list.append('        rettype: ' + sp[1].strip() + "\n")
+                        current_list.append('        rettype: schema_madlib.' + sp[1].strip() + "\n")
                     elif sp[0].strip() == 'argtypes':
                         current_list.append('        argument: ' + sp[1].strip() + "\n")
 
-    print udf_list
-    print uda_list
-
+    # Write the UDF and UDA lists to the changelist
     f.write(
     """
 # List of the UDF changes that affect the user externally. This includes change
@@ -198,7 +193,6 @@ try:
 """)
 
     f.write("udf:\n")
-
     for line in udf_list:
         f.write(line)
 
@@ -206,8 +200,8 @@ try:
 # Changes to aggregates (UDA) including removal and modification
 # Overloaded functions should be mentioned separately
 """)
-    f.write("uda:\n")
 
+    f.write("uda:\n")
     for line in uda_list:
         f.write(line)
 
@@ -220,10 +214,16 @@ try:
     f.write("udo:\n")
     f.write("udoc:\n")
     f.close()
+
+    # Copy the new changelist file to its proper location
+    # This helps to keep the madlib folder clean in case the program stops
+    # unexpectedly
     os.system("cp /tmp/madlib_tmp_cl.yaml {0}".format(ch_filename))
+
 except:
     print "Something went wrong! The changelist might be wrong/corrupted."
     raise
 finally:
     os.system("rm -f /tmp/madlib_tmp_nm.txt /tmp/madlib_tmp_udf.txt "
-              "/tmp/madlib_tmp_udt.txt /tmp/madlib_tmp_cl.yaml")
+              "/tmp/madlib_tmp_udt.txt /tmp/madlib_tmp_cl.yaml "
+              "/tmp/madlib_tmp_typedep.txt")

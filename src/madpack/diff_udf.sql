@@ -74,7 +74,7 @@ $$
             WHERE n.nspname ~ '^({schema_name})$'
             ORDER BY 1, 2, 4
         ) q
-        WHERE retype LIKE '{type_filter}'
+        WHERE retype LIKE '{type_filter}' OR retype LIKE '{type_filter}[]'
         """.format(table_name=table_name, schema_name=schema_name, type_filter=type_filter))
 $$ LANGUAGE plpythonu;
 
