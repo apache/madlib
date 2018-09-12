@@ -669,17 +669,18 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.coxph_train(
     optimizer_params         VARCHAR
 )
 RETURNS VOID AS $$
-    PythonFunctionBodyOnly(`stats', `cox_prop_hazards')
-    cox_prop_hazards.coxph(
-        schema_madlib,
-        source_table,
-        output_table,
-        dependent_varname,
-        independent_varname,
-        right_censoring_status,
-        strata,
-        optimizer_params
-    )
+PythonFunctionBodyOnly(`stats', `cox_prop_hazards')
+    with AOControl(False):
+        cox_prop_hazards.coxph(
+            schema_madlib,
+            source_table,
+            output_table,
+            dependent_varname,
+            independent_varname,
+            right_censoring_status,
+            strata,
+            optimizer_params
+        )
 $$ LANGUAGE plpythonu VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
@@ -1112,7 +1113,8 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.cox_zph
 )
 RETURNS VOID AS $$
 PythonFunctionBodyOnly(`stats', `cox_prop_hazards')
-    cox_prop_hazards.zph(schema_madlib, coxph_model_table, output_table)
+    with AOControl(False):
+        cox_prop_hazards.zph(schema_madlib, coxph_model_table, output_table)
 $$ LANGUAGE plpythonu VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
@@ -1414,17 +1416,18 @@ PythonFunctionBodyOnly(`stats', `cox_prop_hazards')
     temp_string = plpy.execute("SELECT 'pg_temp.' || {schema_madlib}.__unique_string() AS t".
                                format(schema_madlib=schema_madlib))[0]["t"]
 
-    plpy.execute("""
-                 SELECT {schema_madlib}.coxph_train(
-                 '{source}','{temp}', '{dep}', '{indep}',
-                 '{status}', NULL, '{optimizer}')
-                 """.format(schema_madlib=schema_madlib,
-                            source=source,
-                            temp=temp_string,
-                            dep=depColumn,
-                            indep=indepColumn,
-                            status=status,
-                            optimizer=optimizer_params))
+    with AOControl(False):
+        plpy.execute("""
+                     SELECT {schema_madlib}.coxph_train(
+                     '{source}','{temp}', '{dep}', '{indep}',
+                     '{status}', NULL, '{optimizer}')
+                     """.format(schema_madlib=schema_madlib,
+                                source=source,
+                                temp=temp_string,
+                                dep=depColumn,
+                                indep=indepColumn,
+                                status=status,
+                                optimizer=optimizer_params))
     return plpy.execute("SELECT coef, loglikelihood, std_err, z_stats,"
                         "p_values, num_iterations FROM {temp}".
                         format(temp=temp_string))[0]

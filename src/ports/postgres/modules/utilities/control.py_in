@@ -14,6 +14,7 @@ import plpy
 from distutils.util import strtobool
 from functools import wraps
 
+from utilities import extract_keyvalue_params
 from utilities import unique_string
 
 HAS_FUNCTION_PROPERTIES = m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `True', `False')
@@ -156,6 +157,60 @@ class MinWarning(ContextDecorator):
             # if no exception then we reset the client_min_messages
             plpy.execute("SET client_min_messages = {oldMsgLevel}; ".
                          format(oldMsgLevel=self.oldMsgLevel))
+
+
+class AOControl(ContextDecorator):
+
+    """
+    @brief: A wrapper that enables/disables the AO storage option
+    """
+
+    def __init__(self, enable=False):
+        self.to_enable = enable
+        self.was_ao_enabled = False
+        self.guc_exists = True
+        self.storage_options_dict = dict()
+
+    def _parse_gp_default_storage_options(self, gp_default_storage_options_str):
+        """ Parse comma separated key=value pairs
+
+        Example:
+             appendonly=false,blocksize=32768,compresstype=none,checksum=true,orientation=row
+        """
+        self.storage_options_dict = extract_keyvalue_params(gp_default_storage_options_str)
+        self.storage_options_dict['appendonly'] = bool(
+            strtobool(self.storage_options_dict['appendonly']))
+
+    @property
+    def _gp_default_storage_options(self):
+        return ','.join(['{0}={1}'.format(k, v)
+                        for k, v in self.storage_options_dict.iteritems()])
+
+    def __enter__(self):
+        try:
+            _storage_options_str = plpy.execute(
+                "show gp_default_storage_options")[0]["gp_default_storage_options"]
+            self._parse_gp_default_storage_options(_storage_options_str)
+
+            # Set APPENDONLY=False after backing up existing value
+            self.was_ao_enabled = self.storage_options_dict['appendonly']
+            self.storage_options_dict['appendonly'] = self.to_enable
+            plpy.execute("set gp_default_storage_options={0}".
+                         format(self._gp_default_storage_options))
+        except plpy.SPIError:
+            self.guc_exists = False
+        finally:
+            return self
+
+    def __exit__(self, *args):
+        if self.guc_exists:
+            self.storage_options_dict['appendonly'] = self.was_ao_enabled
+            plpy.execute("set gp_default_storage_options={0}".
+                         format(self._gp_default_storage_options))
+        if args and args[0]:
+            # an exception was raised in code. We return False so that any
+            # exception is re-raised after exit.
+            return False
 
 
 class IterationController:
