@@ -46,19 +46,19 @@ if os.path.exists(ch_filename):
 
 err1 = os.system("""psql {0} -l > /dev/null""".format(database))
 if err1 != 0:
-    print "Database {0} does not exist".format(old_vers)
+    print "Database {0} does not exist".format(database)
     raise SystemExit
 
 err1 = os.system("""psql {0} -c "select madlib_old_vers.version()" > /dev/null
                  """.format(database))
 if err1 != 0:
-    print "Schema {0} does not exist".format(old_vers)
+    print "MADlib is not installed in the madlib_old_vers schema. Please refer to the Prequisites."
     raise SystemExit
 
 err1 = os.system("""psql {0} -c "select madlib.version()" > /dev/null
                  """.format(database))
 if err1 != 0:
-    print "Schema {0} does not exist".format(new_vers)
+    print "MADlib is not installed in the madlib schema. Please refer to the Prequisites."
     raise SystemExit
 
 print "Creating changelist {0}".format(ch_filename)
