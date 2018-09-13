@@ -32,7 +32,7 @@ extern "C" {
 
 #include "Compatibility.hpp"
 
-#if PG_VERSION_NUM >= 90000
+#if GP_VERSION_NUM >= 60000
     // MADlib aligns the pointers returned by palloc() to 16-byte boundaries
     // (see Allocator_impl.hpp). This is done to allow Eigen vectorization  (see
     // http://eigen.tuxfamily.org/index.php?title=FAQ#Vectorization for more
@@ -40,9 +40,8 @@ extern "C" {
     // not 16-byte aligned.
     // Further, the pointer realignment invalidates a header that palloc creates
     // just prior to the pointer address.  Greenplum after commit <> fails due
-    // to this invalid header.  Hence, the pointer realignment (and Eigen
-    // vectorization) is disabled below for Greenplum 6 and above.
-    #define DISABLE_POINTER_ALIGNMENT_FOR_GREENPLUM
+    // to this invalid header.  Hence, the pointer realignment and Eigen
+    // vectorization is disabled below for Greenplum 6 and above.
 
     // See http://eigen.tuxfamily.org/dox/group__TopicUnalignedArrayAssert.html
     // for steps to disable vectorization

@@ -211,7 +211,7 @@ template <dbal::ZeroMemory ZM>
 inline
 void *
 Allocator::internalPalloc(size_t inSize) const {
-#if MAXIMUM_ALIGNOF >= 16  || defined DISABLE_POINTER_ALIGNMENT_FOR_GREENPLUM
+#if MAXIMUM_ALIGNOF >= 16  || defined EIGEN_DONT_VECTORIZE
     return (ZM == dbal::DoZero) ? palloc0(inSize) : palloc(inSize);
 #else
     if (inSize > std::numeric_limits<size_t>::max() - 16)
@@ -243,7 +243,7 @@ template <dbal::ZeroMemory ZM>
 inline
 void *
 Allocator::internalRePalloc(void *inPtr, size_t inSize) const {
-#if MAXIMUM_ALIGNOF >= 16 || defined DISABLE_POINTER_ALIGNMENT_FOR_GREENPLUM
+#if MAXIMUM_ALIGNOF >= 16 || defined EIGEN_DONT_VECTORIZE
     return repalloc(inPtr, inSize);
 #else
     if (inSize > std::numeric_limits<size_t>::max() - 16) {
@@ -298,7 +298,7 @@ Allocator::makeAligned(void *inPtr) const {
 inline
 void *
 Allocator::unaligned(void *inPtr) const {
-#if MAXIMUM_ALIGNOF >= 16 || defined DISABLE_POINTER_ALIGNMENT_FOR_GREENPLUM
+#if MAXIMUM_ALIGNOF >= 16 || defined EIGEN_DONT_VECTORIZE
     return inPtr;
 #else
     return (*(reinterpret_cast<void**>(inPtr) - 1));
