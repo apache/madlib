@@ -83,7 +83,7 @@ function(determine_target_versions OUT_VERSIONS)
                 endif()
             elseif(${PORT_UC} STREQUAL "POSTGRESQL" AND
                     (${${PORT_UC}_VERSION_MAJOR} EQUAL 10 OR
-                    ${${PORT_UC}_VERSION_PATCH} GREATER 10))
+                    ${${PORT_UC}_VERSION_MAJOR} GREATER 10))
                 # Starting Postgresql 10, semantic versioning will be followed,
                 # implying we only need 1 folder for same major versions
                 set(VERSION ${${PORT_UC}_VERSION_MAJOR})
