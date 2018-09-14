@@ -28,6 +28,7 @@
 
 # Usage (must be executed in the src/madpack directory):
 # python create_changelist.py <database name> <old version branch> <new version branch> <changelist filename>
+# If you are using the master branch, plase make sure to edit the branch/tag in the output file
 
 # Example (should be equivalent to changelist_1.13_1.14.yaml):
 # python create_changelist.py madlib rel/v1.13 rel/v1.14 chtest1.yaml
@@ -106,6 +107,7 @@ try:
 # updates), are cleaned up to remove object replacements
 """.format(**locals()))
 
+    # Find the new .sql_in files that are not in test folders
     f.write("new module:\n")
     with open('/tmp/madlib_tmp_nm.txt') as fp:
         for line in fp:
@@ -137,15 +139,19 @@ try:
     uda_list=[]
     current_list = udf_list
 
+    # Find the changed functions/aggregates via the diff_udf script and write them to a file
     os.system("psql {0} -f diff_udf.sql > /tmp/madlib_tmp_udf.txt".format(database))
 
+    # The entries in the file are ordered by type.
+    # Read them line by line and add to the udf list unti the first aggregate
     with open('/tmp/madlib_tmp_udf.txt') as fp:
         for line in fp:
             if 'type' in line:
+                # When we get the first aggregate, we switch the current list
                 if 'agg' in line:
                     current_list = uda_list
             if 'UDF' in line:
-                current_list.append('    ' + line.split('|')[1].strip()+"\n")
+                current_list.append(line.split('|')[1])
 
     current_list = udf_list
 
@@ -159,16 +165,20 @@ try:
 
         os.system("""psql {database} -c "DROP TABLE IF EXISTS __tmp__madlib__ " > /dev/null """.format(**locals()))
 
+        # Find all of the old functions that return this particular type t and write to a table
         os.system("""psql {database} -c "SELECT get_functions('__tmp__madlib__', 'madlib_old_vers', 'madlib_old_vers.{t}')" > /dev/null """.format(**locals()))
 
+        # Order them in descending order on type so that we read the functions first and aggregates last
         os.system("""psql {database} -x -c "SELECT type, name, retype, argtypes FROM __tmp__madlib__ ORDER BY type DESC" > /tmp/madlib_tmp_typedep.txt """.format(**locals()))
+
+        os.system("""psql {database} -c "DROP TABLE IF EXISTS __tmp__madlib__ " > /dev/null """.format(**locals()))
 
         with open('/tmp/madlib_tmp_typedep.txt') as fp:
             for line in fp:
                 if '|' in line:
                     sp = line.split('|')
 
-                    # Type is only used for normal/agg switch
+                    # Type is only used for switching the current list from udf to uda
                     if sp[0].strip() == 'type':
                         if sp[1].strip() == 'agg':
                             current_list = uda_list

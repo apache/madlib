@@ -88,9 +88,9 @@ SELECT get_functions('functions_madlib_new_version','madlib','%');
 SELECT
     type,
     --'\t-' || name || ':' || '\n\t\t-rettype: ' || retype || '\n\t\t-argument: ' || argtypes
-    '    - ' || name || ':' AS "Dropped UDF part1",
-    '        rettype: ' || retype AS "Dropped UDF part2",
-    '        argument: ' || argtypes AS "Dropped UDF part3"
+    '   - ' || name || ':' AS "Dropped UDF part1",
+    '       rettype: ' || retype AS "Dropped UDF part2",
+    '       argument: ' || argtypes AS "Dropped UDF part3"
 
 FROM
 (
