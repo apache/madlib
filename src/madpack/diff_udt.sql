@@ -119,5 +119,4 @@ FROM
 WHERE old_vers.typrelid <> 0; -- 0 means base type
 
 SELECT
-    array_upper(detect_changed_types('types_common'), 1) AS N,
-    detect_changed_types('types_common') AS "Changed UDTs";
+    unnest(detect_changed_types('types_common')) AS "Changed UDTs";
