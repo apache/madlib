@@ -152,7 +152,7 @@ def _cleanup_comments_in_sqlfile(output_filename, upgrade):
         os.rename(cleaned_output_filename, output_filename)
 
 def _run_m4_and_append(schema, maddir_mod_py, module, sqlfile,
-                       output_filehandle, pre_sql=None):
+                       output_filehandle, pre_sql=None, test_schema=None):
     """
     Function to process a sql file with M4.
     """
@@ -182,6 +182,8 @@ def _run_m4_and_append(schema, maddir_mod_py, module, sqlfile,
                   '-DMODULE_NAME=' + module,
                   '-I' + maddir_madpack,
                   sqlfile]
+        if test_schema:
+            m4args.append('-DMADLIB_TEST_SCHEMA=' + test_schema)
 
         info_(this, "> ... parsing: " + " ".join(m4args), verbose)
         output_filehandle.flush()
@@ -190,7 +192,7 @@ def _run_m4_and_append(schema, maddir_mod_py, module, sqlfile,
         error_(this, "Failed executing m4 on %s" % sqlfile, False)
         raise Exception
 
-def _run_install_check_sql(schema, maddir_mod_py, module, sqlfile,
+def _run_install_check_sql(schema, test_schema, maddir_mod_py, module, sqlfile,
                            tmpfile, logfile, pre_sql):
     """
         Run SQL file
@@ -204,7 +206,7 @@ def _run_install_check_sql(schema, maddir_mod_py, module, sqlfile,
     """
     try:
         f = open(tmpfile, 'w')
-        _run_m4_and_append(schema, maddir_mod_py, module, sqlfile, f, pre_sql)
+        _run_m4_and_append(schema, maddir_mod_py, module, sqlfile, f, pre_sql, test_schema)
         f.close()
     except:
         error_(this, "Failed to temp m4 processed file %s." % tmpfile, False)
@@ -797,7 +799,7 @@ def _execute_per_module_install_dev_check_algo(schema, test_user,
 
         # Run the SQL
         run_start = datetime.datetime.now()
-        retval = _run_install_check_sql(schema, maddir_mod_py,
+        retval = _run_install_check_sql(schema, test_schema, maddir_mod_py,
                                         module, sqlfile, tmpfile,
                                         logfile, pre_sql)
         # Runtime evaluation
