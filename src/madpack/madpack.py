@@ -175,16 +175,15 @@ def _run_m4_and_append(schema, maddir_mod_py, module, sqlfile,
 
         m4args = ['m4',
                   '-P',
+                  '-I' + maddir_madpack,
                   '-DMADLIB_SCHEMA=' + schema,
                   '-DPLPYTHON_LIBDIR=' + maddir_mod_py,
                   '-DEXT_PYTHON_LIBDIR=' + maddir_ext_py,
                   '-DMODULE_PATHNAME=' + maddir_lib,
-                  '-DMODULE_NAME=' + module,
-                  '-I' + maddir_madpack,
-                  sqlfile]
+                  '-DMODULE_NAME=' + module]
         if test_schema:
             m4args.append('-DMADLIB_TEST_SCHEMA=' + test_schema)
-
+        m4args.append(sqlfile)
         info_(this, "> ... parsing: " + " ".join(m4args), verbose)
         output_filehandle.flush()
         subprocess.call(m4args, stdout=output_filehandle)
