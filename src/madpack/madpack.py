@@ -784,8 +784,8 @@ def _execute_per_module_install_dev_check_algo(schema, test_user,
         pre_sql = '-- Switch to test user:\n' \
                   'SET ROLE %s;\n' \
                   '-- Set SEARCH_PATH for install-check:\n' \
-                  'SET search_path=%s,%s;\n' \
-                  % (test_user, test_schema, schema)
+                  'SET search_path=%s;\n' \
+                  % (test_user, test_schema)
 
 
         # Set file names
