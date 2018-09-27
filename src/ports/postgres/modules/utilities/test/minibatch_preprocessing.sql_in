@@ -79,41 +79,40 @@ INSERT INTO minibatch_preprocessing_input(id,sex,length,diameter,height,whole,sh
 
 -- check if an integer dependent var is being one-hot-encoded
 DROP TABLE IF EXISTS minibatch_preprocessing_out, minibatch_preprocessing_out_standardization, minibatch_preprocessing_out_summary;
-SELECT minibatch_preprocessor('minibatch_preprocessing_input',
+SELECT MADLIB_SCHEMA.minibatch_preprocessor('minibatch_preprocessing_input',
                               'minibatch_preprocessing_out',
                               'rings',
                               'ARRAY[diameter,height,whole,shucked,viscera,shell]',
                               NULL,
                               4,
                               TRUE);
-SELECT assert(array_upper(dependent_varname, 2) > 1,
+SELECT MADLIB_SCHEMA.assert(array_upper(dependent_varname, 2) > 1,
               'One hot encoding with one_hot_encode_int_dep_var=TRUE is not working')
 FROM minibatch_preprocessing_out;
 
 -- check that double precision dependent var is not being one-hot-encoded
 DROP TABLE IF EXISTS minibatch_preprocessing_out, minibatch_preprocessing_out_standardization, minibatch_preprocessing_out_summary;
-SELECT minibatch_preprocessor('minibatch_preprocessing_input',
+SELECT MADLIB_SCHEMA.minibatch_preprocessor('minibatch_preprocessing_input',
                               'minibatch_preprocessing_out',
                               'rings::double precision',
                               'ARRAY[diameter,height,whole,shucked,viscera,shell]',
                               NULL,
                               4,
                               TRUE);
-SELECT assert(1 < all(dependent_varname),
+SELECT MADLIB_SCHEMA.assert(1 < all(dependent_varname),
               'Double precision values are being incorrectly encoded')
 FROM minibatch_preprocessing_out;
 
 -- no of rows = 10, buffer_size = 4, so assert that count =  10/4 = 3
 \set expected_row_count 3
 DROP TABLE IF EXISTS minibatch_preprocessing_out, minibatch_preprocessing_out_standardization, minibatch_preprocessing_out_summary;
-SELECT minibatch_preprocessor('minibatch_preprocessing_input',
+SELECT MADLIB_SCHEMA.minibatch_preprocessor('minibatch_preprocessing_input',
                               'minibatch_preprocessing_out',
                               'length>0.2',
                               'ARRAY[diameter,height,whole,shucked,viscera,shell]',
                               NULL,
                               4);
-SELECT assert
-        (
+SELECT MADLIB_SCHEMA.assert(
         row_count = :expected_row_count, 'Row count validation failed.
         Expected:' || :expected_row_count || ' Actual: ' || row_count
         ) from (select count(*) as row_count from minibatch_preprocessing_out) s;
@@ -124,8 +123,7 @@ SELECT assert_col_dimension('dependent_varname', 2 , '{2,2,2}', NULL);
 SELECT assert_col_dimension('independent_varname', 1 , '{2,4,4}', NULL);
 SELECT assert_col_dimension('independent_varname', 2 , '{6,6,6}', NULL);
 
-SELECT assert
-        (
+SELECT MADLIB_SCHEMA.assert(
         source_table        = 'minibatch_preprocessing_input' AND
         output_table        = 'minibatch_preprocessing_out' AND
         dependent_varname   = 'length>0.2' AND
@@ -135,15 +133,14 @@ SELECT assert
         num_rows_processed  = 10 AND
         num_missing_rows_skipped    = 0 AND
         grouping_cols       is NULL,
-        'Summary Validation failed. Actual:' || __to_char(summary)
+        'Summary Validation failed. Actual:' || MADLIB_SCHEMA.__to_char(summary)
         ) from (select * from minibatch_preprocessing_out_summary) summary;
 
 -- grouping with the same dataset
 \set expected_grouping_row_count '\'' 1,1,2 '\''
 DROP TABLE IF EXISTS minibatch_preprocessing_out, minibatch_preprocessing_out_standardization, minibatch_preprocessing_out_summary;
-SELECT minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out',  'length>0.2',  'ARRAY[diameter,height,whole,shucked,viscera,shell]', 'rings', 4);
-SELECT assert
-        (
+SELECT MADLIB_SCHEMA.minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out',  'length>0.2',  'ARRAY[diameter,height,whole,shucked,viscera,shell]', 'rings', 4);
+SELECT MADLIB_SCHEMA.assert(
         str_row_count = :expected_grouping_row_count, 'Row count validation failed for minibatch_preprocessing grouping.
         Expected:' || :expected_grouping_row_count || ' Actual: ' || str_row_count
         ) from
@@ -163,8 +160,7 @@ SELECT assert_col_dimension('dependent_varname', 2 , '{2,2,2,2}', 'rings');
 SELECT assert_col_dimension('independent_varname', 1 , '{1,1,4,4}', 'rings');
 SELECT assert_col_dimension('independent_varname', 2 , '{6,6,6,6}', 'rings');
 
-SELECT assert
-        (
+SELECT MADLIB_SCHEMA.assert(
         source_table        = 'minibatch_preprocessing_input' AND
         output_table        = 'minibatch_preprocessing_out' AND
         dependent_varname   = 'length>0.2' AND
@@ -175,7 +171,7 @@ SELECT assert
         num_rows_processed  = 10 AND
         num_missing_rows_skipped    = 0 AND
         grouping_cols       = 'rings',
-        'Summary Validation failed for grouping col. Actual:' || __to_char(summary)
+        'Summary Validation failed for grouping col. Actual:' || MADLIB_SCHEMA.__to_char(summary)
         ) from (select * from minibatch_preprocessing_out_summary) summary;
 
 -- Test that the standardization table gets created.
@@ -196,27 +192,25 @@ INSERT INTO minibatch_preprocessing_input(id,sex,length,diameter,height,whole,sh
 (698,'F',0.445,0.335,0.11,0.4355,0.2025,0.1095,0.1195,6),
 (922,NULL,0.445,0.335,0.11,NULL,0.2025,0.1095,0.1195,5),
 (942,'F',0.445,0.335,0.11,0.25,0.2025,0.1095,0.1195,5);
-SELECT minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out', 'sex', 'ARRAY[length,diameter,height,whole,shucked,viscera,shell]', NULL, 2);
-SELECT assert
-        (
+SELECT MADLIB_SCHEMA.minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out', 'sex', 'ARRAY[length,diameter,height,whole,shucked,viscera,shell]', NULL, 2);
+SELECT MADLIB_SCHEMA.assert(
         row_count = 2, 'Row count validation failed with null values.
         Expected:' || 2 || ' Actual: ' || row_count
         ) from (select count(*) as row_count from minibatch_preprocessing_out) s;
-SELECT assert
-        (num_rows_processed = 3 AND num_missing_rows_skipped = 6,
+SELECT MADLIB_SCHEMA.assert(
+        num_rows_processed = 3 AND num_missing_rows_skipped = 6,
          'Rows processed/skipped validation failed_summary.
          Actual num_rows_processed:' || num_rows_processed || ', Actual num_missing_rows_skipped: ' || num_missing_rows_skipped
         ) from (select * from minibatch_preprocessing_out_summary) s;
 
 DROP TABLE IF EXISTS minibatch_preprocessing_out, minibatch_preprocessing_out_standardization, minibatch_preprocessing_out_summary;
-  SELECT minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out', 'sex', 'ARRAY[length,diameter,height,whole,shucked,viscera,shell]', 'rings', 2);
-SELECT assert
-        (
+  SELECT MADLIB_SCHEMA.minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out', 'sex', 'ARRAY[length,diameter,height,whole,shucked,viscera,shell]', 'rings', 2);
+SELECT MADLIB_SCHEMA.assert(
         row_count = 2, 'Row count validation failed with null values and grouping.
         Expected:' || 2 || ' Actual: ' || row_count
         ) from (select count(*) as row_count from minibatch_preprocessing_out) s;
-SELECT assert
-        (num_rows_processed = 3 AND num_missing_rows_skipped = 6,
+SELECT MADLIB_SCHEMA.assert(
+        num_rows_processed = 3 AND num_missing_rows_skipped = 6,
          'Rows processed/skipped validation failed_summary with grouping.
          Actual num_rows_processed:' || num_rows_processed || ', Actual num_missing_rows_skipped: ' || num_missing_rows_skipped
         ) from (select * from minibatch_preprocessing_out_summary) s;
@@ -228,20 +222,20 @@ CREATE TABLE minibatch_preprocessing_input(x1 INTEGER ,x2 INTEGER ,y TEXT);
 INSERT INTO minibatch_preprocessing_input(x1,x2,y) VALUES
 (2,10,'y1'),
 (4,30,'y2');
-SELECT minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out', 'y', 'ARRAY[x1,x2]', NULL, 2);
+SELECT MADLIB_SCHEMA.minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out', 'y', 'ARRAY[x1,x2]', NULL, 2);
 
 -- since the order is not deterministic, we assert for all possible orders
 \set expected_normalized_independent_var1 '\'' {{-1, -1},{1, 1}} '\''
 \set expected_normalized_independent_var2 '\'' {{1, 1},{-1, -1}} '\''
 
-SELECT assert
+SELECT MADLIB_SCHEMA.assert
 (
     independent_varname = :expected_normalized_independent_var1 OR
     independent_varname = :expected_normalized_independent_var2,
     'Standardization check failed. Actual: ' || independent_varname
 ) from
 (
-    select __to_char(independent_varname) as independent_varname from minibatch_preprocessing_out
+    select MADLIB_SCHEMA.__to_char(independent_varname) as independent_varname from minibatch_preprocessing_out
 ) s;
 
 -- Test that the standardization table gets created.
@@ -266,27 +260,24 @@ INSERT INTO minibatch_preprocessing_input(id,sex,attributes) VALUES
 (932,NULL,ARRAY[0.445,0.335,0.11,0.4355,0.2025,0.1095,0.1195]),
 (NULL,'F',ARRAY[0.445,0.335,0.11,0.4355,0.2025,0.1095,0.1195]),
 (922,NULL,ARRAY[0.445,0.335,0.11,NULL,0.2025,0.1095,0.1195]);
-SELECT minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out', 'sex', 'attributes', NULL, 1);
-SELECT assert
-        (
+SELECT MADLIB_SCHEMA.minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out', 'sex', 'attributes', NULL, 1);
+SELECT MADLIB_SCHEMA.assert(
         row_count = 2, 'Row count validation failed with array values in independent variable.
         Expected:' || 2 || ' Actual: ' || row_count
         ) from (select count(*) as row_count from minibatch_preprocessing_out) s;
 
 -- Test for array values in dep column
 DROP TABLE IF EXISTS minibatch_preprocessing_out, minibatch_preprocessing_out_standardization, minibatch_preprocessing_out_summary;
-SELECT minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out', 'attributes', 'ARRAY[id]', NULL, 1);
-SELECT assert
-        (
+SELECT MADLIB_SCHEMA.minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out', 'attributes', 'ARRAY[id]', NULL, 1);
+SELECT MADLIB_SCHEMA.assert(
         row_count = 3, 'Row count validation failed with array values in dependent variable.
         Expected:' || 3 || ' Actual: ' || row_count
         ) from (select count(*) as row_count from minibatch_preprocessing_out) s;
 
 -- Test for null buffer size
 DROP TABLE IF EXISTS minibatch_preprocessing_out, minibatch_preprocessing_out_standardization, minibatch_preprocessing_out_summary;
-SELECT minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out', 'attributes', 'ARRAY[id]');
-SELECT assert
-        (
+SELECT MADLIB_SCHEMA.minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out', 'attributes', 'ARRAY[id]');
+SELECT MADLIB_SCHEMA.assert(
         ind_var_rows = dep_var_rows AND ind_var_rows = buffer_size, 'Row count validation failed for null buffer size.
         Buffer size from summary table: ' || buffer_size || ' does not match the output table:'
         || ind_var_rows
@@ -302,9 +293,8 @@ CREATE TABLE minibatch_preprocessing_input(
 INSERT INTO minibatch_preprocessing_input VALUES
 ('F',ARRAY[0.66, 0.5],6);
 DROP TABLE IF EXISTS minibatch_preprocessing_out, minibatch_preprocessing_out_standardization, minibatch_preprocessing_out_summary;
-SELECT minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out', 'sex', 'length', 'rings');
-SELECT assert
-        (
+SELECT MADLIB_SCHEMA.minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out', 'sex', 'length', 'rings');
+SELECT MADLIB_SCHEMA.assert(
         source_table        = 'minibatch_preprocessing_input' AND
         output_table        = 'minibatch_preprocessing_out' AND
         dependent_varname   = 'sex' AND
@@ -314,7 +304,7 @@ SELECT assert
         num_rows_processed  = 1 AND
         num_missing_rows_skipped    = 0 AND
         grouping_cols       = 'rings',
-        'Summary Validation failed for special chars. Actual:' || __to_char(summary)
+        'Summary Validation failed for special chars. Actual:' || MADLIB_SCHEMA.__to_char(summary)
         ) from (select * from minibatch_preprocessing_out_summary) summary;
 
 
@@ -334,8 +324,8 @@ INSERT INTO minibatch_preprocessing_input VALUES
 ('M"M',ARRAY[0.66, 0.5],6),
 ('MЖM',ARRAY[0.66, 0.5],6);
 DROP TABLE IF EXISTS minibatch_preprocessing_out, minibatch_preprocessing_out_standardization, minibatch_preprocessing_out_summary;
-SELECT minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out', '"se$$''''x"', '"len$$''%*()gth"', '"rin$$Ж!#''gs"', 4);
-SELECT assert(
+SELECT MADLIB_SCHEMA.minibatch_preprocessor('minibatch_preprocessing_input', 'minibatch_preprocessing_out', '"se$$''''x"', '"len$$''%*()gth"', '"rin$$Ж!#''gs"', 4);
+SELECT MADLIB_SCHEMA.assert(
         source_table        = 'minibatch_preprocessing_input' AND
         output_table        = 'minibatch_preprocessing_out' AND
         dependent_varname   = '"se$$''''x"' AND
@@ -346,5 +336,5 @@ SELECT assert(
         num_rows_processed  = 7 AND
         num_missing_rows_skipped    = 0 AND
         grouping_cols       = '"rin$$Ж!#''gs"',
-        'Summary Validation failed for special chars. Actual:' || __to_char(summary)
+        'Summary Validation failed for special chars. Actual:' || MADLIB_SCHEMA.__to_char(summary)
         ) from (select * from minibatch_preprocessing_out_summary order by class_values) summary;
