@@ -11,6 +11,7 @@ from utilities import get_rev_num
 from utilities import remove_comments_from_sql
 from utilities import run_query
 
+
 if not __name__ == "__main__":
     def run_sql(sql, portid, con_args):
         """
@@ -180,7 +181,7 @@ class ChangeHandler(UpgradeBase):
                 for obj_name, obj_details in each_config.iteritems():
                     formatted_obj = {}
                     for k, v in obj_details.items():
-                        v = v.lower().replace('schema_madlib', self._schema)
+                        v = v.lower().replace('schema_madlib', self._schema) if v else ""
                         formatted_obj[k] = v
                     _return_obj[obj_name].append(formatted_obj)
         return _return_obj
