@@ -17,10 +17,22 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# remove symlinks created during rpm install
-find $RPM_INSTALL_PREFIX/madlib/Current -depth -type l -exec rm {} \; 2>/dev/null
-find $RPM_INSTALL_PREFIX/madlib/bin -depth -type l -exec rm {} \; 2>/dev/null
-find $RPM_INSTALL_PREFIX/madlib/doc -depth -type l -exec rm {} \; 2>/dev/null
+##############################################################
+#### During RPM upgrade, rpm_post.sh is run first, followed by
+## rpm_post_uninstall.sh. So we must do all the uninstallation specific stuff
+## based on the current operation being uninstall or upgrade.
 
-# remove "Versions" directory if it's empty
-rmdir $RPM_INSTALL_PREFIX/madlib/Versions 2>/dev/null
+# If the first argument to %preun and %postun is 1, the action is an upgrade
+# If the first argument to %preun and %postun is 0, the action is uninstallation
+##############################################################
+if [ "$1" = "0" ]; then
+    # remove symlinks created during rpm install
+    find $RPM_INSTALL_PREFIX/madlib/Current -depth -type l -exec rm {} \; 2>/dev/null
+    find $RPM_INSTALL_PREFIX/madlib/bin -depth -type l -exec rm {} \; 2>/dev/null
+    find $RPM_INSTALL_PREFIX/madlib/doc -depth -type l -exec rm {} \; 2>/dev/null
+
+    # remove "Versions" directory if it's empty
+    if [ -d $RPM_INSTALL_PREFIX/madlib/Versions ]; then
+        rmdir $RPM_INSTALL_PREFIX/madlib/Versions 2>/dev/null
+    fi
+fi
