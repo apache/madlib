@@ -86,11 +86,13 @@ add_subdirectory(gppkg)
 
 
 # -- Finally do the packaging! -------------------------------------------------
-if(IS_REDHAT)
-  set(CPACK_RPM_POST_INSTALL_SCRIPT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/rpm_post.sh")
-  set(CPACK_RPM_POST_UNINSTALL_SCRIPT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/rpm_post_uninstall.sh")
+if(APPLE)
   set(CPACK_PREFLIGHT_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/preflight.sh)
   set(CPACK_POSTFLIGHT_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/postflight.sh)
+  set(CPACK_MONOLITHIC_INSTALL 1)
+elseif(IS_REDHAT)
+  set(CPACK_RPM_POST_INSTALL_SCRIPT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/rpm_post.sh")
+  set(CPACK_RPM_POST_UNINSTALL_SCRIPT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/rpm_post_uninstall.sh")
   set(CPACK_MONOLITHIC_INSTALL 1)
 elseif(IS_DEBIAN)
   if(NOT CREATE_RPM_FOR_UBUNTU)
