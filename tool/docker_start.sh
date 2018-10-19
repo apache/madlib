@@ -18,7 +18,7 @@
 
 ###############################################################################
 #  This is a script that does the following:
-#  * Pull madlib/postgres_9.6:$IMAGE_TAG(default tag is `latest`) from docker;
+#  * Pull madlib/postgres_10:$IMAGE_TAG(default tag is `latest`) from docker;
 #  * Mount your local madlib directory to docker container;
 #  * Name your docker container as $CONTAINER_NAME (default name is madlib)
 #  * Build madlib from source; build dir is /madlib/build_docker which 
@@ -60,11 +60,11 @@ docker rm "${CONTAINER_NAME}"
 
 # Pull down the base docker images
 echo "Creating docker container"
-docker pull madlib/postgres_9.6:"${IMAGE_TAG}"
+docker pull madlib/postgres_10:"${IMAGE_TAG}"
 
 # Launch docker container with volume mounted from workdir
-docker run -d --name "${CONTAINER_NAME}" -v "${workdir}":/madlib \
-					madlib/postgres_9.6:"${IMAGE_TAG}" | tee build_docker_logs/docker_setup.log
+docker run -d -it --name "${CONTAINER_NAME}" -v "${workdir}":/madlib \
+					madlib/postgres_10:"${IMAGE_TAG}" | tee build_docker_logs/docker_setup.log
 
 ## This sleep is required since it takes a couple of seconds for the docker
 ## container to come up, which is required by the docker exec command that 
@@ -78,7 +78,7 @@ echo "---------- Building MADlib -----------"
 docker exec "${CONTAINER_NAME}" bash -c "rm -rf /madlib/build_docker; \
 							mkdir /madlib/build_docker; \
 							cd /madlib/build_docker; \
-							cmake ..; make; make doc; make install" \
+							cmake ..; make" \
 			| tee "${workdir}/build_docker_logs/madlib_compile.log"
 
 echo "---------- Installing and running install-check --------------------"
