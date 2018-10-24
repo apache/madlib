@@ -63,7 +63,16 @@ if err1 != 0:
     raise SystemExit
 
 print "Creating changelist {0}".format(ch_filename)
-os.system("rm -f /tmp/madlib_tmp_nm.txt /tmp/madlib_tmp_udf.txt /tmp/madlib_tmp_udt.txt")
+os.system("""
+    rm -f /tmp/madlib_tmp_nm.txt \
+    /tmp/madlib_tmp_udf.txt \
+    /tmp/madlib_tmp_udt.txt \
+    /tmp/madlib_tmp_udo.txt \
+    /tmp/madlib_tmp_udoc.txt \
+    /tmp/madlib_tmp_typedep.txt \
+    /tmp/madlib_tmp_typedep_udo.txt \
+    /tmp/madlib_tmp_typedep_udoc.txt
+    """)
 try:
     # Find the new modules using the git diff
     err1 = os.system("git diff {old_vers} {new_vers} --name-only --diff-filter=A > /tmp/madlib_tmp_nm.txt".format(**locals()))
@@ -224,8 +233,87 @@ try:
 # List of the UDC, UDO and UDOC changes.
 """)
     f.write("udc:\n")
+
+    # Find the changed operators
+
+    f.write("\n# Changes in the operators (UDO)\n")
     f.write("udo:\n")
+
+    os.system("psql {0} -f diff_udo.sql > /tmp/madlib_tmp_udo.txt".format(database))
+    with open('/tmp/madlib_tmp_udo.txt') as fp:
+        for line in fp:
+            if ' | ' in line:
+                    sp = line.split(' | ')
+
+                    if sp[0].strip() == 'name':
+                        f.write("    - '" + sp[1].strip() + "':\n")
+                    elif sp[0].strip() == 'rettype':
+                        f.write('        rettype: ' + sp[1].strip() + "\n")
+                    elif sp[0].strip() == 'oprright':
+                        f.write('        rightarg: ' + sp[1].strip() + "\n")
+                    elif sp[0].strip() == 'oprleft':
+                        f.write('        leftarg: ' + sp[1].strip() + "\n")
+
+    for t in udt_list:
+
+        os.system("""psql {database} -c "DROP TABLE IF EXISTS __tmp__madlib__ " > /dev/null """.format(**locals()))
+
+        os.system("""psql {database} -c "SELECT get_udos('__tmp__madlib__', 'madlib_old_vers', '{t}')" > /dev/null """.format(**locals()))
+
+        os.system("""psql {database} -x -c "SELECT name, rettype, oprright, oprleft FROM __tmp__madlib__ ORDER BY name DESC" > /tmp/madlib_tmp_typedep_udo.txt """.format(**locals()))
+
+        os.system("""psql {database} -c "DROP TABLE IF EXISTS __tmp__madlib__ " > /dev/null """.format(**locals()))
+
+        with open('/tmp/madlib_tmp_typedep_udo.txt') as fp:
+            for line in fp:
+                if '|' in line:
+                    sp = line.split('|')
+
+                    if sp[0].strip() == 'name':
+                        f.write("    - '" + sp[1].strip() + "':\n")
+                    elif sp[0].strip() == 'rettype':
+                        f.write('        rettype: ' + sp[1].strip() + "\n")
+                    elif sp[0].strip() == 'oprright':
+                        f.write('        rightarg: ' + sp[1].strip() + "\n")
+                    elif sp[0].strip() == 'oprleft':
+                        f.write('        leftarg: ' + sp[1].strip() + "\n")
+
+
+    # Find the changed operator classes
+
+    f.write("\n# Changes in the operator classes (UDOC)\n")
+    os.system("psql {0} -f diff_udoc.sql > /tmp/madlib_tmp_udoc.txt".format(database))
     f.write("udoc:\n")
+    with open('/tmp/madlib_tmp_udoc.txt') as fp:
+        for line in fp:
+            if '|' in line:
+                    sp = line.split('|')
+
+                    if sp[0].strip() == 'opfamily_name':
+                        f.write("    - '" + sp[1].strip() + "':\n")
+                    elif sp[0].strip() == 'index_method':
+                        f.write('        index_method: ' + sp[1].strip() + "\n")
+
+    for t in udt_list:
+
+        os.system("""psql {database} -c "DROP TABLE IF EXISTS __tmp__madlib__ " > /dev/null """.format(**locals()))
+
+        os.system("""psql {database} -c "SELECT get_udocs('__tmp__madlib__', 'madlib_old_vers', '{t}')" > /dev/null """.format(**locals()))
+
+        os.system("""psql {database} -x -c "SELECT opfamily_name, index_method FROM __tmp__madlib__ ORDER BY name DESC" > /tmp/madlib_tmp_typedep_udoc.txt """.format(**locals()))
+
+        os.system("""psql {database} -c "DROP TABLE IF EXISTS __tmp__madlib__ " > /dev/null """.format(**locals()))
+
+        with open('/tmp/madlib_tmp_typedep_udoc.txt') as fp:
+            for line in fp:
+                if '|' in line:
+                    sp = line.split('|')
+
+                    if sp[0].strip() == 'opfamily_name':
+                        f.write("    - " + sp[1].strip() + ":\n")
+                    elif sp[0].strip() == 'index':
+                        f.write('        index: ' + sp[1].strip() + "\n")
+
     f.close()
 
     # Copy the new changelist file to its proper location
@@ -237,6 +325,13 @@ except:
     print "Something went wrong! The changelist might be wrong/corrupted."
     raise
 finally:
-    os.system("rm -f /tmp/madlib_tmp_nm.txt /tmp/madlib_tmp_udf.txt "
-              "/tmp/madlib_tmp_udt.txt /tmp/madlib_tmp_cl.yaml "
-              "/tmp/madlib_tmp_typedep.txt")
+    os.system("""
+        rm -f /tmp/madlib_tmp_nm.txt \
+        /tmp/madlib_tmp_udf.txt \
+        /tmp/madlib_tmp_udt.txt \
+        /tmp/madlib_tmp_udo.txt \
+        /tmp/madlib_tmp_udoc.txt \
+        /tmp/madlib_tmp_typedep.txt \
+        /tmp/madlib_tmp_typedep_udo.txt \
+        /tmp/madlib_tmp_typedep_udoc.txt
+        """)
