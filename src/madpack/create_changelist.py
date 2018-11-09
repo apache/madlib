@@ -333,5 +333,6 @@ finally:
         /tmp/madlib_tmp_udoc.txt \
         /tmp/madlib_tmp_typedep.txt \
         /tmp/madlib_tmp_typedep_udo.txt \
-        /tmp/madlib_tmp_typedep_udoc.txt
+        /tmp/madlib_tmp_typedep_udoc.txt \
+        /tmp/madlib_tmp_cl.yaml
         """)
