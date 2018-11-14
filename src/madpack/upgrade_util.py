@@ -214,6 +214,8 @@ class ChangeHandler(UpgradeBase):
         self._add_to_dict(config['udc'], self._udc)
         self._add_to_dict(self._load_config_param(config['udf']), self._udf)
         self._add_to_dict(self._load_config_param(config['uda']), self._uda)
+        self._add_to_dict(self._load_config_param(config['udo']), self._udo)
+        self._add_to_dict(self._load_config_param(config['udoc']), self._udoc)
 
     def _get_relevant_filenames(self, upgrade_from):
         """ Get all changelist files that together describe the upgrade process
@@ -473,7 +475,7 @@ class ChangeHandler(UpgradeBase):
         """
         for op_cls in self._udoc:
             for value in self._udoc[op_cls]:
-                index = value['index']
+                index = value['index_method']
                 _write_to_file(self.output_filehandle, """
                     DROP OPERATOR CLASS IF EXISTS {schema}.{op_cls} USING {index};
                     """.format(schema=self._schema, **locals()))
