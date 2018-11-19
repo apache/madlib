@@ -647,9 +647,9 @@ array_contains(PG_FUNCTION_ARGS){
     PG_FREE_IF_COPY(v2, 1);
 
     if (DatumGetFloat8(res) == 0.) {
-        PG_RETURN_BOOL(TRUE);
+        PG_RETURN_BOOL(true);
     } else {
-        PG_RETURN_BOOL(FALSE);
+        PG_RETURN_BOOL(false);
     }
 }
 
