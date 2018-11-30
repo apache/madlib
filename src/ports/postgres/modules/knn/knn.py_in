@@ -39,7 +39,7 @@ from utilities.validate_args import quote_ident
 from utilities.validate_args import is_var_valid
 from utilities.utilities import NUMERIC, ONLY_ARRAY
 from utilities.utilities import is_valid_psql_type
-from utilities.utilities import valid_distance_function
+from utilities.utilities import is_less_than_pg11
 
 MAX_WEIGHT_ZERO_DIST = 1e6
 
@@ -113,15 +113,14 @@ def knn_validate_src(schema_madlib, point_source, point_column_name, point_id,
                                'squared_dist_norm2', 'dist_angle',
                                'dist_tanimoto')])
 
-        full_fn_dist = fn_dist + '(DOUBLE PRECISION[], DOUBLE PRECISION[])'
-        profunc = valid_distance_function(schema_madlib, full_fn_dist)
+        profunc = "proisagg = TRUE" if is_less_than_pg11(schema_madlib) else "prokind = 'a'"
 
         is_invalid_func = plpy.execute("""
-            SELECT (prorettype != 'DOUBLE PRECISION'::regtype OR
-                   {profunc}) AS OUTPUT
+            SELECT prorettype != 'DOUBLE PRECISION'::regtype OR
+                   {profunc} AS OUTPUT
             FROM pg_proc
-            WHERE oid='{full_fn_dist}'::regprocedure;
-            """.format(full_fn_dist=full_fn_dist, profunc=profunc))[0]['output']
+            WHERE oid='{fn_dist}(DOUBLE PRECISION[], DOUBLE PRECISION[])'::regprocedure;
+            """.format(fn_dist=fn_dist, profunc=profunc))[0]['output']
 
         if is_invalid_func or (fn_dist not in dist_functions):
             plpy.error("KNN error: Distance function has invalid signature "
