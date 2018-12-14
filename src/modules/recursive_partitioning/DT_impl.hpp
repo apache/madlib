@@ -862,7 +862,7 @@ DecisionTree<Container>::expand_by_sampling(const Accumulator &state,
                 }
             }
 
-            bool is_leaf_split = FALSE;
+            bool is_leaf_split = false;
             if (max_impurity_gain > 0){
                 // Create and update child nodes if splitting current
                 uint64_t true_count = statCount(max_stats.segment(0, sps));
@@ -871,7 +871,7 @@ DecisionTree<Container>::expand_by_sampling(const Accumulator &state,
                 if (shouldSplit(total_count, true_count, false_count,
                                 min_split, min_bucket, max_depth)) {
 
-                    is_leaf_split = TRUE;
+                    is_leaf_split = true;
                     double max_threshold;
                     if (max_is_cat)
                         max_threshold = static_cast<double>(max_bin);

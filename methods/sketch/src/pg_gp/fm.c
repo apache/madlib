@@ -556,8 +556,6 @@ big_or(PG_FUNCTION_ARGS)
 
   PG_RETURN_VOID();
 }
-  
-  
 /*! OR of two big bitmaps, for gathering sketches computed in parallel. */
 void big_or_internal(bytea *bitmap1, bytea *bitmap2, bytea *out)
 {
@@ -594,7 +592,7 @@ bytea *fmsketch_sortasort_insert(bytea *transblob, Datum dat, size_t len)
     sortasort *s_in =
         (sortasort *)(transval->storage);
     bytea *    newblob;
-    bool       success = FALSE;
+    bool       success = false;
     size_t     new_storage_sz;
     size_t     newsize;
 
@@ -605,7 +603,7 @@ bytea *fmsketch_sortasort_insert(bytea *transblob, Datum dat, size_t len)
     if (success < 0)
         elog(ERROR, "insufficient directory capacity in sortasort");
 
-    if (success == TRUE) return (transblob);
+    if (success == true) return (transblob);
 
     /* XXX  THIS WHILE LOOP WILL SUCCEED THE FIRST TRY ... REMOVE IT. */
     while (!success) {

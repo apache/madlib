@@ -337,7 +337,11 @@ AnyType::operator[](uint16_t inID) const {
             throw std::out_of_range("Invalid type conversion. Access behind "
                 "end of composite object.");
 
+#if PG_VERSION_NUM >= 110000
+        typeID = TupleDescAttr(tupdesc, inID)->atttypid;
+#else
         typeID = tupdesc->attrs[inID]->atttypid;
+#endif
         bool isNull = false;
         datum = madlib_GetAttributeByNum(mTupleHeader, inID, &isNull);
         if (isNull)
@@ -448,7 +452,11 @@ AnyType::getAsDatum(FunctionCallInfo inFnCallInfo,
         bool* nulls = new bool[targetTupleDesc->natts];
 
         for (size_t pos = 0; pos < mChildren.size(); ++pos) {
-            Oid targetTypeID = targetTupleDesc->attrs[pos]->atttypid;
+#if PG_VERSION_NUM >= 110000
+           Oid targetTypeID = TupleDescAttr(targetTupleDesc, pos)->atttypid;
+#else
+           Oid targetTypeID = targetTupleDesc->attrs[pos]->atttypid;
+#endif
 
             values[pos] = mChildren[pos].getAsDatum(inFnCallInfo, targetTypeID);
             nulls[pos] = mChildren[pos].isNull();

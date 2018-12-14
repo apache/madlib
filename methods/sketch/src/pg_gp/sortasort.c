@@ -132,7 +132,7 @@ int sortasort_try_insert(sortasort *s_in, Datum dat, int len)
     int found = sortasort_find(s_in, dat);
     if (found >= 0 && found < (int)s_in->num_vals) {
         /* found!  just return TRUE */
-        return TRUE;
+        return true;
     }
 
     len = ExtractDatumLen(dat, len, s_in->typByVal, -1);
@@ -146,7 +146,7 @@ int sortasort_try_insert(sortasort *s_in, Datum dat, int len)
     /* we need to insert v.  return FALSE if not enough space. */
     if (s_in->storage_cur + len >= s_in->storage_sz) {
         /* caller will have to allocate a bigger one and try again */
-        return FALSE;
+        return false;
     }
 
     /* return -1 if no more capacity */
@@ -173,7 +173,7 @@ int sortasort_try_insert(sortasort *s_in, Datum dat, int len)
                   sorta_cmp,
                   (void *)s_in);
 
-    return TRUE;
+    return true;
 }
 
 /*!

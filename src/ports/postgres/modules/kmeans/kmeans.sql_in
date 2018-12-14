@@ -766,15 +766,30 @@ BEGIN
 
     proc_fn_dist := fn_dist
         || '(DOUBLE PRECISION[], DOUBLE PRECISION[])';
-    IF (SELECT prorettype != 'DOUBLE PRECISION'::regtype OR proisagg = TRUE
-        FROM pg_proc WHERE oid = proc_fn_dist) THEN
-        RAISE EXCEPTION 'Kmeans error: Distance function has wrong signature or is not a simple function.';
+
+    -- Handle PG11 pg_proc table changes
+    IF (SELECT MADLIB_SCHEMA.is_pg_major_version_less_than(11) = TRUE) THEN
+      IF (SELECT prorettype != 'DOUBLE PRECISION'::regtype OR proisagg = TRUE
+          FROM pg_proc WHERE oid = proc_fn_dist) THEN
+          RAISE EXCEPTION 'Kmeans error: Distance function has wrong signature or is not a simple function.';
+      END IF;
+      proc_agg_centroid := agg_centroid || '(DOUBLE PRECISION[])';
+      IF (SELECT prorettype != 'DOUBLE PRECISION[]'::regtype OR proisagg = FALSE
+          FROM pg_proc WHERE oid = proc_agg_centroid) THEN
+          RAISE EXCEPTION 'Kmeans error: Mean aggregate has wrong signature or is not an aggregate.';
+      END IF;
+    ELSE
+      IF (SELECT prorettype != 'DOUBLE PRECISION'::regtype OR prokind = 'a'
+          FROM pg_proc WHERE oid = proc_fn_dist) THEN
+          RAISE EXCEPTION 'Kmeans error: Distance function has wrong signature or is not a simple function.';
+      END IF;
+      proc_agg_centroid := agg_centroid || '(DOUBLE PRECISION[])';
+      IF (SELECT prorettype != 'DOUBLE PRECISION[]'::regtype OR prokind != 'a'
+          FROM pg_proc WHERE oid = proc_agg_centroid) THEN
+          RAISE EXCEPTION 'Kmeans error: Mean aggregate has wrong signature or is not an aggregate.';
+      END IF;
     END IF;
-    proc_agg_centroid := agg_centroid || '(DOUBLE PRECISION[])';
-    IF (SELECT prorettype != 'DOUBLE PRECISION[]'::regtype OR proisagg = FALSE
-        FROM pg_proc WHERE oid = proc_agg_centroid) THEN
-        RAISE EXCEPTION 'Kmeans error: Mean aggregate has wrong signature or is not an aggregate.';
-    END IF;
+
     IF (min_frac_reassigned < 0) OR (min_frac_reassigned > 1) THEN
         RAISE EXCEPTION 'Kmeans error: Invalid convergence threshold (must be a fraction between 0 and 1).';
     END IF;
@@ -965,9 +980,16 @@ BEGIN
         rel_source, expr_point, k, initial_centroids, seeding_sample_ratio);
 
     proc_fn_dist := fn_dist || '(DOUBLE PRECISION[], DOUBLE PRECISION[])';
-    IF (SELECT prorettype != 'DOUBLE PRECISION'::regtype OR proisagg = TRUE
-        FROM pg_proc WHERE oid = proc_fn_dist) THEN
-        RAISE EXCEPTION 'Kmeans error: Distance function has wrong signature or is not a simple function.';
+    IF (SELECT MADLIB_SCHEMA.is_pg_major_version_less_than(11) = TRUE) THEN
+      IF (SELECT prorettype != 'DOUBLE PRECISION'::regtype OR proisagg = TRUE
+          FROM pg_proc WHERE oid = proc_fn_dist) THEN
+          RAISE EXCEPTION 'Kmeans error: Distance function has wrong signature or is not a simple function.';
+      END IF;
+    ELSE
+      IF (SELECT prorettype != 'DOUBLE PRECISION'::regtype OR prokind = 'a'
+          FROM pg_proc WHERE oid = proc_fn_dist) THEN
+          RAISE EXCEPTION 'Kmeans error: Distance function has wrong signature or is not a simple function.';
+      END IF;
     END IF;
 
     -- Unfortunately, Greenplum and PostgreSQL <= 8.2 do not have conversion
@@ -1660,9 +1682,16 @@ BEGIN
 
     proc_fn_dist := fn_dist
         || '(DOUBLE PRECISION[], DOUBLE PRECISION[])';
-    IF (SELECT prorettype != 'DOUBLE PRECISION'::regtype OR proisagg = TRUE
-        FROM pg_proc WHERE oid = proc_fn_dist) THEN
-        RAISE EXCEPTION 'Kmeans error: Distance function has wrong signature or is not a simple function.';
+    IF (SELECT MADLIB_SCHEMA.is_pg_major_version_less_than(11) = TRUE) THEN
+      IF (SELECT prorettype != 'DOUBLE PRECISION'::regtype OR proisagg = TRUE
+          FROM pg_proc WHERE oid = proc_fn_dist) THEN
+          RAISE EXCEPTION 'Kmeans error: Distance function has wrong signature or is not a simple function.';
+      END IF;
+    ELSE
+      IF (SELECT prorettype != 'DOUBLE PRECISION'::regtype OR prokind = 'a'
+          FROM pg_proc WHERE oid = proc_fn_dist) THEN
+          RAISE EXCEPTION 'Kmeans error: Distance function has wrong signature or is not a simple function.';
+      END IF;
     END IF;
 
     ans := MADLIB_SCHEMA.internal_execute_using_silhouette_args($sql$
