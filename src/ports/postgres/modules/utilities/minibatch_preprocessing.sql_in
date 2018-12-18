@@ -589,3 +589,51 @@ RETURNS VARCHAR AS $$
     return minibatch_preprocessing.MiniBatchDocumentation.minibatch_preprocessor_help(schema_madlib, '')
 $$ LANGUAGE plpythonu VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.minibatch_preprocessor_dl(
+    source_table                VARCHAR,
+    output_table                VARCHAR,
+    dependent_varname           VARCHAR,
+    independent_varname         VARCHAR,
+    num_of_buffers              INTEGER,
+    normalizing_const           DOUBLE PRECISION
+) RETURNS VOID AS $$
+    PythonFunctionBodyOnly(utilities, minibatch_preprocessing)
+    from utilities.control import MinWarning
+    with AOControl(False):
+        with MinWarning('error'):
+            minibatch_preprocessor_obj = minibatch_preprocessing.MiniBatchPreProcessorDL(**globals())
+            minibatch_preprocessor_obj.minibatch_preprocessor_dl()
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.minibatch_preprocessor_dl(
+    source_table            VARCHAR,
+    output_table            VARCHAR,
+    dependent_varname       VARCHAR,
+    independent_varname     VARCHAR,
+    num_of_buffers          INTEGER
+) RETURNS VOID AS $$
+  SELECT MADLIB_SCHEMA.minibatch_preprocessor_dl($1, $2, $3, $4, $5, 255.0);
+$$ LANGUAGE sql VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.agg_array_concat_transition(anyarray, anyarray)
+  RETURNS anyarray
+   AS 'select $1 || $2'
+   LANGUAGE SQL
+   IMMUTABLE;
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.agg_array_concat_merge(anyarray, anyarray)
+  RETURNS anyarray
+   AS 'select $1 || $2'
+   LANGUAGE SQL
+   IMMUTABLE
+   RETURNS NULL ON NULL INPUT;
+
+DROP AGGREGATE IF EXISTS MADLIB_SCHEMA.agg_array_concat(anyarray);
+CREATE AGGREGATE MADLIB_SCHEMA.agg_array_concat(anyarray) (
+   SFUNC = MADLIB_SCHEMA.agg_array_concat_transition,
+   STYPE = anyarray,
+   PREFUNC = MADLIB_SCHEMA.agg_array_concat_merge
+   );
