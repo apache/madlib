@@ -80,6 +80,10 @@ class MiniBatchPreProcessorDL:
         """.format(**locals())
         plpy.execute(scalar_mult_sql)
         # Create the mini-batched output table
+        if is_platform_pg():
+            distributed_by_clause = ''
+        else:
+            distributed_by_clause= ' DISTRIBUTED BY (buffer_id) '
         sql = """
             CREATE TABLE {self.output_table} AS
             SELECT * FROM
@@ -91,11 +95,12 @@ class MiniBatchPreProcessorDL:
                 FROM {norm_tbl}
                 GROUP BY buffer_id
             ) b
-            DISTRIBUTED BY (buffer_id)
+            {distributed_by_clause}
         """.format(x=MINIBATCH_OUTPUT_INDEPENDENT_COLNAME,
-                   y=MINIBATCH_OUTPUT_DEPENDENT_COLNAME, **locals())
+                   y=MINIBATCH_OUTPUT_DEPENDENT_COLNAME,
+                   **locals())
         plpy.execute(sql)
-        plpy.execute("DROP TABLE {}".format(norm_tbl))
+        plpy.execute("DROP TABLE {0}".format(norm_tbl))
         # Create summary table
         self._create_output_summary_table()
 
@@ -136,7 +141,7 @@ class MiniBatchPreProcessorDL:
 
     def _get_num_buffers(self):
         num_rows_in_tbl = plpy.execute("""
-                SELECT count(*) AS cnt FROM {}
+                SELECT count(*) AS cnt FROM {0}
             """.format(self.source_table))[0]['cnt']
         buffer_size_calculator = MiniBatchBufferSizeCalculator()
         indepdent_var_dim = _tbl_dimension_rownum(
