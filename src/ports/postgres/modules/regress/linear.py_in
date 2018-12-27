@@ -11,19 +11,45 @@ from utilities.validate_args import table_is_empty
 from utilities.utilities import add_postfix
 from utilities.utilities import _assert
 from utilities.control import MinWarning
+from utilities.utilities import get_table_qualified_col_str
+
 # ----------------------------------------------------------------------
 
 
 def linregr_train(schema_madlib, source_table, out_table,
                   dependent_varname, independent_varname, grouping_cols,
                   heteroskedasticity_option, **kwargs):
+    """
+        Args:
+        @param source_table,                -- name of input table
+        @param out_table,                   -- name of output table
+        @param dependent_varname,           -- name of dependent variable
+        @param independent_varname,         -- name of independent variables
+        @param grouping_cols,               -- names of columns to group-by
+        @param heteroskedasticity_option    -- perform heteroskedasticity test?
+
+    """
+
     with MinWarning('warning'):
         _validate_args(schema_madlib, source_table, out_table,
                        dependent_varname, independent_varname,
                        grouping_cols, heteroskedasticity_option)
 
-        group_str = '' if grouping_cols is None else 'GROUP BY %s' % grouping_cols
-        group_str_sel = '' if grouping_cols is None else grouping_cols + ','
+        group_col_list = ''if grouping_cols is None else _string_to_array_with_quotes(
+            grouping_cols)
+
+        group_str = '' if grouping_cols is None else 'GROUP BY %s' % get_table_qualified_col_str(source_table,
+                                                                                                 group_col_list)
+        # For json expressions like data->>'ID', this will quote them to
+        # "data->>'ID'"
+        group_cols_w_quotes = ''if grouping_cols is None else ' ,'.join(
+            " \"{col}\" ".format(**locals()) for col in group_col_list)
+
+        # For json expressions like data->>'ID' it will alias the columns to
+        # "data->>'ID'"
+        group_str_sel = ''if grouping_cols is None else ' , '.join("{source_table}.{col} as \"{col}\" "
+                                                                   .format(source_table=source_table, col=col)
+                                                                   for col in group_col_list) + ","
         join_str = ',' if grouping_cols is None else 'JOIN'
         using_str = '' if grouping_cols is None else 'USING (%s)' % grouping_cols
 
@@ -50,6 +76,13 @@ def linregr_train(schema_madlib, source_table, out_table,
                        independent_varname=independent_varname,
                        source_table=source_table))
 
+        # USING Clause does not support expressions. So modifying to the regular
+        # join clause instead.
+        join_clause = ' AND '.join("{source_table}.{col} = {temp_lin_rst}.\"{col}\""
+                                   .format(source_table=source_table, col=col,
+                                           temp_lin_rst=temp_lin_rst)
+                                   for col in group_col_list)
+
         # Run heteroskedasticity test
         if heteroskedasticity_option:
             temp_hsk_rst = unique_string()
@@ -64,15 +97,15 @@ def linregr_train(schema_madlib, source_table, out_table,
                         {independent_varname},
                         {temp_lin_rst}.coef) AS hsk_rst
                 FROM
-                    {source_table} {join_str} {temp_lin_rst} {using_str}
-                {group_str}
+                    {source_table} {join_str} {temp_lin_rst} ON {join_clause}
+               {group_str}
                 """.format(schema_madlib=schema_madlib,
                            temp_hsk_rst=temp_hsk_rst,
                            dependent_varname=dependent_varname,
                            independent_varname=independent_varname,
                            group_str_sel=group_str_sel, group_str=group_str,
-                           join_str=join_str, using_str=using_str,
-                           source_table=source_table, temp_lin_rst=temp_lin_rst))
+                           join_str=join_str, source_table=source_table,
+                           temp_lin_rst=temp_lin_rst, join_clause=join_clause))
 
         # Output the results
         join_str = ''
@@ -80,17 +113,19 @@ def linregr_train(schema_madlib, source_table, out_table,
         if heteroskedasticity_option:
             if grouping_cols is not None:
                 join_str = 'JOIN %s AS hsk' % temp_hsk_rst
-                using_str = 'USING (%s)' % (grouping_cols)
+                using_str = 'USING (%s)' % group_cols_w_quotes
             else:
                 join_str = ', %s AS hsk' % temp_hsk_rst
         bp_stats = '(hsk.hsk_rst).bp_stats,' if heteroskedasticity_option else ''
         bp_p_value = '(hsk.hsk_rst).bp_p_value,' if heteroskedasticity_option else ''
 
+        group_cols_w_quotes = '' if grouping_cols is None else group_cols_w_quotes + ","
+
         plpy.execute(
             """
             CREATE TABLE {out_table} AS
             SELECT
-                {group_str_sel}
+               {group_cols_w_quotes}
                 coef,
                 r2,
                 std_err,
@@ -109,10 +144,11 @@ def linregr_train(schema_madlib, source_table, out_table,
                 END AS num_missing_rows_skipped,
                 vcov as variance_covariance
             FROM
-                {temp_lin_rst} AS lin {join_str} {using_str}
-           """.format(out_table=out_table, group_str_sel=group_str_sel,
+                {temp_lin_rst} AS lin {join_str}  {using_str}
+           """.format(out_table=out_table,
                       bp_stats=bp_stats, bp_p_value=bp_p_value,
-                      temp_lin_rst=temp_lin_rst, join_str=join_str, using_str=using_str))
+                      temp_lin_rst=temp_lin_rst, join_str=join_str, using_str=using_str,
+                      group_cols_w_quotes=group_cols_w_quotes))
 
         num_rows = plpy.execute(
             """
@@ -134,11 +170,11 @@ def linregr_train(schema_madlib, source_table, out_table,
                       'linregr'::varchar                  as method
                     , '{source_table}'::varchar           as source_table
                     , '{out_table}'::varchar              as out_table
-                    , '{dependent_varname}'::varchar      as dependent_varname
-                    , '{independent_varname}'::varchar    as independent_varname
+                    , $${dependent_varname}$$::varchar      as dependent_varname
+                    , $${independent_varname}$$::varchar    as independent_varname
                     , {num_rows_processed}::integer       as num_rows_processed
                     , {num_rows_skipped}::integer         as num_missing_rows_skipped
-                    , {grouping_col}::text                as grouping_col
+                    , $${grouping_col}$$::text                as grouping_col
             """.format(out_table=out_table, source_table=source_table,
                        out_table_summary=out_table_summary,
                        dependent_varname=dependent_varname,
@@ -185,10 +221,12 @@ def _validate_args(schema_madlib, source_table, out_table, dependent_varname,
     if grouping_cols is not None:
         _assert(grouping_cols != '',
                 "Linregr error: Invalid grouping columns name!")
+        # grouping columns can be a valid expression as well, for eg.
+        # a json expression (data->>'id'), so commenting this part.
         grouping_list = _string_to_array_with_quotes(grouping_cols)
-        _assert(columns_exist_in_table(
-            source_table, grouping_list, schema_madlib),
-            "Linregr error: Grouping column does not exist!")
+        #_assert(columns_exist_in_table(
+        #    source_table, grouping_list, schema_madlib),
+        #    "Linregr error: Grouping column does not exist!")
 
         predefined = set(('coef', 'r2', 'std_err', 't_stats',
                           'p_values', 'condition_no',
@@ -277,6 +315,7 @@ def linregr_help_message(schema_madlib, message, **kwargs):
         help_string = "No such option. Use {schema_madlib}.linregr_train()"
 
     return help_string.format(schema_madlib=schema_madlib)
+
 
 def linregr_predict_help_message(schema_madlib, message, **kwargs):
     """ Help message for Prediction in Linear Regression
