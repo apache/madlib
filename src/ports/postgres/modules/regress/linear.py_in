@@ -12,6 +12,12 @@ from utilities.utilities import add_postfix
 from utilities.utilities import _assert
 from utilities.control import MinWarning
 from utilities.utilities import get_table_qualified_col_str
+from utilities.utilities import strip_end_quotes
+from utilities.utilities import _string_to_array
+from utilities.validate_args import get_expr_type
+from utilities.utilities import _string_to_sql_array
+from utilities.validate_args import quote_ident
+
 
 # ----------------------------------------------------------------------
 
@@ -42,14 +48,16 @@ def linregr_train(schema_madlib, source_table, out_table,
                                                                                                  group_col_list)
         # For json expressions like data->>'ID', this will quote them to
         # "data->>'ID'"
+        cols_wo_quotes = ''if grouping_cols is None else ' '.join(
+            strip_end_quotes(col).format(**locals()) for col in group_col_list)
         group_cols_w_quotes = ''if grouping_cols is None else ' ,'.join(
-            " \"{col}\" ".format(**locals()) for col in group_col_list)
+            " \"" + strip_end_quotes(col) + "\" ".format(**locals()) for col in group_col_list)
 
         # For json expressions like data->>'ID' it will alias the columns to
         # "data->>'ID'"
-        group_str_sel = ''if grouping_cols is None else ' , '.join("{source_table}.{col} as \"{col}\" "
-                                                                   .format(source_table=source_table, col=col)
+        group_str_sel = ''if grouping_cols is None else ' , '.join("{source_table}.{col} as \"".format(source_table=source_table, col=col) + strip_end_quotes(col) + "\" "
                                                                    for col in group_col_list) + ","
+
         join_str = ',' if grouping_cols is None else 'JOIN'
         using_str = '' if grouping_cols is None else 'USING (%s)' % grouping_cols
 
@@ -78,10 +86,10 @@ def linregr_train(schema_madlib, source_table, out_table,
 
         # USING Clause does not support expressions. So modifying to the regular
         # join clause instead.
-        join_clause = ' AND '.join("{source_table}.{col} = {temp_lin_rst}.\"{col}\""
-                                   .format(source_table=source_table, col=col,
-                                           temp_lin_rst=temp_lin_rst)
-                                   for col in group_col_list)
+        join_clause = " ON " + ' AND '.join("{source_table}.{col} = {temp_lin_rst}.\""
+                                            .format(source_table=source_table, col=col,
+                                                    temp_lin_rst=temp_lin_rst) + strip_end_quotes(col) + "\""
+                                            for col in group_col_list)
 
         # Run heteroskedasticity test
         if heteroskedasticity_option:
@@ -97,7 +105,7 @@ def linregr_train(schema_madlib, source_table, out_table,
                         {independent_varname},
                         {temp_lin_rst}.coef) AS hsk_rst
                 FROM
-                    {source_table} {join_str} {temp_lin_rst} ON {join_clause}
+                    {source_table} {join_str} {temp_lin_rst} {join_clause}
                {group_str}
                 """.format(schema_madlib=schema_madlib,
                            temp_hsk_rst=temp_hsk_rst,
@@ -179,7 +187,7 @@ def linregr_train(schema_madlib, source_table, out_table,
                        out_table_summary=out_table_summary,
                        dependent_varname=dependent_varname,
                        independent_varname=independent_varname,
-                       grouping_col="'" + grouping_cols + "'" if grouping_cols else "NULL",
+                       grouping_col=grouping_cols if grouping_cols else "NULL",
                        **num_rows))
     return None
 # ----------------------------------------------------------------------
@@ -224,9 +232,6 @@ def _validate_args(schema_madlib, source_table, out_table, dependent_varname,
         # grouping columns can be a valid expression as well, for eg.
         # a json expression (data->>'id'), so commenting this part.
         grouping_list = _string_to_array_with_quotes(grouping_cols)
-        #_assert(columns_exist_in_table(
-        #    source_table, grouping_list, schema_madlib),
-        #    "Linregr error: Grouping column does not exist!")
 
         predefined = set(('coef', 'r2', 'std_err', 't_stats',
                           'p_values', 'condition_no',

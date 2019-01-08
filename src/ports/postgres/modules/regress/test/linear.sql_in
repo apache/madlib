@@ -221,63 +221,13 @@ select linregr_predict('example');
 -- Test case for JSON Data Type and Special characters. 
 -- This function checks special characters for GPDB version = 4.x and JSON for 5.x and above
 
-create or replace function linereg_expr_test() RETURNS BOOLEAN AS
+create or replace function linereg_expr_test() RETURNS VOID AS
 $$ 
 DECLARE col_type TEXT;
 
 begin
 select typname into col_type from pg_type where typname = 'json' ;
 if col_type = 'json' THEN
-
-DROP TABLE IF EXISTS houses_spcl;
-CREATE TABLE houses_spcl (
-    id SERIAL NOT NULL,
-    "ta,x" INTEGER,
-    bedroom REAL,
-    "ba$th" REAL,
-    "pr'ice" INTEGER,
-    size INTEGER,
-    lot INTEGER
-);
-
-INSERT INTO houses_spcl("ta,x", bedroom, "ba$th", "pr'ice", size, lot) VALUES
-( 590, 2, 1,    50000,  770, 22100),
-(1050, 3, 2,    85000, 1410, 12000),
-(  20, 3, 1,    22500, 1060, 3500 ),
-( 870, 2, 2,    90000, 1300, 17500),
-(1320, 3, 2,   133000, 1500, 30000),
-(1350, 2, 1,    90500,  820, 25700),
-(2790, 3, 2.5, 260000, 2130, 25000),
-( 680, 2, 1,   142500, 1170, 22000),
-(1840, 3, 2,   160000, 1500, 19000),
-(3680, 4, 2,   240000, 2790, 20000),
-(1660, 3, 1,    87000, 1030, 17500),
-(1620, 3, 2,   118600, 1250, 20000),
-(3100, 3, 2,   140000, 1760, 38000),
-(2070, 2, 3,   148000, 1550, 14000),
-( 650, 3, 1.5,  65000, 1450, 12000);
-
-drop table if exists result_lin_houses_spcl;
-drop table if exists result_lin_houses_spcl_summary;
-PERFORM linregr_train('houses_spcl', 'result_lin_houses_spcl', '"pr''ice"',
-                    'array[1, "ta,x", "ba$th", size]',
-                    'bedroom', True);
-PERFORM assert(
-    relative_error(coef, array[-84242.0345, 55.4430, -78966.9754, 225.6119]) < 1e-2 and
-    relative_error(r2, 0.9688) < 1e-2 and
-    relative_error(std_err, array[35019.00, 19.57, 23036.81, 49.04]) < 1e-2 and
-    relative_error(t_stats, array[-2.406, 2.833, -3.428, 4.600]) < 1e-2 and
-    relative_error(p_values, array[0.251, 0.216, 0.181, 0.136]) < 1e-2 and
-    relative_error(condition_no, 10086.1) < 1e-2 and
-    relative_error(bp_stats, 2.5451) < 1e-2 and
-    relative_error(bp_p_value, 0.467192) < 1e-2,
-    'Linear regression with heteroskedasticity & grouping (houses): Wrong results'
-)
-from result_lin_houses_spcl
-where bedroom = 2;
-
-return TRUE;
-else 
 
 DROP TABLE IF EXISTS houses_json;
 CREATE TABLE houses_json (
@@ -305,9 +255,60 @@ INSERT INTO houses_json VALUES
 
 drop table if exists result_lin_houses_json;
 drop table if exists result_lin_houses_json_summary;
-SELECT linregr_train('houses_json', 'result_lin_houses_json', '(data->>''pr''''ice'')',
-                    'array[1, (data->>''ta,x''), (data->>''ba$th''), size]',
-                    '(data->>''bedroom'')', True);
+PERFORM linregr_train('houses_json', 'result_lin_houses_json', '(data->>''pr''''ice'')::integer',
+                    'array[1, (data->>''ta,x'')::integer, (data->>''ba$th'')::double precision, (data->>''size'')::integer]',
+                    'data->>''bedroom''', True);
+PERFORM assert(
+    relative_error(coef, array[-84242.0345, 55.4430, -78966.9754, 225.6119]) < 1e-2 and
+    relative_error(r2, 0.9688) < 1e-2 and
+    relative_error(std_err, array[35019.00, 19.57, 23036.81, 49.04]) < 1e-2 and
+    relative_error(t_stats, array[-2.406, 2.833, -3.428, 4.600]) < 1e-2 and
+    relative_error(p_values, array[0.251, 0.216, 0.181, 0.136]) < 1e-2 and
+    relative_error(condition_no, 10086.1) < 1e-2 and
+    relative_error(bp_stats, 2.5451) < 1e-2 and
+    relative_error(bp_p_value, 0.467192) < 1e-2,
+    'Linear regression with heteroskedasticity & grouping (houses): Wrong results'
+)
+from result_lin_houses_json
+where "data->>'bedroom'"::integer = 2;
+
+else 
+
+
+
+DROP TABLE IF EXISTS houses_spcl;
+CREATE TABLE houses_spcl (
+    id SERIAL NOT NULL,
+    "ta,x" INTEGER,
+    "bed,room" REAL,
+    "ba$th" REAL,
+    "pr'ice" INTEGER,
+    size INTEGER,
+    lot INTEGER
+);
+
+INSERT INTO houses_spcl("ta,x", "bed,room", "ba$th", "pr'ice", size, lot) VALUES
+( 590, 2, 1,    50000,  770, 22100),
+(1050, 3, 2,    85000, 1410, 12000),
+(  20, 3, 1,    22500, 1060, 3500 ),
+( 870, 2, 2,    90000, 1300, 17500),
+(1320, 3, 2,   133000, 1500, 30000),
+(1350, 2, 1,    90500,  820, 25700),
+(2790, 3, 2.5, 260000, 2130, 25000),
+( 680, 2, 1,   142500, 1170, 22000),
+(1840, 3, 2,   160000, 1500, 19000),
+(3680, 4, 2,   240000, 2790, 20000),
+(1660, 3, 1,    87000, 1030, 17500),
+(1620, 3, 2,   118600, 1250, 20000),
+(3100, 3, 2,   140000, 1760, 38000),
+(2070, 2, 3,   148000, 1550, 14000),
+( 650, 3, 1.5,  65000, 1450, 12000);
+
+drop table if exists result_lin_houses_spcl;
+drop table if exists result_lin_houses_spcl_summary;
+PERFORM linregr_train('houses_spcl', 'result_lin_houses_spcl', '"pr''ice"',
+                    'array[1, "ta,x", "ba$th", size]',
+                    '"bed,room"', True);
 PERFORM assert(
     relative_error(coef, array[-84242.0345, 55.4430, -78966.9754, 225.6119]) < 1e-2 and
     relative_error(r2, 0.9688) < 1e-2 and
@@ -320,14 +321,13 @@ PERFORM assert(
     'Linear regression with heteroskedasticity & grouping (houses): Wrong results'
 )
 from result_lin_houses_spcl
-where "data->>'bedroom'" = 2;
- return FALSE; 
+where result_lin_houses_spcl."bed,room" = 2;
+
+
 end IF;
 
-return true;
 end;
 $$ LANGUAGE plpgsql;
-
 
 
 select linereg_expr_test();
