@@ -66,28 +66,30 @@ def knn_validate_src(schema_madlib, point_source, point_column_name, point_id,
         cols_in_tbl_valid(point_source, [label_column_name], 'kNN')
 
     _assert(is_var_valid(point_source, point_column_name),
-            "kNN error: {0} is an invalid column name or expression for point_column_name param".format(point_column_name))
+            "kNN error: {0} is an invalid column name or "
+            "expression for point_column_name param".format(point_column_name))
     point_col_type = get_expr_type(point_column_name, point_source)
     _assert(is_valid_psql_type(point_col_type, NUMERIC | ONLY_ARRAY),
-            "kNN Error: Feature column or expression '{0}' in train table is not"
-            " an array.".format(point_column_name))
+            "kNN Error: Feature column or expression '{0}' in train table is not "
+            "an array.".format(point_column_name))
 
     _assert(is_var_valid(test_source, test_column_name),
-            "kNN error: {0} is an invalid column name or expression for test_column_name param".format(test_column_name))
+            "kNN error: {0} is an invalid column name or "
+            "expression for test_column_name param".format(test_column_name))
     test_col_type = get_expr_type(test_column_name, test_source)
     _assert(is_valid_psql_type(test_col_type, NUMERIC | ONLY_ARRAY),
-            "kNN Error: Feature column or expression '{0}' in test table is not"
-            " an array.".format(test_column_name))
+            "kNN Error: Feature column or expression '{0}' in test table is not "
+            "an array.".format(test_column_name))
 
     cols_in_tbl_valid(point_source, [point_id], 'kNN')
     cols_in_tbl_valid(test_source, [test_id], 'kNN')
 
     if not array_col_has_no_null(point_source, point_column_name):
-        plpy.error("kNN Error: Feature column '{0}' in train table has some"
-                   " NULL values.".format(point_column_name))
+        plpy.error("kNN Error: Feature column '{0}' in train table has some "
+                   "NULL values.".format(point_column_name))
     if not array_col_has_no_null(test_source, test_column_name):
-        plpy.error("kNN Error: Feature column '{0}' in test table has some"
-                   " NULL values.".format(test_column_name))
+        plpy.error("kNN Error: Feature column '{0}' in test table has some "
+                   "NULL values.".format(test_column_name))
 
     if k <= 0:
         plpy.error("kNN Error: k={0} is an invalid value, must be greater "
@@ -130,53 +132,11 @@ def knn_validate_src(schema_madlib, point_source, point_column_name, point_id,
             """.format(fn_dist=fn_dist, profunc=profunc))[0]['output']
 
         if is_invalid_func or (fn_dist not in dist_functions):
-            plpy.error("KNN error: Distance function has invalid signature "
-                       "or is not a simple function.")
+            plpy.error("KNN error: Distance function ({0}) has invalid signature "
+                       "or is not a simple function.".format(fn_dist))
 
     return k
-# ------------------------------------------------------------------------------
-
-
-def kd_tree(schema_madlib, source_table, output_table, point_column_name, depth, **kwargs):
-
-    with MinWarning("error"):
-
-        validate_kd_tree(source_table, output_table, point_column_name, depth)
-        num_features = plpy.execute("SELECT array_upper({point_column_name},1) AS num FROM {source_table}".format(**locals()))[0]['num']
-
-        clauses = []
-        cutoffs = []
-        clause_counter = 0
-        current_feature = 1
-        clauses.append(" WHERE 1=1 ")
-        for i in range(0, depth):
-            for j in range(0, pow(2,i)):
-                clause = clauses[clause_counter]
-                cutoff_sql = """SELECT percentile_disc(0.5) within group (
-                            ORDER BY {point_column_name}[{current_feature}]) AS cutoff
-                        FROM {source_table} {clause}""".format(**locals())
-
-                cutoff = plpy.execute(cutoff_sql)[0]['cutoff']
-                cutoffs.append(cutoff if cutoff is not None else "NULL")
-                clause_counter = clause_counter + 1
-                clauses.append(clause + "AND {point_column_name}[{current_feature}] < {cutoff} ".format(**locals()))
-                clauses.append(clause + "AND {point_column_name}[{current_feature}] >= {cutoff} ".format(**locals()))
-            current_feature = current_feature % num_features + 1
-
-
-        plpy.execute("CREATE TABLE {output_table}_tree (tree DOUBLE PRECISION[]);".format(**locals()))
-
-        plpy.execute("""INSERT INTO {0} (tree) VALUES ('{{ {1} }}')""".format(
-            output_table+"_tree", " , ".join(map(str,cutoffs))))
-
-        output_sql = " CREATE TABLE {output_table} AS SELECT *, CASE "
-        num_leaves = pow(2,depth)
-        for i in range(0, num_leaves):
-            cond = clauses.pop()[14:]
-
-            output_sql += "WHEN {0} THEN {1}::INTEGER \n".format(cond, num_leaves-i-1)
-        output_sql = (output_sql + "END AS case FROM {source_table}").format(**locals())
-        plpy.execute(output_sql)
+# -----------------------------------------------------------------------------
 
 
 def validate_kd_tree(source_table, output_table, point_column_name, depth):
@@ -186,7 +146,8 @@ def validate_kd_tree(source_table, output_table, point_column_name, depth):
     output_tbl_valid(output_table+"_tree", 'kd_tree')
 
     _assert(is_var_valid(source_table, point_column_name),
-            "kd_tree error: {0} is an invalid column name or expression for point_column_name param".format(point_column_name))
+            "kd_tree error: {0} is an invalid column name or expression "
+            "for point_column_name param".format(point_column_name))
     point_col_type = get_expr_type(point_column_name, source_table)
     _assert(is_valid_psql_type(point_col_type, NUMERIC | ONLY_ARRAY),
             "kNN Error: Feature column or expression '{0}' in train table is not"
@@ -194,135 +155,200 @@ def validate_kd_tree(source_table, output_table, point_column_name, depth):
     if depth <= 0:
         plpy.error("kNN Error: depth={0} is an invalid value, must be greater "
                    "than 0.".format(depth))
+# -----------------------------------------------------------------------------
 
-def knn_tree(schema_madlib, kd_out, point_source, point_column_name, point_id,
-        label_column_name, test_source, test_column_name, test_id, interim_table,
-        in_k, output_neighbors, fn_dist, weighted_avg, label_out,
-        comma_label_out_alias, label_name, train, train_id, dist_inverse, **kwargs):
+
+def kd_tree(schema_madlib, source_table, output_table, point_column_name, depth, **kwargs):
 
     with MinWarning("error"):
+        validate_kd_tree(source_table, output_table, point_column_name, depth)
+        n_features = num_features(source_table, point_column_name)
+        clauses = [" WHERE 1=1 "]
+        cutoffs = []
+        clause_counter = 0
+        for curr_level in range(depth):
+            current_feature = depth % n_features + 1
+            for curr_leaf in range(pow(2, each_level)):
+                clause = clauses[clause_counter]
+                # get the median for current feature for rows that fall into curr_leaf
+                cutoff_sql = """
+                    SELECT percentile_disc(0.5)
+                           WITHIN GROUP (
+                            order by {point_column_name}[{current_feature}]
+                            ) as cutoff
+                    FROM {source_table}
+                    {clause}
+                    """.format(**locals())
+                cutoff = plpy.execute(cutoff_sql)[0]['cutoff']
+                cutoffs.append(cutoff if cutoff is not None else "NULL")
+                clause_counter += 1
+                clauses.append(clause + "AND {point_column_name}[{current_feature}] < {cutoff} ".
+                               format(**locals()))
+                clauses.append(clause + "AND {point_column_name}[{current_feature}] >= {cutoff} ".
+                               format(**locals()))
 
-        tree_model = kd_out + "_tree"
-        num_features = plpy.execute("SELECT array_upper({point_column_name},1) AS num FROM {test_source}".format(**locals()))[0]['num']
+        output_table_tree = add_postfix(output_table, "_tree")
+        plpy.execute("CREATE TABLE {0} AS "
+                     "SELECT ('{{ {1} }}')::DOUBLE PRECISION[]".
+                     format(output_table_tree,
+                            " ,".join(map(str, cutoffs))))
 
+        case_when_clause = []
+        n_leaves = pow(2, depth)
+        for i in reversed(range(n_leaves)):   # TODO: Why is this reversed?
+            cond = clauses.pop()[14:]         # TODO: Why 14?
+            case_when_clause.append("WHEN {0} THEN {1}::INTEGER".format(cond, i))
+        output_sql = """
+            CREATE TABLE {output_table} AS
+                SELECT *,
+                       CASE
+                        {case_when_clause_str}
+                       END AS case
+                FROM {source_table}")
+            """.format(case_when_clause_str="\n".join(case_when_clause),
+                       **locals())
+        plpy.execute(output_sql)
+# -----------------------------------------------------------------------------
+
+
+def knn_tree(schema_madlib, kd_out, point_source, point_column_name, point_id,
+             label_column_name, test_source, test_column_name, test_id, interim_table,
+             in_k, output_neighbors, fn_dist, weighted_avg, label_out,
+             comma_label_out_alias, label_name, train, train_id, dist_inverse, **kwargs):
+
+    with MinWarning("error"):
+        tree_model = add_postfix(kd_out, "_tree")
+        n_features = num_features(test_source, point_column_name)
         tree = plpy.execute("SELECT * FROM {0}".format(tree_model))[0]['tree']
-        num_leaves = len(tree)+1
+        # 'tree' contains only non-leaf nodes,
+        # hence 'n_leaves' is always 1 more than len(tree)
+        n_leaves = len(tree) + 1
 
-        depth = int(log(num_leaves, 2))
-
-        clauses = []
+        depth = int(log(n_leaves, 2))
+        clauses = [" 1 = 1 " for i in range(n_leaves)]
         clause_counter = 0
         tree_counter = 0
-        current_feature = 1
-        borders = {}
+        borders = defaultdict(list)
         borders_table = unique_string() + "_borders"
-        for i in range(0,num_features):
-            borders[i] = []
 
-        for i in range(0, num_leaves):
-            clauses.append(" 1=1 ")
-
-        for i in range(0,depth):
-            repeat_num = num_leaves / (pow(2,i+1))
-
-            for j in range(0, pow(2,i)):
+        for i in range(depth):
+            repeat_num = n_leaves / (pow(2, i + 1))
+            current_feature = depth % n_features + 1
+            for j in range(0, pow(2, i)):
                 cutoff = tree[tree_counter]
-                borders[current_feature-1].append(cutoff)
+                borders[current_feature - 1].append(cutoff)
                 for k in range(repeat_num):
                     clause = clauses.pop(0)
                     clause += " AND {point_column_name}[{current_feature}] < {cutoff} ".format(**locals())
                     clauses.append(clause)
+
                 for k in range(repeat_num):
                     clause = clauses.pop(0)
                     clause += " AND {point_column_name}[{current_feature}] >= {cutoff} ".format(**locals())
                     clauses.append(clause)
                 tree_counter += 1
 
-            current_feature = current_feature % num_features + 1
-
         plpy.execute("DROP TABLE IF EXISTS {borders_table}".format(**locals()))
-        create_sql = "CREATE TABLE {borders_table} ("
-        create_sql_cons = []
-        for i in range(0,num_features):
-            create_sql_cons.append(" dim{0} DOUBLE PRECISION[] ".format(str(i)))
-        create_sql += " , ".join(create_sql_cons) + ") "
-
-        plpy.execute(create_sql.format(**locals()))
-
-        insert_fields_sql_cons = []
-        for i in range(0,num_features):
-            insert_fields_sql_cons.append(" dim{0} ".format(str(i)))
-
-        insert_sql = "INSERT INTO {0} ({1}) VALUES \n (".format(
-                            borders_table, " , ".join(insert_fields_sql_cons))
-        insert_values_sql_cons = []
-        for i in range(0,num_features):
-
-            insert_values_sql_cons.append(" ARRAY{0}::double precision[] ".format(str(borders[i])))
-        insert_sql += " , ".join(insert_values_sql_cons) + " )"
-        plpy.execute(insert_sql)
-
-        test_view = unique_string()+"_test_view"
+        select_sql_cons = [" ARRAY{0}::DOUBLE PRECISION[] AS dim{1}".
+                           format(str(borders[i]), i) for i in range(n_features)]
+        plpy.execute("""
+            CREATE TABLE {borders_table} AS
+            SELECT ({select_sql_cons})
+            """.format(borders_table=borders_table,
+                       select_sql_cons=", ".join(select_sql_cons)))
 
         plpy.execute("DROP VIEW IF EXISTS {test_view}".format(**locals()))
-        test_view_sql = " CREATE VIEW {test_view} AS SELECT *, CASE ".format(**locals())
+        test_view_case_when = '\n'.join(["WHEN {0} THEN {1}::INTEGER".
+                                   format(clauses[i], i) for i in range(n_leaves)])
+        plpy.execute("""
+            CREATE VIEW {test_view} AS
+            SELECT *,
+                   CASE
+                    {case_when}
+                   END AS case
+            FROM {source}
+            """.format(test_view=unique_string() + "_test_view",
+                       case_when=test_view_case_when,
+                       source=test_source))
 
-        for i in range(0, num_leaves):
-            test_view_sql += " WHEN {0} THEN {1}::INTEGER ".format(clauses[i], i)
-
-        test_view_sql += "END AS case FROM {0}".format(test_source)
-
-        plpy.execute(test_view_sql)
-
-        sql = """ CREATE TABLE {interim_table} AS
+        test_unique_string = unique_string()
+        sql = """
+            CREATE TABLE {interim_table} AS
             SELECT * FROM (
-                SELECT row_number() over (partition by {test_id} ORDER BY dist) AS r,
-                       {test_id}, {train_id}, dist,
-                       CASE WHEN dist = 0.0 THEN {max_weight_zero_dist}
-                                 ELSE 1.0 / dist
-                            END AS {dist_inverse}
-                            {comma_label_out_alias}
+                SELECT row_number() OVER (PARTITION BY {test_id} ORDER BY dist) AS r,
+                       {test_id},
+                       {train_id},
+                       dist,
+                       CASE WHEN dist = 0.0
+                            THEN {MAX_WEIGHT_ZERO_DIST}
+                            ELSE 1.0 / dist
+                       END AS {dist_inverse}
+                       {comma_label_out_alias}
                 FROM (
-                    SELECT {train}.case AS tr_case, test.case AS test_case,
-                           {train}.{point_id} AS {train_id},test.{test_id} AS {test_id},
-                           {fn_dist}({train}.data,test.data) AS dist
+                    SELECT {train}.case AS tr_case,
+                           {test}.case AS test_case,
+                           {train}.{point_id} AS {train_id},
+                           {test}.{test_id} AS {test_id},
+                           {fn_dist}({train}.data, {test}.data) AS dist
                            {label_out}
-                    FROM {kd_out} AS {train} INNER JOIN {test_view} AS test ON {train}.case = test.case
+                    FROM {kd_out} AS {train} INNER JOIN {test_view} AS {test}
+                         ON {train}.case = {test}.case
                     ) q1
-                )q2
-            WHERE r <= {in_k}""".format(max_weight_zero_dist=MAX_WEIGHT_ZERO_DIST,
-                **locals())
+                ) q2
+            WHERE r <= {in_k}
+            """.format(test=test_unique_string, **locals())
         plpy.execute(sql)
 
-        max_dist_sql = """SELECT {test_id}, max(dist) AS dists
-                          FROM {interim_table} GROUP BY {test_id} ORDER BY {test_id}""".format(**locals())
+        max_dist_sql = """
+            SELECT {test_id}, max(dist) AS dists
+            FROM {interim_table}
+            GROUP BY {test_id}
+            ORDER BY {test_id}
+            """.format(**locals())
         redo = []
         tmp_compare = unique_string(desp="tmp_compare1")
 
-        for i in range(0,min(num_features,depth)):
-
+        for i in range(0, min(n_features, depth)):
             plpy.execute("DROP TABLE IF EXISTS {tmp_compare}".format(**locals()))
             plpy.execute("""
-            CREATE TABLE {tmp_compare} AS SELECT {test_id}, max, ({test_column_name}[{i}+1] - max) * ({test_column_name}[{i}+1] - max) AS border_dists
-            FROM (
-                SELECT {test_id}, {test_column_name}, max(dim{i}) AS max
-                FROM {test_view} , (
-                    SELECT unnest(dim{i}) AS dim{i} FROM {borders_table})q1
-                WHERE  {test_column_name}[{i}+1] >= dim{i} group by {test_id},{test_column_name}) q2; """.format(**locals()))
+            CREATE TABLE {tmp_compare} AS
+                SELECT {test_id},
+                       max,
+                       ({test_column_name}[{i} + 1] - max) * ({test_column_name}[{i} + 1] - max) AS border_dists
+                FROM (
+                    SELECT {test_id}, {test_column_name}, max(dim{i}) AS max
+                    FROM {test_view},
+                         (SELECT unnest(dim{i}) AS dim{i} FROM {borders_table}) q1
+                    WHERE  {test_column_name}[{i} + 1] >= dim{i}
+                    GROUP BY {test_id}, {test_column_name}
+                    ) q2;
+            """.format(**locals()))
 
             plpy.execute("""
-            INSERT INTO {tmp_compare} (SELECT {test_id}, min, ({test_column_name}[{i}+1] - min) * ({test_column_name}[{i}+1] - min) AS  border_dists
-            FROM (
-                SELECT {test_id}, {test_column_name}, min(dim{i}) AS min
-                FROM {test_view} , (
-                    SELECT unnest(dim{i}) AS dim{i} FROM {borders_table})q1
-                WHERE  {test_column_name}[{i}+1] < dim{i} group by {test_id},{test_column_name}) q2)""".format(**locals()))
+                INSERT INTO {tmp_compare} (
+                    SELECT {test_id},
+                        min,
+                        ({test_column_name}[{i}+1] - min) * ({test_column_name}[{i}+1] - min) AS  border_dists
+                    FROM (
+                        SELECT {test_id}, {test_column_name}, min(dim{i}) AS min
+                        FROM {test_view},
+                            (
+                                SELECT unnest(dim{i}) AS dim{i} FROM {borders_table}
+                            )q1
+                        WHERE  {test_column_name}[{i}+1] < dim{i}
+                        GROUP BY {test_id},{test_column_name}
+                    ) q2)""".format(**locals()))
 
-            redo_sql = """ SELECT array_agg(q2.{test_id}) AS {test_id}, array_agg(dists) AS dist,
-                                  array_agg(border_dists) AS border
-                        FROM {tmp_compare} INNER JOIN ({max_dist_sql})q2 ON (q2.{test_id} = {tmp_compare}.{test_id})
-                        WHERE q2.dists > border_dists
-                    """.format(**locals())
+            redo_sql = """
+                SELECT array_agg(q2.{test_id}) AS {test_id},
+                       array_agg(dists) AS dist,
+                       array_agg(border_dists) AS border
+                FROM {tmp_compare}
+                    INNER JOIN
+                     ({max_dist_sql})q2
+                    ON (q2.{test_id} = {tmp_compare}.{test_id})
+                WHERE q2.dists > border_dists
+                """.format(**locals())
 
             to_redo = plpy.execute(redo_sql)[0]
             if to_redo["id"] is not None:
@@ -332,12 +358,13 @@ def knn_tree(schema_madlib, kd_out, point_source, point_column_name, point_id,
             tmp_compare = unique_string(desp="tmp_compare2")
 
         if len(redo) > 0:
-
             tmp_view = unique_string() + "_tmp_view"
             plpy.execute("DROP VIEW IF EXISTS {tmp_view}".format(**locals()))
-            plpy.execute(""" CREATE VIEW {tmp_view} AS
+            plpy.execute("""
+                CREATE VIEW {tmp_view} AS
                 SELECT * FROM {test_source}
-                WHERE id=ANY(ARRAY{redo})""".format(**locals()))
+                WHERE id = ANY(ARRAY{redo})
+                """.format(**locals()))
 
             plpy.execute("""
                 DELETE FROM {interim_table} WHERE id=ANY(ARRAY{redo})
@@ -368,9 +395,10 @@ def knn_tree(schema_madlib, kd_out, point_source, point_column_name, point_id,
                         )q1
                     )q2
                 WHERE r <= {in_k} """.format(max_weight_zero_dist=MAX_WEIGHT_ZERO_DIST,
-                                          **locals()))
-
+                                             **locals()))
         drop_tables([borders_table, tmp_compare])
+# -----------------------------------------------------------------------------
+
 
 def knn(schema_madlib, point_source, point_column_name, point_id,
         label_column_name, test_source, test_column_name, test_id, output_table,
