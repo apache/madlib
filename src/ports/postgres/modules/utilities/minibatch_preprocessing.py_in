@@ -54,7 +54,7 @@ MINIBATCH_OUTPUT_INDEPENDENT_COLNAME = "independent_varname"
 class MiniBatchPreProcessorDL:
     def __init__(self, schema_madlib, source_table, output_table,
                  dependent_varname, independent_varname, buffer_size,
-                 normalizing_const, **kwargs):
+                 normalizing_const, dependent_offset, **kwargs):
         self.schema_madlib = schema_madlib
         self.source_table = source_table
         self.output_table = output_table
@@ -62,6 +62,7 @@ class MiniBatchPreProcessorDL:
         self.independent_varname = independent_varname
         self.buffer_size = buffer_size
         self.normalizing_const = normalizing_const
+        self.dependent_offset = dependent_offset
         self.module_name = "minibatch_preprocessor_DL"
         self.output_summary_table = add_postfix(self.output_table, "_summary")
         self._validate_args()
@@ -70,11 +71,16 @@ class MiniBatchPreProcessorDL:
     def minibatch_preprocessor_dl(self):
         norm_tbl = unique_string(desp='normalized')
         # Create a temp table that has independent var normalized.
+
+        dependent_varname_with_offset = self.dependent_varname
+        if self.dependent_offset:
+            dependent_varname_with_offset = '{0} + {1}'.format(self.dependent_varname, self.dependent_offset)
+
         scalar_mult_sql = """
             CREATE TEMP TABLE {norm_tbl} AS
             SELECT {self.schema_madlib}.array_scalar_mult(
                 {self.independent_varname}::REAL[], (1/{self.normalizing_const})::REAL) AS x_norm,
-                {self.dependent_varname} AS y,
+                {dependent_varname_with_offset} AS y,
                 row_number() over() AS row_id
             FROM {self.source_table}
         """.format(**locals())
@@ -719,6 +725,9 @@ class MiniBatchDocumentation:
             normalizing_const      -- DOUBLE PRECISON. Default 255.0. The
                                       normalizing constant to use for
                                       standardizing arrays in independent_varname.
+            dependent_offset       -- INTEGER. If non-zero, shifts all dependent
+                                      variable values by this number (should
+                                      only be used for numeric types).
         );
 
 
@@ -739,8 +748,9 @@ class MiniBatchDocumentation:
 
         source_table              -- Source table name.
         output_table              -- Output table name from preprocessor.
-        dependent_varname         -- Dependent variable from the original table.
-        independent_varname       -- Independent variables from the original
+        dependent_varname         -- Dependent variable values from the original table
+                                     (shifted by dependent_offset, if specified).
+        independent_varname       -- Independent variable values from the original
                                      table.
         dependent_vartype         -- Type of the dependent variable from the
                                      original table.
