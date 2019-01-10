@@ -33,7 +33,7 @@ OutputStreamBufferBase<Derived, C, Allocator>::~OutputStreamBufferBase() {
  * @brief Output a string
  *
  * Subclasses are required to implement this method and to feed the message
- * the the the DBMS-specific logging routine.
+ * to the DBMS-specific logging routine.
  * @param inMsg Null-terminated string to be output.
  * @param inLength Length of inMsg (for convenience).
  */

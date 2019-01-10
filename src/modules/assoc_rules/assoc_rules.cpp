@@ -92,7 +92,7 @@ gen_rules_from_cfp::SRF_next(void *user_fctx, bool *is_last_call) {
     int                 len = 0;
 
     if (!is_last_call)
-        throw std::invalid_argument("the paramter is_last_class should not be null");
+        throw std::invalid_argument("the parameter is_last_class should not be null");
 
     if (myfctx->num_calls <= 0) {
         *is_last_call = true;

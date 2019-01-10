@@ -2,8 +2,8 @@
  *
  * @file newton.hpp
  *
- * Generic implementaion of Newton's method, in the fashion of
- * user-definied aggregates. They should be called by actually database
+ * Generic implementation of Newton's method, in the fashion of
+ * user-defined aggregates. They should be called by actually database
  * functions, after arguments are properly parsed.
  *
  *//* ----------------------------------------------------------------------- */

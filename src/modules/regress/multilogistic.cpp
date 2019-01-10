@@ -528,7 +528,7 @@ __mlogregr_irls_step_final::run(AnyType &args) {
     // matrices. We extend the check also to the dependent variables.
     if (!state.X_transp_AX.is_finite() || !state.gradient.is_finite())
         throw NoSolutionFoundException("Over- or underflow in intermediate "
-            "calulation. Input data is likely of poor numerical condition.");
+            "calculation. Input data is likely of poor numerical condition.");
 
     SymmetricPositiveDefiniteEigenDecomposition<Matrix> decomposition(
         -1 * state.X_transp_AX, EigenvaluesOnly, ComputePseudoInverse);
@@ -856,7 +856,7 @@ mlogregr_robust_step_final::run(AnyType &args) {
     // matrices. We extend the check also to the dependent variables.
     if (!state.X_transp_AX.is_finite())
         throw NoSolutionFoundException("Over- or underflow in intermediate "
-            "calulation. Input data is likely of poor numerical condition.");
+            "calculation. Input data is likely of poor numerical condition.");
 
 
     SymmetricPositiveDefiniteEigenDecomposition<Matrix> decomposition(

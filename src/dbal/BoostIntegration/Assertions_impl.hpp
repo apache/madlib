@@ -54,7 +54,7 @@ void
 assertion_failed(char const *inExpr, char const *inFunction,
     char const *inFile, long inLine) {
 
-    assertion_failed_msg("A run-time error occured.", inExpr, inFunction,
+    assertion_failed_msg("A run-time error occurred.", inExpr, inFunction,
         inFile, inLine);
 }
 

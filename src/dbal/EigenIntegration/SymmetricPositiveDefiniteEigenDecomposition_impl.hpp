@@ -56,7 +56,7 @@ SymmetricPositiveDefiniteEigenDecomposition<MatrixType>::conditionNo()
     // All eigenvalues of a positive semi-definite matrix are
     // non-negative, so in theory no need to take absolute values.
     // Unfortunately, numerical instabilities can cause eigenvalues to
-    // be slightly negative. We should interprete that as 0.
+    // be slightly negative. We should interpret that as 0.
     if (denominator < 0)
         denominator = 0;
 

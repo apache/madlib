@@ -719,7 +719,7 @@ def _execute_per_module_db_create_obj_algo(schema, maddir_mod_py, module,
                                            sqlfile, algoname, cur_tmpdir,
                                            upgrade, create_obj_handle, sc):
     """
-        Perform opertions that have to be done per module when
+        Perform operations that have to be done per module when
         _db_create_objects function is invoked
     """
     if not upgrade:
@@ -936,7 +936,7 @@ def parse_arguments():
         '-c', '--conn', metavar='CONNSTR', nargs=1, dest='connstr', default=None,
         help="""Connection string of the following syntax:
                    [user[/password]@][host][:port][/database]
-                 If not provided default values will be derived for PostgerSQL and Greenplum:
+                 If not provided default values will be derived for PostgreSQL and Greenplum:
                  - user: PGUSER or USER env variable or OS username
                  - pass: PGPASSWORD env variable or runtime prompt
                  - host: PGHOST env variable or 'localhost'

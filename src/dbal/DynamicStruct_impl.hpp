@@ -196,7 +196,7 @@ DynamicStructBase<Derived,
     if (mByteStream.eof()) {
         // The assumption is that either
         // a) we have a valid dynamic struct, in which case we do not end here
-        // b) we have an unintialized dynamic struct, which only consists of
+        // b) we have an uninitialized dynamic struct, which only consists of
         //    (too few) zero bytes.
         // If (b) is violated, then mByteStream.tell() might not have the
         // correct size information.

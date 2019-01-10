@@ -45,7 +45,7 @@ lmf_igd_transition::run(AnyType &args) {
     // For other tuples: args[0] holds the computation state until last tuple
     LMFIGDState<MutableArrayHandle<double> > state = args[0];
 
-    // initilize the state if first tuple
+    // initialize the state if first tuple
     if (state.algo.numRows == 0) {
         if (!args[4].isNull()) {
             LMFIGDState<ArrayHandle<double> > previousState = args[4];
@@ -111,7 +111,7 @@ lmf_igd_transition::run(AnyType &args) {
 }
 
 /**
- * @brief Perform the perliminary aggregation function: Merge transition states
+ * @brief Perform the preliminary aggregation function: Merge transition states
  */
 AnyType
 lmf_igd_merge::run(AnyType &args) {
