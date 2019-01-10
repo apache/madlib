@@ -284,7 +284,7 @@ AnyType coxph_improved_step_final::run(AnyType& args)
 
     if (!state.hessian.is_finite() || !state.grad.is_finite())
         throw NoSolutionFoundException("Over- or underflow in intermediate "
-                                       "calulation. Input data is likely of poor numerical condition.");
+                                       "calculation. Input data is likely of poor numerical condition.");
 
    // First merge all tied times of death for the last row
     state.grad -= state.multiplier*state.H/state.S;
@@ -294,7 +294,7 @@ AnyType coxph_improved_step_final::run(AnyType& args)
 
     if (isinf(static_cast<double>(state.logLikelihood)) || isnan(static_cast<double>(state.logLikelihood)))
         throw NoSolutionFoundException("Over- or underflow in intermediate "
-                                       "calulation. Input data is likely of poor numerical condition.");
+                                       "calculation. Input data is likely of poor numerical condition.");
 
     // Computing pseudo inverse of a PSD matrix
     SymmetricPositiveDefiniteEigenDecomposition<Matrix> decomposition(
@@ -339,7 +339,7 @@ AnyType coxph_improved_strata_step_final::run(AnyType& args)
 
     if (!state.hessian.is_finite() || !state.grad.is_finite())
         throw NoSolutionFoundException("Over- or underflow in intermediate "
-                                       "calulation. Input data is likely of poor numerical condition.");
+                                       "calculation. Input data is likely of poor numerical condition.");
 
     // Computing pseudo inverse of a PSD matrix
     SymmetricPositiveDefiniteEigenDecomposition<Matrix> decomposition(

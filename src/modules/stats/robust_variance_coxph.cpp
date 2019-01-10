@@ -243,7 +243,7 @@ AnyType rb_coxph_step_final::run(AnyType& args)
 
     if (!state.M.is_finite())
         throw NoSolutionFoundException("Over- or underflow in intermediate "
-                                       "calulation. Input data is likely of poor numerical condition.");
+                                       "calculation. Input data is likely of poor numerical condition.");
 
     // Computing pseudo inverse of a PSD matrix
     SymmetricPositiveDefiniteEigenDecomposition<Matrix> decomposition(
@@ -434,7 +434,7 @@ AnyType rb_coxph_strata_step_final::run(AnyType& args)
 
     if (!state.M.is_finite())
         throw NoSolutionFoundException("Over- or underflow in intermediate "
-                                       "calulation. Input data is likely of poor numerical condition.");
+                                       "calculation. Input data is likely of poor numerical condition.");
 
     // For the last tie
     state.M = state.M - (state.tie12 + trans(state.tie12)) * state.A
@@ -468,7 +468,7 @@ AnyType rb_sum_strata_final::run(AnyType& args)
 
     if (!state.M.is_finite())
         throw NoSolutionFoundException("Over- or underflow in intermediate "
-                                       "calulation. Input data is likely of poor numerical condition.");
+                                       "calculation. Input data is likely of poor numerical condition.");
 
     // Computing pseudo inverse of a PSD matrix
     SymmetricPositiveDefiniteEigenDecomposition<Matrix> decomposition(

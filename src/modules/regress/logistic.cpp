@@ -655,9 +655,9 @@ AnyType logregr_irls_step_final::run(AnyType &args) {
     // matrices. We extend the check also to the dependent variables.
     if (!state.X_transp_AX.is_finite() || !state.X_transp_Az.is_finite()){
         //throw NoSolutionFoundException(
-        //    "Over- or underflow in intermediate calulation. Input data is "
+        //    "Over- or underflow in intermediate calculation. Input data is "
         //    "likely of poor numerical condition.");
-        warning("Over- or underflow in intermediate calulation. Input data is "
+        warning("Over- or underflow in intermediate calculation. Input data is "
               "likely of poor numerical condition.");
         state.status = TERMINATED;
         return state;

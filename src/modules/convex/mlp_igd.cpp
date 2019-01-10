@@ -140,7 +140,7 @@ mlp_igd_transition::run(AnyType &args) {
 }
 
 /**
- * @brief Perform the perliminary aggregation function: Merge transition states
+ * @brief Perform the preliminary aggregation function: Merge transition states
  */
 AnyType
 mlp_igd_merge::run(AnyType &args) {
@@ -189,7 +189,7 @@ mlp_minibatch_transition::run(AnyType &args) {
     // For other tuples: args[0] holds the computation state until last tuple
     MLPMiniBatchState<MutableArrayHandle<double> > state = args[0];
 
-    // initilize the state if first tuple
+    // initialize the state if first tuple
     if (state.numRows == 0) {
         if (!args[3].isNull()) {
             MLPMiniBatchState<ArrayHandle<double> > previousState = args[3];

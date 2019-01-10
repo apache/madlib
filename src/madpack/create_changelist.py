@@ -28,7 +28,7 @@
 
 # Usage (must be executed in the src/madpack directory):
 # python create_changelist.py <database name> <old version branch> <new version branch> <changelist filename>
-# If you are using the master branch, plase make sure to edit the branch/tag in the output file
+# If you are using the master branch, please make sure to edit the branch/tag in the output file
 
 # Example (should be equivalent to changelist_1.13_1.14.yaml):
 # python create_changelist.py madlib rel/v1.13 rel/v1.14 chtest1.yaml

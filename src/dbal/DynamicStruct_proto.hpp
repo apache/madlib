@@ -150,7 +150,7 @@ public:
      * @brief Bind a DynamicStruct object to the current position in the stream
      *
      * The following idiom (in-class friend function together with static
-     * polymorphicsm) is called the "Barton-Nackman trick". Essentially, we only
+     * polymorphism) is called the "Barton-Nackman trick". Essentially, we only
      * make operator>> visible if type Derived is involved.
      *
      * Subclasses have to implement the bind() function.

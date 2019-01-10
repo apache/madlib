@@ -54,7 +54,7 @@ AnyType coxph_step_inner_final::run(AnyType &args) {
 
     if (!state.hessian.is_finite() || !state.grad.is_finite())
         throw NoSolutionFoundException("Over- or underflow in intermediate "
-                                       "calulation. Input data is likely of poor numerical condition.");
+                                       "calculation. Input data is likely of poor numerical condition.");
 
     // First merge all tied times of death for the last row
     state.grad -= state.multiplier*state.H/state.S;

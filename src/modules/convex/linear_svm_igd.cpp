@@ -121,7 +121,7 @@ linear_svm_igd_transition::run(AnyType &args) {
 }
 
 /**
- * @brief Perform the perliminary aggregation function: Merge transition states
+ * @brief Perform the preliminary aggregation function: Merge transition states
  */
 AnyType
 linear_svm_igd_merge::run(AnyType &args) {

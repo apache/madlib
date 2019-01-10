@@ -419,7 +419,7 @@ mlogregr_marginal_step_final::run(AnyType &args) {
     // matrices. We extend the check also to the dependent variables.
     if (!state.X_transp_AX.is_finite())
         throw NoSolutionFoundException("Over- or underflow in intermediate "
-                                       "calulation. Input data is likely of poor numerical condition.");
+                                       "calculation. Input data is likely of poor numerical condition.");
 
     // Include marginal effects of reference variable:
     // FIXME: They have been taken out of the output for now

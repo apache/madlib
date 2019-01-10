@@ -145,7 +145,7 @@ def run_query(sql, con_args, show_error=True):
 def get_db_madlib_version(con_args, schema):
     """
     Read MADlib version from database
-        @param con_args database conection object
+        @param con_args database connection object
         @param schema MADlib schema name
     """
     try:
