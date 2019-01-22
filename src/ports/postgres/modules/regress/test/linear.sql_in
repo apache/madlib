@@ -213,3 +213,153 @@ select linregr_train('example');
 select linregr_predict();
 select linregr_predict('usage');
 select linregr_predict('example');
+
+
+
+
+
+------------------------------------------------------------------------
+
+
+-- Test case for JSON Data Type and Special characters. 
+-- This function checks special characters for GPDB version = 4.x and JSON for 5.x and above
+
+create or replace function linereg_expr_test() RETURNS VOID AS
+$$ 
+DECLARE col_type TEXT;
+
+begin
+select typname into col_type from pg_type where typname = 'json' ;
+if col_type = 'json' THEN
+
+DROP TABLE IF EXISTS houses_json;
+CREATE TABLE houses_json (
+    id SERIAL NOT NULL,
+    data json
+);
+
+
+INSERT INTO houses_json VALUES
+( 2  ,'{ "ta,x":  590, "bedroom":2, "ba$th":1,   "pr''ice":  50000, "size": 770, "lot":22100 }'),
+( 4  ,'{ "ta,x": 1050, "bedroom":3, "ba$th":2,   "pr''ice":  85000, "size":1410, "lot":12000 }'),
+( 1  ,'{ "ta,x":   20, "bedroom":3, "ba$th":1,   "pr''ice":  22500, "size":1060, "lot":3500  }'),
+( 6  ,'{ "ta,x":  870, "bedroom":2, "ba$th":2,   "pr''ice":  90000, "size":1300, "lot":17500 }'),
+( 3  ,'{ "ta,x": 1320, "bedroom":3, "ba$th":2,   "pr''ice": 133000, "size":1500, "lot":30000 }'),
+( 5  ,'{ "ta,x": 1350, "bedroom":2, "ba$th":1,   "pr''ice":  90500, "size": 820, "lot":25700 }'),
+( 7  ,'{ "ta,x": 2790, "bedroom":3, "ba$th":2.5, "pr''ice": 260000, "size":2130, "lot":25000 }'),
+( 10 ,'{ "ta,x":  680, "bedroom":2, "ba$th":1,   "pr''ice": 142500, "size":1170, "lot":22000 }'),
+( 9  ,'{ "ta,x": 1840, "bedroom":3, "ba$th":2,   "pr''ice": 160000, "size":1500, "lot":19000 }'),
+( 8  ,'{ "ta,x": 3680, "bedroom":4, "ba$th":2,   "pr''ice": 240000, "size":2790, "lot":20000 }'),
+( 11 ,'{ "ta,x": 1660, "bedroom":3, "ba$th":1,   "pr''ice":  87000, "size":1030, "lot":17500 }'),
+( 12 ,'{ "ta,x": 1620, "bedroom":3, "ba$th":2,   "pr''ice": 118600, "size":1250, "lot":20000 }'),
+( 13 ,'{ "ta,x": 3100, "bedroom":3, "ba$th":2,   "pr''ice": 140000, "size":1760, "lot":38000 }'),
+( 14 ,'{ "ta,x": 2070, "bedroom":2, "ba$th":3,   "pr''ice": 148000, "size":1550, "lot":14000 }'),
+( 15 ,'{ "ta,x":  650, "bedroom":3, "ba$th":1.5, "pr''ice":  65000, "size":1450, "lot":12000 }');
+
+drop table if exists result_lin_houses_json;
+drop table if exists result_lin_houses_json_summary;
+PERFORM linregr_train('houses_json', 'result_lin_houses_json', '(data->>''pr''''ice'')::integer',
+                    'array[1, (data->>''ta,x'')::integer, (data->>''ba$th'')::double precision, (data->>''size'')::integer]',
+                    'data->>''bedroom''', True);
+PERFORM assert(
+    relative_error(coef, array[-84242.0345, 55.4430, -78966.9754, 225.6119]) < 1e-2 and
+    relative_error(r2, 0.9688) < 1e-2 and
+    relative_error(std_err, array[35019.00, 19.57, 23036.81, 49.04]) < 1e-2 and
+    relative_error(t_stats, array[-2.406, 2.833, -3.428, 4.600]) < 1e-2 and
+    relative_error(p_values, array[0.251, 0.216, 0.181, 0.136]) < 1e-2 and
+    relative_error(condition_no, 10086.1) < 1e-2 and
+    relative_error(bp_stats, 2.5451) < 1e-2 and
+    relative_error(bp_p_value, 0.467192) < 1e-2,
+    'Linear regression with heteroskedasticity & grouping (houses): Wrong results'
+)
+from result_lin_houses_json
+where "data->>'bedroom'"::integer = 2;
+
+else 
+
+
+
+DROP TABLE IF EXISTS houses_spcl;
+CREATE TABLE houses_spcl (
+    id SERIAL NOT NULL,
+    "ta,x" INTEGER,
+    "bed,room" REAL,
+    "ba$th" REAL,
+    "pr'ice" INTEGER,
+    size INTEGER,
+    lot INTEGER
+);
+
+INSERT INTO houses_spcl("ta,x", "bed,room", "ba$th", "pr'ice", size, lot) VALUES
+( 590, 2, 1,    50000,  770, 22100),
+(1050, 3, 2,    85000, 1410, 12000),
+(  20, 3, 1,    22500, 1060, 3500 ),
+( 870, 2, 2,    90000, 1300, 17500),
+(1320, 3, 2,   133000, 1500, 30000),
+(1350, 2, 1,    90500,  820, 25700),
+(2790, 3, 2.5, 260000, 2130, 25000),
+( 680, 2, 1,   142500, 1170, 22000),
+(1840, 3, 2,   160000, 1500, 19000),
+(3680, 4, 2,   240000, 2790, 20000),
+(1660, 3, 1,    87000, 1030, 17500),
+(1620, 3, 2,   118600, 1250, 20000),
+(3100, 3, 2,   140000, 1760, 38000),
+(2070, 2, 3,   148000, 1550, 14000),
+( 650, 3, 1.5,  65000, 1450, 12000);
+
+drop table if exists result_lin_houses_spcl;
+drop table if exists result_lin_houses_spcl_summary;
+PERFORM linregr_train('houses_spcl', 'result_lin_houses_spcl', '"pr''ice"',
+                    'array[1, "ta,x", "ba$th", size]',
+                    '"bed,room"', True);
+PERFORM assert(
+    relative_error(coef, array[-84242.0345, 55.4430, -78966.9754, 225.6119]) < 1e-2 and
+    relative_error(r2, 0.9688) < 1e-2 and
+    relative_error(std_err, array[35019.00, 19.57, 23036.81, 49.04]) < 1e-2 and
+    relative_error(t_stats, array[-2.406, 2.833, -3.428, 4.600]) < 1e-2 and
+    relative_error(p_values, array[0.251, 0.216, 0.181, 0.136]) < 1e-2 and
+    relative_error(condition_no, 10086.1) < 1e-2 and
+    relative_error(bp_stats, 2.5451) < 1e-2 and
+    relative_error(bp_p_value, 0.467192) < 1e-2,
+    'Linear regression with heteroskedasticity & grouping (houses): Wrong results'
+)
+from result_lin_houses_spcl
+where result_lin_houses_spcl."bed,room" = 2;
+
+
+end IF;
+
+end;
+$$ LANGUAGE plpgsql;
+
+
+select linereg_expr_test();
+
+
+
+------------------------------------------------------------------------
+
+-- Test Case for : when grouping_cols is NULL and the heteroskedasticity_option is True
+
+
+
+
+drop table if exists result_lin_houses;
+drop table if exists result_lin_houses_summary;
+select linregr_train('houses', 'result_lin_houses', 'price',
+                    'array[1, tax, bath, size]',
+                    NULL, True);
+
+select assert(
+    relative_error(coef, array[-12849.4168959872,28.9613922651765,10181.6290712648,50.516894915354]) < 1e-2 and
+    relative_error(r2, 0.768577580597443) < 1e-2 and
+    relative_error(std_err, array[33453.0344331391,15.8992104963997,19437.7710925923,32.928023174087]) < 1e-2 and
+    relative_error(t_stats, array[-0.38410317968819,1.82156166004184,0.523806408809133,1.53416118083605]) < 1e-2 and
+    relative_error(p_values, array[0.708223134615422,0.0958005827189772,0.610804093526536,0.153235085548186]) < 1e-2 and
+    relative_error(condition_no, 9002.50) < 1e-2 and
+    relative_error(bp_stats, 1.22605243985138) < 1e-2 and
+    relative_error(bp_p_value, 0.746762880478034) < 1e-2,
+    'Linear regression with heteroskedasticity with no grouping: Wrong results'
+)
+from result_lin_houses;
+
