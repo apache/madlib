@@ -63,3 +63,63 @@ SELECT minibatch_preprocessor_dl(
   'minibatch_preprocessor_dl_batch',
   'label',
   'x');
+
+DROP TABLE IF EXISTS minibatch_preprocessor_dl_input;
+CREATE TABLE minibatch_preprocessor_dl_input(id serial, x double precision[], y INTEGER);
+INSERT INTO minibatch_preprocessor_dl_input(x, y) VALUES
+(ARRAY[1,2,3,4,5,6], 4),
+(ARRAY[11,2,3,4,5,6], 3),
+(ARRAY[11,22,33,4,5,6], 8),
+(ARRAY[11,22,33,44,5,6], 2),
+(ARRAY[11,22,33,44,65,6], 5),
+(ARRAY[11,22,33,44,65,56], 6),
+(ARRAY[11,22,33,44,65,56], 2),
+(ARRAY[11,22,33,44,65,56], 10),
+(ARRAY[11,22,33,44,65,56], 3),
+(ARRAY[11,22,33,44,65,56], 7),
+(ARRAY[11,22,33,44,65,56], 6),
+(ARRAY[11,22,33,44,65,56], -6),
+(ARRAY[11,22,33,144,65,56], 9),
+(ARRAY[11,22,233,44,65,56], 0),
+(ARRAY[11,22,33,44,65,56], 12),
+(ARRAY[11,22,33,44,65,56], -3),
+(ARRAY[11,22,33,44,65,56], -1);
+
+DROP TABLE IF EXISTS minibatch_preprocessor_dl_batch, minibatch_preprocessor_dl_batch_summary;
+SELECT minibatch_preprocessor_dl(
+  'minibatch_preprocessor_dl_input',
+  'minibatch_preprocessor_dl_batch',
+  'y',
+  'x',
+  4,
+  5);
+
+-- Test that indepdendent vars get divided by 5, by verifying min value goes from 1 to 0.2, and max value from 233 to 46.6
+SELECT assert(relative_error(MIN(x),0.2) < 0.00001, 'Independent var not normalized properly!') FROM (SELECT UNNEST(independent_varname) as x FROM minibatch_preprocessor_dl_batch) a;
+SELECT assert(relative_error(MAX(x),46.6) < 0.00001, 'Independent var not normalized properly!') FROM (SELECT UNNEST(independent_varname) as x FROM minibatch_preprocessor_dl_batch) a;
+
+DROP TABLE IF EXISTS minibatch_preprocessor_dl_batch, minibatch_preprocessor_dl_batch_summary;
+SELECT minibatch_preprocessor_dl(
+  'minibatch_preprocessor_dl_input',
+  'minibatch_preprocessor_dl_batch',
+  'y',
+  'x',
+  4,
+  5,
+  6);
+
+-- Test that dependent vars gets shifted by +6, by verifying minimum value goes from -6 to 0
+SELECT assert(abs(MIN(y))<0.00001, 'Dependent var not shifted properly!') FROM (SELECT UNNEST(dependent_varname) as y FROM minibatch_preprocessor_dl_batch) a;
+
+DROP TABLE IF EXISTS minibatch_preprocessor_dl_batch, minibatch_preprocessor_dl_batch_summary;
+SELECT minibatch_preprocessor_dl(
+  'minibatch_preprocessor_dl_input',
+  'minibatch_preprocessor_dl_batch',
+  'y',
+  'x',
+  4,
+  5,
+  -6);
+
+-- Test that dependent vars gets shifted by -6, by verifying minimum value goes from -6 to -12
+SELECT assert(relative_error(MIN(y), -12)<0.00001, 'Dependent var not shifted properly!') FROM (SELECT UNNEST(dependent_varname) as y FROM minibatch_preprocessor_dl_batch) a;
