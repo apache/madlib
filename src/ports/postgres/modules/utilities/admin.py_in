@@ -11,6 +11,15 @@ def __get_madlib_temp_tables(target_schema):
             """.format(**locals())
     return plpy.execute(sql_get_tables_to_drop)
 
+def __get_madlib_temp_views(target_schema):
+    sql_get_tables_to_drop = """
+            SELECT quote_ident(viewname) AS viewname
+            FROM pg_views
+            WHERE viewname LIKE E'%madlib\_temp%'
+            AND quote_ident(schemaname) = '{target_schema}'
+            """.format(**locals())
+    return plpy.execute(sql_get_tables_to_drop)
+
 # ------------------------------------------------------------------------------
 def cleanup_madlib_temp_tables(schema_madlib, target_schema, **kwargs):
     """ Drop all tables matching '%madlib_temp%' in the given schema
@@ -65,3 +74,16 @@ def cleanup_madlib_temp_tables_script(schema_madlib, target_schema, **kwargs):
         sql_drop = "DROP TABLE {target_schema}.{tablename};".format(**locals())
         sql_content += sql_drop + "\n"
     return sql_content
+
+# ------------------------------------------------------------------------------
+def cleanup_madlib_temp_views(schema_madlib, target_schema, **kwargs):
+    to_drop_list = __get_madlib_temp_views(target_schema)
+    if len(to_drop_list) == 0:
+        plpy.info("No madlib temp views found in schema {target_schema}.".format(**locals()))
+        return None
+    sql_drop_all = 'DROP VIEW IF EXISTS '
+    sql_drop_all += ",".join(["{target_schema}.{viewname}".format(
+            viewname=row['viewname'], **locals()) for row in to_drop_list])
+    sql_drop_all += " CASCADE;"
+    plpy.notice("Dropping {0} views ...".format(len(to_drop_list)))
+    plpy.execute(sql_drop_all)
