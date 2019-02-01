@@ -90,8 +90,8 @@ def warn(condition, msg):
 # ------------------------------------------------------------------------------
 
 
-def get_distribution_policy(source_table):
-    """ Return a list of columns that define the distribution policy of source_table
+def get_distributed_by(source_table):
+    """ Return a "distributed by (...)" clause that defines distribution policy of source_table
     Args:
         @param source_table
 
@@ -100,25 +100,46 @@ def get_distribution_policy(source_table):
     """
     _, table_name = _get_table_schema_names(source_table)
     schema_name = get_first_schema(source_table)
-    dist_attr = plpy.execute("""
-    SELECT array_agg(pga.attname) as dist_attr
-    FROM (
-        SELECT gdp.localoid,
-                 CASE
-                     WHEN ( ARRAY_UPPER(gdp.attrnums, 1) > 0 ) THEN
-                        UNNEST(gdp.attrnums)
-                     ELSE NULL
-                 END AS attnum
-            FROM gp_distribution_policy gdp
-        ) AS distkey
-        INNER JOIN pg_class AS pgc
-        ON distkey.localoid = pgc.oid AND pgc.relname = '{table_name}'
-        INNER JOIN pg_namespace pgn
-        ON pgc.relnamespace = pgn.oid AND pgn.nspname = '{schema_name}'
-        LEFT OUTER JOIN pg_attribute pga
-        ON distkey.attnum = pga.attnum AND distkey.localoid = pga.attrelid
-    """.format(table_name=table_name, schema_name=schema_name))[0]["dist_attr"]
-    return dist_attr
+
+    # GPDB 6 has pg_get_table_distributedby(<oid>) function to get the
+    # DISTRIBUTED BY clause of a table. In older version, we have to
+    # dig the column names based on gp_distribution_policy catalog.
+    version_wrapper = __mad_version()
+    if version_wrapper.is_gp_version_less_than("6.0"):
+        dist_attr = plpy.execute("""
+        SELECT array_agg(pga.attname) as dist_attr
+        FROM (
+            SELECT gdp.localoid,
+                     CASE
+                         WHEN ( ARRAY_UPPER(gdp.attrnums, 1) > 0 ) THEN
+                            UNNEST(gdp.attrnums)
+                         ELSE NULL
+                     END AS attnum
+                FROM gp_distribution_policy gdp
+            ) AS distkey
+            INNER JOIN pg_class AS pgc
+            ON distkey.localoid = pgc.oid AND pgc.relname = '{table_name}'
+            INNER JOIN pg_namespace pgn
+            ON pgc.relnamespace = pgn.oid AND pgn.nspname = '{schema_name}'
+            LEFT OUTER JOIN pg_attribute pga
+            ON distkey.attnum = pga.attnum AND distkey.localoid = pga.attrelid
+        """.format(table_name=table_name, schema_name=schema_name))[0]["dist_attr"]
+        if len(dist_attr) > 0:
+            dist_str = 'distributed by (' + ','.join(['"%s"' % i
+                                                      for i in dist_attr
+                                                      if i is not None]) + ')'
+        else:
+            dist_str = 'distributed randomly'
+    else:
+        dist_str = plpy.execute("""
+        SELECT pg_catalog.pg_get_table_distributedby(pgc.oid) as distributedby
+        FROM pg_class AS pgc
+        INNER JOIN pg_namespace pgn ON pgc.relnamespace = pgn.oid
+        WHERE pgc.relname = '{table_name}' AND pgn.nspname = '{schema_name}'
+        """.format(table_name=table_name, schema_name=schema_name))[0]["distributedby"]
+
+    return dist_str
+
 # ------------------------------------------------------------------------------
 
 
