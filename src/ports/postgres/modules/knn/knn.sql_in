@@ -180,7 +180,7 @@ speed up the algorithm but reduce the accuracy. </li>
 Inceasing this value will increase the accuracy but slow down the algorithm.</li></ul>
 
 Please note that the kd-tree accuracy will be lower for datasets with higher
-number of features. It is also advised to use at least two leaf nodes to improve the accuracy.</dd>
+number of features. It is also advised to use at least two leaf nodes to improve the accuracy. Refer to the <a href="#background">Technical Background</a> for details. </dd>
 
 
 </dl>
@@ -397,6 +397,38 @@ SELECT * FROM knn_result_classification ORDER BY id;
 (6 rows)
 </pre>
 
+-# Run KNN with kd-tree option
+<pre class="example">
+DROP TABLE IF EXISTS knn_result_classification;
+SELECT madlib.knn(
+                'knn_train_data',        -- Table of training data
+                'data',                  -- Col name of training data
+                'id',                    -- Col name of id in train data
+                NULL,                    -- Training labels
+                'knn_test_data',         -- Table of test data
+                'data',                  -- Col name of test data
+                'id',                    -- Col name of id in test data
+                'knn_result_classification_kd',  -- Output table
+                 1,                      -- Number of nearest neighbors
+                 True,                   -- True to list nearest-neighbors by id
+                 'madlib.squared_dist_norm2', -- Distance function
+                 False,                  -- For weighted average
+                 'kd_tree',              -- Use kd-tree
+                 'depth=1, leaf_nodes=1' -- Kd-tree options
+                 );
+SELECT * FROM madlib_knn_result_classification_kd ORDER BY id;
+</pre>
+<pre class="result">
+ id |  data   | k_nearest_neighbours
+----+---------+----------------------
+  1 | {2,1}   | {1}
+  2 | {2,6}   | {3}
+  3 | {15,40} | {7}
+  4 | {12,1}  | {4}
+  5 | {2,90}  | {9}
+  6 | {50,45} | {6}
+</pre>
+
 @anchor background
 @par Technical Background
 
@@ -409,6 +441,12 @@ vector (a test point) is classified by assigning the label which is most
 frequent among the k training samples nearest to that test point.
 In case of regression, average of the values of these k training samples
 is assigned to the test point.
+
+The kd-tree option is developed to improve the execution time of the knn operation by sacrificing accuracy. The kd-tree implementation divides the training dataset into regions (leaf nodes). A tree of depth 3 will have 2^3 = 8 regions. The algorithm will look for the nearset neighbors in the designated regions (instead of the whole dataset). For a given test point, the first region is found by traversing the tree and finding its associated node. If the user requests a higher number of leaf nodes, we look at the distance between the point and the borders of its region and expand the search to the closest regions.
+
+The kd-tree implementation assumes that the data is normalized; otherwise, the distance to border calculation will not yield correct results and the accuracy of the output may decrease. Kd-tree will use the features in the order they are porvided.
+
+Note that the kd-tree implementation accuracy might suffer on datasets with high number of features (dimensions). For example, assume that we are using a dataset with 20 features and kd-tree of depth 3. This means the regions are construted based on the first 3 features while the remaining 17 features are not considered. It is possible to miss nearest neighbors that are close in those remaining dimensions becasue they got assigned to a further region.
 
 @anchor literature
 @literature
