@@ -29,9 +29,7 @@
 import plpy
 import copy
 from collections import defaultdict
-from math import floor
 from math import log
-from math import ceil
 from utilities.control import MinWarning
 from utilities.utilities import _assert
 from utilities.utilities import add_postfix
@@ -265,7 +263,7 @@ def knn_tree(schema_madlib, kd_out, point_source, point_column_name, point_id,
              label_column_name, test_source, test_column_name, test_id,
              interim_table, in_k, output_neighbors, fn_dist, weighted_avg,
              leaf_nodes, r_id, dim, r_border, label_out, comma_label_out_alias,
-             label_name, train, train_id, dist_inverse, **kwargs):
+             label_name, train, train_id, dist_inverse, test_id_temp, **kwargs):
     """
         KNN function to find the K Nearest neighbours
         Args:
@@ -314,12 +312,13 @@ def knn_tree(schema_madlib, kd_out, point_source, point_column_name, point_id,
             @param train
             @param train_id
             @param dist_inverse
+            @param test_id_temp
     """
     with MinWarning("error"):
 
         tree_model = add_postfix(kd_out, "_tree")
         regions_table = add_postfix(kd_out, "_regions")
-        n_features = num_features(test_source, point_column_name)
+        n_features = num_features(test_source, test_column_name)
 
         tree = plpy.execute("SELECT * FROM {0}".format(tree_model))[0]['tree']
         # 'tree' contains only non-leaf nodes,
@@ -426,9 +425,9 @@ def knn_tree(schema_madlib, kd_out, point_source, point_column_name, point_id,
 
         sql = """ CREATE TABLE {interim_table} AS
             SELECT * FROM (
-                SELECT row_number() OVER (PARTITION BY {test_id}
+                SELECT row_number() OVER (PARTITION BY {test_id_temp}
                                           ORDER BY dist) AS r,
-                       {test_id},
+                       {test_id_temp},
                        {train_id},
                        dist,
                        CASE WHEN dist = 0.0
@@ -440,7 +439,7 @@ def knn_tree(schema_madlib, kd_out, point_source, point_column_name, point_id,
                     SELECT {train}.{r_id} AS tr_{r_id},
                            test.{r_id} AS test_{r_id},
                            {train}.{point_id} AS {train_id},
-                           test.{test_id} AS {test_id},
+                           test.{test_id} AS {test_id_temp},
                            {fn_dist}({train}.data,test.data) AS dist
                            {label_out}
                     FROM {kd_out} AS {train} INNER JOIN {ext_test_view} AS test
@@ -452,10 +451,10 @@ def knn_tree(schema_madlib, kd_out, point_source, point_column_name, point_id,
                 **locals())
         plpy.execute(sql)
 
-        # plpy.execute("DROP VIEW IF EXISTS {test_view} CASCADE".format(**locals()))
+        plpy.execute("DROP VIEW IF EXISTS {test_view} CASCADE".format(**locals()))
 
-        # if leaf_nodes > 1:
-        #     drop_tables([joined_regions, exp_table])
+        if leaf_nodes > 1:
+            drop_tables([joined_regions, exp_table])
 
         return
 # ------------------------------------------------------------------------------
@@ -524,10 +523,12 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
             leaf_nodes = algorithm_params_dict['leaf_nodes']
         else:
             depth = 0
+        n_features = num_features(test_source, test_column_name)
         use_kdtree = (True if algorithm and
                               'kd_tree' in algorithm and
                               depth > 0 and
-                              pow(2, depth) > leaf_nodes
+                              pow(2, depth) > leaf_nodes and
+                              leaf_nodes <= 2 * n_features
                            else False)
 
         # Unique Strings
@@ -645,8 +646,7 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
                      test_source, test_column_name, test_id, interim_table,
                      k, output_neighbors, fn_dist, weighted_avg, leaf_nodes,
                      r_id, dim, r_border, label_out, comma_label_out_alias,
-                     label_name, train, train_id, dist_inverse)
-            test_id_temp = test_id
+                     label_name, train, train_id, dist_inverse, test_id_temp)
         if not use_kdtree:
             plpy.execute("""
                 CREATE TABLE {interim_table} AS
