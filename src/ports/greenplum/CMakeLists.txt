@@ -11,8 +11,7 @@ set(PORT_DEPLOY_SCRIPT "${CMAKE_BINARY_DIR}/deploy/Component_${PORT}.cmake")
 
 if(APPLE)
     # FIXME: This should be handled in a better way.
-    # Greenplum is 32bit on the Mac.
-    set(ADDITIONAL_GCC_FLAGS "-m32")
+    set(ADDITIONAL_GCC_FLAGS "-m64")
 else(APPLE)
     unset(ADDITIONAL_GCC_FLAGS)
 endif(APPLE)
