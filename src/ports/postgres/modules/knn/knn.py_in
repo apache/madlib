@@ -191,7 +191,8 @@ def kd_tree(schema_madlib, source_table, output_table, point_column_name, depth,
                     """.format(**locals())
 
                 cutoff = plpy.execute(cutoff_sql)[0]['cutoff']
-
+                cutoff = cutoff if cutoff is not None else "NULL"
+                clause_counter += 1
                 region = regions.pop(0)
                 region1 = copy.deepcopy(region)
                 region2 = copy.deepcopy(region)
@@ -200,8 +201,7 @@ def kd_tree(schema_madlib, source_table, output_table, point_column_name, depth,
                 regions.append(region1)
                 regions.append(region2)
 
-                cutoffs.append(cutoff if cutoff is not None else "NULL")
-                clause_counter += 1
+                cutoffs.append(cutoff)
                 clauses.append(clause +
                                "AND {point_column_name}[{current_feature}]"
                                " < {cutoff} ".format(**locals()))
@@ -215,7 +215,6 @@ def kd_tree(schema_madlib, source_table, output_table, point_column_name, depth,
                      "SELECT ('{{ {1} }}')::DOUBLE PRECISION[] AS tree".
                      format(output_table_tree,
                             " ,".join(map(str, cutoffs))))
-
         plpy.execute("""
             CREATE TABLE {regions_table} (
                 {r_id} INTEGER, {dim} INTEGER, {r_border} DOUBLE PRECISION)
@@ -345,6 +344,8 @@ def knn_tree(schema_madlib, kd_out, point_source, point_column_name, point_id,
 
             for j in range(0, pow(2, i)):
                 cutoff = tree[tree_counter]
+                cutoff = cutoff if cutoff is not None else "NULL"
+
                 for k in range(repeat_num):
                     clause = clauses.pop(0)
                     clause += (" AND {point_column_name}[{current_feature}] "
@@ -359,15 +360,14 @@ def knn_tree(schema_madlib, kd_out, point_source, point_column_name, point_id,
 
             current_feature = current_feature % n_features + 1
 
-
         test_view = unique_string("test_view")
         plpy.execute("DROP VIEW IF EXISTS {test_view}".format(**locals()))
         test_view_case_when = '\n'.join(["WHEN {0} THEN {1}::INTEGER".
                                    format(clauses[i], i) for i in range(n_leaves)])
         test_view_sql = """
             CREATE VIEW {test_view} AS
-                SELECT {point_id},
-                       {point_column_name}::DOUBLE PRECISION[],
+                SELECT {test_id},
+                       {test_column_name}::DOUBLE PRECISION[],
                        CASE
                         {test_view_case_when}
                        END AS {r_id}
@@ -389,25 +389,25 @@ def knn_tree(schema_madlib, kd_out, point_source, point_column_name, point_id,
 
             plpy.execute("""
                 CREATE TABLE {exp_table} AS
-                SELECT {point_id}, {point_column_name}::DOUBLE PRECISION[],
-                       {point_column_name}::DOUBLE PRECISION[] AS {old_data}, {dim},
+                SELECT {test_id}, {test_column_name}::DOUBLE PRECISION[],
+                       {test_column_name}::DOUBLE PRECISION[] AS {old_data}, {dim},
                        CASE
-                            WHEN {r_border}-{point_column_name}[{dim}] > 0
+                            WHEN {r_border}-{test_column_name}[{dim}] > 0
                             THEN {r_border}+{EPSILON}
                             ELSE {r_border}-{EPSILON} END AS border_eps
                 FROM {joined_regions} INNER JOIN (
-                        SELECT {point_id},
+                        SELECT {test_id},
                                percentile_disc({quant}) WITHIN GROUP
                                 (ORDER BY
-                                    abs({r_border}-{point_column_name}[{dim}])
+                                    abs({r_border}-{test_column_name}[{dim}])
                                 ) min_border
-                        FROM {joined_regions} GROUP BY {point_id}
-                    )q1 USING ({point_id})
-                WHERE abs({r_border}-{point_column_name}[{dim}]) <= min_border
+                        FROM {joined_regions} GROUP BY {test_id}
+                    )q1 USING ({test_id})
+                WHERE abs({r_border}-{test_column_name}[{dim}]) <= min_border
                 """.format(EPSILON=EPSILON, **locals()))
 
             plpy.execute("""
-                UPDATE {exp_table} SET {point_column_name}[{dim}]=border_eps
+                UPDATE {exp_table} SET {test_column_name}[{dim}]=border_eps
                 """.format(**locals()))
 
             ext_test_view = unique_string("ext_test_view")
@@ -415,7 +415,7 @@ def knn_tree(schema_madlib, kd_out, point_source, point_column_name, point_id,
             ext_test_view_sql = """ CREATE VIEW {ext_test_view} AS
                 SELECT * FROM {test_view}
                 UNION
-                SELECT {point_id}, {old_data} AS {point_column_name},
+                SELECT {test_id}, {old_data} AS {test_column_name},
                     CASE {test_view_case_when} END AS {r_id}
                 FROM {exp_table}
                 """.format(**locals())
@@ -440,7 +440,8 @@ def knn_tree(schema_madlib, kd_out, point_source, point_column_name, point_id,
                            test.{r_id} AS test_{r_id},
                            {train}.{point_id} AS {train_id},
                            test.{test_id} AS {test_id_temp},
-                           {fn_dist}({train}.data,test.data) AS dist
+                           {fn_dist}({train}.{point_column_name},
+                                     test.{test_column_name}) AS dist
                            {label_out}
                     FROM {kd_out} AS {train} INNER JOIN {ext_test_view} AS test
                         ON {train}.{r_id} = test.{r_id}
@@ -528,7 +529,7 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
                               'kd_tree' in algorithm and
                               depth > 0 and
                               pow(2, depth) > leaf_nodes and
-                              leaf_nodes <= 2 * n_features
+                              leaf_nodes <= 2 * n_features + 1
                            else False)
 
         # Unique Strings
