@@ -150,7 +150,7 @@ def knn_validate_src(schema_madlib, point_source, point_column_name, point_id,
 
 
 def kd_tree(schema_madlib, source_table, output_table, point_column_name, depth,
-            r_id, dim, r_border, **kwargs):
+            r_id, dim, **kwargs):
     """
         KD-tree function to create a partitioning for KNN
         Args:
@@ -163,8 +163,6 @@ def kd_tree(schema_madlib, source_table, output_table, point_column_name, depth,
             @param depth                Depth of the kd tree
             @param r_id                 Name of the region id column
             @param dim                  Name of the dimension column
-            @param r_border             Name of the region border column
-            #TODO add r_border everywhere
 
     """
     with MinWarning("error"):
@@ -174,8 +172,7 @@ def kd_tree(schema_madlib, source_table, output_table, point_column_name, depth,
 
         clauses = [" WHERE 1=1 "]
         cutoffs = []
-        regions = [[("'-Infinity'","'Infinity'") for i in range(n_features)]]
-        regions_table = add_postfix(output_table, "_regions")
+        centers_table = add_postfix(output_table, "_centers")
         clause_counter = 0
         current_feature = 1
         for curr_level in range(depth):
@@ -193,13 +190,6 @@ def kd_tree(schema_madlib, source_table, output_table, point_column_name, depth,
                 cutoff = plpy.execute(cutoff_sql)[0]['cutoff']
                 cutoff = cutoff if cutoff is not None else "NULL"
                 clause_counter += 1
-                region = regions.pop(0)
-                region1 = copy.deepcopy(region)
-                region2 = copy.deepcopy(region)
-                region1[current_feature-1] = (region[current_feature-1][0], cutoff)
-                region2[current_feature-1] = (cutoff, region[current_feature-1][1])
-                regions.append(region1)
-                regions.append(region2)
 
                 cutoffs.append(cutoff)
                 clauses.append(clause +
@@ -215,19 +205,6 @@ def kd_tree(schema_madlib, source_table, output_table, point_column_name, depth,
                      "SELECT ('{{ {1} }}')::DOUBLE PRECISION[] AS tree".
                      format(output_table_tree,
                             " ,".join(map(str, cutoffs))))
-        plpy.execute("""
-            CREATE TABLE {regions_table} (
-                {r_id} INTEGER, {dim} INTEGER, {r_border} DOUBLE PRECISION)
-            """.format(**locals()))
-
-        for i, region in enumerate(regions,0):
-            for j, border in enumerate(region,0):
-                for k in border:
-                    plpy.execute("""
-                        INSERT INTO {regions_table}
-                            ({r_id}, {dim}, {r_border})
-                        VALUES ({i}, {j}+1, {k})""".format(**locals())
-                        )
 
         n_leaves = pow(2,depth)
         case_when_clause = ["WHEN {0} THEN {1}::INTEGER".format(cond[14:], i)
@@ -238,6 +215,17 @@ def kd_tree(schema_madlib, source_table, output_table, point_column_name, depth,
                 FROM {source_table}""".format(
                     cases = ' '.join(case_when_clause),**locals())
         plpy.execute(output_sql)
+
+        plpy.execute("DROP TABLE IF EXISTS {0}".format(centers_table))
+        centers_sql = """
+            CREATE TABLE {centers_table} AS
+                SELECT {r_id}, {schema_madlib}.array_scalar_mult(
+                        {schema_madlib}.sum({point_column_name}):: DOUBLE PRECISION[],
+                        (1.0/count(*))::DOUBLE PRECISION) AS __center__
+                FROM {output_table}
+                GROUP BY {r_id}
+            """.format(**locals())
+        plpy.execute(centers_sql)
 # ------------------------------------------------------------------------------
 
 def validate_kd_tree(source_table, output_table, point_column_name, depth):
@@ -261,7 +249,7 @@ def validate_kd_tree(source_table, output_table, point_column_name, depth):
 def knn_tree(schema_madlib, kd_out, point_source, point_column_name, point_id,
              label_column_name, test_source, test_column_name, test_id,
              interim_table, in_k, output_neighbors, fn_dist, weighted_avg,
-             leaf_nodes, r_id, dim, r_border, label_out, comma_label_out_alias,
+             leaf_nodes, r_id, dim, label_out, comma_label_out_alias,
              label_name, train, train_id, dist_inverse, test_id_temp, **kwargs):
     """
         KNN function to find the K Nearest neighbours
@@ -302,7 +290,6 @@ def knn_tree(schema_madlib, kd_out, point_source, point_column_name, point_id,
             @param leaf_nodes           Number of leaf nodes to explore
             @param r_id                 Name of the region id column
             @param dim                  Name of the dimension column
-            @param r_border             Name of the region border column
             Following parameters are passed to ensure the interim table has
             identical features to non-kd-tree implementation
             @param label_out
@@ -316,7 +303,7 @@ def knn_tree(schema_madlib, kd_out, point_source, point_column_name, point_id,
     with MinWarning("error"):
 
         tree_model = add_postfix(kd_out, "_tree")
-        regions_table = add_postfix(kd_out, "_regions")
+        centers_table = add_postfix(kd_out, "_centers")
         n_features = num_features(test_source, test_column_name)
 
         tree = plpy.execute("SELECT * FROM {0}".format(tree_model))[0]['tree']
@@ -332,7 +319,7 @@ def knn_tree(schema_madlib, kd_out, point_source, point_column_name, point_id,
 
         # The first leaf_note is itself,
         # we expand to n-1 nodes out of 2 * n_features borders
-        quant = (leaf_nodes-1) / (n_features * 2.0)
+        quant = float(leaf_nodes) / n_leaves
 
         clause_counter = 0
         tree_counter = 0
@@ -372,53 +359,24 @@ def knn_tree(schema_madlib, kd_out, point_source, point_column_name, point_id,
                         {test_view_case_when}
                        END AS {r_id}
                 FROM {test_source}""".format(**locals())
-        plpy.execute(test_view_sql.format())
+        plpy.execute(test_view_sql)
 
         if leaf_nodes > 1:
-            joined_regions = unique_string("joined_regions")
-            plpy.execute("DROP TABLE IF EXISTS {joined_regions}".format(**locals()))
-            plpy.execute("""
-                CREATE TABLE {joined_regions} AS
-                    SELECT *
-                    FROM {test_view} INNER JOIN {regions_table}
-                        USING ({r_id})
-                """.format(**locals()))
-
-            exp_table = unique_string("exp_table")
-            old_data = unique_string("exp_table")
-
-            plpy.execute("""
-                CREATE TABLE {exp_table} AS
-                SELECT {test_id}, {test_column_name}::DOUBLE PRECISION[],
-                       {test_column_name}::DOUBLE PRECISION[] AS {old_data}, {dim},
-                       CASE
-                            WHEN {r_border}-{test_column_name}[{dim}] > 0
-                            THEN {r_border}+{EPSILON}
-                            ELSE {r_border}-{EPSILON} END AS border_eps
-                FROM {joined_regions} INNER JOIN (
-                        SELECT {test_id},
-                               percentile_disc({quant}) WITHIN GROUP
-                                (ORDER BY
-                                    abs({r_border}-{test_column_name}[{dim}])
-                                ) min_border
-                        FROM {joined_regions} GROUP BY {test_id}
-                    )q1 USING ({test_id})
-                WHERE abs({r_border}-{test_column_name}[{dim}]) <= min_border
-                """.format(EPSILON=EPSILON, **locals()))
-
-            plpy.execute("""
-                UPDATE {exp_table} SET {test_column_name}[{dim}]=border_eps
-                """.format(**locals()))
-
             ext_test_view = unique_string("ext_test_view")
-            plpy.execute("DROP VIEW IF EXISTS {ext_test_view}".format(**locals()))
-            ext_test_view_sql = """ CREATE VIEW {ext_test_view} AS
-                SELECT * FROM {test_view}
-                UNION
-                SELECT {test_id}, {old_data} AS {test_column_name},
-                    CASE {test_view_case_when} END AS {r_id}
-                FROM {exp_table}
-                """.format(**locals())
+            ext_test_view_sql = """
+                CREATE VIEW {ext_test_view} AS
+                    SELECT {test_id},
+                           {test_column_name}::DOUBLE PRECISION[],
+                           {centers_table}.{r_id}
+                    FROM {test_view} INNER JOIN
+                        (SELECT {test_id}, percentile_disc({quant}) WITHIN GROUP
+                            (ORDER BY {fn_dist}({test_column_name}, __center__)
+                            ) AS __dist_center__
+                         FROM {test_view}, {centers_table}
+                         GROUP BY {test_id}
+                        )__q1__ USING ({test_id}), {centers_table}
+                    WHERE {fn_dist}({test_column_name}, __center__) <= __dist_center__
+                """. format(**locals())
             plpy.execute(ext_test_view_sql)
         else:
             ext_test_view = test_view
@@ -453,10 +411,7 @@ def knn_tree(schema_madlib, kd_out, point_source, point_column_name, point_id,
         plpy.execute(sql)
 
         plpy.execute("DROP VIEW IF EXISTS {test_view} CASCADE".format(**locals()))
-        drop_tables([tree_model, regions_table])
-
-        if leaf_nodes > 1:
-            drop_tables([joined_regions, exp_table])
+        drop_tables([tree_model])
 
         return
 # ------------------------------------------------------------------------------
@@ -545,10 +500,8 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
         dist = unique_string(desp='dist')
         train_id = unique_string(desp='train_id')
         dist_inverse = unique_string(desp='dist_inverse')
-        r = unique_string(desp='r')
         r_id = unique_string(desp='r_id')
         dim = unique_string(desp='dim')
-        r_border = unique_string(desp='r_border')
 
         if not fn_dist:
             fn_dist = '{0}.squared_dist_norm2'.format(schema_madlib)
@@ -642,12 +595,12 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
         if use_kdtree:
             kd_output_table = unique_string(desp='kd_tree')
             kd_tree(schema_madlib, point_source, kd_output_table,
-                    point_column_name, depth, r_id, dim, r_border)
+                    point_column_name, depth, r_id, dim)
             knn_tree(schema_madlib, kd_output_table, point_source,
                      point_column_name, point_id, label_column_name,
                      test_source, test_column_name, test_id, interim_table,
                      k, output_neighbors, fn_dist, weighted_avg, leaf_nodes,
-                     r_id, dim, r_border, label_out, comma_label_out_alias,
+                     r_id, dim, label_out, comma_label_out_alias,
                      label_name, train, train_id, dist_inverse, test_id_temp)
         if not use_kdtree:
             plpy.execute("""
