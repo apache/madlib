@@ -57,7 +57,7 @@ EPSILON = 1/MAX_WEIGHT_ZERO_DIST
 def knn_validate_src(schema_madlib, point_source, point_column_name, point_id,
                      label_column_name, test_source, test_column_name,
                      test_id, output_table, k, output_neighbors, fn_dist,
-                     algorithm, **kwargs):
+                     depth, leaf_nodes, **kwargs):
     input_tbl_valid(point_source, 'kNN')
     input_tbl_valid(test_source, 'kNN')
     output_tbl_valid(output_table, 'kNN')
@@ -138,13 +138,15 @@ def knn_validate_src(schema_madlib, point_source, point_column_name, point_id,
         if is_invalid_func or (fn_dist not in dist_functions):
             plpy.error("KNN error: Distance function ({0}) has invalid signature "
                        "or is not a simple function.".format(fn_dist))
-    if algorithm:
-        algorithm = algorithm.lower().strip()
-        if algorithm not in ['brute_force', 'kd_tree']:
-            plpy.error("KNN error: Incorrect algorithm. "
-                       "Please pick brute_force or kd_tree".format(fn_dist))
-
-
+    if depth <= 0:
+        plpy.error("kNN Error: depth={0} is an invalid value, must be greater "
+                   "than 0.".format(depth))
+    if leaf_nodes <= 0:
+        plpy.error("kNN Error: leaf_nodes={0} is an invalid value, must be greater "
+                   "than 0.".format(leaf_nodes))
+    if pow(2,depth) <= leaf_nodes:
+        plpy.error("kNN Error: depth={0}, leaf_nodes={1} is not valid. "
+                   "The leaf_nodes value must be lower than 2^depth".format(depth, leaf_nodes))
     return k
 # ------------------------------------------------------------------------------
 
@@ -411,9 +413,28 @@ def knn_tree(schema_madlib, kd_out, point_source, point_column_name, point_id,
         plpy.execute(sql)
 
         plpy.execute("DROP VIEW IF EXISTS {test_view} CASCADE".format(**locals()))
-        drop_tables([tree_model])
+        drop_tables([tree_model, centers_table, kd_out])
 
         return
+# ------------------------------------------------------------------------------
+
+def _get_algorithm_name(algorithm):
+    if not algorithm:
+        algorithm = 'brute_force'
+    else:
+        supported_algorithms = ['brute_force', 'kd_tree']
+        try:
+            # allow user to specify a prefix substring of
+            # supported algorithms. This works because the supported
+            # algorithms have unique prefixes.
+            algorithm = next(x for x in supported_algorithms
+                               if x.startswith(algorithm))
+        except StopIteration:
+            # next() returns a StopIteration if no element found
+            plpy.error("kNN Error: Invalid algorithm: "
+                       "{0}. Supported algorithms are ({1})"
+                       .format(algorithm, ','.join(sorted(supported_algorithms))))
+    return algorithm
 # ------------------------------------------------------------------------------
 
 def knn(schema_madlib, point_source, point_column_name, point_id,
@@ -463,30 +484,30 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
         output_neighbors = True if output_neighbors is None else output_neighbors
         if k is None:
             k = 1
+
+        algorithm = _get_algorithm_name(algorithm)
+
+        # Default values for depth and leaf nodes
+        depth = 3
+        leaf_nodes = 2
+
+        if algorithm_params:
+            params_types = {'depth': int, 'leaf_nodes': int}
+            default_args = {'depth': 3, 'leaf_nodes': 2}
+            algorithm_params_dict = extract_keyvalue_params(algorithm_params,
+                                                            params_types,
+                                                            default_args)
+
+            depth = algorithm_params_dict['depth']
+            leaf_nodes = algorithm_params_dict['leaf_nodes']
+
         knn_validate_src(schema_madlib, point_source,
                          point_column_name, point_id, label_column_name,
                          test_source, test_column_name, test_id,
                          output_table, k, output_neighbors, fn_dist,
-                         algorithm)
+                         depth, leaf_nodes)
 
-
-        if algorithm_params:
-            params_types = {'depth': int, 'leaf_nodes': int}
-            default_args = {'depth': 'depth', 'leaf_nodes': 'leaf_nodes'}
-            algorithm_params_dict = extract_keyvalue_params(algorithm_params,
-                                                            params_types,
-                                                            default_args)
-            depth = algorithm_params_dict['depth']
-            leaf_nodes = algorithm_params_dict['leaf_nodes']
-        else:
-            depth = 0
         n_features = num_features(test_source, test_column_name)
-        use_kdtree = (True if algorithm and
-                              'kd_tree' in algorithm and
-                              depth > 0 and
-                              pow(2, depth) > leaf_nodes and
-                              leaf_nodes <= 2 * n_features + 1
-                           else False)
 
         # Unique Strings
         x_temp_table = unique_string(desp='x_temp_table')
@@ -593,7 +614,7 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
         else:
             knn_neighbors = ''
 
-        if use_kdtree:
+        if 'kd_tree' in algorithm:
             kd_output_table = unique_string(desp='kd_tree')
             kd_tree(schema_madlib, point_source, kd_output_table,
                     point_column_name, depth, r_id, dim)
@@ -603,7 +624,7 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
                      k, output_neighbors, fn_dist, weighted_avg, leaf_nodes,
                      r_id, dim, label_out, comma_label_out_alias,
                      label_name, train, train_id, dist_inverse, test_id_temp)
-        if not use_kdtree:
+        else:
             plpy.execute("""
                 CREATE TABLE {interim_table} AS
                     SELECT * FROM (
@@ -635,7 +656,7 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
                 WHERE {y_temp_table}.{r} <= {k}
                 """.format(max_weight_zero_dist=MAX_WEIGHT_ZERO_DIST, **locals()))
 
-        sql = """
+        output_sql = """
             CREATE TABLE {output_table} AS
                 {view_def}
                 SELECT
@@ -653,8 +674,8 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
                     {test_column_name}
                          {view_grp_by}
             """
-        plpy.execute(sql.format(**locals()))
-        plpy.execute("DROP TABLE IF EXISTS {0}".format(interim_table))
+        plpy.execute(output_sql.format(**locals()))
+        drop_tables([interim_table])
         return
 # ------------------------------------------------------------------------------
 
