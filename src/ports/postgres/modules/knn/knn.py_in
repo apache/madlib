@@ -31,6 +31,7 @@ import copy
 from collections import defaultdict
 from math import log
 from utilities.control import MinWarning
+from utilities.utilities import INTEGER
 from utilities.utilities import _assert
 from utilities.utilities import add_postfix
 from utilities.utilities import extract_keyvalue_params
@@ -113,7 +114,7 @@ def knn_validate_src(schema_madlib, point_source, point_column_name, point_id,
                        format(col_type, point_source))
 
     col_type_test = get_expr_type(test_id, test_source).lower()
-    if col_type_test not in ['integer']:
+    if col_type_test not in INTEGER:
         plpy.error("kNN Error: Invalid data type '{0}' for"
                    " test_id column in table '{1}'.".
                    format(col_type_test, test_source))
@@ -350,13 +351,14 @@ def knn_tree(schema_madlib, kd_out, point_source, point_column_name, point_id,
             current_feature = current_feature % n_features + 1
 
         test_view = unique_string("test_view")
+        t_col_name = unique_string("t_col_name")
         plpy.execute("DROP VIEW IF EXISTS {test_view}".format(**locals()))
         test_view_case_when = '\n'.join(["WHEN {0} THEN {1}::INTEGER".
                                    format(clauses[i], i) for i in range(n_leaves)])
         test_view_sql = """
             CREATE VIEW {test_view} AS
                 SELECT {test_id},
-                       {test_column_name}::DOUBLE PRECISION[],
+                       {test_column_name}::DOUBLE PRECISION[] AS {t_col_name},
                        CASE
                         {test_view_case_when}
                        END AS {r_id}
@@ -368,7 +370,7 @@ def knn_tree(schema_madlib, kd_out, point_source, point_column_name, point_id,
             ext_test_view_sql = """
                 CREATE VIEW {ext_test_view} AS
                     SELECT {test_id},
-                           {test_column_name}::DOUBLE PRECISION[],
+                           {t_col_name},
                            {centers_table}.{r_id}
                     FROM {test_view} INNER JOIN
                         (SELECT {test_id}, percentile_disc({quant}) WITHIN GROUP
@@ -400,13 +402,13 @@ def knn_tree(schema_madlib, kd_out, point_source, point_column_name, point_id,
                            test.{r_id} AS test_{r_id},
                            {train}.{point_id} AS {train_id},
                            test.{test_id} AS {test_id_temp},
-                           {fn_dist}({train}.{point_column_name},
-                                     test.{test_column_name}) AS dist
+                           {fn_dist}({point_column_name},
+                                     {t_col_name}) AS dist
                            {label_out}
                     FROM {kd_out} AS {train} INNER JOIN {ext_test_view} AS test
                         ON {train}.{r_id} = test.{r_id}
                     ) q1
-                )q2
+                ) q2
             WHERE r <= {in_k}""".format(
                 max_weight_zero_dist=MAX_WEIGHT_ZERO_DIST,
                 **locals())
