@@ -32,25 +32,29 @@ m4_include(`SQLCommon.m4')
 <div class="toc"><b>Contents</b><ul>
 <li class="level1"><a href="#minibatch_preprocessor_dl">Mini-Batch Preprocessor for Deep Learning</a></li>
 <li class="level1"><a href="#example">Examples</a></li>
+<li class="level1"><a href="#related">Related Topics</a></li>
 </ul></div>
 
-For Deep Learning based techniques such as Convolutional Neural Nets, the input
-data is mostly images. These images can be represented as an array of numbers
-where all elements are between 0 and 255 in value. It is standard practice
-to divide each of these numbers by 255.0 to normalize the image data.
-minibatch_preprocessor() is for general use-cases, but for deep learning based
-use-cases we provide minibatch_preprocessor_dl() that is light-weight and is
-specific to image datasets. The normalizing constant is parameterized, and can
-be specified based on the kind of image data used.
+For deep learning techniques such as convolutional neural networks, the input
+data is often images. These images can represented as an array of numbers
+with elements between 0 and 255, representing grayscale or RGB channel values
+for each pixel in the image.  It is standard practice to divide by 255 to
+normalize the image data.  The normalizing constant is parameterized, and can
+be set depending on the format of image data used.
+
+This mini-batch preprocessor is a lightweight version designed specifically
+for image data.  A separate more general minibatch_preprocessor() is also
+available for other MADlib modules using non-image input data.
+
 <pre class="syntax">
-minibatch_preprocessor_dl(source_table,
-                        output_table,
-                        dependent_varname,
-                        independent_varname,
-                        buffer_size,
-                        normalizing_const,
-                        dependent_offset
-                        )
+minibatch_preprocessor_dl( source_table,
+                           output_table,
+                           dependent_varname,
+                           independent_varname,
+                           buffer_size,
+                           normalizing_const,
+                           dependent_offset
+                          )
 </pre>
 
 \b Arguments
@@ -62,9 +66,9 @@ minibatch_preprocessor_dl(source_table,
   <dt>output_table</dt>
   <dd>TEXT.  Name of the output table from the preprocessor which
   will be used as input to algorithms that support mini-batching.
-  Note that the arrays packed into the output table are randomized
+  Note that the arrays packed into the output table are shuffled
   and normalized (by dividing each element in the independent variable array
-  by the normalizing_const), so they will not match up in an obvious way with
+  by the "normalizing_const"), so they will not match up in an obvious way with
   the rows in the source table.
   </dd>
 
@@ -73,7 +77,7 @@ minibatch_preprocessor_dl(source_table,
   </dd>
 
   <dt>independent_varname</dt>
-  <dd>TEXT. Name of the independent variable column. The column must be of
+  <dd>TEXT. Name of the independent variable column. The column must be
   a numeric array type.
   </dd>
 
@@ -82,19 +86,21 @@ minibatch_preprocessor_dl(source_table,
   number of rows from the
   source table that are packed into one row of the preprocessor
   output table.  The default value is computed considering size of
-  the source table, number of independent variables, number of groups,
-  and number of segments in the database cluster.  For larger data sets,
-  the computed buffer size will typically be a value in the millions.
+  the source table, number of independent variables,
+  and number of segments in the database cluster.
   </dd>
 
   <dt>normalizing_const (optional)</dt>
-  <dd>DOUBLE PRECISION, default: 255.0. The normalizing constant to divide
+  <dd>DOUBLE PRECISION, default: 255. The normalizing constant to divide
   each value in the independent_varname array by.
   </dd>
 
   <dt>dependent_offset (optional)</dt>
   <dd>INTEGER, default: NULL. If specified, shifts all dependent
-  variable values by this number (should only be used for numeric types).
+  variable values by this number (should only be used for numeric
+  types).  For example, can be used to handle the case where you need to
+  convert between class values that start at 0 or 1, which saves
+  you from having to run a separate query on the output table.
   </dd>
 
 </dl>
@@ -105,7 +111,7 @@ minibatch_preprocessor_dl(source_table,
     <table class="output">
       <tr>
         <th>buffer_id</th>
-        <td>INTEGER. Unique id for packed table.
+        <td>INTEGER. Unique id for each row in the packed table.
         </td>
       </tr>
       <tr>
@@ -142,7 +148,7 @@ A summary table named \<output_table\>_summary is also created, which has the fo
     </tr>
     <tr>
         <th>dependent_vartype</th>
-        <td>Type of the dependent varialbe from the source table.</td>
+        <td>Type of the dependent variable from the source table.</td>
     </tr>
     <tr>
         <th>buffer_size</th>
@@ -152,159 +158,234 @@ A summary table named \<output_table\>_summary is also created, which has the fo
 
 @anchor example
 @par Examples
--#  Create an input data set based on the well known iris data set:
+-#  Create an artificial 2x2 resolution color image data set with 3 possible classifications:
 <pre class="example">
-DROP TABLE IF EXISTS iris_data;
-CREATE TABLE iris_data(
-    id serial,
-    attributes numeric[],
-    class_text varchar,
-    class integer,
-    state varchar
+DROP TABLE IF EXISTS image_data;
+CREATE TABLE image_data AS (
+SELECT ARRAY[
+        (random() * 256)::integer, -- R values
+        (random() * 256)::integer,
+        (random() * 256)::integer,
+        (random() * 256)::integer,
+        (random() * 256)::integer, -- G values
+        (random() * 256)::integer,
+        (random() * 256)::integer,
+        (random() * 256)::integer,
+        (random() * 256)::integer, -- B values
+        (random() * 256)::integer,
+        (random() * 256)::integer,
+        (random() * 256)::integer
+    ] as rgb, ('{cat,dog,bird}'::text[])[ceil(random()*3)] as species
+FROM generate_series(1, 52)
 );
-INSERT INTO iris_data(id, attributes, class_text, class, state) VALUES
-(1,ARRAY[5.0,3.2,1.2,0.2],'Iris_setosa',1,'Alaska'),
-(2,ARRAY[5.5,3.5,1.3,0.2],'Iris_setosa',1,'Alaska'),
-(3,ARRAY[4.9,3.1,1.5,0.1],'Iris_setosa',1,'Alaska'),
-(4,ARRAY[4.4,3.0,1.3,0.2],'Iris_setosa',1,'Alaska'),
-(5,ARRAY[5.1,3.4,1.5,0.2],'Iris_setosa',1,'Alaska'),
-(6,ARRAY[5.0,3.5,1.3,0.3],'Iris_setosa',1,'Alaska'),
-(7,ARRAY[4.5,2.3,1.3,0.3],'Iris_setosa',1,'Alaska'),
-(8,ARRAY[4.4,3.2,1.3,0.2],'Iris_setosa',1,'Alaska'),
-(9,ARRAY[5.0,3.5,1.6,0.6],'Iris_setosa',1,'Alaska'),
-(10,ARRAY[5.1,3.8,1.9,0.4],'Iris_setosa',1,'Alaska'),
-(11,ARRAY[4.8,3.0,1.4,0.3],'Iris_setosa',1,'Alaska'),
-(12,ARRAY[5.1,3.8,1.6,0.2],'Iris_setosa',1,'Alaska'),
-(13,ARRAY[5.7,2.8,4.5,1.3],'Iris_versicolor',2,'Alaska'),
-(14,ARRAY[6.3,3.3,4.7,1.6],'Iris_versicolor',2,'Alaska'),
-(15,ARRAY[4.9,2.4,3.3,1.0],'Iris_versicolor',2,'Alaska'),
-(16,ARRAY[6.6,2.9,4.6,1.3],'Iris_versicolor',2,'Alaska'),
-(17,ARRAY[5.2,2.7,3.9,1.4],'Iris_versicolor',2,'Alaska'),
-(18,ARRAY[5.0,2.0,3.5,1.0],'Iris_versicolor',2,'Alaska'),
-(19,ARRAY[5.9,3.0,4.2,1.5],'Iris_versicolor',2,'Alaska'),
-(20,ARRAY[6.0,2.2,4.0,1.0],'Iris_versicolor',2,'Alaska'),
-(21,ARRAY[6.1,2.9,4.7,1.4],'Iris_versicolor',2,'Alaska'),
-(22,ARRAY[5.6,2.9,3.6,1.3],'Iris_versicolor',2,'Alaska'),
-(23,ARRAY[6.7,3.1,4.4,1.4],'Iris_versicolor',2,'Alaska'),
-(24,ARRAY[5.6,3.0,4.5,1.5],'Iris_versicolor',2,'Alaska'),
-(25,ARRAY[5.8,2.7,4.1,1.0],'Iris_versicolor',2,'Alaska'),
-(26,ARRAY[6.2,2.2,4.5,1.5],'Iris_versicolor',2,'Alaska'),
-(27,ARRAY[5.6,2.5,3.9,1.1],'Iris_versicolor',2,'Alaska'),
-(28,ARRAY[5.0,3.4,1.5,0.2],'Iris_setosa',1,'Tennessee'),
-(29,ARRAY[4.4,2.9,1.4,0.2],'Iris_setosa',1,'Tennessee'),
-(30,ARRAY[4.9,3.1,1.5,0.1],'Iris_setosa',1,'Tennessee'),
-(31,ARRAY[5.4,3.7,1.5,0.2],'Iris_setosa',1,'Tennessee'),
-(32,ARRAY[4.8,3.4,1.6,0.2],'Iris_setosa',1,'Tennessee'),
-(33,ARRAY[4.8,3.0,1.4,0.1],'Iris_setosa',1,'Tennessee'),
-(34,ARRAY[4.3,3.0,1.1,0.1],'Iris_setosa',1,'Tennessee'),
-(35,ARRAY[5.8,4.0,1.2,0.2],'Iris_setosa',1,'Tennessee'),
-(36,ARRAY[5.7,4.4,1.5,0.4],'Iris_setosa',1,'Tennessee'),
-(37,ARRAY[5.4,3.9,1.3,0.4],'Iris_setosa',1,'Tennessee'),
-(38,ARRAY[6.0,2.9,4.5,1.5],'Iris_versicolor',2,'Tennessee'),
-(39,ARRAY[5.7,2.6,3.5,1.0],'Iris_versicolor',2,'Tennessee'),
-(40,ARRAY[5.5,2.4,3.8,1.1],'Iris_versicolor',2,'Tennessee'),
-(41,ARRAY[5.5,2.4,3.7,1.0],'Iris_versicolor',2,'Tennessee'),
-(42,ARRAY[5.8,2.7,3.9,1.2],'Iris_versicolor',2,'Tennessee'),
-(43,ARRAY[6.0,2.7,5.1,1.6],'Iris_versicolor',2,'Tennessee'),
-(44,ARRAY[5.4,3.0,4.5,1.5],'Iris_versicolor',2,'Tennessee'),
-(45,ARRAY[6.0,3.4,4.5,1.6],'Iris_versicolor',2,'Tennessee'),
-(46,ARRAY[6.7,3.1,4.7,1.5],'Iris_versicolor',2,'Tennessee'),
-(47,ARRAY[6.3,2.3,4.4,1.3],'Iris_versicolor',2,'Tennessee'),
-(48,ARRAY[5.6,3.0,4.1,1.3],'Iris_versicolor',2,'Tennessee'),
-(49,ARRAY[5.5,2.5,4.0,1.3],'Iris_versicolor',2,'Tennessee'),
-(50,ARRAY[5.5,2.6,4.4,1.2],'Iris_versicolor',2,'Tennessee'),
-(51,ARRAY[6.1,3.0,4.6,1.4],'Iris_versicolor',2,'Tennessee'),
-(52,ARRAY[5.8,2.6,4.0,1.2],'Iris_versicolor',2,'Tennessee');
+SELECT * FROM image_data;
+</pre>
+<pre class="result">
+                       rgb                        | species
+--------------------------------------------------+---------
+ {177,194,185,175,43,16,205,92,164,130,204,100}   | cat
+ {128,51,73,226,104,194,73,190,98,23,98,101}      | cat
+ {237,14,81,38,116,2,232,45,177,19,61,126}        | dog
+ {225,0,59,69,29,187,120,102,157,224,40,230}      | dog
+ {138,253,256,239,51,237,253,132,19,113,134,251}  | dog
+ {55,14,219,182,125,189,182,184,2,211,115,122}    | cat
+ {16,90,96,246,248,234,243,248,217,39,229,215}    | dog
+ {247,72,49,242,230,104,256,193,30,125,126,212}   | cat
+ {128,167,168,250,223,184,84,63,174,76,42,161}    | cat
+ {3,200,41,218,114,32,33,163,18,8,11,18}          | bird
+ {41,143,71,253,196,200,163,108,194,130,35,22}    | bird
+ {209,98,235,114,167,238,58,207,200,172,240,233}  | cat
+ {2,241,90,21,186,130,164,1,127,104,201,34}       | bird
+ {139,164,247,161,102,200,3,82,58,170,64,115}     | dog
+ {8,31,105,241,110,107,226,200,128,156,74,36}     | dog
+ {200,140,103,234,95,241,143,86,146,245,30,149}   | cat
+ {87,63,134,203,185,142,234,34,127,88,141,97}     | cat
+ {13,254,105,49,155,50,189,2,28,28,243,171}       | dog
+ {133,160,144,26,231,231,90,109,178,19,252,156}   | cat
+ {123,244,194,221,20,208,218,125,1,117,175,190}   | dog
+ {204,218,106,119,75,239,23,219,9,254,194,99}     | dog
+ {116,118,103,16,171,226,5,109,191,25,61,153}     | dog
+ {62,14,69,252,133,17,213,239,136,32,222,159}     | bird
+ {231,157,189,74,9,49,192,112,66,107,83,70}       | bird
+ {18,95,22,171,245,84,185,58,79,62,75,36}         | cat
+ {211,69,11,114,64,242,15,254,60,24,47,252}       | dog
+ {31,171,230,197,167,228,220,138,123,199,79,75}   | cat
+ {83,238,149,1,213,101,150,168,179,155,255,49}    | dog
+ {123,157,77,177,69,108,92,43,49,3,15,13}         | dog
+ {138,212,221,212,219,48,194,113,49,152,213,199}  | cat
+ {136,98,62,185,256,185,86,77,106,155,185,198}    | bird
+ {235,202,213,247,87,95,203,52,51,167,100,245}    | cat
+ {149,141,236,93,204,117,191,10,46,190,195,133}   | cat
+ {45,32,196,244,230,175,189,187,166,21,26,113}    | cat
+ {77,24,173,66,47,66,207,28,159,155,145,94}       | dog
+ {191,28,104,67,39,150,99,235,137,73,154,71}      | cat
+ {65,92,30,178,164,107,202,81,173,249,147,124}    | cat
+ {50,23,166,144,188,101,172,36,168,211,186,11}    | bird
+ {67,84,88,138,88,153,229,117,75,138,224,21}      | bird
+ {140,14,110,8,36,160,31,201,48,219,46,219}       | bird
+ {214,174,184,224,108,251,52,196,133,139,93,106}  | cat
+ {168,244,225,189,207,109,203,61,117,239,221,148} | bird
+ {13,111,230,232,109,188,150,37,157,2,32,209}     | bird
+ {165,92,36,15,93,203,4,61,136,210,171,84}        | cat
+ {32,66,236,180,251,249,34,225,225,144,157,119}   | bird
+ {58,121,213,11,64,122,103,99,137,195,47,141}     | cat
+ {183,95,171,11,111,203,77,91,127,72,83,162}      | cat
+ {52,49,199,172,230,1,37,187,11,101,52,114}       | bird
+ {190,53,247,75,54,174,170,226,185,24,173,6}      | dog
+ {44,78,198,206,119,251,255,62,166,229,63,204}    | dog
+ {75,49,212,189,249,146,242,240,221,40,159,134}   | cat
+ {88,159,183,94,18,228,172,216,178,35,211,177}    | dog
+(52 rows)
 </pre>
 
--#  Run the preprocessor:
+-#  Run the preprocessor for image data:
 <pre class="example">
-DROP TABLE IF EXISTS iris_data_packed, iris_data_packed_summary;
-SELECT madlib.minibatch_preprocessor_dl('iris_data',         -- Source table
-                                     'iris_data_packed',  -- Output table
-                                     'class_text',        -- Dependent variable
-                                     'attributes',        -- Independent variables
-                                     NULL,                -- buffer size
-                                     2                    -- normalizing constant
-                                     );
+DROP TABLE IF EXISTS image_data_packed, image_data_packed_summary;
+SELECT madlib.minibatch_preprocessor_dl('image_data',         -- Source table
+                                        'image_data_packed',  -- Output table
+                                        'species',            -- Dependent variable
+                                        'rgb'                 -- Independent variable
+                                        );
 </pre>
 For small datasets like in this example, buffer size is mainly
 determined by the number of segments in the database.
-This example is run on a Greenplum database with 3 segments,
-so there are 3 rows with a buffer size of 18.
+This example is run on a Greenplum database with 2 segments,
+so there are 2 rows with a buffer size of 26.
 For PostgresSQL, there would be only one row with a buffer
 size of 52 since it is a single node database.
 For larger data sets, other factors go into
 computing buffers size besides number of segments.
-Also, note that the dependent variable has
-been one-hot encoded since it is categorical.
 Here is a sample of the packed output table:
 <pre class="example">
 \\x on
-SELECT * FROM iris_data_packed;
+SELECT * FROM image_data_packed ORDER BY buffer_id;
 </pre>
 <pre class="result">
 -[ RECORD 1 ]-------+-------------------------------------
-independent_varname | {{2.55,1.7,0.75,0.1},{2.55,1.9,0.95,0.2},{2.9,1.35,1.95,0.6},{3.35,1.55,2.2,0.7},{2.85,1.3,1.75,0.5},{3.1,1.1,2.25,0.75},...}}
-dependent_varname   | {Iris_versicolor,Iris_versicolor,Iris_versicolor,Iris_versicolor,Iris_setosa,Iris_setosa,...}
-buffer_id           | 0
+independent_var | {{0.501961,0.2,0.286275,0.886275,0.407843,0.760784,0.286275,0.745098,0.384314,0.0901961,0.384314,0.396078},...}}
+dependent_var   | {cat,dog,cat,cat,bird,cat,dog,cat,dog,dog,dog,bird,dog,dog,cat,cat,cat,cat,bird,bird,bird,cat,cat,bird,dog,dog}
+buffer_id       | 0
 -[ RECORD 2 ]-------+-------------------------------------
-independent_varname | {{2.4,1.5,0.7,0.15},{2.2,1.6,0.65,0.1},{2.8,1.45,1.8,0.65},{2.9,1.3,2,0.6},{2.2,1.45,0.7,0.1},{2.85,1.4,2.25,0.65},{2.8,1.25,1.95,0.55},...}}
-dependent_varname   | {Iris_setosa,Iris_setosa,Iris_versicolor,Iris_versicolor,Iris_setosa,Iris_versicolor,...}
-buffer_id           | 1
--[ RECORD 2 ]-------+-------------------------------------
-independent_varname | {{2.4,1.7,0.8,0.1},{2.9,1.35,2.05,0.5},{3.15,1.65,2.35,0.8},{2.7,1.95,0.65,0.2},{2.75,1.3,2.2,0.6},{3,1.1,2,0.5},{2.55,1.9,0.8,0.1},...}}
-dependent_varname   | {Iris_versicolor,Iris_setosa,Iris_versicolor,Iris_versicolor,Iris_setosa,Iris_setosa,...}
-buffer_id           | 2
+independent_var | {{0.694118,0.760784,0.72549,0.686275,0.168627,0.0627451,0.803922,0.360784,0.643137,0.509804,0.8,0.392157},...}}
+dependent_var   | {cat,dog,dog,dog,cat,bird,bird,dog,cat,cat,dog,bird,cat,cat,dog,bird,cat,dog,cat,bird,cat,bird,bird,cat,dog,cat}
+buffer_id       | 1
 </pre>
 Review the output summary table:
 <pre class="example">
 \\x on
-SELECT * FROM iris_data_packed_summary;
+SELECT * FROM image_data_packed_summary;
 </pre>
 <pre class="result">
 -[ RECORD 1 ]-------+------------------
-source_table        | iris_data
-output_table        | iris_data_packed
-dependent_varname   | class_text
-independent_varname | attributes
-dependent_vartype   | character varying
-buffer_size         | 18
+source_table        | image_data
+output_table        | image_data_packed
+dependent_varname   | species
+independent_varname | rgb
+dependent_vartype   | text
+buffer_size         | 26
 </pre>
 
 -# Generally the default buffer size will work well,
 but if you have occasion to change it:
 <pre class="example">
-DROP TABLE IF EXISTS iris_data_packed, iris_data_packed_summary;
-SELECT madlib.minibatch_preprocessor_dl('iris_data',         -- Source table
-                                     'iris_data_packed',  -- Output table
-                                     'class_text',        -- Dependent variable
-                                     'attributes',        -- Independent variables
-                                     10                   -- Buffer size
-                                     );
-</pre>
-Review the number of buffers in the output table:
-<pre class="example">
-SELECT COUNT(*) FROM iris_data_packed;
+DROP TABLE IF EXISTS image_data_packed, image_data_packed_summary;
+SELECT madlib.minibatch_preprocessor_dl('image_data',         -- Source table
+                                        'image_data_packed',  -- Output table
+                                        'species',            -- Dependent variable
+                                        'rgb',                -- Independent variable
+                                        10                    -- Buffer size
+                                        );
+SELECT COUNT(*) FROM image_data_packed;
 </pre>
 <pre class="result">
--[ RECORD 1 ]
-count | 6
+ count
++-------
+     6
 </pre>
 Review the output summary table:
 <pre class="example">
 \\x on
-SELECT * FROM iris_data_packed_summary;
+SELECT * FROM image_data_packed_summary;
 </pre>
 <pre class="result">
 -[ RECORD 1 ]-------+------------------
-source_table        | iris_data
-output_table        | iris_data_packed
-dependent_varname   | class_text
-independent_varname | attributes
-dependent_vartype   | character varying
+source_table        | image_data
+output_table        | image_data_packed
+dependent_varname   | species
+independent_varname | rgb
+dependent_vartype   | text
 buffer_size         | 10
 </pre>
+
+-# Shift integer dependent variable.  Let's say our input data has class levels
+starting from 1, but we want them to start from 0 after preprocesssing.
+Create a new image data set with class values as 1, 2 or 3:
+<pre class="example">
+DROP TABLE IF EXISTS image_data_2;
+CREATE TABLE image_data_2 AS (
+SELECT ARRAY[
+        (random() * 256)::integer, -- R values
+        (random() * 256)::integer,
+        (random() * 256)::integer,
+        (random() * 256)::integer,
+        (random() * 256)::integer, -- G values
+        (random() * 256)::integer,
+        (random() * 256)::integer,
+        (random() * 256)::integer,
+        (random() * 256)::integer, -- B values
+        (random() * 256)::integer,
+        (random() * 256)::integer,
+        (random() * 256)::integer
+    ] as rgb, ('{1,2,3}'::integer[])[ceil(random()*3)] as species
+FROM generate_series(1, 52)
+);
+SELECT * FROM image_data_2 LIMIT 10;
+</pre>
+<pre class="result">
+                      rgb                       | species
+------------------------------------------------+---------
+ {103,220,183,64,237,22,86,152,10,170,81,68}    |       3
+ {144,143,30,189,98,99,200,212,163,185,227,161} |       3
+ {252,208,241,132,65,89,96,247,153,77,13,239}   |       3
+ {23,153,55,92,146,199,235,176,131,77,19,75}    |       1
+ {182,5,4,86,250,0,38,235,132,103,67,228}       |       2
+ {220,50,107,203,23,131,100,78,222,246,21,201}  |       2
+ {152,22,185,227,55,110,232,59,197,226,59,235}  |       3
+ {192,82,16,164,176,236,214,27,183,237,158,27}  |       1
+ {124,17,80,69,183,233,91,111,204,146,221,180}  |       3
+ {162,150,8,141,98,200,222,114,108,142,95,66}   |       2
+...
+</pre>
+Now run the preprocessor with a dependent variable offset of -1:
+<pre class="example">
+DROP TABLE IF EXISTS image_data_packed_2, image_data_packed_2_summary;
+SELECT madlib.minibatch_preprocessor_dl('image_data_2',       -- Source table
+                                        'image_data_packed_2', -- Output table
+                                        'species',            -- Dependent variable
+                                        'rgb',                -- Independent variable
+                                        NULL,                 -- Buffer size
+                                        255,                  -- Normalizing constant
+                                        -1                    -- Dependent variable offset
+                                        );
+SELECT * FROM image_data_packed_2 ORDER BY buffer_id;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]-------+-------------------------------------
+independent_var | {{0.564706,0.560784,0.117647,0.741176,0.384314,0.388235,0.784314,0.831373,0.639216,0.72549,0.890196,0.631373},...}}
+dependent_var   | {2,0,1,0,1,1,1,0,1,0,2,0,1,0,1,0,2,0,2,0,2,1,0,1,0,0}
+buffer_id       | 0
+-[ RECORD 2 ]-------+-------------------------------------
+independent_var | {{0.403922,0.862745,0.717647,0.25098,0.929412,0.0862745,0.337255,0.596078,0.0392157,0.666667,0.317647,0.266667},...}}
+dependent_var   | {2,2,1,2,2,1,1,2,0,0,0,1,1,1,0,2,2,1,2,1,1,0,2,1,2,2}
+buffer_id       | 1
+</pre>
+
+@anchor related
+@par Related Topics
+
+minibatch_preprocessing_dl.sql_in
+
+minibatch_preprocessing.sql_in
 
 */
 
