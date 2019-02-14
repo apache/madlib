@@ -239,7 +239,7 @@ def validate_kd_tree(source_table, output_table, point_column_name, depth):
 
 def knn_kd_tree(schema_madlib, kd_out, test_source, test_column_name, test_id,
                 fn_dist, max_leaves_to_explore, depth, r_id, case_when_clause,
-                **kwargs):
+                t_col_name, **kwargs):
     """
         KNN function to find the K Nearest neighbours using kd tree
         Args:
@@ -258,6 +258,7 @@ def knn_kd_tree(schema_madlib, kd_out, test_source, test_column_name, test_id,
             @param r_id                 Name of the region id column
             @param case_when_clause     SQL string for reconstructing the
                                         kd-tree
+            @param t_col_name           Unique test point column name
     """
     with MinWarning("error"):
 
@@ -269,7 +270,7 @@ def knn_kd_tree(schema_madlib, kd_out, test_source, test_column_name, test_id,
         test_view_sql = """
             CREATE VIEW {test_view} AS
                 SELECT {test_id},
-                       {test_column_name}::DOUBLE PRECISION[],
+                       {test_column_name}::DOUBLE PRECISION[] AS {t_col_name},
                        CASE
                        {case_when_clause}
                        END AS {r_id}
@@ -285,14 +286,14 @@ def knn_kd_tree(schema_madlib, kd_out, test_source, test_column_name, test_id,
                         row_number() OVER (PARTITION BY {test_id}
                                            ORDER BY __dist_center__) AS r,
                         {test_id},
-                        {test_column_name},
+                        {t_col_name},
                         {r_id}
                     FROM (
                         SELECT
                             {test_id},
-                            {test_column_name},
+                            {t_col_name},
                             {centers_table}.{r_id} AS {r_id},
-                            {fn_dist}({test_column_name}, __center__)
+                            {fn_dist}({t_col_name}, __center__)
                                 AS __dist_center__
                         FROM {test_view}, {centers_table}
                     ) q1
@@ -309,7 +310,7 @@ def knn_kd_tree(schema_madlib, kd_out, test_source, test_column_name, test_id,
 def _create_interim_tbl(schema_madlib, point_source, point_column_name, point_id,
     label_name, test_source, test_column_name, test_id, interim_table, k,
     fn_dist, test_id_temp, train_id, dist_inverse, comma_label_out_alias,
-    label_out, r_id, kd_out, train, **kwargs):
+    label_out, r_id, kd_out, train, t_col_name, **kwargs):
     """
         KNN function to create the interim table
         Args:
@@ -343,7 +344,7 @@ def _create_interim_tbl(schema_madlib, point_source, point_column_name, point_id
                                         DOUBLE PRECISION[] x, DOUBLE PRECISION[] y
                                         -> DOUBLE PRECISION
             Following parameters are passed to ensure the interim table has
-            identical features to non-kd-tree implementation
+            identical features in both implementations
             @param test_id_temp
             @param train_id
             @param dist_inverse
@@ -352,10 +353,10 @@ def _create_interim_tbl(schema_madlib, point_source, point_column_name, point_id
             @param r_id
             @param kd_out
             @param train
+            @param t_col_name
     """
     with MinWarning("error"):
         p_col_name = unique_string(desp='p_col_name')
-        t_col_name = unique_string(desp='t_col_name')
         x_temp_table = unique_string(desp='x_temp_table')
         y_temp_table = unique_string(desp='y_temp_table')
         test = unique_string(desp='test')
@@ -364,6 +365,7 @@ def _create_interim_tbl(schema_madlib, point_source, point_column_name, point_id
 
         select_sql = ""
         get_r_id = ""
+        t_col_cast = "{test_column_name} AS {t_col_name}"
         train_sql = """ (SELECT {point_id},
                            {point_column_name} AS {p_col_name}
                            {label_name}
@@ -372,7 +374,7 @@ def _create_interim_tbl(schema_madlib, point_source, point_column_name, point_id
                         ) {train}
                     """
         test_sql = """ (SELECT {test_id},
-                        {test_column_name} AS {t_col_name}
+                        {t_col_cast}
                         {get_r_id}
                         FROM {test_source}
                        ) {test}
@@ -383,12 +385,13 @@ def _create_interim_tbl(schema_madlib, point_source, point_column_name, point_id
         if r_id is not None:
             point_source = kd_out
             get_r_id = ", {r_id}"
+            t_col_cast = "{t_col_name}"
             select_sql = """ {train}.{r_id} AS tr_{r_id},
                             {test}.{r_id} AS test_{r_id}, """.format(**locals())
             from_sql = """ {train_sql} INNER JOIN {test_sql}
                            ON {train}.{r_id} = {test}.{r_id} """.format(**locals())
         else:
-            from_sql = """ {train_sql}, {test_sql} """
+            from_sql = """ {train_sql}, {test_sql} """.format(**locals())
 
         from_sql = from_sql.format(**locals()).format(**locals())
         plpy.execute("""
@@ -520,6 +523,7 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
         train_id = unique_string(desp='train_id')
         dist_inverse = unique_string(desp='dist_inverse')
         dim = unique_string(desp='dim')
+        t_col_name = unique_string(desp='t_col_name')
 
         if not fn_dist:
             fn_dist = '{0}.squared_dist_norm2'.format(schema_madlib)
@@ -623,7 +627,7 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
             test_view = knn_kd_tree(schema_madlib, kd_output_table, test_source,
                                     test_column_name, test_id, fn_dist,
                                     max_leaves_to_explore, depth, r_id,
-                                    case_when_clause)
+                                    case_when_clause, t_col_name)
         else:
             test_view = test_source
 
@@ -632,7 +636,7 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
                             point_id, label_name, test_view, test_column_name,
                             test_id, interim_table, k, fn_dist, test_id_temp,
                             train_id, dist_inverse, comma_label_out_alias,
-                            label_out, r_id, kd_output_table, train)
+                            label_out, r_id, kd_output_table, train, t_col_name)
         output_sql = """
             CREATE TABLE {output_table} AS
                 {view_def}
