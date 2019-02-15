@@ -265,7 +265,7 @@ def knn_kd_tree(schema_madlib, kd_out, test_source, test_column_name, test_id,
 
         centers_table = add_postfix(kd_out, "_centers")
         n_leaves = pow(2,depth)
-        test_view = unique_string(desp='test_view')
+        test_view = add_postfix(kd_out, "_test_view")
 
         plpy.execute("DROP VIEW IF EXISTS {test_view}".format(**locals()))
         test_view_sql = """
@@ -279,7 +279,7 @@ def knn_kd_tree(schema_madlib, kd_out, test_source, test_column_name, test_id,
         plpy.execute(test_view_sql)
 
         if max_leaves_to_explore > 1:
-            ext_test_view = unique_string("ext_test_view")
+            ext_test_view = add_postfix(kd_out, "_ext_test_view")
             ext_test_view_sql = """
                 CREATE VIEW {ext_test_view} AS
                 SELECT * FROM(
@@ -541,7 +541,7 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
         view_grp_by = ""
         r_id = None
         kd_output_table = None
-        test_view = None
+        test_data = None
 
         if label_column_name:
             label_column_type = get_expr_type(
@@ -625,16 +625,16 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
                                              kd_output_table,
                                              point_column_name,
                                              depth, r_id)
-            test_view = knn_kd_tree(schema_madlib, kd_output_table, test_source,
+            test_data = knn_kd_tree(schema_madlib, kd_output_table, test_source,
                                     test_column_name, test_id, fn_dist,
                                     max_leaves_to_explore, depth, r_id,
                                     case_when_clause, t_col_name)
         else:
-            test_view = test_source
+            test_data = test_source
 
         # interim_table picks the 'k' nearest neighbors for each test point
         _create_interim_tbl(schema_madlib, point_source, point_column_name,
-                            point_id, label_name, test_view, test_column_name,
+                            point_id, label_name, test_data, test_column_name,
                             test_id, interim_table, k, fn_dist, test_id_temp,
                             train_id, dist_inverse, comma_label_out_alias,
                             label_out, r_id, kd_output_table, train, t_col_name)
@@ -661,7 +661,11 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
 
         if 'kd_tree' in algorithm:
             centers_table = add_postfix(kd_output_table, "_centers")
+            test_view = add_postfix(kd_output_table, "_test_view")
+            ext_test_view = add_postfix(kd_output_table, "_ext_test_view")
             plpy.execute("DROP VIEW IF EXISTS {test_view} CASCADE".format(
+                         **locals()))
+            plpy.execute("DROP VIEW IF EXISTS {ext_test_view} CASCADE".format(
                          **locals()))
             drop_tables([centers_table, kd_output_table])
         return
