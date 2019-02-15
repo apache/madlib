@@ -32,7 +32,6 @@
 
 m4_include(`SQLCommon.m4')
 
-
 /**
 @addtogroup grp_knn
 
@@ -47,11 +46,7 @@ m4_include(`SQLCommon.m4')
 </ul>
 </div>
 
-@brief Finds k nearest data points to the given data point and outputs majority vote value of output classes for classification, and average value of target values for regression.
-
-\warning <em> This MADlib method is still in early stage development. There may be some
-issues that will be addressed in a future version. Interface and implementation
-are subject to change. </em>
+@brief Finds k nearest data points to the given data point and outputs majority vote value of output classes for classification, or average value of target values for regression.
 
 @anchor knn
 
@@ -65,6 +60,9 @@ the k nearest data points. That is, the testing example gets assigned the
 most popular class from the nearest neighbors.
 For regression, the output is the average of the values of k nearest
 neighbors of the given test point.
+
+Both exact and approximate methods are supported.  The approximate methods
+can be used in the case that run-time is too long using the exact method.
 
 @anchor usage
 @par Usage
@@ -156,32 +154,37 @@ regression values using a weighted average.   The idea is to
 weigh the contribution of each of the k neighbors according
 to their distance to the test point, giving greater influence
 to closer neighbors.  The distance function 'fn_dist' specified
-above is used.
-
-For classification, majority voting weighs a neighbor
-according to inverse distance.
-
-For regression, the inverse distance weighting approach is
-used from Shepard [4].
+above is used.  For classification, majority voting weighs a neighbor
+according to inverse distance.  For regression, the inverse distance
+weighting approach is used from Shepard [4].
 
 <dt>algorithm (optional)</dt>
 <dd>TEXT, default: 'brute_force'. The name of the algorithm
-used for knn. Following options are supported:
+used to compute nearest neighbors. The following options are supported:
 <ul>
-<li><b>\ref brute_force</b>: Exact result </li>
-<li><b>\ref kd_tree</b>: Approximate result </li></ul></dd>
+<li><b>\ref brute_force</b>: Produces an exact result by searching
+all points in the search space.  You can also use a short
+form "b" or "brute" etc. to select brute force.</li>
+<li><b>\ref kd_tree</b>: Produces an approximate result by searching
+a subset of the search space, that is, only certain leaf nodes in the
+kd-tree as specified by "algorithm_params" below.
+You can also use a short
+form "k" or "kd" etc. to select kd-tree.</li></ul></dd>
 
 <dt>algorithm_params (optional)</dt>
-<dd>TEXT, default: 'depth=3, leaf_nodes=2'. The parameters for kd_tree algorithm.
+<dd>TEXT, default: 'depth=3, leaf_nodes=2'. These parameters apply to the
+kd-tree algorithm only.
 <ul>
-<li><b>\ref depth</b>: The depth of the kd tree. Increasing this value will
-speed up the algorithm but reduce the accuracy. </li>
-<li><b>\ref leaf_nodes</b>: Number of leaf nodes to search for each test point.
-Inceasing this value will increase the accuracy but slow down the algorithm.</li></ul>
+<li><b>\ref depth</b>: Depth of the kd-tree. Increasing this value will
+decrease run-time but reduce the accuracy.</li>
+<li><b>\ref leaf_nodes</b>: Number of leaf nodes (regions) to search for each test point.
+Inceasing this value will improve the accuracy but increase run-time.</li></ul>
 
-Please note that the kd-tree accuracy will be lower for datasets with higher
-number of features. It is also advised to use at least two leaf nodes to improve the accuracy. Refer to the <a href="#background">Technical Background</a> for details. </dd>
-
+@note
+Please note that the kd-tree accuracy will be lower for datasets with a high
+number of features. It is advised to use at least two leaf nodes.
+Refer to the <a href="#background">Technical Background</a> for more information
+on how the kd-tree is implemented.</dd>
 
 </dl>
 
@@ -256,7 +259,7 @@ INSERT INTO knn_train_data_reg VALUES
 
 -#  Prepare some testing data:
 <pre class="example">
-DROP TABLE IF EXISTS knn_test_data;
+DROP TABLE IF EXISTS knn_test_data CASCADE;
 CREATE TABLE knn_test_data (
                     id integer,
                     data integer[]
@@ -397,9 +400,10 @@ SELECT * FROM knn_result_classification ORDER BY id;
 (6 rows)
 </pre>
 
--# Run KNN with kd-tree option
+-# Use kd-tree option.  First we build a kd-tree to depth 4 and
+search half (8) of the 16 leaf nodes (i.e., 2^4 total leaf nodes):
 <pre class="example">
-DROP TABLE IF EXISTS knn_result_classification;
+DROP TABLE IF EXISTS knn_result_classification_kd;
 SELECT madlib.knn(
                 'knn_train_data',        -- Table of training data
                 'data',                  -- Col name of training data
@@ -409,24 +413,58 @@ SELECT madlib.knn(
                 'data',                  -- Col name of test data
                 'id',                    -- Col name of id in test data
                 'knn_result_classification_kd',  -- Output table
-                 1,                      -- Number of nearest neighbors
+                 3,                      -- Number of nearest neighbors
                  True,                   -- True to list nearest-neighbors by id
                  'madlib.squared_dist_norm2', -- Distance function
                  False,                  -- For weighted average
                  'kd_tree',              -- Use kd-tree
-                 'depth=1, leaf_nodes=1' -- Kd-tree options
+                 'depth=4, leaf_nodes=8' -- Kd-tree options
                  );
-SELECT * FROM madlib_knn_result_classification_kd ORDER BY id;
+SELECT * FROM knn_result_classification_kd ORDER BY id;
+</pre>
+<pre class="result">
+ id |  data   | k_nearest_neighbours
+----+---------+----------------------
+  1 | {2,1}   | {1,2,3}
+  2 | {2,6}   | {5,4,3}
+  3 | {15,40} | {7,6,5}
+  4 | {12,1}  | {4,5,3}
+  5 | {2,90}  | {9,6,7}
+  6 | {50,45} | {6,7,8}
+(6 rows)
+</pre>
+The result above is the same as brute force. If we search just 1 leaf node,
+run-time will be faster but accuracy will be lower. This shows up in this
+very small data set by not being able to find 3 nearest neighbors for all test points:
+<pre class="example">
+DROP TABLE IF EXISTS knn_result_classification_kd;
+SELECT madlib.knn(
+                'knn_train_data',        -- Table of training data
+                'data',                  -- Col name of training data
+                'id',                    -- Col name of id in train data
+                NULL,                    -- Training labels
+                'knn_test_data',         -- Table of test data
+                'data',                  -- Col name of test data
+                'id',                    -- Col name of id in test data
+                'knn_result_classification_kd',  -- Output table
+                 3,                      -- Number of nearest neighbors
+                 True,                   -- True to list nearest-neighbors by id
+                 'madlib.squared_dist_norm2', -- Distance function
+                 False,                  -- For weighted average
+                 'kd_tree',              -- Use kd-tree
+                 'depth=4, leaf_nodes=1' -- Kd-tree options
+                 );
+SELECT * FROM knn_result_classification_kd ORDER BY id;
 </pre>
 <pre class="result">
  id |  data   | k_nearest_neighbours
 ----+---------+----------------------
   1 | {2,1}   | {1}
-  2 | {2,6}   | {3}
+  2 | {2,6}   | {3,2}
   3 | {15,40} | {7}
-  4 | {12,1}  | {4}
-  5 | {2,90}  | {9}
-  6 | {50,45} | {6}
+  5 | {2,90}  | {3,2}
+  6 | {50,45} | {6,8}
+(5 rows)
 </pre>
 
 @anchor background
@@ -442,11 +480,26 @@ frequent among the k training samples nearest to that test point.
 In case of regression, average of the values of these k training samples
 is assigned to the test point.
 
-The kd-tree option is developed to improve the execution time of the knn operation by sacrificing accuracy. The kd-tree implementation divides the training dataset into regions (leaf nodes). A tree of depth 3 will have 2^3 = 8 regions. The algorithm will look for the nearset neighbors in the designated regions (instead of the whole dataset). For a given test point, the first region is found by traversing the tree and finding its associated node. If the user requests a higher number of leaf nodes, we look at the distance between the point and the borders of its region and expand the search to the closest regions.
+An approximate method based on kd-trees [5] is provided.
+Using the kd-tree algorithm can improve the execution time of the k-NN
+operation, but at expense of sacrificing some accuracy. The kd-tree implementation
+divides the training dataset into regions (leaf nodes). For example, a tree of depth 3 will
+have a total of 2^3 = 8 regions. The algorithm will look for the nearest neighbors in
+certain regions instead of searching the whole dataset. For a given test point, the
+first (home) region is found by traversing the tree and finding its associated node. If the user
+requests additional leaf nodes to be used, we look at the distance between the point and the
+centroids of other regions and expand the search to the specified number of closest regions.
 
-The kd-tree implementation assumes that the data is normalized; otherwise, the distance to border calculation will not yield correct results and the accuracy of the output may decrease. Kd-tree will use the features in the order they are porvided.
+The kd-tree implementation (and in fact the whole k-NN implementation)
+assumes that the data is normalized; otherwise, the distance
+to centroid calculation will not yield correct results and the accuracy of the output may
+decrease. Kd-tree will build the tree from the features in the order they are provided.
 
-Note that the kd-tree implementation accuracy might suffer on datasets with high number of features (dimensions). For example, assume that we are using a dataset with 20 features and kd-tree of depth 3. This means the regions are construted based on the first 3 features while the remaining 17 features are not considered. It is possible to miss nearest neighbors that are close in those remaining dimensions becasue they got assigned to a further region.
+Note that the kd-tree accuracy might suffer on datasets with a high number
+of features (dimensions). For example, let's say we are using a dataset with 20 features
+and kd-tree depth of only 3. This means the kd-tree is constructed based on the first 3 features
+and not the remaining 17 features.  Therefore, it is possible to miss nearest neighbors that are
+close in those 17 dimensions because they got assigned to a further region.
 
 @anchor literature
 @literature
@@ -464,13 +517,19 @@ Note that the kd-tree implementation accuracy might suffer on datasets with high
     https://ai2-s2-pdfs.s3.amazonaws.com/a7e2/814ec5db800d2f8c4313fd436e9cf8273821.pdf
 
 @anchor knn-lit-4
-[4]    Shepard, Donald (1968). "A two-dimensional interpolation function for
+[4] Shepard, Donald (1968). "A two-dimensional interpolation function for
 irregularly-spaced data". Proceedings of the 1968 ACM National Conference. pp. 517–524.
+
+@anchor knn-lit-5
+[5] Bentley, J. L. (1975). "Multidimensional binary search trees used for
+associative searching". Communications of the ACM. 18 (9): 509. doi:10.1145/361002.361007.
+
 
 @internal
 @sa namespace knn (documenting the implementation in Python)
 @endinternal
 */
+
 
 CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.__knn_validate_src(
     point_source VARCHAR,
