@@ -51,13 +51,14 @@ from utilities.validate_args import is_col_array
 from utilities.validate_args import is_var_valid
 from utilities.validate_args import quote_ident
 
-MAX_WEIGHT_ZERO_DIST = 1e6
-
+WEIGHT_FOR_ZERO_DIST = 1e6
+BRUTE_FORCE = 'brute_force'
+KD_TREE = 'kd_tree'
 
 def knn_validate_src(schema_madlib, point_source, point_column_name, point_id,
                      label_column_name, test_source, test_column_name,
                      test_id, output_table, k, output_neighbors, fn_dist,
-                     depth, leaf_nodes, **kwargs):
+                     is_brute_force, depth, leaf_nodes, **kwargs):
     input_tbl_valid(point_source, 'kNN')
     input_tbl_valid(test_source, 'kNN')
     output_tbl_valid(output_table, 'kNN')
@@ -125,12 +126,12 @@ def knn_validate_src(schema_madlib, point_source, point_column_name, point_id,
                                'squared_dist_norm2', 'dist_angle',
                                'dist_tanimoto')])
 
-        profunc = ("proisagg = TRUE" if is_pg_major_version_less_than(schema_madlib, 11)
-              else "prokind = 'a'")
+        profunc = ("proisagg = TRUE"
+                   if is_pg_major_version_less_than(schema_madlib, 11)
+                   else "prokind = 'a'")
 
         is_invalid_func = plpy.execute("""
-            SELECT prorettype != 'DOUBLE PRECISION'::regtype OR
-                   {profunc} AS OUTPUT
+            SELECT prorettype != 'DOUBLE PRECISION'::regtype OR {profunc} AS OUTPUT
             FROM pg_proc
             WHERE oid='{fn_dist}(DOUBLE PRECISION[], DOUBLE PRECISION[])'::regprocedure;
             """.format(fn_dist=fn_dist, profunc=profunc))[0]['output']
@@ -138,15 +139,17 @@ def knn_validate_src(schema_madlib, point_source, point_column_name, point_id,
         if is_invalid_func or (fn_dist not in dist_functions):
             plpy.error("KNN error: Distance function ({0}) has invalid signature "
                        "or is not a simple function.".format(fn_dist))
-    if depth <= 0:
-        plpy.error("kNN Error: depth={0} is an invalid value, must be greater "
-                   "than 0.".format(depth))
-    if leaf_nodes <= 0:
-        plpy.error("kNN Error: leaf_nodes={0} is an invalid value, must be greater "
-                   "than 0.".format(leaf_nodes))
-    if pow(2,depth) <= leaf_nodes:
-        plpy.error("kNN Error: depth={0}, leaf_nodes={1} is not valid. "
-                   "The leaf_nodes value must be lower than 2^depth".format(depth, leaf_nodes))
+    if not is_brute_force:
+        if depth <= 0:
+            plpy.error("kNN Error: depth={0} is an invalid value, must be "
+                       "greater than 0.".format(depth))
+        if leaf_nodes <= 0:
+            plpy.error("kNN Error: leaf_nodes={0} is an invalid value, must be "
+                       "greater than 0.".format(leaf_nodes))
+        if pow(2, depth) <= leaf_nodes:
+            plpy.error("kNN Error: depth={0}, leaf_nodes={1} is not valid. "
+                       "The leaf_nodes value must be lower than 2^depth".
+                       format(depth, leaf_nodes))
     return k
 # ------------------------------------------------------------------------------
 
@@ -419,15 +422,15 @@ def _create_interim_tbl(schema_madlib, point_source, point_column_name, point_id
                         ) {x_temp_table}
                     ) {y_temp_table}
             WHERE {y_temp_table}.{r} <= {k}
-            """.format(max_weight_zero_dist=MAX_WEIGHT_ZERO_DIST, **locals()))
+            """.format(max_weight_zero_dist=WEIGHT_FOR_ZERO_DIST, **locals()))
 
 # ------------------------------------------------------------------------------
 
 def _get_algorithm_name(algorithm):
     if not algorithm:
-        algorithm = 'brute_force'
+        algorithm = BRUTE_FORCE
     else:
-        supported_algorithms = ['brute_force', 'kd_tree']
+        supported_algorithms = [BRUTE_FORCE, KD_TREE]
         try:
             # allow user to specify a prefix substring of
             # supported algorithms. This works because the supported
@@ -512,7 +515,7 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
                          point_column_name, point_id, label_column_name,
                          test_source, test_column_name, test_id,
                          output_table, k, output_neighbors, fn_dist,
-                         depth, max_leaves_to_explore)
+                         algorithm == BRUTE_FORCE, depth, max_leaves_to_explore)
 
         n_features = num_features(test_source, test_column_name)
 
