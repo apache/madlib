@@ -61,14 +61,14 @@ MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL = "independent_var"
 class MiniBatchPreProcessorDL:
     def __init__(self, schema_madlib, source_table, output_table,
                  dependent_varname, independent_varname, buffer_size,
-                 normalizing_const, dependent_offset, **kwargs):
+                 normalizing_const=1.0, dependent_offset=None, **kwargs):
         self.schema_madlib = schema_madlib
         self.source_table = source_table
         self.output_table = output_table
         self.dependent_varname = dependent_varname
         self.independent_varname = independent_varname
         self.buffer_size = buffer_size
-        self.normalizing_const = normalizing_const
+        self.normalizing_const = normalizing_const if normalizing_const else 1.0
         self.dependent_offset = dependent_offset
         self.module_name = "minibatch_preprocessor_DL"
         self.output_summary_table = add_postfix(self.output_table, "_summary")
@@ -76,8 +76,8 @@ class MiniBatchPreProcessorDL:
         self.num_of_buffers = self._get_num_buffers()
 
     def minibatch_preprocessor_dl(self):
-        norm_tbl = unique_string(desp='normalized')
         # Create a temp table that has independent var normalized.
+        norm_tbl = unique_string(desp='normalized')
 
         dependent_varname_with_offset = self.dependent_varname
         if self.dependent_offset:
@@ -90,7 +90,7 @@ class MiniBatchPreProcessorDL:
                 {dependent_varname_with_offset} AS y,
                 row_number() over() AS row_id
             FROM {self.source_table}
-        """.format(**locals())
+            """.format(**locals())
         plpy.execute(scalar_mult_sql)
         # Create the mini-batched output table
         if is_platform_pg():
@@ -109,11 +109,11 @@ class MiniBatchPreProcessorDL:
                 GROUP BY buffer_id
             ) b
             {distributed_by_clause}
-        """.format(x=MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL,
-                   y=MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL,
-                   **locals())
+            """.format(x=MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL,
+                       y=MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL,
+                       **locals())
         plpy.execute(sql)
-        plpy.execute("DROP TABLE {0}".format(norm_tbl))
+        plpy.execute("DROP TABLE IF EXISTS {0}".format(norm_tbl))
         # Create summary table
         self._create_output_summary_table()
 
@@ -127,7 +127,7 @@ class MiniBatchPreProcessorDL:
                 $__madlib__${self.independent_varname}$__madlib__$::TEXT AS independent_varname,
                 $__madlib__${self.dependent_vartype}$__madlib__$::TEXT AS dependent_vartype,
                 {self.buffer_size} AS buffer_size
-        """.format(self=self)
+            """.format(self=self)
         plpy.execute(query)
 
     def _validate_args(self):
@@ -139,7 +139,7 @@ class MiniBatchPreProcessorDL:
             self.independent_varname, self.source_table)
         _assert(is_valid_psql_type(self.independent_vartype,
                                    NUMERIC | ONLY_ARRAY),
-                "Invalid independent variable type, should be an array of " \
+                "Invalid independent variable type, should be an array of "
                 "one of {0}".format(','.join(NUMERIC)))
         self.dependent_vartype = get_expr_type(
             self.dependent_varname, self.source_table)
@@ -149,7 +149,7 @@ class MiniBatchPreProcessorDL:
                 format(','.join(dep_valid_types)))
         if self.buffer_size is not None:
             _assert(self.buffer_size > 0,
-                    "minibatch_preprocessor_dl: The buffer size has to be a " \
+                    "minibatch_preprocessor_dl: The buffer size has to be a "
                     "positive integer or NULL.")
 
     def _get_num_buffers(self):
@@ -158,11 +158,11 @@ class MiniBatchPreProcessorDL:
             """.format(self.source_table))[0]['cnt']
         buffer_size_calculator = MiniBatchBufferSizeCalculator()
         indepdent_var_dim = _tbl_dimension_rownum(
-            self.schema_madlib, self.source_table, self.independent_varname,
-            skip_row_count=True)
+            self.schema_madlib, self.source_table,
+            self.independent_varname, skip_row_count=True)
         self.buffer_size = buffer_size_calculator.calculate_default_buffer_size(
             self.buffer_size, num_rows_in_tbl, indepdent_var_dim[0])
-        return ceil((1.0*num_rows_in_tbl)/self.buffer_size)
+        return ceil((1.0 * num_rows_in_tbl) / self.buffer_size)
 
 class MiniBatchPreProcessor:
     """
@@ -701,12 +701,11 @@ class MiniBatchDocumentation:
         ----------------------------------------------------------------
         For Deep Learning based techniques such as Convolutional Neural Nets,
         the input data is mostly images. These images can be represented as an
-        array of numbers where all elements are between 0 and 255 in value.
-        It is standard practice to divide each of these numbers by 255.0 to
-        normalize the image data. minibatch_preprocessor() is for general
-        use-cases, but for deep learning based use-cases we provide
-        minibatch_preprocessor_dl() that is light-weight and is
-        specific to image datasets.
+        array of numbers where each element represents a pixel/color intensity.
+        It is standard practice to normalize the image data before use.
+        minibatch_preprocessor() is for general use-cases, but for deep learning
+        based use-cases we provide minibatch_preprocessor_dl() that is
+        light-weight and is specific to image datasets.
 
         The normalizing constant is parameterized, and can be specified based
         on the kind of image data used.
@@ -729,7 +728,7 @@ class MiniBatchDocumentation:
                                       column
             buffer_size            -- INTEGER. Default computed automatically.
                                       Number of source input rows to pack into a buffer
-            normalizing_const      -- DOUBLE PRECISON. Default 255.0. The
+            normalizing_const      -- DOUBLE PRECISON. Default 1.0. The
                                       normalizing constant to use for
                                       standardizing arrays in independent_varname.
             dependent_offset       -- INTEGER. If specified, shifts all dependent
