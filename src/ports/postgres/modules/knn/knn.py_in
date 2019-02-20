@@ -176,40 +176,39 @@ def build_kd_tree(schema_madlib, source_table, output_table, point_column_name,
         clauses = [' 1=1 ']
         centers_table = add_postfix(output_table, "_centers")
         clause_counter = 0
-        current_feature = 0
         for curr_level in range(depth):
-            current_feature = (current_feature % n_features) + 1
-
+            curr_feature = (curr_level % n_features) + 1
             for curr_leaf in range(pow(2,curr_level)):
                 clause = clauses[clause_counter]
                 cutoff_sql = """
                     SELECT percentile_disc(0.5)
                            WITHIN GROUP (
-                            ORDER BY ({point_column_name})[{current_feature}]
+                            ORDER BY ({point_column_name})[{curr_feature}]
                            ) AS cutoff
                     FROM {source_table}
                     WHERE {clause}
                     """.format(**locals())
 
                 cutoff = plpy.execute(cutoff_sql)[0]['cutoff']
-                cutoff = cutoff if cutoff is not None else "NULL"
+                cutoff = "NULL" if cutoff is None else cutoff
                 clause_counter += 1
                 clauses.append(clause +
-                               "AND ({point_column_name})[{current_feature}]"
-                               " < {cutoff} ".format(**locals()))
+                               "AND ({point_column_name})[{curr_feature}] < {cutoff} ".
+                               format(**locals()))
                 clauses.append(clause +
-                               "AND ({point_column_name})[{current_feature}]"
-                               " >= {cutoff} ".format(**locals()))
+                               "AND ({point_column_name})[{curr_feature}] >= {cutoff} ".
+                               format(**locals()))
 
-        n_leaves = pow(2,depth)
-        case_when_clause = ' '.join(["WHEN {0} THEN {1}::INTEGER".format(cond, i)
+        n_leaves = pow(2, depth)
+        case_when_clause = '\n'.join(["WHEN {0} THEN {1}::INTEGER".format(cond, i)
                                      for i, cond in enumerate(clauses[-n_leaves:])])
         output_sql = """
             CREATE TABLE {output_table} AS
-                SELECT *, CASE {case_when_clause} END AS {r_id}
-                FROM {source_table}""".format(**locals())
+                SELECT *,
+                       CASE {case_when_clause} END AS {r_id}
+                FROM {source_table}
+            """.format(**locals())
         plpy.execute(output_sql)
-
         plpy.execute("DROP TABLE IF EXISTS {0}".format(centers_table))
         centers_sql = """
             CREATE TABLE {centers_table} AS
@@ -222,6 +221,7 @@ def build_kd_tree(schema_madlib, source_table, output_table, point_column_name,
         plpy.execute(centers_sql)
         return case_when_clause
 # ------------------------------------------------------------------------------
+
 
 def validate_kd_tree(source_table, output_table, point_column_name, depth):
 
@@ -240,6 +240,7 @@ def validate_kd_tree(source_table, output_table, point_column_name, depth):
         plpy.error("kNN Error: depth={0} is an invalid value, must be greater "
                    "than 0.".format(depth))
 # ------------------------------------------------------------------------------
+
 
 def knn_kd_tree(schema_madlib, kd_out, test_source, test_column_name, test_id,
                 fn_dist, max_leaves_to_explore, depth, r_id, case_when_clause,
@@ -265,18 +266,17 @@ def knn_kd_tree(schema_madlib, kd_out, test_source, test_column_name, test_id,
             @param t_col_name           Unique test point column name
     """
     with MinWarning("error"):
-
         centers_table = add_postfix(kd_out, "_centers")
-        n_leaves = pow(2,depth)
         test_view = add_postfix(kd_out, "_test_view")
 
+        n_leaves = pow(2,depth)
         plpy.execute("DROP VIEW IF EXISTS {test_view}".format(**locals()))
         test_view_sql = """
             CREATE VIEW {test_view} AS
                 SELECT {test_id},
-                       {test_column_name}::DOUBLE PRECISION[] AS {t_col_name},
+                       ({test_column_name})::DOUBLE PRECISION[] AS {t_col_name},
                        CASE
-                       {case_when_clause}
+                        {case_when_clause}
                        END AS {r_id}
                 FROM {test_source}""".format(**locals())
         plpy.execute(test_view_sql)
@@ -297,8 +297,7 @@ def knn_kd_tree(schema_madlib, kd_out, test_source, test_column_name, test_id,
                             {test_id},
                             {t_col_name},
                             {centers_table}.{r_id} AS {r_id},
-                            {fn_dist}({t_col_name}, __center__)
-                                AS __dist_center__
+                            {fn_dist}({t_col_name}, __center__) AS __dist_center__
                         FROM {test_view}, {centers_table}
                     ) q1
                 ) q2
@@ -360,6 +359,10 @@ def _create_interim_tbl(schema_madlib, point_source, point_column_name, point_id
             @param t_col_name
     """
     with MinWarning("error"):
+        # If r_id is None, we are using the brute force algorithm.
+        is_brute_force = not bool(r_id)
+        r_id = "NULL AS {0}".format(unique_string()) if not r_id else r_id
+
         p_col_name = unique_string(desp='p_col_name')
         x_temp_table = unique_string(desp='x_temp_table')
         y_temp_table = unique_string(desp='y_temp_table')
@@ -367,62 +370,55 @@ def _create_interim_tbl(schema_madlib, point_source, point_column_name, point_id
         r = unique_string(desp='r')
         dist = unique_string(desp='dist')
 
-        select_sql = ""
-        get_r_id = ""
-        t_col_cast = "{test_column_name} AS {t_col_name}"
-        train_sql = """ (SELECT {point_id},
-                           {point_column_name} AS {p_col_name}
-                           {label_name}
-                           {get_r_id}
-                         FROM {point_source}
-                        ) {train}
-                    """
-        test_sql = """ (SELECT {test_id},
-                        {t_col_cast}
-                        {get_r_id}
-                        FROM {test_source}
-                       ) {test}
-                   """
-        # If r_id is None, we are using the brute force algorithm.
-        # Else we are using the kd_tree algorithm which requires more
-        # complicated "select" and "from" clauses.
-        if r_id is not None:
+        if not is_brute_force:
             point_source = kd_out
-            get_r_id = ", {r_id}"
-            t_col_cast = "{t_col_name}"
+            where_condition = "{train}.{r_id} = {test}.{r_id} ".format(**locals())
             select_sql = """ {train}.{r_id} AS tr_{r_id},
                             {test}.{r_id} AS test_{r_id}, """.format(**locals())
-            from_sql = """ {train_sql} INNER JOIN {test_sql}
-                           ON {train}.{r_id} = {test}.{r_id} """.format(**locals())
+            t_col_cast = t_col_name
         else:
-            from_sql = """ {train_sql}, {test_sql} """.format(**locals())
+            where_condition = "1 = 1"
+            select_sql = ""
+            t_col_cast = "({test_column_name}) AS {t_col_name}".format(**locals())
 
-        from_sql = from_sql.format(**locals()).format(**locals())
         plpy.execute("""
             CREATE TABLE {interim_table} AS
-                SELECT * FROM (
-                    SELECT row_number() over
-                            (partition by {test_id_temp} order by {dist}) AS {r},
-                            {test_id_temp},
-                            {train_id},
-                            CASE WHEN {dist} = 0.0 THEN {max_weight_zero_dist}
-                                 ELSE 1.0 / {dist}
-                            END AS {dist_inverse}
-                            {comma_label_out_alias}
+                SELECT *
+                FROM (
+                    SELECT row_number() OVER
+                                (PARTITION BY {test_id_temp} ORDER BY {dist}) AS {r},
+                           {test_id_temp},
+                           {train_id},
+                           CASE WHEN {dist} = 0.0 THEN {weight_for_zero_dist}
+                                ELSE 1.0 / {dist}
+                           END AS {dist_inverse}
+                           {comma_label_out_alias}
                     FROM (
                         SELECT {select_sql}
-                            {test}.{test_id} AS {test_id_temp},
-                            {train}.{point_id} AS {train_id},
-                            {fn_dist}(
-                                {p_col_name},
-                                {t_col_name})
-                            AS {dist}
-                            {label_out}
-                            FROM {from_sql}
-                        ) {x_temp_table}
-                    ) {y_temp_table}
+                               {test}.{test_id} AS {test_id_temp},
+                               {train}.{point_id} AS {train_id},
+                               {fn_dist}({p_col_name}, {t_col_name}) AS {dist}
+                               {label_out}
+                        FROM
+                            (
+                                SELECT {point_id},
+                                       {r_id},
+                                       {point_column_name} AS {p_col_name}
+                                       {label_name}
+                                FROM {point_source}
+                            ) {train},
+                            (
+                                SELECT {test_id},
+                                       {t_col_cast},
+                                       {r_id}
+                                FROM {test_source}
+                            ) {test}
+                        WHERE
+                            {where_condition}
+                    ) {x_temp_table}
+                ) {y_temp_table}
             WHERE {y_temp_table}.{r} <= {k}
-            """.format(max_weight_zero_dist=WEIGHT_FOR_ZERO_DIST, **locals()))
+            """.format(weight_for_zero_dist=WEIGHT_FOR_ZERO_DIST, **locals()))
 
 # ------------------------------------------------------------------------------
 
@@ -490,7 +486,6 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
             @param algorithm_params     The parameters for kd-tree algorithm
     """
     with MinWarning('warning'):
-
         output_neighbors = True if output_neighbors is None else output_neighbors
         if k is None:
             k = 1
@@ -658,18 +653,16 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
                 GROUP BY knn_temp.{test_id_temp},
                     {test_column_name}
                          {view_grp_by}
-            """
-        plpy.execute(output_sql.format(**locals()))
+            """.format(**locals())
+        plpy.execute(output_sql)
         drop_tables([interim_table])
 
         if 'kd_tree' in algorithm:
             centers_table = add_postfix(kd_output_table, "_centers")
             test_view = add_postfix(kd_output_table, "_test_view")
             ext_test_view = add_postfix(kd_output_table, "_ext_test_view")
-            plpy.execute("DROP VIEW IF EXISTS {test_view} CASCADE".format(
-                         **locals()))
-            plpy.execute("DROP VIEW IF EXISTS {ext_test_view} CASCADE".format(
-                         **locals()))
+            plpy.execute("DROP VIEW IF EXISTS {0} CASCADE".format(test_view))
+            plpy.execute("DROP VIEW IF EXISTS {0} CASCADE".format(ext_test_view))
             drop_tables([centers_table, kd_output_table])
         return
 # ------------------------------------------------------------------------------
@@ -737,6 +730,5 @@ of k nearest neighbors of the given testing example.
 For an overview on usage, run:
 SELECT {schema_madlib}.knn('usage');
 """
-
     return help_string.format(schema_madlib=schema_madlib)
 # ------------------------------------------------------------------------------
