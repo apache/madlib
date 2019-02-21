@@ -32,7 +32,6 @@
 
 m4_include(`SQLCommon.m4')
 
-
 /**
 @addtogroup grp_knn
 
@@ -47,24 +46,22 @@ m4_include(`SQLCommon.m4')
 </ul>
 </div>
 
-@brief Finds k nearest data points to the given data point and outputs majority vote value of output classes for classification, and average value of target values for regression.
-
-\warning <em> This MADlib method is still in early stage development. There may be some
-issues that will be addressed in a future version. Interface and implementation
-are subject to change. </em>
+@brief Finds \f$k\f$ nearest data points to the given data point and outputs majority
+vote value of output classes for classification, or average value of target
+values for regression.
 
 @anchor knn
 
-K-nearest neighbors is a method for finding the k closest points to a
-given data point in terms of a given metric. Its input consists of
-data points as features from testing examples, and it
-looks for k closest points in the training set for each of the data
-points in test set.  The output of KNN depends on the type of task.
-For classification, the output is the majority vote of the classes of
-the k nearest data points. That is, the testing example gets assigned the
-most popular class from the nearest neighbors.
-For regression, the output is the average of the values of k nearest
-neighbors of the given test point.
+K-nearest neighbors is a method for finding the \f$k\f$ closest points to a given data
+point in terms of a given metric. Its input consists of data points as features
+from testing examples and it looks for \f$k\f$ closest points in the training set
+for each of the data points in test set. The output of KNN depends on the type
+of task. For classification, the output is the majority vote of the classes of
+the \f$k\f$ nearest data points. For regression, the output is the average of the
+values of \f$k\f$ nearest neighbors of the given test point.
+
+Both exact and approximate methods are supported. The approximate methods can be
+used in the case that run-time is too long using the exact method.
 
 @anchor usage
 @par Usage
@@ -80,7 +77,9 @@ knn( point_source,
      k,
      output_neighbors,
      fn_dist,
-     weighted_avg
+     weighted_avg,
+     algorithm,
+     algorithm_params
    )
 </pre>
 
@@ -93,7 +92,7 @@ in a column of type <tt>DOUBLE PRECISION[]</tt>.
 </dd>
 
 <dt>point_column_name</dt>
-<dd>TEXT. Name of the column with training data points 
+<dd>TEXT. Name of the column with training data points
 or expression that evaluates to a numeric array</dd>
 
 <dt>point_id</dt>
@@ -116,7 +115,7 @@ in a column of type <tt>DOUBLE PRECISION[]</tt>.
 </dd>
 
 <dt>test_column_name</dt>
-<dd>TEXT. Name of the column with testing data points 
+<dd>TEXT. Name of the column with testing data points
 or expression that evaluates to a numeric array</dd>
 
 <dt>test_id</dt>
@@ -154,13 +153,38 @@ regression values using a weighted average.   The idea is to
 weigh the contribution of each of the k neighbors according
 to their distance to the test point, giving greater influence
 to closer neighbors.  The distance function 'fn_dist' specified
-above is used.
+above is used.  For classification, majority voting weighs a neighbor
+according to inverse distance.  For regression, the inverse distance
+weighting approach is used from Shepard [4].
 
-For classification, majority voting weighs a neighbor
-according to inverse distance.
+<dt>algorithm (optional)</dt>
+<dd>TEXT, default: 'brute_force'. The name of the algorithm
+used to compute nearest neighbors. The following options are supported:
+<ul>
+<li><b>\ref brute_force</b>: Produces an exact result by searching
+all points in the search space.  You can also use a short
+form "b" or "brute" etc. to select brute force.</li>
+<li><b>\ref kd_tree</b>: Produces an approximate result by searching
+a subset of the search space, that is, only certain leaf nodes in the
+kd-tree as specified by "algorithm_params" below.
+You can also use a short
+form "k" or "kd" etc. to select kd-tree.</li></ul></dd>
 
-For regression, the inverse distance weighting approach is
-used from Shepard [4].
+<dt>algorithm_params (optional)</dt>
+<dd>TEXT, default: 'depth=3, leaf_nodes=2'. These parameters apply to the
+kd-tree algorithm only.
+<ul>
+<li><b>\ref depth</b>: Depth of the kd-tree. Increasing this value will
+decrease run-time but reduce the accuracy.</li>
+<li><b>\ref leaf_nodes</b>: Number of leaf nodes (regions) to search for each test point.
+Inceasing this value will improve the accuracy but increase run-time.</li></ul>
+
+@note
+Please note that the kd-tree accuracy will be lower for datasets with a high
+number of features. It is advised to use at least two leaf nodes.
+Refer to the <a href="#background">Technical Background</a> for more information
+on how the kd-tree is implemented.</dd>
+
 </dl>
 
 
@@ -234,7 +258,7 @@ INSERT INTO knn_train_data_reg VALUES
 
 -#  Prepare some testing data:
 <pre class="example">
-DROP TABLE IF EXISTS knn_test_data;
+DROP TABLE IF EXISTS knn_test_data CASCADE;
 CREATE TABLE knn_test_data (
                     id integer,
                     data integer[]
@@ -375,6 +399,73 @@ SELECT * FROM knn_result_classification ORDER BY id;
 (6 rows)
 </pre>
 
+-# Use kd-tree option.  First we build a kd-tree to depth 4 and
+search half (8) of the 16 leaf nodes (i.e., 2^4 total leaf nodes):
+<pre class="example">
+DROP TABLE IF EXISTS knn_result_classification_kd;
+SELECT madlib.knn(
+                'knn_train_data',        -- Table of training data
+                'data',                  -- Col name of training data
+                'id',                    -- Col name of id in train data
+                NULL,                    -- Training labels
+                'knn_test_data',         -- Table of test data
+                'data',                  -- Col name of test data
+                'id',                    -- Col name of id in test data
+                'knn_result_classification_kd',  -- Output table
+                 3,                      -- Number of nearest neighbors
+                 True,                   -- True to list nearest-neighbors by id
+                 'madlib.squared_dist_norm2', -- Distance function
+                 False,                  -- For weighted average
+                 'kd_tree',              -- Use kd-tree
+                 'depth=4, leaf_nodes=8' -- Kd-tree options
+                 );
+SELECT * FROM knn_result_classification_kd ORDER BY id;
+</pre>
+<pre class="result">
+ id |  data   | k_nearest_neighbours
+----+---------+----------------------
+  1 | {2,1}   | {1,2,3}
+  2 | {2,6}   | {5,4,3}
+  3 | {15,40} | {7,6,5}
+  4 | {12,1}  | {4,5,3}
+  5 | {2,90}  | {9,6,7}
+  6 | {50,45} | {6,7,8}
+(6 rows)
+</pre>
+The result above is the same as brute force. If we search just 1 leaf node,
+run-time will be faster but accuracy will be lower. This shows up in this
+very small data set by not being able to find 3 nearest neighbors for all test points:
+<pre class="example">
+DROP TABLE IF EXISTS knn_result_classification_kd;
+SELECT madlib.knn(
+                'knn_train_data',        -- Table of training data
+                'data',                  -- Col name of training data
+                'id',                    -- Col name of id in train data
+                NULL,                    -- Training labels
+                'knn_test_data',         -- Table of test data
+                'data',                  -- Col name of test data
+                'id',                    -- Col name of id in test data
+                'knn_result_classification_kd',  -- Output table
+                 3,                      -- Number of nearest neighbors
+                 True,                   -- True to list nearest-neighbors by id
+                 'madlib.squared_dist_norm2', -- Distance function
+                 False,                  -- For weighted average
+                 'kd_tree',              -- Use kd-tree
+                 'depth=4, leaf_nodes=1' -- Kd-tree options
+                 );
+SELECT * FROM knn_result_classification_kd ORDER BY id;
+</pre>
+<pre class="result">
+ id |  data   | k_nearest_neighbours
+----+---------+----------------------
+  1 | {2,1}   | {1}
+  2 | {2,6}   | {3,2}
+  3 | {15,40} | {7}
+  5 | {2,90}  | {3,2}
+  6 | {50,45} | {6,8}
+(5 rows)
+</pre>
+
 @anchor background
 @par Technical Background
 
@@ -382,11 +473,37 @@ The training data points are vectors in a multidimensional feature space,
 each with a class label. The training phase of the algorithm consists
 only of storing the feature vectors and class labels of the training points.
 
-In the classification phase, k is a user-defined constant, and an unlabeled
-vector (a test point) is classified by assigning the label which is most
-frequent among the k training samples nearest to that test point.
-In case of regression, average of the values of these k training samples
-is assigned to the test point.
+In the prediction phase, \f$k\f$ is a user-defined constant, and an unlabeled vector
+(a test point) is predicted by using the label from the the \f$k\f$ training samples
+nearest to that test point.
+
+Since distances between points are used to find the nearest neighbors, the data
+should be standardized across features. This ensures that all features are given
+equal weightage in the distance computation.
+
+An approximation method can be used to speed the prediction phase by building
+appropriate data structures in the training phase. An example of such a data
+structure is kd-trees [5]. Using the kd-tree algorithm can improve the execution
+time of the \f$k\f$-NN operation, but at expense of sacrificing some accuracy. The
+kd-tree implementation divides the training dataset into multiple regions that
+correspond to the leaf nodes of a tree. For example, a tree of depth \f$3\f$ will have
+a total of \f$2^3 = 8\f$ regions. The algorithm will look for the nearest neighbors
+in a subset of all regions instead of searching the whole dataset. For a given
+test point, the first (home) region is found by traversing the tree and finding
+its associated node. If the user requests additional leaf nodes to be searched,
+we look at the distance between the point and the centroids of other regions and
+expand the search to the specified number of closest regions.
+
+It's important to note that the nodes that each level of the kd-tree search over
+a single feature and the features are explored in the same order as that in the
+data.
+
+The kd-tree accuracy might suffer on datasets with a high number of features
+(dimensions). For example, let's say we are using a dataset with 20 features and
+kd-tree depth of only 3. This means the kd-tree is constructed based on the
+first 3 features. Therefore, it is possible to miss nearest neighbors that are
+closer in those 17 dimensions because they got assigned to a further region (the
+distance computation would still uses all 20 features).
 
 @anchor literature
 @literature
@@ -404,13 +521,19 @@ is assigned to the test point.
     https://ai2-s2-pdfs.s3.amazonaws.com/a7e2/814ec5db800d2f8c4313fd436e9cf8273821.pdf
 
 @anchor knn-lit-4
-[4]    Shepard, Donald (1968). "A two-dimensional interpolation function for
+[4] Shepard, Donald (1968). "A two-dimensional interpolation function for
 irregularly-spaced data". Proceedings of the 1968 ACM National Conference. pp. 517–524.
+
+@anchor knn-lit-5
+[5] Bentley, J. L. (1975). "Multidimensional binary search trees used for
+associative searching". Communications of the ACM. 18 (9): 509. doi:10.1145/361002.361007.
+
 
 @internal
 @sa namespace knn (documenting the implementation in Python)
 @endinternal
 */
+
 
 CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.__knn_validate_src(
     point_source VARCHAR,
@@ -440,12 +563,61 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.knn(
     k INTEGER,
     output_neighbors BOOLEAN,
     fn_dist TEXT,
-    weighted_avg BOOLEAN
+    weighted_avg BOOLEAN,
+    algorithm VARCHAR,
+    algorithm_params VARCHAR
 ) RETURNS VARCHAR AS $$
     PythonFunction(`knn', `knn', `knn')
 $$ LANGUAGE plpythonu VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.knn(
+    point_source VARCHAR,
+    point_column_name VARCHAR,
+    point_id VARCHAR,
+    label_column_name VARCHAR,
+    test_source VARCHAR,
+    test_column_name VARCHAR,
+    test_id VARCHAR,
+    output_table VARCHAR,
+    k INTEGER,
+    output_neighbors BOOLEAN,
+    fn_dist TEXT,
+    weighted_avg BOOLEAN,
+    algorithm VARCHAR
+) RETURNS VARCHAR AS $$
+    DECLARE
+    returnstring VARCHAR;
+BEGIN
+    returnstring = MADLIB_SCHEMA.knn($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
+                                     NULL);
+    RETURN returnstring;
+END;
+$$ LANGUAGE plpgsql VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.knn(
+    point_source VARCHAR,
+    point_column_name VARCHAR,
+    point_id VARCHAR,
+    label_column_name VARCHAR,
+    test_source VARCHAR,
+    test_column_name VARCHAR,
+    test_id VARCHAR,
+    output_table VARCHAR,
+    k INTEGER,
+    output_neighbors BOOLEAN,
+    fn_dist TEXT,
+    weighted_avg BOOLEAN
+) RETURNS VARCHAR AS $$
+    DECLARE
+    returnstring VARCHAR;
+BEGIN
+    returnstring = MADLIB_SCHEMA.knn($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
+                                     NULL, NULL);
+    RETURN returnstring;
+END;
+$$ LANGUAGE plpgsql VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
 CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.knn(
     point_source VARCHAR,
@@ -463,7 +635,8 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.knn(
     DECLARE
     returnstring VARCHAR;
 BEGIN
-    returnstring = MADLIB_SCHEMA.knn($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, FALSE);
+    returnstring = MADLIB_SCHEMA.knn($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
+                                     FALSE, NULL, NULL);
     RETURN returnstring;
 END;
 $$ LANGUAGE plpgsql VOLATILE
@@ -486,7 +659,8 @@ DECLARE
     returnstring VARCHAR;
 BEGIN
     returnstring = MADLIB_SCHEMA.knn($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
-                                     'MADLIB_SCHEMA.squared_dist_norm2', FALSE);
+                                     'MADLIB_SCHEMA.squared_dist_norm2', FALSE,
+                                     NULL, NULL);
     RETURN returnstring;
 END;
 $$ LANGUAGE plpgsql VOLATILE
@@ -507,7 +681,8 @@ DECLARE
     returnstring VARCHAR;
 BEGIN
     returnstring = MADLIB_SCHEMA.knn($1,$2,$3,$4,$5,$6,$7,$8,$9,TRUE,
-                                     'MADLIB_SCHEMA.squared_dist_norm2', FALSE);
+                                     'MADLIB_SCHEMA.squared_dist_norm2', FALSE,
+                                     NULL, NULL);
     RETURN returnstring;
 END;
 $$ LANGUAGE plpgsql VOLATILE
@@ -527,7 +702,8 @@ DECLARE
     returnstring VARCHAR;
 BEGIN
     returnstring = MADLIB_SCHEMA.knn($1,$2,$3,$4,$5,$6,$7,$8,1,TRUE,
-                                     'MADLIB_SCHEMA.squared_dist_norm2',FALSE);
+                                     'MADLIB_SCHEMA.squared_dist_norm2',FALSE,
+                                     NULL, NULL);
     RETURN returnstring;
 END;
 $$ LANGUAGE plpgsql VOLATILE
@@ -546,4 +722,3 @@ RETURNS VARCHAR AS $$
     SELECT MADLIB_SCHEMA.knn('');
 $$ LANGUAGE sql IMMUTABLE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `CONTAINS SQL', `');
-
