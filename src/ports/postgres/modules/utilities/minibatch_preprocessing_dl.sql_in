@@ -30,14 +30,14 @@ m4_include(`SQLCommon.m4')
 @addtogroup grp_minibatch_preprocessing_dl
 
 <div class="toc"><b>Contents</b><ul>
-<li class="level1"><a href="#minibatch_preprocessor_dl">Mini-Batch Preprocessor for Deep Learning</a></li>
+<li class="level1"><a href="#minibatch_preprocessor_dl">Mini-Batch Preprocessor for Image Data</a></li>
 <li class="level1"><a href="#example">Examples</a></li>
 <li class="level1"><a href="#related">Related Topics</a></li>
 </ul></div>
 
 For deep learning based techniques such as convolutional neural nets, the input
 data is often images. These images can be represented as an array of numbers
-where each element defines represents grayscale or RGB channel values for each
+where each element represents grayscale or RGB channel values for each
 pixel in the image. It is standard practice to normalize the image data before
 training. The normalizing constant is parameterized, and can be set depending on
 the format of image data used.
@@ -92,7 +92,8 @@ minibatch_preprocessor_dl( source_table,
 
   <dt>normalizing_const (optional)</dt>
   <dd>DOUBLE PRECISION, default: 1.0. The normalizing constant to divide
-  each value in the independent_varname array by.
+  each value in the independent_varname array by.  For example, in some cases
+  you may need to use 255 for this value if the image data is 0-255.
   </dd>
 
   <dt>dependent_offset (optional)</dt>
@@ -158,7 +159,123 @@ A summary table named \<output_table\>_summary is also created, which has the fo
 
 @anchor example
 @par Examples
--#  Create an artificial 2x2 resolution color image data set with 3 possible classifications:
+-#  Create an artificial 2x2 resolution color image data set with 3 possible classifications.
+The RGB values are per-pixel arrays:
+<pre class="example">
+DROP TABLE IF EXISTS image_data;
+CREATE TABLE image_data AS (
+    SELECT ARRAY[
+        ARRAY[
+            ARRAY[(random() * 256)::integer, -- pixel (1,1)
+                (random() * 256)::integer,
+                (random() * 256)::integer],
+            ARRAY[(random() * 256)::integer, -- pixel (2,1)
+                (random() * 256)::integer,
+                (random() * 256)::integer]
+        ],
+        ARRAY[
+            ARRAY[(random() * 256)::integer, -- pixel (1,2)
+                (random() * 256)::integer,
+                (random() * 256)::integer],
+            ARRAY[(random() * 256)::integer, -- pixel (2,1)
+                (random() * 256)::integer,
+                (random() * 256)::integer]
+        ]
+    ] as rgb, ('{cat,dog,bird}'::text[])[ceil(random()*3)] as species
+    FROM generate_series(1, 52)
+);
+SELECT * FROM image_data;
+</pre>
+<pre class="result">
+                             rgb                             | species
+-------------------------------------------------------------+---------
+ {{{46,137,5},{208,71,90}},{{148,61,186},{8,109,10}}}        | dog
+ {{{94,133,111},{41,211,179}},{{11,81,114},{26,182,105}}}    | dog
+ {{{9,198,217},{84,224,7}},{{221,230,216},{36,64,107}}}      | dog
+ {{{250,116,206},{4,249,43}},{{136,104,85},{91,27,96}}}      | bird
+ {{{9,226,50},{223,238,158}},{{245,69,45},{206,35,139}}}     | bird
+ {{{230,76,170},{97,38,256}},{{95,79,53},{153,17,188}}}      | bird
+ {{{234,240,201},{63,210,211}},{{33,3,177},{16,161,166}}}    | cat
+ {{{207,116,120},{90,46,94}},{{166,216,190},{204,216,29}}}   | cat
+ {{{13,182,44},{201,174,22}},{{186,119,85},{139,73,118}}}    | dog
+ {{{86,236,135},{98,229,56}},{{150,26,76},{235,115,142}}}    | bird
+ {{{16,128,19},{82,2,21}},{{182,146,111},{44,27,251}}}       | dog
+ {{{155,55,178},{135,61,127}},{{199,201,127},{146,211,0}}}   | bird
+ {{{140,56,91},{37,205,186}},{{180,139,83},{212,94,163}}}    | dog
+ {{{35,72,197},{64,98,167}},{{176,120,13},{209,199,55}}}     | cat
+ {{{145,159,176},{36,127,176}},{{222,114,143},{214,56,142}}} | dog
+ {{{152,248,249},{26,46,172}},{{65,203,229},{21,32,147}}}    | dog
+ {{{211,57,188},{23,18,187}},{{69,60,112},{41,131,209}}}     | bird
+ {{{190,51,66},{218,220,218}},{{210,213,244},{256,129,53}}}  | bird
+ {{{40,0,124},{213,201,190}},{{80,68,77},{24,240,39}}}       | dog
+ {{{105,121,39},{119,75,103}},{{48,228,8},{43,6,16}}}        | dog
+ {{{214,143,134},{74,251,204}},{{49,226,171},{145,27,160}}}  | bird
+ {{{71,224,194},{216,149,3}},{{80,52,97},{211,115,129}}}     | bird
+ {{{66,131,251},{67,228,209}},{{210,106,27},{205,54,76}}}    | bird
+ {{{193,43,21},{163,215,79}},{{211,130,254},{113,36,213}}}   | bird
+ {{{183,29,86},{229,41,166}},{{73,97,155},{207,178,174}}}    | cat
+ {{{253,235,211},{38,79,175}},{{51,176,42},{201,27,47}}}     | bird
+ {{{107,217,255},{122,72,221}},{{23,244,58},{66,26,148}}}    | bird
+ {{{221,95,164},{185,251,42}},{{94,58,58},{14,222,88}}}      | dog
+ {{{105,188,149},{109,226,140}},{{80,31,105},{74,64,36}}}    | cat
+ {{{215,40,134},{71,156,50}},{{160,226,179},{255,169,185}}}  | cat
+ {{{146,235,249},{181,128,163}},{{161,132,14},{249,4,72}}}   | dog
+ {{{195,223,197},{49,149,156}},{{89,26,227},{245,76,131}}}   | bird
+ {{{255,131,128},{184,179,19}},{{163,171,200},{35,78,105}}}  | dog
+ {{{79,128,8},{211,197,199}},{{22,160,79},{97,53,137}}}      | dog
+(52 rows)
+</pre>
+-#  Run the preprocessor for image data:
+<pre class="example">
+DROP TABLE IF EXISTS image_data_packed, image_data_packed_summary;
+SELECT madlib.minibatch_preprocessor_dl('image_data',         -- Source table
+                                        'image_data_packed',  -- Output table
+                                        'species',            -- Dependent variable
+                                        'rgb',                -- Independent variable
+                                        NULL,                 -- Buffer size
+                                        255                   -- Normalizing constant
+                                        );
+</pre>
+For small datasets like in this example, buffer size is mainly
+determined by the number of segments in the database.
+This example is run on a Greenplum database with 2 segments,
+so there are 2 rows with a buffer size of 26.
+For PostgresSQL, there would be only one row with a buffer
+size of 52 since it is a single node database.
+For larger data sets, other factors go into
+computing buffers size besides number of segments.
+Here is a sample of the packed output table:
+<pre class="example">
+\\x on
+SELECT * FROM image_data_packed ORDER BY buffer_id;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]---+---------------------------------------------------------------------------------------------------------------------
+independent_var | {{{{0.607843,0.215686,0.698039},{0.529412,0.239216,0.498039}},{{0.780392,0.788235,0.498039},{0.572549,0.827451,0}}},...}
+dependent_var   | {bird,dog,dog,cat,bird,dog,bird,dog,cat,cat,bird,dog,dog,cat,bird,dog,bird,dog,bird,bird,dog,bird,dog,dog,bird,cat}
+buffer_id       | 0
+-[ RECORD 2 ]---+---------------------------------------------------------------------------------------------------------------------
+independent_var | {{{{0.184314,0.380392,0.556863},{0.133333,0.764706,0.6}},{{0.470588,0.85098,0.32549},{0.666667,0.196078,0.129412}}},...}
+dependent_var   | {bird,bird,bird,cat,dog,bird,cat,cat,bird,dog,dog,cat,dog,bird,cat,dog,bird,bird,dog,dog,dog,bird,dog,bird,bird,cat}
+buffer_id       | 1
+</pre>
+Review the output summary table:
+<pre class="example">
+\\x on
+SELECT * FROM image_data_packed_summary;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]-------+------------------
+source_table        | image_data
+output_table        | image_data_packed
+dependent_varname   | species
+independent_varname | rgb
+dependent_vartype   | text
+buffer_size         | 26
+</pre>
+
+-#  Load data in another format.  Create an artificial 2x2 resolution color image
+data set with 3 possible classifications. The RGB values are unrolled into a flat array:
 <pre class="example">
 DROP TABLE IF EXISTS image_data;
 CREATE TABLE image_data AS (
@@ -244,17 +361,11 @@ DROP TABLE IF EXISTS image_data_packed, image_data_packed_summary;
 SELECT madlib.minibatch_preprocessor_dl('image_data',         -- Source table
                                         'image_data_packed',  -- Output table
                                         'species',            -- Dependent variable
-                                        'rgb'                 -- Independent variable
+                                        'rgb',                -- Independent variable
+                                        NULL,                 -- Buffer size
+                                        255                   -- Normalizing constant
                                         );
 </pre>
-For small datasets like in this example, buffer size is mainly
-determined by the number of segments in the database.
-This example is run on a Greenplum database with 2 segments,
-so there are 2 rows with a buffer size of 26.
-For PostgresSQL, there would be only one row with a buffer
-size of 52 since it is a single node database.
-For larger data sets, other factors go into
-computing buffers size besides number of segments.
 Here is a sample of the packed output table:
 <pre class="example">
 \\x on
@@ -270,20 +381,6 @@ independent_var | {{0.694118,0.760784,0.72549,0.686275,0.168627,0.0627451,0.8039
 dependent_var   | {cat,dog,dog,dog,cat,bird,bird,dog,cat,cat,dog,bird,cat,cat,dog,bird,cat,dog,cat,bird,cat,bird,bird,cat,dog,cat}
 buffer_id       | 1
 </pre>
-Review the output summary table:
-<pre class="example">
-\\x on
-SELECT * FROM image_data_packed_summary;
-</pre>
-<pre class="result">
--[ RECORD 1 ]-------+------------------
-source_table        | image_data
-output_table        | image_data_packed
-dependent_varname   | species
-independent_varname | rgb
-dependent_vartype   | text
-buffer_size         | 26
-</pre>
 
 -# Generally the default buffer size will work well,
 but if you have occasion to change it:
@@ -293,7 +390,8 @@ SELECT madlib.minibatch_preprocessor_dl('image_data',         -- Source table
                                         'image_data_packed',  -- Output table
                                         'species',            -- Dependent variable
                                         'rgb',                -- Independent variable
-                                        10                    -- Buffer size
+                                        10,                   -- Buffer size
+                                        255                   -- Normalizing constant
                                         );
 SELECT COUNT(*) FROM image_data_packed;
 </pre>
