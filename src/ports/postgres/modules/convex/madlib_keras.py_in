@@ -1,0 +1,898 @@
+# coding=utf-8
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+import plpy
+import keras
+import numpy as np
+import time
+import datetime
+import os
+from keras.models import *
+from keras.layers import *
+from keras.optimizers import *
+from keras import backend as K
+from keras.regularizers import *
+from utilities.validate_args import output_tbl_valid
+from utilities.validate_args import input_tbl_valid
+from utilities.utilities import add_postfix
+from utilities.utilities import madlib_version
+from utilities.model_arch_info import get_input_shape
+from utilities.utilities import _assert
+from utilities.utilities import is_var_valid
+
+def _validate_input_table(source_table, independent_varname,
+                          dependent_varname):
+    _assert(is_var_valid(source_table, independent_varname),
+            "model_keras error: invalid independent_varname "
+            "('{independent_varname}') for source_table "
+            "({source_table})!".format(
+                independent_varname=independent_varname,
+                source_table=source_table))
+
+    _assert(is_var_valid(source_table, dependent_varname),
+            "model_keras error: invalid dependent_varname "
+            "('{dependent_varname}') for source_table "
+            "({source_table})!".format(
+                dependent_varname=dependent_varname, source_table=source_table))
+
+def _validate_input_args(
+    source_table, dependent_varname, independent_varname, model_arch_table,
+    validation_table, output_model_table, num_iterations):
+
+    module_name = 'model_keras'
+    _assert(num_iterations > 0,
+        "model_keras error: Number of iterations cannot be < 1.")
+
+    output_summary_model_table = add_postfix(output_model_table, "_summary")
+    input_tbl_valid(source_table, module_name)
+    # Source table and validation tables must have the same schema
+    _validate_input_table(source_table, independent_varname, dependent_varname)
+    if validation_table and validation_table.strip() != '':
+        input_tbl_valid(validation_table, module_name)
+        _validate_input_table(validation_table, independent_varname,
+                              dependent_varname)
+    # Validate model arch table's schema.
+    input_tbl_valid(model_arch_table, module_name)
+    # Validate output tables
+    output_tbl_valid(output_model_table, module_name)
+    output_tbl_valid(output_summary_model_table, module_name)
+
+def _validate_input_shapes(source_table, independent_varname, input_shape):
+    """
+    Validate if the input shape specified in model architecture is the same
+    as the shape of the image specified in the indepedent var of the input
+    table.
+    """
+    # The weird indexing with 'i+2' and 'i' below has two reasons:
+    # 1) The indexing for array_upper() starts from 1, but indexing in the
+    # input_shape list starts from 0.
+    # 2) Input_shape is only the image's dimension, whereas a row of
+    # independent varname in a table contains buffer size as the first
+    # dimension, followed by the image's dimension. So we must ignore
+    # the first dimension from independent varname.
+    array_upper_query = ", ".join("array_upper({0}, {1}) AS n_{2}".format(
+        independent_varname, i+2, i) for i in range(len(input_shape)))
+    query = """
+        SELECT {0}
+        FROM {1}
+        LIMIT 1
+    """.format(array_upper_query, source_table)
+    # This query will fail if an image in independent var does not have the
+    # same number of dimensions as the input_shape.
+    result = plpy.execute(query)[0]
+    _assert(len(result) == len(input_shape),
+        "model_keras error: The number of dimensions ({0}) of each image in" \
+        " model architecture and {1} in {2} ({3}) do not match.".format(
+            len(input_shape), independent_varname, source_table, len(result)))
+    for i in range(len(input_shape)):
+        key_name = "n_{0}".format(i)
+        if result[key_name] != input_shape[i]:
+            # Construct the shape in independent varname to display meaningful
+            # error msg.
+            input_shape_from_table = [result["n_{0}".format(i)] for i in range(
+                1, len(input_shape))]
+            plpy.error("model_keras error: Input shape {0} in the model" \
+                " architecture does not match the input shape {1} of column" \
+                " {2} in table {3}.".format(input_shape, input_shape_from_table, independent_varname, source_table))
+
+def fit(schema_madlib, source_table, model, dependent_varname,
+        independent_varname, model_arch_table, model_arch_id, compile_params,
+        fit_params, num_iterations, num_classes, use_gpu = True,
+        validation_table=None, name="", description="", **kwargs):
+    _validate_input_args(source_table, dependent_varname, independent_varname,
+                         model_arch_table, validation_table,
+                         model, num_iterations)
+
+    start_training_time = datetime.datetime.now()
+
+    # Disable GPU on master
+    os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+
+    use_gpu = bool(use_gpu)
+
+    # Get the serialized master model
+    start_deserialization = time.time()
+    model_arch_query = "SELECT model_arch, model_weights FROM {0} WHERE id = {1}".format(model_arch_table, model_arch_id)
+    query_result = plpy.execute(model_arch_query)
+    if not  query_result or len(query_result) == 0:
+        plpy.error("no model arch found in table {0} with id {1}".format(model_arch_table, model_arch_id))
+    query_result = query_result[0]
+    model_arch = query_result['model_arch']
+    input_shape = get_input_shape(model_arch)
+    _validate_input_shapes(source_table, independent_varname, input_shape)
+    if validation_table:
+        _validate_input_shapes(
+            validation_table, independent_varname, input_shape)
+    model_weights_serialized = query_result['model_weights']
+
+    # Convert model from json and initialize weights
+    master_model = model_from_json(model_arch)
+    model_weights = master_model.get_weights()
+
+    # Get shape of weights in each layer from model arch
+    model_shapes = []
+    for weight_arr in master_model.get_weights():
+        model_shapes.append(weight_arr.shape)
+
+    if model_weights_serialized:
+        # If warm start from previously trained model, set weights
+        model_weights = deserialize_weights_orig(model_weights_serialized, model_shapes)
+        master_model.set_weights(model_weights)
+
+    end_deserialization = time.time()
+    # plpy.info("Model deserialization time: {} sec".format(end_deserialization - start_deserialization))
+
+    # Construct validation dataset if provided
+    validation_set_provided = bool(validation_table)
+    validation_aggregate_accuracy = []; validation_aggregate_loss = []
+    x_validation = None; y_validation = None
+    if validation_set_provided:
+        x_validation,  y_validation = get_data_as_np_array(validation_table,
+                                                           dependent_varname,
+                                                           independent_varname,
+                                                           input_shape,
+                                                           num_classes)
+
+    # Compute total buffers on each segment
+    total_buffers_per_seg = plpy.execute(
+        """ SELECT gp_segment_id, count(*) AS total_buffers_per_seg
+            FROM {0}
+            GROUP BY gp_segment_id
+        """.format(source_table))
+    seg_nums = [int(each_buffer["gp_segment_id"]) for each_buffer in total_buffers_per_seg]
+    total_buffers_per_seg = [int(each_buffer["total_buffers_per_seg"]) for each_buffer in total_buffers_per_seg]
+
+    # Prepare the SQL for running distributed training via UDA
+    compile_params_to_pass = "$madlib$" + compile_params + "$madlib$"
+    fit_params_to_pass = "$madlib$" + fit_params + "$madlib$"
+    run_training_iteration = plpy.prepare("""
+        SELECT {0}.fit_step(
+            {1}::REAL[],
+            {2}::SMALLINT[],
+            gp_segment_id,
+            {3}::INTEGER,
+            ARRAY{4},
+            ARRAY{5},
+            $MAD${6}$MAD$::TEXT,
+            {7}::TEXT,
+            {8}::TEXT,
+            {9},
+            $1
+        ) AS iteration_result
+        FROM {10}
+        """.format(schema_madlib, independent_varname, dependent_varname,
+                   num_classes, seg_nums, total_buffers_per_seg, model_arch,
+                   compile_params_to_pass, fit_params_to_pass,
+                   use_gpu, source_table), ["bytea"])
+
+    # Define the state for the model and loss/accuracy storage lists
+    model_state = serialize_weights(0, 0, 0, model_weights)
+    aggregate_loss, aggregate_accuracy, aggregate_runtime = [], [], []
+
+    plpy.info("Model architecture size: {}KB".format(len(model_arch)/1024))
+    plpy.info("Model state (serialized) size: {}MB".format(len(model_state)/1024/1024))
+
+    # Run distributed training for specified number of iterations
+    for i in range(num_iterations):
+        # prev_state = model_state
+        start_iteration = time.time()
+        try:
+            iteration_result = plpy.execute(run_training_iteration,
+                                            [model_state])[0]['iteration_result']
+        except plpy.SPIError as e:
+            plpy.error('A plpy error occurred in the step function: {0}'.
+                       format(str(e)))
+        end_iteration = time.time()
+        plpy.info("Time for iteration {0}: {1} sec".
+                  format(i + 1, end_iteration - start_iteration))
+        aggregate_runtime.append(datetime.datetime.now())
+        avg_loss, avg_accuracy, model_state = deserialize_iteration_state(iteration_result)
+        plpy.info("Average loss after training iteration {0}: {1}".format(i + 1, avg_loss))
+        plpy.info("Average accuracy after training iteration {0}: {1}".format(i + 1, avg_accuracy))
+        if validation_set_provided:
+            _, _, _, updated_weights = deserialize_weights(model_state, model_shapes)
+            master_model.set_weights(updated_weights)
+            compile_params_args = convert_string_of_args_to_dict(compile_params)
+            master_model.compile(**compile_params_args)
+            evaluate_result = master_model.evaluate(x_validation, y_validation)
+            if len(evaluate_result) < 2:
+                plpy.error('Calling evaluate on validation data returned < 2 '
+                           'metrics. Expected metrics are loss and accuracy')
+            validation_loss = evaluate_result[0]
+            validation_accuracy = evaluate_result[1]
+            plpy.info("Validation set accuracy after iteration {0}: {1}".
+                      format(i + 1, validation_accuracy))
+            validation_aggregate_accuracy.append(validation_accuracy)
+            validation_aggregate_loss.append(validation_loss)
+        aggregate_loss.append(avg_loss)
+        aggregate_accuracy.append(avg_accuracy)
+
+
+    end_training_time = datetime.datetime.now()
+
+    final_validation_acc = None
+    if validation_aggregate_accuracy and len(validation_aggregate_accuracy) > 0:
+        final_validation_acc = validation_aggregate_accuracy[-1]
+
+    final_validation_loss = None
+    if validation_aggregate_loss and len(validation_aggregate_loss) > 0:
+        final_validation_loss = validation_aggregate_loss[-1]
+    version = madlib_version(schema_madlib)
+    # accuracy = aggregate_accuracy[-1]
+    # loss = aggregate_loss[-1]
+    create_output_summary_table = plpy.prepare("""
+        CREATE TABLE {0}_summary AS
+        SELECT
+        $1 AS model_arch_table,
+        $2 AS model_arch_id,
+        $3 AS model_type,
+        $4 AS start_training_time,
+        $5 AS end_training_time,
+        $6 AS source_table,
+        $7 AS validation_table,
+        $8 AS model,
+        $9 AS dependent_varname,
+        $10 AS independent_varname,
+        $11 AS name,
+        $12 AS description,
+        $13 AS model_size,
+        $14 AS madlib_version,
+        $15 AS compile_params,
+        $16 AS fit_params,
+        $17 AS num_iterations,
+        $18 AS num_classes,
+        $19 AS accuracy,
+        $20 AS loss,
+        $21 AS accuracy_iter,
+        $22 AS loss_iter,
+        $23 AS time_iter,
+        $24 AS accuracy_validation,
+        $25 AS loss_validation,
+        $26 AS accuracy_iter_validation,
+        $27 AS loss_iter_validation
+        """.format(model), ["TEXT", "INTEGER", "TEXT", "TIMESTAMP",
+                                 "TIMESTAMP", "TEXT", "TEXT","TEXT",
+                                 "TEXT", "TEXT", "TEXT", "TEXT", "INTEGER",
+                                 "TEXT", "TEXT", "TEXT", "INTEGER",
+                                 "INTEGER", "DOUBLE PRECISION",
+                                 "DOUBLE PRECISION", "DOUBLE PRECISION[]",
+                                 "DOUBLE PRECISION[]", "TIMESTAMP[]",
+                                 "DOUBLE PRECISION", "DOUBLE PRECISION",
+                                 "DOUBLE PRECISION[]", "DOUBLE PRECISION[]"])
+    plpy.execute(create_output_summary_table, [model_arch_table, model_arch_id,
+                                               "madlib_keras",
+                                               start_training_time, end_training_time,
+                                               source_table, validation_table,
+                                               model, dependent_varname,
+                                               independent_varname, name, description,
+                                               None, version, compile_params,
+                                               fit_params, num_iterations, num_classes,
+                                               aggregate_accuracy[-1],
+                                               aggregate_loss[-1],
+                                               aggregate_accuracy, aggregate_loss,
+                                               aggregate_runtime, final_validation_acc,
+                                               final_validation_loss,
+                                               validation_aggregate_accuracy,
+                                               validation_aggregate_loss])
+
+    create_output_table = plpy.prepare("""
+        CREATE TABLE {0} AS
+        SELECT $1 as model_data""".format(model), ["bytea"])
+    plpy.execute(create_output_table, [model_state])
+
+def get_device_name_for_keras(use_gpu, seg, gpus_per_host):
+    if use_gpu:
+        device_name = '/gpu:0'
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(seg % gpus_per_host)
+    else: # cpu only
+        device_name = '/cpu:0'
+        os.environ["CUDA_VISIBLE_DEVICES"] = '-1'
+
+    return device_name
+
+def set_keras_session(use_gpu):
+    config = K.tf.ConfigProto()
+    if use_gpu:
+        config.gpu_options.allow_growth = False
+        config.gpu_options.per_process_gpu_memory_fraction = 0.9
+    session = K.tf.Session(config=config)
+    K.set_session(session)
+
+def clear_keras_session():
+    sess = K.get_session()
+    K.clear_session()
+    sess.close()
+
+def compile_and_set_weights(segment_model, compile_params, device_name,
+                            previous_state):
+    model_shapes = []
+    with K.tf.device(device_name):
+        compile_params = convert_string_of_args_to_dict(compile_params)
+        segment_model.compile(**compile_params)
+        # prev_segment_model.compile(**compile_params)
+        for a in segment_model.get_weights():
+            model_shapes.append(a.shape)
+
+        agg_loss, agg_accuracy, _, model_weights = deserialize_weights(
+            previous_state, model_shapes)
+        segment_model.set_weights(model_weights)
+    # prev_model.set_weights(model_weights)
+
+def fit_transition(state, ind_var, dep_var, current_seg_id, num_classes,
+                   all_seg_ids, total_buffers_per_seg, architecture,
+                   compile_params, fit_params, use_gpu, previous_state,
+                   **kwargs):
+
+    """
+
+    :param state:
+    :param ind_var:
+    :param dep_var:
+    :param current_seg_id:
+    :param num_classes:
+    :param all_seg_ids:
+    :param total_buffers_per_seg:
+    :param architecture:
+    :param compile_params:
+    :param fit_params:
+    :param use_gpu:
+    :param previous_state:
+    :param kwargs:
+    :return:
+    """
+    if not ind_var or not dep_var:
+        return state
+
+    start_transition = time.time()
+    SD = kwargs['SD']
+
+    gpus_per_host = 4
+    # Configure GPUs/CPUs
+    device_name = get_device_name_for_keras(
+        use_gpu, current_seg_id, gpus_per_host)
+
+    # Set up system if this is the first buffer on segment'
+    if not state:
+        set_keras_session(use_gpu)
+        segment_model = model_from_json(architecture)
+        compile_and_set_weights(segment_model, compile_params, device_name,
+                                previous_state)
+        SD['segment_model'] = segment_model
+        SD['buffer_count'] = 0
+    else:
+        segment_model = SD['segment_model']
+
+    agg_loss = 0
+    agg_accuracy = 0
+    input_shape = get_input_shape(architecture)
+
+    # Prepare the data
+    x_train = np.array(ind_var, dtype='float64').reshape(
+        len(ind_var), *input_shape)
+    y_train = np.array(dep_var)
+    y_train = keras.utils.to_categorical(y_train, num_classes)
+
+    # Fit segment model on data
+    start_fit = time.time()
+    with K.tf.device(device_name):
+        fit_params = convert_string_of_args_to_dict(fit_params)
+        history = segment_model.fit(x_train, y_train, **fit_params)
+        # loss, accuracy = prev_model.evaluate(x_train, y_train)
+        loss = history.history['loss'][0]
+        accuracy = history.history['acc'][0]
+    end_fit = time.time()
+
+    # Re-serialize the weights
+    # Update buffer count, check if we are done
+    SD['buffer_count'] += 1
+    updated_loss = agg_loss + loss
+    updated_accuracy = agg_accuracy + accuracy
+
+    with K.tf.device(device_name):
+        updated_weights = segment_model.get_weights()
+
+    total_buffers = total_buffers_per_seg[all_seg_ids.index(current_seg_id)]
+    if SD['buffer_count'] == total_buffers:
+        if total_buffers == 0:
+            plpy.error('total buffers is 0')
+
+        updated_loss /= total_buffers
+        updated_accuracy /= total_buffers
+        # plpy.info('final buffer loss {}, accuracy {}, buffer count {}'.format(loss, accuracy, SD['buffer_count']))
+        clear_keras_session()
+
+    new_model_state = serialize_weights(updated_loss, updated_accuracy,
+                                        SD['buffer_count'], updated_weights)
+    # new_model_state[2] += len(x_train)
+
+    del x_train
+    del y_train
+
+    end_transition = time.time()
+    plpy.info("Processed buffer {0}: Fit took {1} sec, Total was {2} sec".format(
+        SD['buffer_count'], end_fit - start_fit, end_transition - start_transition))
+
+    return new_model_state
+
+def fit_merge(state1, state2, **kwargs):
+    # Return if called early
+    if not state1 or not state2:
+        return state1 or state2
+
+    # Deserialize states
+    loss1, accuracy1, buffer_count1, weights1 = deserialize_weights_merge(state1)
+    loss2, accuracy2, buffer_count2, weights2 = deserialize_weights_merge(state2)
+        # plpy.info('merge buffer loss1 {}, accuracy1 {}, buffer count1 {}'.format(loss1, accuracy1, buffer_count1))
+    # plpy.info('merge buffer loss2 {}, accuracy2 {}, buffer count2 {}'.format(loss2, accuracy2, buffer_count2))
+
+    # Compute total buffer counts
+    # buffer_count1, buffer_count2 = state1[2], state2[2]
+    total_buffers = (buffer_count1 + buffer_count2) * 1.0
+    if total_buffers == 0:
+        plpy.error('total buffers in merge is 0')
+    merge_weight1 = buffer_count1 / total_buffers
+    merge_weight2 = buffer_count2 / total_buffers
+
+    # Average the losses
+    # loss1, loss2 = state1[0], state2[0]
+    avg_loss = merge_weight1*loss1 + merge_weight2*loss2
+
+    # Average the accuracies
+    # accuracy1, accuracy2 = state1[1], state2[1]
+    avg_accuracy = merge_weight1*accuracy1 + merge_weight2*accuracy2
+
+    # Average the weights
+    # weights1, weights2 = state1[3:], state2[3:]
+    avg_weights = merge_weight1*weights1 + merge_weight2*weights2
+    # avg_weights = [(merge_weight1 * e1) + (merge_weight2 * e2) for e1, e2 in zip(weights1, weights2)]
+
+    # Return the merged state
+    return serialize_weights_merge(avg_loss, avg_accuracy, total_buffers, avg_weights)
+
+def fit_final(state, **kwargs):
+    return state
+
+
+def get_data_as_np_array(table_name, y, x, input_shape, num_classes):
+    """
+
+    :param table_name: Table containing the batch of images per row
+    :param y: Column name for y
+    :param x: Column name for x
+    :param input_shape: input_shape of data in array format [L , W , C]
+    :param num_classes: num of distinct classes in y
+    :return:
+    """
+    val_data_qry = "SELECT {0}, {1} FROM {2}".format(y, x, table_name)
+    input_shape = map(int, input_shape)
+    val_data = plpy.execute(val_data_qry)
+    indep_len = len(val_data[0][x])
+    pixels_per_image = int(input_shape[0] * input_shape[1] * input_shape[2])
+    x_validation = np.ndarray((0,indep_len, pixels_per_image))
+    y_validation = np.ndarray((0,indep_len))
+    for i in range(len(val_data)):
+        x_test = np.asarray((val_data[i][x],))
+        x_test = x_test.reshape(1, indep_len, pixels_per_image)
+        y_test = np.asarray((val_data[i][y],))
+        y_test = y_test.reshape(1, indep_len)
+        x_validation=np.concatenate((x_validation, x_test))
+        y_validation=np.concatenate((y_validation, y_test))
+    num_test_examples = x_validation.shape[0]
+    x_validation = x_validation.reshape(indep_len * num_test_examples, *input_shape)
+    x_validation = x_validation.astype('float64')
+    y_validation = y_validation.reshape(indep_len * num_test_examples)
+
+    x_validation = x_validation.astype('float64')
+    #x_validation /= 255.0
+    y_validation = keras.utils.to_categorical(y_validation, num_classes)
+
+    return x_validation, y_validation
+
+def evaluate(schema_madlib, model_table, source_table, id_col, model_arch_table,
+             model_arch_id, dependent_varname, independent_varname, compile_params,
+             output_table, **kwargs):
+    module_name = 'madlib_keras_evaluate'
+    input_tbl_valid(source_table, module_name)
+    input_tbl_valid(model_arch_table, module_name)
+    output_tbl_valid(output_table, module_name)
+
+    # _validate_input_args(test_table, model_arch_table, output_table)
+    device_name = '/cpu:0'
+    os.environ["CUDA_VISIBLE_DEVICES"] = '-1'
+
+    model_data_query = "SELECT model_data from {0}".format(model_table)
+    model_data = plpy.execute(model_data_query)[0]['model_data']
+
+    model_arch_query = "SELECT model_arch, model_weights FROM {0} " \
+                       "WHERE id = {1}".format(model_arch_table, model_arch_id)
+    query_result = plpy.execute(model_arch_query)
+
+    query_result = query_result[0]
+    model_arch = query_result['model_arch']
+    input_shape = get_input_shape(model_arch)
+    model = model_from_json(model_arch)
+
+    model_shapes = []
+    for weight_arr in model.get_weights():
+        model_shapes.append(weight_arr.shape)
+    _, updated_weights = deserialize_weights(model_data, model_shapes)
+    model.set_weights(updated_weights)
+    compile_params_args = convert_string_of_args_to_dict(compile_params)
+    with K.tf.device(device_name):
+        model.compile(**compile_params_args)
+
+    input_shape = map(int, input_shape)
+    x_validation,  y_validation = get_data_as_np_array(source_table,
+                                                       dependent_varname,
+                                                       independent_varname,
+                                                       input_shape,
+                                                       num_classes)
+
+    plpy.info('X shape : {0}'.format(x_validation.shape))
+    plpy.info('Y shape : {0}'.format(y_validation.shape))
+
+    with K.tf.device(device_name):
+        evaluate_result = model.evaluate(x_validation, y_validation)
+
+    plpy.info('evaluate result is {}'.format(evaluate_result))
+
+
+def evaluate1(schema_madlib, model_table, test_table, id_col, model_arch_table,
+            model_arch_id, dependent_varname, independent_varname, compile_params, output_table,
+            **kwargs):
+    # module_name = 'madlib_keras_evaluate'
+    # input_tbl_valid(test_table, module_name)
+    # input_tbl_valid(model_arch_table, module_name)
+    # output_tbl_valid(output_table, module_name)
+
+    # _validate_input_args(test_table, model_arch_table, output_table)
+
+    model_data_query = "SELECT model_data from {0}".format(model_table)
+    model_data = plpy.execute(model_data_query)[0]['model_data']
+
+    model_arch_query = "SELECT model_arch, model_weights FROM {0} " \
+                       "WHERE id = {1}".format(model_arch_table, model_arch_id)
+    query_result = plpy.execute(model_arch_query)
+    if not  query_result or len(query_result) == 0:
+        plpy.error("no model arch found in table {0} with id {1}".format(model_arch_table, model_arch_id))
+    query_result = query_result[0]
+    model_arch = query_result['model_arch']
+    input_shape = get_input_shape(model_arch)
+    compile_params = "$madlib$" + compile_params + "$madlib$"
+    # evaluate_query = plpy.prepare("""create table {output_table} as
+    evaluate_query = plpy.prepare("""
+        select {id_col}, (madlib.internal_keras_evaluate({independent_varname},
+                                             {dependent_varname},
+                                             $MAD${model_arch}$MAD$,
+                                             $1,ARRAY{input_shape},
+                                             {compile_params}))
+        from {test_table}""".format(**locals()), ["bytea"])
+    plpy.execute(evaluate_query, [model_data])
+
+def internal_keras_evaluate(x_test, y_test, model_arch, model_data, input_shape,
+                           compile_params):
+    compile_params = convert_string_of_args_to_dict(compile_params)
+    device_name = '/cpu:0'
+    os.environ["CUDA_VISIBLE_DEVICES"] = '-1'
+
+    model = model_from_json(model_arch)
+    plpy.info('model in str is {}'.format(str(model)))
+
+    model_shapes = []
+    for weight_arr in model.get_weights():
+        model_shapes.append(weight_arr.shape)
+    _, model_weights = deserialize_weights(model_data, model_shapes)
+    model.set_weights(model_weights)
+    with K.tf.device(device_name):
+        model.compile(**compile_params)
+
+    x_test = np.array(x_test).reshape(len(x_test), input_shape[0], input_shape[1],
+                                      input_shape[2])
+    x_test = x_test.astype('float32')
+    y_test = keras.utils.to_categorical(np.array(y_test), 10)
+    with K.tf.device(device_name):
+        res = model.evaluate(x_test, y_test)
+    plpy.info('evaluate result from internal_keras_evaluate is {}'.format(res))
+    return res
+
+def print_md5_sum(obj, name):
+    import hashlib
+    m = hashlib.md5()
+    m.update(obj)
+    plpy.info('md5 sum for {} is {}'.format(name, m.hexdigest()))
+
+
+def predict(schema_madlib, model_table, test_table, id_col, model_arch_table,
+            model_arch_id, independent_varname, compile_params, output_table,
+            **kwargs):
+    module_name = 'madlib_keras_predict'
+    input_tbl_valid(test_table, module_name)
+    input_tbl_valid(model_arch_table, module_name)
+    output_tbl_valid(output_table, module_name)
+
+    # _validate_input_args(test_table, model_arch_table, output_table)
+
+    model_data_query = "SELECT model_data from {0}".format(model_table)
+    model_data = plpy.execute(model_data_query)[0]['model_data']
+
+    model_arch_query = "SELECT model_arch, model_weights FROM {0} " \
+                       "WHERE id = {1}".format(model_arch_table, model_arch_id)
+    query_result = plpy.execute(model_arch_query)
+    if not  query_result or len(query_result) == 0:
+        plpy.error("no model arch found in table {0} with id {1}".format(model_arch_table, model_arch_id))
+    query_result = query_result[0]
+    model_arch = query_result['model_arch']
+    input_shape = get_input_shape(model_arch)
+    compile_params = "$madlib$" + compile_params + "$madlib$"
+    predict_query = plpy.prepare("""create table {output_table} as
+        select {id_col}, (madlib.internal_keras_predict({independent_varname},
+                                             $MAD${model_arch}$MAD$,
+                                             $1,ARRAY{input_shape},
+                                             {compile_params}))[1] as prediction
+        from {test_table}""".format(**locals()), ["bytea"])
+    plpy.execute(predict_query, [model_data])
+
+
+def internal_keras_predict(x_test, model_arch, model_data, input_shape, compile_params):
+    model = model_from_json(model_arch)
+    compile_params = convert_string_of_args_to_dict(compile_params)
+    device_name = '/cpu:0'
+    os.environ["CUDA_VISIBLE_DEVICES"] = '-1'
+
+    with K.tf.device(device_name):
+        model.compile(**compile_params)
+
+    model_shapes = []
+    for weight_arr in model.get_weights():
+        model_shapes.append(weight_arr.shape)
+    _,_,_, model_weights = deserialize_weights(model_data, model_shapes)
+    model.set_weights(model_weights)
+    x_test = np.array(x_test).reshape(1, *input_shape)
+    x_test /= 255
+    res = model.predict_classes(x_test)
+    return res
+
+#### FUNCTIONS TO CHANGE ####
+
+# def construct_init_state(model_weights_serialized):
+#     return str([0, 0, 0] + model_weights_serialized) # format: [loss, accuracy, buffer_count, weights...]
+
+# def deserialize_iteration_state(iteration_result):
+#     iteration_result = eval(iteration_result)
+#     avg_loss, avg_accuracy, updated_model_state = iteration_result[0], iteration_result[1], iteration_result[3:]
+#     return avg_loss, avg_accuracy, str([0, 0, 0] + updated_model_state)
+
+# def deserialize_weights(model_weights_serialized, model_shapes):
+#     model_state = eval(model_weights_serialized)
+#     model_weights_serialized = model_state[3:]
+#     i, j, model_weights = 0, 0, []
+#     while j < len(model_shapes):
+#         next_pointer = i + reduce(lambda x, y: x * y, model_shapes[j])
+#         weight_arr_portion = model_weights_serialized[i:next_pointer]
+#         model_weights.append(np.array(weight_arr_portion).reshape(model_shapes[j]))
+#         i, j = next_pointer, j + 1
+#     return model_state[2], model_weights
+
+# def serialize_weights(loss, accuracy, buffer_count, model_weights):
+#     flattened_weights = [list(w.flatten()) for w in model_weights]
+#     model_weights_serialized = sum(flattened_weights, [])
+#     return str([loss, accuracy, buffer_count] + model_weights_serialized)
+
+# def deserialize_weights_merge(model_weights_serialized):
+#     model_state = eval(model_weights_serialized)
+#     return model_state[0], model_state[1], model_state[2], model_state[3:]
+
+# def serialize_weights_merge(avg_loss, avg_accuracy, total_buffers, avg_weights):
+#     return str([avg_loss, avg_accuracy, total_buffers] + avg_weights)
+
+# def reset_buffers_final(state):
+#     state = eval(state)
+#     state[2] = 0
+#     return str(state)
+
+# SPLITTER SERIALIZATION: WORKS
+# def deserialize_iteration_state(iteration_result):
+#     split_state = filter(None, iteration_result.split('splitter'))
+#     new_model_string = "0splitter0splitter0splitter"
+#     for a in split_state[3:]:
+#         new_model_string += a
+#         new_model_string += 'splitter'
+#     avg_loss, avg_accuracy = split_state[0], split_state[1]
+#     return float(avg_loss), float(avg_accuracy), new_model_string
+
+# def deserialize_weights(model_state, model_shapes):
+#     split_state = filter(None, model_state.split('splitter'))
+#     j, model_weights = 0, []
+#     for a in split_state[3:]:
+#         arr = np.fromstring(a, dtype=np.float32)
+#         model_weights.append(arr.reshape(model_shapes[j]))
+#         j += 1
+#     '''For the buffer count, we first cast to float and then int because Python
+#     cannot cast directly from string like '3.0' to int 3'''
+#     return int(float(split_state[2])), model_weights
+
+# def serialize_weights(loss, accuracy, buffer_count, model_weights):
+#     new_model_string = str(loss) + "splitter" + str(accuracy) + "splitter" + str(buffer_count) + "splitter"
+#     for a in model_weights:
+#         a = np.float32(a)
+#         new_model_string += a.tostring()
+#         new_model_string += 'splitter'
+#     return new_model_string
+
+# def deserialize_weights_merge(state):
+#     split_state = filter(None, state.split('splitter'))
+#     model_weights = []
+#     for a in split_state[3:]:
+#         model_weights.append(np.fromstring(a, dtype=np.float32))
+#     return float(split_state[0]), float(split_state[1]), int(float(split_state[2])), model_weights
+# END SPLITTER SERIALIZATION
+
+"""
+Parameters:
+    iteration_result: the output of the step function
+Returns:
+    loss: the averaged loss from that iteration of training
+    accuracy: the averaged accuracy from that iteration of training
+    new_model_state: the stringified (serialized) state to pass in to next iteration
+        of step function training, represents the averaged weights from the last
+        iteration of training; zeros out loss, accuracy, buffer_count in this state
+        because the new iteration must start with fresh values
+"""
+def deserialize_iteration_state(iteration_result):
+    if not iteration_result:
+        return None
+    state = np.fromstring(iteration_result, dtype=np.float32)
+    new_model_string = np.array(state)
+    new_model_string[0], new_model_string[1], new_model_string[2] = 0, 0, 0
+    new_model_string = np.float32(new_model_string)
+    return float(state[0]), float(state[1]), new_model_string.tostring()
+
+"""
+Parameters:
+    model_state: a stringified (serialized) state containing loss, accuracy, buffer_count,
+        and model_weights, passed from postgres
+    model_shapes: a list of tuples containing the shapes of each element in keras.get_weights()
+Returns:
+    buffer_count: the buffer count from state
+    model_weights: a list of numpy arrays that can be inputted into keras.set_weights()
+"""
+def deserialize_weights(model_state, model_shapes):
+    if not model_state or not model_shapes:
+        return None
+    state = np.fromstring(model_state, dtype=np.float32)
+    model_weights_serialized = state[3:]
+    i, j, model_weights = 0, 0, []
+    while j < len(model_shapes):
+        next_pointer = i + reduce(lambda x, y: x * y, model_shapes[j])
+        weight_arr_portion = model_weights_serialized[i:next_pointer]
+        model_weights.append(weight_arr_portion.reshape(model_shapes[j]))
+        i, j = next_pointer, j + 1
+    return int(float(state[0])), int(float(state[1])), int(float(state[2])), model_weights
+
+"""
+Parameters:
+    loss, accuracy, buffer_count: float values
+    model_weights: a list of numpy arrays, what you get from keras.get_weights()
+Returns:
+    A stringified (serialized) state containing all these values, to be passed to postgres
+"""
+def serialize_weights(loss, accuracy, buffer_count, model_weights):
+    if model_weights is None:
+        return None
+    flattened_weights = [w.flatten() for w in model_weights]
+    model_weights_serialized = np.concatenate(flattened_weights)
+    new_model_string = np.array([loss, accuracy, buffer_count])
+    new_model_string = np.concatenate((new_model_string, model_weights_serialized))
+    new_model_string = np.float32(new_model_string)
+    return new_model_string.tostring()
+
+"""
+Parameters:
+    state: the stringified (serialized) state containing loss, accuracy, buffer_count, and
+        model_weights, passed from postgres to merge function
+Returns:
+    loss: the averaged loss from that iteration of training
+    accuracy: the averaged accuracy from that iteration of training
+    buffer_count: total buffer counts processed
+    model_weights: a single flattened numpy array containing all of the weights, flattened
+        because all we have to do is average them (so don't have to reshape)
+"""
+def deserialize_weights_merge(state):
+    if not state:
+        return None
+    state = np.fromstring(state, dtype=np.float32)
+    return float(state[0]), float(state[1]), int(float(state[2])), state[3:]
+
+"""
+Parameters:
+    loss, accuracy, buffer_count: float values
+    model_weights: a single flattened numpy array containing all of the weights, averaged
+        in merge function over the 2 states
+Returns:
+    A stringified (serialized) state containing all these values, to be passed to postgres
+"""
+def serialize_weights_merge(loss, accuracy, buffer_count, model_weights):
+    if model_weights is None:
+        return None
+    new_model_string = np.array([loss, accuracy, buffer_count])
+    new_model_string = np.concatenate((new_model_string, model_weights))
+    new_model_string = np.float32(new_model_string)
+    return new_model_string.tostring()
+
+#### OTHER FUNCTIONS ####
+
+"""
+Original deserialization for warm-start, used only to parse model received
+from query at the top of this file
+"""
+def deserialize_weights_orig(model_weights_serialized, model_shapes):
+    i, j, model_weights = 0, 0, []
+    while j < len(model_shapes):
+        next_pointer = i + reduce(lambda x, y: x * y, model_shapes[j])
+        weight_arr_portion = model_weights_serialized[i:next_pointer]
+        model_weights.append(np.array(weight_arr_portion).reshape(model_shapes[j]))
+        i, j = next_pointer, j + 1
+    return model_weights
+
+"""
+Used to convert compile_params and fit_params to actual argument dictionaries
+"""
+def convert_string_of_args_to_dict(str_of_args):
+    """Uses parenthases matching algorithm to intelligently convert
+    a string with valid python code into an argument dictionary"""
+    stack = []
+    dual = {
+        '(' : ')',
+        '[' : ']',
+        '{' : '}',
+    }
+    result_str = ""
+    for char in str_of_args:
+        if char in dual.keys():
+            stack.append(char)
+            result_str += char
+        elif char in dual.values() and stack:
+            if dual[stack[-1]] == char:
+                stack.pop(-1)
+            result_str += char
+        elif not stack and char == "=":
+            result_str += ":"
+        else:
+            result_str += char
+    return eval('{' + result_str + '}')

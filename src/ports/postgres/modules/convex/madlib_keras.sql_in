@@ -1,0 +1,286 @@
+/* ----------------------------------------------------------------------- *//**
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ *
+ *
+ * @file madlib_keras.sql_in
+ *
+ * @brief SQL functions for multilayer perceptron
+ * @date June 2012
+ *
+ *
+ *//* ----------------------------------------------------------------------- */
+
+m4_include(`SQLCommon.m4')
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.madlib_keras_fit(
+    source_table            VARCHAR,
+    model                   VARCHAR,
+    dependent_varname       VARCHAR,
+    independent_varname     VARCHAR,
+    model_arch_table        VARCHAR,
+    model_arch_id           INTEGER,
+    compile_params          VARCHAR,
+    fit_params              VARCHAR,
+    num_iterations          INTEGER,
+    num_classes             INTEGER,
+    use_gpu                 BOOLEAN,
+    validation_table        VARCHAR,
+    name                    VARCHAR,
+    description             VARCHAR
+) RETURNS VOID AS $$
+    PythonFunctionBodyOnly(`convex', `madlib_keras')
+    with AOControl(False):
+        madlib_keras.fit(**globals())
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.madlib_keras_fit(
+    source_table            VARCHAR,
+    model                   VARCHAR,
+    dependent_varname       VARCHAR,
+    independent_varname     VARCHAR,
+    model_arch_table        VARCHAR,
+    model_arch_id           INTEGER,
+    compile_params          VARCHAR,
+    fit_params              VARCHAR,
+    num_iterations          INTEGER,
+    num_classes             INTEGER,
+    use_gpu                 BOOLEAN,
+    validation_table        VARCHAR
+) RETURNS VOID AS $$
+    SELECT MADLIB_SCHEMA.madlib_keras_fit($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NULL, NULL);
+$$ LANGUAGE sql VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.madlib_keras_fit(
+    source_table            VARCHAR,
+    model                   VARCHAR,
+    dependent_varname       VARCHAR,
+    independent_varname     VARCHAR,
+    model_arch_table        VARCHAR,
+    model_arch_id           INTEGER,
+    compile_params          VARCHAR,
+    fit_params              VARCHAR,
+    num_iterations          INTEGER,
+    num_classes             INTEGER,
+    use_gpu                 BOOLEAN
+) RETURNS VOID AS $$
+    SELECT MADLIB_SCHEMA.madlib_keras_fit($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NULL, NULL, NULL);
+$$ LANGUAGE sql VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.madlib_keras_fit(
+    source_table            VARCHAR,
+    model                   VARCHAR,
+    dependent_varname       VARCHAR,
+    independent_varname     VARCHAR,
+    model_arch_table        VARCHAR,
+    model_arch_id           INTEGER,
+    compile_params          VARCHAR,
+    fit_params              VARCHAR,
+    num_iterations          INTEGER,
+    num_classes             INTEGER
+) RETURNS VOID AS $$
+    SELECT MADLIB_SCHEMA.madlib_keras_fit($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, TRUE, NULL, NULL, NULL);
+$$ LANGUAGE sql VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.fit_transition(
+    state                      BYTEA,
+    ind_var                    REAL[],
+    dep_var                    SMALLINT[],
+    current_seg_id             INTEGER,
+    num_classes                INTEGER,
+    all_seg_ids                INTEGER[],
+    total_buffers_per_seg      INTEGER[],
+    architecture               TEXT,
+    compile_params             TEXT,
+    fit_params                 TEXT,
+    use_gpu                    BOOLEAN,
+    previous_state             BYTEA
+) RETURNS BYTEA AS $$
+PythonFunctionBodyOnlyNoSchema(`convex', `madlib_keras')
+    return madlib_keras.fit_transition(**globals())
+$$ LANGUAGE plpythonu
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.fit_merge(
+    state1          BYTEA,
+    state2          BYTEA
+) RETURNS BYTEA AS $$
+PythonFunctionBodyOnlyNoSchema(`convex', `madlib_keras')
+    return madlib_keras.fit_merge(**globals())
+$$ LANGUAGE plpythonu
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.fit_final(
+    state BYTEA
+) RETURNS BYTEA AS $$
+PythonFunctionBodyOnlyNoSchema(`convex', `madlib_keras')
+    return madlib_keras.fit_final(**globals())
+$$ LANGUAGE plpythonu
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+DROP AGGREGATE IF EXISTS MADLIB_SCHEMA.fit_step(REAL[],
+                                                   SMALLINT[],
+                                                   INTEGER,
+                                                   INTEGER,
+                                                   INTEGER[],
+                                                   INTEGER[],
+                                                   TEXT,
+                                                   INTEGER[],
+                                                   TEXT,
+                                                   TEXT,
+                                                   TEXT,
+                                                   BOOLEAN,
+                                                   BYTEA);
+CREATE AGGREGATE MADLIB_SCHEMA.fit_step(
+    /* ind_var */                REAL[],
+    /* dep_var */                SMALLINT[],
+    /* current_seg_id */         INTEGER,
+    /* num_classes */            INTEGER,
+    /* all_seg_ids*/             INTEGER[],
+    /* total_buffers_per_seg*/   INTEGER[],
+    /* architecture */           TEXT,
+    /* compile_params */         TEXT,
+    /* fit_params */             TEXT,
+    /* use_gpu */                BOOLEAN,
+    /* previous_state */         BYTEA
+)(
+    STYPE=BYTEA,
+    SFUNC=MADLIB_SCHEMA.fit_transition,
+    PREFUNC=MADLIB_SCHEMA.fit_merge,
+    FINALFUNC=MADLIB_SCHEMA.fit_final
+);
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.madlib_keras_predict(
+    model_table             VARCHAR,
+    test_table              VARCHAR,
+    id_col                  VARCHAR,
+    model_arch_table        VARCHAR,
+    model_arch_id           INTEGER,
+    independent_varname     VARCHAR,
+    compile_params          VARCHAR,
+    output_table            VARCHAR
+) RETURNS VOID AS $$
+    PythonFunctionBodyOnly(`convex', `madlib_keras')
+    with AOControl(False):
+        madlib_keras.predict(schema_madlib,
+               model_table,
+               test_table,
+               id_col,
+               model_arch_table,
+               model_arch_id,
+               independent_varname,
+               compile_params,
+               output_table)
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.internal_keras_predict(
+   independent_var double precision [],
+   model_architecture TEXT,
+   model_data bytea,
+   input_shape integer[],
+   compile_params TEXT
+) RETURNS DOUBLE PRECISION[] AS $$
+    PythonFunctionBodyOnly(`convex', `madlib_keras')
+    with AOControl(False):
+        return madlib_keras.internal_keras_predict(
+               independent_var,
+               model_architecture,
+               model_data,
+               input_shape,
+               compile_params)
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.madlib_keras_evaluate(
+    model_table             VARCHAR,
+    test_table              VARCHAR,
+    id_col                  VARCHAR,
+    model_arch_table        VARCHAR,
+    model_arch_id           INTEGER,
+    dependent_varname       VARCHAR,
+    independent_varname     VARCHAR,
+    compile_params          VARCHAR,
+    output_table            VARCHAR
+) RETURNS VOID AS $$
+    PythonFunctionBodyOnly(`convex', `madlib_keras')
+    with AOControl(False):
+        madlib_keras.evaluate(schema_madlib,
+               model_table,
+               test_table,
+               id_col,
+               model_arch_table,
+               model_arch_id,
+               dependent_varname,
+               independent_varname,
+               compile_params,
+               output_table)
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.madlib_keras_evaluate1(
+    model_table             VARCHAR,
+    test_table              VARCHAR,
+    id_col                  VARCHAR,
+    model_arch_table        VARCHAR,
+    model_arch_id           INTEGER,
+    dependent_varname       VARCHAR,
+    independent_varname     VARCHAR,
+    compile_params          VARCHAR,
+    output_table            VARCHAR
+) RETURNS VOID AS $$
+    PythonFunctionBodyOnly(`convex', `madlib_keras')
+    with AOControl(False):
+        madlib_keras.evaluate1(schema_madlib,
+               model_table,
+               test_table,
+               id_col,
+               model_arch_table,
+               model_arch_id,
+               dependent_varname,
+               independent_varname,
+               compile_params,
+               output_table)
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.internal_keras_evaluate(
+   dependent_var double precision [],
+   independent_var double precision [],
+   model_architecture TEXT,
+   model_data bytea,
+   input_shape integer[],
+   compile_params TEXT
+) RETURNS DOUBLE PRECISION[] AS $$
+    PythonFunctionBodyOnly(`convex', `madlib_keras')
+    with AOControl(False):
+        return madlib_keras.internal_keras_evaluate(
+               dependent_var,
+               independent_var,
+               model_architecture,
+               model_data,
+               input_shape,
+               compile_params)
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');

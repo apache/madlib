@@ -1,0 +1,89 @@
+# coding=utf-8
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+m4_changequote(`<!', `!>')
+
+import sys
+import json
+
+def get_layers(arch):
+    d = json.loads(arch)
+    config = d['config']
+    if type(config) == list:
+        return config  # In keras 1.x, all models are sequential
+    elif type(config) == dict and 'layers' in config:
+        layers = config['layers']
+        if type(layers) == list:
+            return config['layers']  # In keras 2.x, only sequential models are supported
+    plpy.error('Unable to read input_shape from keras model arch.  Note: only sequential keras models are supported.')
+    return None
+
+def get_input_shape(arch):
+    layers = get_layers(arch)
+    return layers[0]['config']['batch_input_shape'][1:]
+
+def print_model_arch_layers(arch):
+    layers = get_layers(arch)
+
+    print("\nModel arch layers:")
+    first = True
+    for layer in layers:
+        if first:
+            first = False
+        else:
+            print("   |")
+            print("   V")
+        class_name = layer['class_name']
+        config = layer['config']
+        if class_name == 'Dense':
+            print("{0}[{1}]".class_name)
+        else:
+            print(class_name)
+
+def print_input_shape(arch):
+    layers = get_layers(arch)
+    print("\nInput shape:")
+    print(layers[0]['config']['batch_input_shape'][1:])
+
+def print_required_imports(arch):
+    layers = get_layers(arch)
+    class_names = set(layer['class_name'] for layer in layers )
+    print("\nRequired imports:")
+    for module in class_names:
+        print("import {}".module)
+
+def main(argv):
+    if len(argv) >= 2:
+        file = open(argv[1],"r")
+    else:
+        file = sys.stdin
+
+    arch = file.readline().strip()
+    print_model_arch_layers(arch)
+    print_input_shape(arch)
+    print_required_imports(arch)
+
+def _error(msg):
+    raise Exception(msg)
+
+if __name__ == "__main__":
+    class plpy:
+        pass
+    plpy.error = _error
+    main(sys.argv)
