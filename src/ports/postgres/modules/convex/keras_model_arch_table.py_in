@@ -17,11 +17,11 @@
 # specific language governing permissions and limitations
 # under the License.
 """
-@file keras_model_repo_table.py_in
+@file keras_model_arch_table.py_in
 
-@brief keras model repo table management helper functions
+@brief keras model arch table management helper functions
 
-@namespace keras_model_repo_table
+@namespace keras_model_arch_table
 """
 
 from utilities.validate_args import table_exists
@@ -33,19 +33,19 @@ from utilities.utilities import unique_string
 import plpy
 
 class Format:
-    """Expected format of keras_model_repo_table.
+    """Expected format of keras_model_arch_table.
        Example uses:
 
            from utilities.validate_args import columns_missing_from_table
-           from keras_model_repo_table import Format
+           from keras_model_arch_table import Format
 
            # Validate names in cols list against actual table
-           missing_cols = columns_missing_from_table('my_repo_table', Format.col_names)
+           missing_cols = columns_missing_from_table('my_arch_table', Format.col_names)
 
-           # Get model arch from repo table, without hard coding column names
+           # Get model arch from keras model arch table, without hard coding column names
            sql = "SELECT {arch} FROM {table} WHERE {id} = {my_id}"
                  .format(arch=Format.model_arch,
-                         table='my_repo',
+                         table='my_arch_table',
                          id=Format.model_id,
                          my_id=1)
            arch = plpy.execute(sql)[0]
@@ -59,32 +59,32 @@ class Format:
 def _execute(sql,max_rows=0):
     return plpy.execute(sql,max_rows)
 
-def create_model(model_repo_table, model_arch,**kwargs):
-    model_repo_table = quote_ident(model_repo_table)
-    if not table_exists(model_repo_table):
+def load_keras_model(model_arch_table, model_arch,**kwargs):
+    model_arch_table = quote_ident(model_arch_table)
+    if not table_exists(model_arch_table):
         col_defs = ','.join(map(' '.join,
                             zip(Format.col_names,
                                 Format.col_types)))
 
-        sql = "CREATE TABLE {model_repo_table} ({col_defs})" \
+        sql = "CREATE TABLE {model_arch_table} ({col_defs})" \
               .format(**locals())
 
         _execute(sql)
-        plpy.info("Keras model repo table {0} created." \
-            .format(model_repo_table))
+        plpy.info("Created new keras model arch table {0}." \
+            .format(model_arch_table))
     else:
-        missing_cols = columns_missing_from_table(model_repo_table, Format.col_names)
+        missing_cols = columns_missing_from_table(model_arch_table, Format.col_names)
         if len(missing_cols) > 0:
-            plpy.error("Invalid keras model repo table {0},"
-                       " missing columns: {1}".format(model_repo_table, missing_cols))
+            plpy.error("Invalid keras model arch table {0},"
+                       " missing columns: {1}".format(model_arch_table, missing_cols))
 
     unique_str = unique_string(prefix_has_temp=False)
 
-    sql = """INSERT INTO {model_repo_table} ({model_arch_col}, {internal_id_col})
+    sql = """INSERT INTO {model_arch_table} ({model_arch_col}, {internal_id_col})
                                     VALUES({model_arch}, '{unique_str}');
              SELECT model_id, model_arch
-                 FROM {model_repo_table} WHERE {internal_id_col} = '{unique_str}'
-    """.format(model_repo_table=model_repo_table,
+                 FROM {model_arch_table} WHERE {internal_id_col} = '{unique_str}'
+    """.format(model_arch_table=model_arch_table,
                model_arch_col=Format.model_arch,
                unique_str=unique_str,
                model_arch=quote_literal(model_arch),
@@ -93,40 +93,40 @@ def create_model(model_repo_table, model_arch,**kwargs):
 # This code works perfectly in postgres 8.3+, but fails in Greenplum 5 with:
 #   ERROR:  The RETURNING clause of the INSERT statement is not supported in this version
 #           of Greenplum Database.
-#    sql = """INSERT INTO {model_repo_table}
+#    sql = """INSERT INTO {model_arch_table}
 #        (model_arch)
 #        VALUES('{model_arch}')
-#        RETURNING *;""".format(model_repo_table=model_repo_table,
+#        RETURNING *;""".format(model_arch_table=model_arch_table,
 #                                model_arch=quote_literal(model_arch))
     res = _execute(sql,1)
 
     if len(res) != 1 or res[0][Format.model_arch] != model_arch:
         raise Exception("Failed to insert new row in {0} table--try again?"
-                       .format(model_repo_table))
-    plpy.info("Added model id {0} to {1} table".format(res[0]['model_id'], model_repo_table))
+                       .format(model_arch_table))
+    plpy.info("Added model id {0} to {1} table".format(res[0]['model_id'], model_arch_table))
 
-def delete_model(model_repo_table, model_id, **kwargs):
-    if not table_exists(model_repo_table):
-        plpy.error("Table {0} does not exist.".format(model_repo_table))
+def delete_model(model_arch_table, model_id, **kwargs):
+    if not table_exists(model_arch_table):
+        plpy.error("Table {0} does not exist.".format(model_arch_table))
 
-    missing_cols = columns_missing_from_table(model_repo_table, Format.col_names)
+    missing_cols = columns_missing_from_table(model_arch_table, Format.col_names)
     if len(missing_cols) > 0:
-        plpy.error("Invalid keras model repo table {0},"
-                   " missing columns: {1}".format(model_repo_table, missing_cols))
+        plpy.error("Invalid keras model arch table {0},"
+                   " missing columns: {1}".format(model_arch_table, missing_cols))
 
     sql = """
-           DELETE FROM {model_repo_table} WHERE model_id={model_id}
-          """.format(model_repo_table=model_repo_table, model_id=model_id)
+           DELETE FROM {model_arch_table} WHERE model_id={model_id}
+          """.format(model_arch_table=model_arch_table, model_id=model_id)
     res = _execute(sql)
 
     if res.nrows() > 0:
-        plpy.info("Model id {0} has been deleted from {1}.".format(model_id, model_repo_table))
+        plpy.info("Model id {0} has been deleted from {1}.".format(model_id, model_arch_table))
     else:
         plpy.info("Model id {0} not found".format(model_id))
 
-    sql = "SELECT model_id FROM {model_repo_table}".format(model_repo_table=model_repo_table)
+    sql = "SELECT model_id FROM {model_arch_table}".format(model_arch_table=model_arch_table)
     res = _execute(sql)
     if not res or len(res) == 0:
-        plpy.info("Removing empty model repo table {model_repo_table}".format(model_repo_table=model_repo_table))
-        sql = "DROP TABLE {model_repo_table}".format(model_repo_table=model_repo_table)
+        plpy.info("Removing empty keras model arch table {model_arch_table}".format(model_arch_table=model_arch_table))
+        sql = "DROP TABLE {model_arch_table}".format(model_arch_table=model_arch_table)
         _execute(sql)
