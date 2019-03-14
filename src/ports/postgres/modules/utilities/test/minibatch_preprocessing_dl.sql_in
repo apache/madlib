@@ -51,11 +51,14 @@ SELECT minibatch_preprocessor_dl(
 SELECT assert(count(*)=4, 'Incorrect number of buffers in minibatch_preprocessor_dl_batch.')
 FROM minibatch_preprocessor_dl_batch;
 
+SELECT assert(array_upper(independent_var, 2)=6, 'Incorrect buffer size.')
+FROM minibatch_preprocessor_dl_batch WHERE buffer_id=0;
+
 SELECT assert(array_upper(independent_var, 1)=5, 'Incorrect buffer size.')
 FROM minibatch_preprocessor_dl_batch WHERE buffer_id=1;
 
-SELECT assert(array_upper(independent_var, 1)=2, 'Incorrect buffer size.')
-FROM minibatch_preprocessor_dl_batch WHERE buffer_id=4;
+SELECT assert(array_upper(independent_var, 1)=4, 'Incorrect buffer size.')
+FROM minibatch_preprocessor_dl_batch WHERE buffer_id=3;
 
 DROP TABLE IF EXISTS minibatch_preprocessor_dl_batch, minibatch_preprocessor_dl_batch_summary;
 SELECT minibatch_preprocessor_dl(
@@ -65,25 +68,25 @@ SELECT minibatch_preprocessor_dl(
   'x');
 
 DROP TABLE IF EXISTS minibatch_preprocessor_dl_input;
-CREATE TABLE minibatch_preprocessor_dl_input(id serial, x double precision[], y INTEGER);
-INSERT INTO minibatch_preprocessor_dl_input(x, y) VALUES
-(ARRAY[1,2,3,4,5,6], 4),
-(ARRAY[11,2,3,4,5,6], 3),
-(ARRAY[11,22,33,4,5,6], 8),
-(ARRAY[11,22,33,44,5,6], 2),
-(ARRAY[11,22,33,44,65,6], 5),
-(ARRAY[11,22,33,44,65,56], 6),
-(ARRAY[11,22,33,44,65,56], 2),
-(ARRAY[11,22,33,44,65,56], 10),
-(ARRAY[11,22,33,44,65,56], 3),
-(ARRAY[11,22,33,44,65,56], 7),
-(ARRAY[11,22,33,44,65,56], 6),
-(ARRAY[11,22,33,44,65,56], -6),
-(ARRAY[11,22,33,144,65,56], 9),
-(ARRAY[11,22,233,44,65,56], 0),
-(ARRAY[11,22,33,44,65,56], 12),
-(ARRAY[11,22,33,44,65,56], -3),
-(ARRAY[11,22,33,44,65,56], -1);
+CREATE TABLE minibatch_preprocessor_dl_input(id serial, x double precision[], y INTEGER, y1 BOOLEAN, y2 TEXT, y3 DOUBLE PRECISION, y4 DOUBLE PRECISION[], y5 INTEGER[]);
+INSERT INTO minibatch_preprocessor_dl_input(x, y, y1, y2, y3, y4, y5) VALUES
+(ARRAY[1,2,3,4,5,6], 4, TRUE, 'a', 4.0, ARRAY[1.0, 0.0], ARRAY[1,0]),
+(ARRAY[11,2,3,4,5,6], 3, TRUE, 'c', 4.2, ARRAY[0.0, 1.0], ARRAY[1,0]),
+(ARRAY[11,22,33,4,5,6], 8, TRUE, 'a', 4.0, ARRAY[0.0, 1.0], ARRAY[1,0]),
+(ARRAY[11,22,33,44,5,6], 2, FALSE, 'a', 4.2, ARRAY[0.0, 1.0], ARRAY[1,0]),
+(ARRAY[11,22,33,44,65,6], 5, TRUE, 'b', 4.0, ARRAY[0.0, 1.0], ARRAY[0,1]),
+(ARRAY[11,22,33,44,65,56], 6, TRUE, 'a', 5.0, ARRAY[1.0, 0.0], ARRAY[1,0]),
+(ARRAY[11,22,33,44,65,56], 2, TRUE, 'a', 4.0, ARRAY[1.0, 0.0], ARRAY[1,0]),
+(ARRAY[11,22,33,44,65,56], 10, TRUE, 'a', 4.0, ARRAY[1.0, 0.0], ARRAY[1,0]),
+(ARRAY[11,22,33,44,65,56], 3, TRUE, 'b', 4.0, ARRAY[1.0, 0.0], ARRAY[1,0]),
+(ARRAY[11,22,33,44,65,56], 7, FALSE, 'a', 5.0, ARRAY[1.0, 0.0], ARRAY[1,0]),
+(ARRAY[11,22,33,44,65,56], 6, TRUE, 'a', 4.0, ARRAY[0.0, 1.0], ARRAY[1,0]),
+(ARRAY[11,22,33,44,65,56], -6, TRUE, 'a', 4.0, ARRAY[1.0, 0.0], ARRAY[1,0]),
+(ARRAY[11,22,33,144,65,56], 9, TRUE, 'c', 4.0, ARRAY[0.0, 1.0], ARRAY[1,0]),
+(ARRAY[11,22,233,44,65,56], 0, TRUE, 'a', 5.0, ARRAY[1.0, 0.0], ARRAY[0,1]),
+(ARRAY[11,22,33,44,65,56], 12, TRUE, 'a', 4.0, ARRAY[1.0, 0.0], ARRAY[1,0]),
+(ARRAY[11,22,33,44,65,56], -3, FALSE, 'a', 4.2, ARRAY[1.0, 0.0], ARRAY[1,0]),
+(ARRAY[11,22,33,44,65,56], -1, TRUE, 'b', 4.0, ARRAY[0.0, 1.0], ARRAY[0,1]);
 
 DROP TABLE IF EXISTS minibatch_preprocessor_dl_batch, minibatch_preprocessor_dl_batch_summary;
 SELECT minibatch_preprocessor_dl(
@@ -109,7 +112,7 @@ SELECT minibatch_preprocessor_dl(
   6);
 
 -- Test that dependent vars gets shifted by +6, by verifying minimum value goes from -6 to 0
-SELECT assert(abs(MIN(y))<0.00001, 'Dependent var not shifted properly!') FROM (SELECT UNNEST(dependent_var) as y FROM minibatch_preprocessor_dl_batch) a;
+SELECT assert(abs(MIN(y))<0.00001, 'Dependent var not shifted properly!') FROM (SELECT UNNEST(y1) as y FROM minibatch_preprocessor_dl_batch) a;
 
 DROP TABLE IF EXISTS minibatch_preprocessor_dl_batch, minibatch_preprocessor_dl_batch_summary;
 SELECT minibatch_preprocessor_dl(
@@ -122,4 +125,81 @@ SELECT minibatch_preprocessor_dl(
   -6);
 
 -- Test that dependent vars gets shifted by -6, by verifying minimum value goes from -6 to -12
-SELECT assert(relative_error(MIN(y), -12)<0.00001, 'Dependent var not shifted properly!') FROM (SELECT UNNEST(dependent_var) as y FROM minibatch_preprocessor_dl_batch) a;
+SELECT assert(relative_error(MIN(y), -12)<0.00001, 'Dependent var not shifted properly!') FROM (SELECT UNNEST(y1) as y FROM minibatch_preprocessor_dl_batch) a;
+
+
+-- Test one-hot encoding for dependent_var
+-- test boolean type
+DROP TABLE IF EXISTS minibatch_preprocessor_dl_batch, minibatch_preprocessor_dl_batch_summary;
+SELECT minibatch_preprocessor_dl(
+  'minibatch_preprocessor_dl_input',
+  'minibatch_preprocessor_dl_batch',
+  'y1',
+  'x',
+  4,
+  5);
+SELECT assert(pg_typeof(dependent_var) = 'integer[]'::regtype, 'One-hot encode doesn''t convert into integer array format') FROM minibatch_preprocessor_dl_batch WHERE buffer_id = 0;
+SELECT assert(array_upper(dependent_var, 2) = 2, 'Incorrect one-hot encode dimension') FROM
+  minibatch_preprocessor_dl_batch WHERE buffer_id = 0;
+SELECT assert(SUM(y) = 1, 'Incorrect one-hot encode format') FROM (SELECT buffer_id, UNNEST(dependent_var[1:1]) as y FROM minibatch_preprocessor_dl_batch) a WHERE buffer_id = 0;
+
+-- test text type
+DROP TABLE IF EXISTS minibatch_preprocessor_dl_batch, minibatch_preprocessor_dl_batch_summary;
+SELECT minibatch_preprocessor_dl(
+  'minibatch_preprocessor_dl_input',
+  'minibatch_preprocessor_dl_batch',
+  'y2',
+  'x',
+  4,
+  5);
+SELECT assert(pg_typeof(dependent_var) = 'integer[]'::regtype, 'One-hot encode doesn''t convert into integer array format') FROM minibatch_preprocessor_dl_batch WHERE buffer_id = 0;
+SELECT assert(array_upper(dependent_var, 2) = 3, 'Incorrect one-hot encode dimension') FROM
+  minibatch_preprocessor_dl_batch WHERE buffer_id = 0;
+SELECT assert(SUM(y) = 1, 'Incorrect one-hot encode format') FROM (SELECT buffer_id, UNNEST(dependent_var[1:1]) as y FROM minibatch_preprocessor_dl_batch) a WHERE buffer_id = 0;
+
+-- test double precision type
+DROP TABLE IF EXISTS minibatch_preprocessor_dl_batch, minibatch_preprocessor_dl_batch_summary;
+SELECT minibatch_preprocessor_dl(
+  'minibatch_preprocessor_dl_input',
+  'minibatch_preprocessor_dl_batch',
+  'y3',
+  'x',
+  4,
+  5);
+SELECT assert(pg_typeof(dependent_var) = 'integer[]'::regtype, 'One-hot encode doesn''t convert into integer array format') FROM minibatch_preprocessor_dl_batch WHERE buffer_id = 0;
+SELECT assert(array_upper(dependent_var, 2) = 3, 'Incorrect one-hot encode dimension') FROM
+  minibatch_preprocessor_dl_batch WHERE buffer_id = 0;
+SELECT assert(SUM(y) = 1, 'Incorrect one-hot encode format') FROM (SELECT buffer_id, UNNEST(dependent_var[1:1]) as y FROM minibatch_preprocessor_dl_batch) a WHERE buffer_id = 0;
+
+
+-- test double precision array type
+DROP TABLE IF EXISTS minibatch_preprocessor_dl_batch, minibatch_preprocessor_dl_batch_summary;
+SELECT minibatch_preprocessor_dl(
+  'minibatch_preprocessor_dl_input',
+  'minibatch_preprocessor_dl_batch',
+  'y4',
+  'x',
+  4,
+  5);
+SELECT assert(pg_typeof(dependent_var) = 'integer[]'::regtype, 'One-hot encode doesn''t convert into integer array format') FROM minibatch_preprocessor_dl_batch WHERE buffer_id = 0;
+SELECT assert(array_upper(dependent_var, 2) = 2, 'Incorrect one-hot encode dimension') FROM
+  minibatch_preprocessor_dl_batch WHERE buffer_id = 0;
+SELECT assert(relative_error(SUM(y), SUM(y4)) < 0.000001, 'Incorrect one-hot encode value') FROM (SELECT UNNEST(dependent_var) AS y FROM minibatch_preprocessor_dl_batch) a, (SELECT UNNEST(y4) as y4 FROM minibatch_preprocessor_dl_input) b;
+
+-- test integer array type
+DROP TABLE IF EXISTS minibatch_preprocessor_dl_batch, minibatch_preprocessor_dl_batch_summary;
+SELECT minibatch_preprocessor_dl(
+  'minibatch_preprocessor_dl_input',
+  'minibatch_preprocessor_dl_batch',
+  'y5',
+  'x',
+  4,
+  5);
+SELECT assert(pg_typeof(dependent_var) = 'integer[]'::regtype, 'One-hot encode doesn''t convert into integer array format') FROM minibatch_preprocessor_dl_batch WHERE buffer_id = 0;
+SELECT assert(array_upper(dependent_var, 2) = 2, 'Incorrect one-hot encode dimension') FROM
+  minibatch_preprocessor_dl_batch WHERE buffer_id = 0;
+SELECT assert(relative_error(SUM(y), SUM(y5)) < 0.000001, 'Incorrect one-hot encode value') FROM (SELECT UNNEST(dependent_var) AS y FROM minibatch_preprocessor_dl_batch) a, (SELECT UNNEST(y5) as y5 FROM minibatch_preprocessor_dl_input) b;
+SELECT assert (dependent_vartype   = 'integer[]' AND
+               class_values        IS NULL,
+               'Summary Validation failed. Actual:' || __to_char(summary)
+              ) from (select * from minibatch_preprocessor_dl_batch_summary) summary;

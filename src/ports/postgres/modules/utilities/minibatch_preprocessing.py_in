@@ -34,6 +34,7 @@ from utilities import is_platform_pg
 from utilities import is_psql_boolean_type
 from utilities import is_psql_char_type
 from utilities import is_psql_int_type
+from utilities import is_psql_numeric_type
 from utilities import is_valid_psql_type
 from utilities import py_list_to_sql_string
 from utilities import split_quoted_delimited_str
@@ -57,112 +58,6 @@ MINIBATCH_OUTPUT_INDEPENDENT_COLNAME = "independent_varname"
 # used for regular and DL minibatch.
 MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL = "dependent_var"
 MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL = "independent_var"
-
-class MiniBatchPreProcessorDL:
-    def __init__(self, schema_madlib, source_table, output_table,
-                 dependent_varname, independent_varname, buffer_size,
-                 normalizing_const=1.0, dependent_offset=None, **kwargs):
-        self.schema_madlib = schema_madlib
-        self.source_table = source_table
-        self.output_table = output_table
-        self.dependent_varname = dependent_varname
-        self.independent_varname = independent_varname
-        self.buffer_size = buffer_size
-        self.normalizing_const = normalizing_const if normalizing_const else 1.0
-        self.dependent_offset = dependent_offset
-        self.module_name = "minibatch_preprocessor_DL"
-        self.output_summary_table = add_postfix(self.output_table, "_summary")
-        self._validate_args()
-        self.num_of_buffers = self._get_num_buffers()
-
-    def minibatch_preprocessor_dl(self):
-        # Create a temp table that has independent var normalized.
-        norm_tbl = unique_string(desp='normalized')
-
-        dependent_varname_with_offset = self.dependent_varname
-        if self.dependent_offset:
-            dependent_varname_with_offset = '{0} + {1}'.format(self.dependent_varname, self.dependent_offset)
-
-        scalar_mult_sql = """
-            CREATE TEMP TABLE {norm_tbl} AS
-            SELECT {self.schema_madlib}.array_scalar_mult(
-                {self.independent_varname}::REAL[], (1/{self.normalizing_const})::REAL) AS x_norm,
-                {dependent_varname_with_offset} AS y,
-                row_number() over() AS row_id
-            FROM {self.source_table} order by random()
-        """.format(**locals())
-        plpy.execute(scalar_mult_sql)
-        # Create the mini-batched output table
-        if is_platform_pg():
-            distributed_by_clause = ''
-        else:
-            distributed_by_clause= ' DISTRIBUTED BY (buffer_id) '
-        sql = """
-            CREATE TABLE {self.output_table} AS
-            SELECT * FROM
-            (
-                SELECT {self.schema_madlib}.agg_array_concat(
-                    ARRAY[{norm_tbl}.x_norm::REAL[]]) AS {x},
-                    array_agg({norm_tbl}.y) AS {y},
-                    ({norm_tbl}.row_id%{self.num_of_buffers})::smallint AS buffer_id
-                FROM {norm_tbl}
-                GROUP BY buffer_id
-            ) b
-            {distributed_by_clause}
-            """.format(x=MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL,
-                       y=MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL,
-                       **locals())
-        plpy.execute(sql)
-        plpy.execute("DROP TABLE IF EXISTS {0}".format(norm_tbl))
-        # Create summary table
-        self._create_output_summary_table()
-
-    def _create_output_summary_table(self):
-        query = """
-            CREATE TABLE {self.output_summary_table} AS
-            SELECT
-                $__madlib__${self.source_table}$__madlib__$::TEXT AS source_table,
-                $__madlib__${self.output_table}$__madlib__$::TEXT AS output_table,
-                $__madlib__${self.dependent_varname}$__madlib__$::TEXT AS dependent_varname,
-                $__madlib__${self.independent_varname}$__madlib__$::TEXT AS independent_varname,
-                $__madlib__${self.dependent_vartype}$__madlib__$::TEXT AS dependent_vartype,
-                {self.buffer_size} AS buffer_size
-            """.format(self=self)
-        plpy.execute(query)
-
-    def _validate_args(self):
-        validate_module_input_params(
-            self.source_table, self.output_table, self.independent_varname,
-            self.dependent_varname, self.module_name, None,
-            [self.output_summary_table])
-        self.independent_vartype = get_expr_type(
-            self.independent_varname, self.source_table)
-        _assert(is_valid_psql_type(self.independent_vartype,
-                                   NUMERIC | ONLY_ARRAY),
-                "Invalid independent variable type, should be an array of "
-                "one of {0}".format(','.join(NUMERIC)))
-        self.dependent_vartype = get_expr_type(
-            self.dependent_varname, self.source_table)
-        dep_valid_types = NUMERIC | TEXT | BOOLEAN
-        _assert(is_valid_psql_type(self.dependent_vartype, dep_valid_types),
-                "Invalid dependent variable type, should be one of {0}".
-                format(','.join(dep_valid_types)))
-        if self.buffer_size is not None:
-            _assert(self.buffer_size > 0,
-                    "minibatch_preprocessor_dl: The buffer size has to be a "
-                    "positive integer or NULL.")
-
-    def _get_num_buffers(self):
-        num_rows_in_tbl = plpy.execute("""
-                SELECT count(*) AS cnt FROM {0}
-            """.format(self.source_table))[0]['cnt']
-        buffer_size_calculator = MiniBatchBufferSizeCalculator()
-        indepdent_var_dim = _tbl_dimension_rownum(
-            self.schema_madlib, self.source_table,
-            self.independent_varname, skip_row_count=True)
-        self.buffer_size = buffer_size_calculator.calculate_default_buffer_size(
-            self.buffer_size, num_rows_in_tbl, indepdent_var_dim[0])
-        return ceil((1.0 * num_rows_in_tbl) / self.buffer_size)
 
 class MiniBatchPreProcessor:
     """
@@ -333,6 +228,8 @@ class MiniBatchPreProcessor:
         else:
             return "ARRAY[({0})]".format(self.dependent_varname)
 
+
+
     def get_indep_var_array_expr(self):
         """ we assume that all the independent features are either numeric or
         already encoded by the user.
@@ -446,6 +343,141 @@ class MiniBatchPreProcessor:
                 {grouping_cols_str}::TEXT AS grouping_cols
         """.format(**locals())
         plpy.execute(query)
+
+
+class MiniBatchPreProcessorDL(MiniBatchPreProcessor):
+    def __init__(self, schema_madlib, source_table, output_table,
+                 dependent_varname, independent_varname, buffer_size,
+                 normalizing_const=1.0, dependent_offset=None,
+                 one_hot_encode_int_dep_var=False, **kwargs):
+        self.schema_madlib = schema_madlib
+        self.source_table = source_table
+        self.output_table = output_table
+        self.dependent_varname = dependent_varname
+        self.independent_varname = independent_varname
+        self.buffer_size = buffer_size
+        self.normalizing_const = normalizing_const if normalizing_const else 1.0
+        self.dependent_offset = dependent_offset
+        self.module_name = "minibatch_preprocessor_DL"
+        self.output_summary_table = add_postfix(self.output_table, "_summary")
+        self._validate_args()
+        self.num_of_buffers = self._get_num_buffers()
+        self.to_one_hot_encode = one_hot_encode_int_dep_var
+        # self.to_one_hot_encode = self.should_one_hot_encode(one_hot_encode_int_dep_var)
+        if self.to_one_hot_encode:
+            if is_valid_psql_type(self.dependent_vartype, NUMERIC | ONLY_ARRAY):
+                # Assuming the input NUMERIC[] is already on_hot_encoded so casting to INTEGER[]
+                # self.dependent_varname = self.dependent_varname + '::INTEGER[]'
+                self.dependent_levels = None
+            else:
+                self.dependent_levels = get_distinct_col_levels(
+                self.source_table, self.dependent_varname, self.dependent_vartype)
+        else:
+            self.dependent_levels = None
+
+    def minibatch_preprocessor_dl(self):
+        # Create a temp table that has independent var normalized.
+        norm_tbl = unique_string(desp='normalized')
+
+        dependent_varname_with_offset = self.dependent_varname
+        if self.dependent_offset:
+            dependent_varname_with_offset = '{0} + {1}'.format(self.dependent_varname, self.dependent_offset)
+        dep_var_array_expr = self.get_dep_var_array_expr()
+        if is_valid_psql_type(self.dependent_vartype, NUMERIC | ONLY_ARRAY):
+            dep_var_array_expr = dep_var_array_expr + '::INTEGER[]'
+        scalar_mult_sql = """
+            CREATE TEMP TABLE {norm_tbl} AS
+            SELECT {self.schema_madlib}.array_scalar_mult(
+                {self.independent_varname}::REAL[], (1/{self.normalizing_const})::REAL) AS x_norm,
+                {dependent_varname_with_offset} AS y1,
+                {dep_var_array_expr} AS y,
+                row_number() over() AS row_id
+            FROM {self.source_table}
+            """.format(**locals())
+        plpy.execute(scalar_mult_sql)
+        # Create the mini-batched output table
+        if is_platform_pg():
+            distributed_by_clause = ''
+        else:
+            distributed_by_clause= ' DISTRIBUTED BY (buffer_id) '
+        sql = """
+            CREATE TABLE {self.output_table} AS
+            SELECT * FROM
+            (
+                SELECT {self.schema_madlib}.agg_array_concat(
+                    ARRAY[{norm_tbl}.x_norm::REAL[]]) AS {x},
+                    {self.schema_madlib}.agg_array_concat(
+                    ARRAY[{norm_tbl}.y1]) AS y1,
+                    {self.schema_madlib}.agg_array_concat(
+                    ARRAY[{norm_tbl}.y]) AS {y},
+                    ({norm_tbl}.row_id%{self.num_of_buffers})::smallint AS buffer_id
+                FROM {norm_tbl}
+                GROUP BY buffer_id
+            ) b
+            {distributed_by_clause}
+            """.format(x=MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL,
+                       y=MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL,
+                       **locals())
+        plpy.execute(sql)
+        plpy.execute("DROP TABLE IF EXISTS {0}".format(norm_tbl))
+        # Create summary table
+        self._create_output_summary_table()
+
+    def _create_output_summary_table(self):
+        query = """
+            CREATE TABLE {self.output_summary_table} AS
+            SELECT
+                $__madlib__${self.source_table}$__madlib__$::TEXT AS source_table,
+                $__madlib__${self.output_table}$__madlib__$::TEXT AS output_table,
+                $__madlib__${self.dependent_varname}$__madlib__$::TEXT AS dependent_varname,
+                $__madlib__${self.independent_varname}$__madlib__$::TEXT AS independent_varname,
+                $__madlib__${self.dependent_vartype}$__madlib__$::TEXT AS dependent_vartype,
+                {self.buffer_size} AS buffer_size
+            """.format(self=self)
+        plpy.execute(query)
+
+    def _validate_args(self):
+        validate_module_input_params(
+            self.source_table, self.output_table, self.independent_varname,
+            self.dependent_varname, self.module_name, None,
+            [self.output_summary_table])
+        self.independent_vartype = get_expr_type(
+            self.independent_varname, self.source_table)
+        _assert(is_valid_psql_type(self.independent_vartype,
+                                   NUMERIC | ONLY_ARRAY),
+                "Invalid independent variable type, should be an array of "
+                "one of {0}".format(','.join(NUMERIC)))
+        self.dependent_vartype = get_expr_type(
+            self.dependent_varname, self.source_table)
+        if is_valid_psql_type(self.dependent_vartype, NUMERIC | ONLY_ARRAY):
+            pass
+        else:
+            dep_valid_types = NUMERIC | TEXT | BOOLEAN
+            _assert(is_valid_psql_type(self.dependent_vartype, dep_valid_types),
+                    "Invalid dependent variable type, should be one of {0}".
+                    format(','.join(dep_valid_types)))
+        if self.buffer_size is not None:
+            _assert(self.buffer_size > 0,
+                    "minibatch_preprocessor_dl: The buffer size has to be a "
+                    "positive integer or NULL.")
+
+    def _get_num_buffers(self):
+        num_rows_in_tbl = plpy.execute("""
+                SELECT count(*) AS cnt FROM {0}
+            """.format(self.source_table))[0]['cnt']
+        buffer_size_calculator = MiniBatchBufferSizeCalculator()
+        indepdent_var_dim = _tbl_dimension_rownum(
+            self.schema_madlib, self.source_table,
+            self.independent_varname, skip_row_count=True)
+        self.buffer_size = buffer_size_calculator.calculate_default_buffer_size(
+            self.buffer_size, num_rows_in_tbl, indepdent_var_dim[0])
+        return ceil((1.0 * num_rows_in_tbl) / self.buffer_size)
+
+    # def should_one_hot_encode(self, one_hot_encode_int_dep_var):
+    #     return (is_psql_char_type(self.dependent_vartype) or
+    #             is_psql_boolean_type(self.dependent_vartype) or
+    #             (is_psql_numeric_type(self.dependent_vartype) and
+    #                 one_hot_encode_int_dep_var))
 
 
 class MiniBatchStandardizer:
