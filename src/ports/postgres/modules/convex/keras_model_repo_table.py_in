@@ -27,6 +27,7 @@
 from utilities.validate_args import table_exists
 from utilities.validate_args import columns_missing_from_table
 from utilities.validate_args import quote_ident
+from utilities.control import MinWarning
 from internal.db_utils import quote_literal
 from utilities.utilities import unique_string
 import plpy
@@ -54,6 +55,10 @@ class Format:
     col_types = ('SERIAL PRIMARY KEY', 'JSON', 'DOUBLE PRECISION[]', 'TEXT')
     (model_id, model_arch, model_weights, __internal_madlib_id__) = col_names
 
+@MinWarning("warning")
+def _execute(sql,max_rows=0):
+    return plpy.execute(sql,max_rows)
+
 def create_model(model_repo_table, model_arch,**kwargs):
     model_repo_table = quote_ident(model_repo_table)
     if not table_exists(model_repo_table):
@@ -64,7 +69,7 @@ def create_model(model_repo_table, model_arch,**kwargs):
         sql = "CREATE TABLE {model_repo_table} ({col_defs})" \
               .format(**locals())
 
-        plpy.execute(sql)
+        _execute(sql)
         plpy.info("Keras model repo table {0} created." \
             .format(model_repo_table))
     else:
@@ -86,13 +91,14 @@ def create_model(model_repo_table, model_arch,**kwargs):
                internal_id_col=Format.__internal_madlib_id__)
 
 # This code works perfectly in postgres 8.3+, but fails in Greenplum 5 with:
-#   ERROR:  The RETURNING clause of the INSERT statement is not supported in this version of Greenplum Database.
+#   ERROR:  The RETURNING clause of the INSERT statement is not supported in this version
+#           of Greenplum Database.
 #    sql = """INSERT INTO {model_repo_table}
 #        (model_arch)
 #        VALUES('{model_arch}')
 #        RETURNING *;""".format(model_repo_table=model_repo_table,
 #                                model_arch=quote_literal(model_arch))
-    res = plpy.execute(sql)
+    res = _execute(sql,1)
 
     if len(res) != 1 or res[0][Format.model_arch] != model_arch:
         raise Exception("Failed to insert new row in {0} table--try again?"
@@ -109,16 +115,18 @@ def delete_model(model_repo_table, model_id, **kwargs):
                    " missing columns: {1}".format(model_repo_table, missing_cols))
 
     sql = """
-        DELETE FROM {model_repo_table}
-            WHERE model_id={model_id}
-    """.format(model_repo_table=model_repo_table,
-               model_id=model_id)
-    plpy.info("Executing: {0}".format(sql))
-    plpy.execute(sql)
-    plpy.info("Model id {0} has been deleted from {1}.".format(model_id, model_repo_table))
+           DELETE FROM {model_repo_table} WHERE model_id={model_id}
+          """.format(model_repo_table=model_repo_table, model_id=model_id)
+    res = _execute(sql)
+
+    if res.nrows() > 0:
+        plpy.info("Model id {0} has been deleted from {1}.".format(model_id, model_repo_table))
+    else:
+        plpy.info("Model id {0} not found".format(model_id))
+
     sql = "SELECT model_id FROM {model_repo_table}".format(model_repo_table=model_repo_table)
-    res = plpy.execute(sql)
+    res = _execute(sql)
     if not res or len(res) == 0:
         plpy.info("Removing empty model repo table {model_repo_table}".format(model_repo_table=model_repo_table))
         sql = "DROP TABLE {model_repo_table}".format(model_repo_table=model_repo_table)
-        plpy.execute(sql)
+        _execute(sql)
