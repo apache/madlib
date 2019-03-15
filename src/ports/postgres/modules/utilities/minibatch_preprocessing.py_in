@@ -348,8 +348,8 @@ class MiniBatchPreProcessor:
 class MiniBatchPreProcessorDL(MiniBatchPreProcessor):
     def __init__(self, schema_madlib, source_table, output_table,
                  dependent_varname, independent_varname, buffer_size,
-                 normalizing_const=1.0, dependent_offset=None,
-                 one_hot_encode_int_dep_var=False, **kwargs):
+                 normalizing_const=1.0, one_hot_encode_int_dep_var=False,
+                 **kwargs):
         self.schema_madlib = schema_madlib
         self.source_table = source_table
         self.output_table = output_table
@@ -357,7 +357,6 @@ class MiniBatchPreProcessorDL(MiniBatchPreProcessor):
         self.independent_varname = independent_varname
         self.buffer_size = buffer_size
         self.normalizing_const = normalizing_const if normalizing_const else 1.0
-        self.dependent_offset = dependent_offset
         self.module_name = "minibatch_preprocessor_DL"
         self.output_summary_table = add_postfix(self.output_table, "_summary")
         self._validate_args()
@@ -380,8 +379,6 @@ class MiniBatchPreProcessorDL(MiniBatchPreProcessor):
         norm_tbl = unique_string(desp='normalized')
 
         dependent_varname_with_offset = self.dependent_varname
-        if self.dependent_offset:
-            dependent_varname_with_offset = '{0} + {1}'.format(self.dependent_varname, self.dependent_offset)
         dep_var_array_expr = self.get_dep_var_array_expr()
         if is_valid_psql_type(self.dependent_vartype, NUMERIC | ONLY_ARRAY):
             dep_var_array_expr = dep_var_array_expr + '::INTEGER[]'
@@ -389,7 +386,6 @@ class MiniBatchPreProcessorDL(MiniBatchPreProcessor):
             CREATE TEMP TABLE {norm_tbl} AS
             SELECT {self.schema_madlib}.array_scalar_mult(
                 {self.independent_varname}::REAL[], (1/{self.normalizing_const})::REAL) AS x_norm,
-                {dependent_varname_with_offset} AS y1,
                 {dep_var_array_expr} AS y,
                 row_number() over() AS row_id
             FROM {self.source_table}
@@ -406,8 +402,6 @@ class MiniBatchPreProcessorDL(MiniBatchPreProcessor):
             (
                 SELECT {self.schema_madlib}.agg_array_concat(
                     ARRAY[{norm_tbl}.x_norm::REAL[]]) AS {x},
-                    {self.schema_madlib}.agg_array_concat(
-                    ARRAY[{norm_tbl}.y1]) AS y1,
                     {self.schema_madlib}.agg_array_concat(
                     ARRAY[{norm_tbl}.y]) AS {y},
                     ({norm_tbl}.row_id%{self.num_of_buffers})::smallint AS buffer_id
@@ -763,9 +757,9 @@ class MiniBatchDocumentation:
             normalizing_const      -- DOUBLE PRECISON. Default 1.0. The
                                       normalizing constant to use for
                                       standardizing arrays in independent_varname.
-            dependent_offset       -- INTEGER. If specified, shifts all dependent
-                                      variable values by this number (should
-                                      only be used for numeric types).
+            one_hot_encode_int_dep_var -- BOOLEAN. Default FALSE. Flag to one-hot
+                                                      encode dependent variables that are
+                                                      scalar integers
         );
 
 
@@ -787,7 +781,7 @@ class MiniBatchDocumentation:
         source_table              -- Source table name.
         output_table              -- Output table name from preprocessor.
         dependent_varname         -- Dependent variable values from the original table
-                                     (shifted by dependent_offset, if specified).
+                                     (encoded by one_hot_encode, if specified).
         independent_varname       -- Independent variable values from the original
                                      table.
         dependent_vartype         -- Type of the dependent variable from the

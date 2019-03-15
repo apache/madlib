@@ -53,7 +53,7 @@ minibatch_preprocessor_dl( source_table,
                            independent_varname,
                            buffer_size,
                            normalizing_const,
-                           dependent_offset
+                           one_hot_encode_int_dep_var
                         )
 </pre>
 
@@ -96,13 +96,21 @@ minibatch_preprocessor_dl( source_table,
   you may need to use 255 for this value if the image data is 0-255.
   </dd>
 
-  <dt>dependent_offset (optional)</dt>
-  <dd>INTEGER, default: NULL. If specified, shifts all dependent
-  variable values by this number (should only be used for numeric
-  types).  For example, can be used to handle the case where you need to
-  convert between class values that start at 0 or 1, which saves
-  you from having to run a separate query on the output table.
-  </dd>
+  <dt>one_hot_encode_int_dep_var (optional)</dt>
+    <dd> BOOLEAN. default: FALSE.
+    Flag to one-hot encode dependent variables that are
+    scalar integers. This parameter is ignored if the
+    dependent variable is not a scalar integer.
+
+  @note The mini-batch preprocessor automatically encodes
+  dependent variables that are boolean and character types such as text, char and
+  varchar.  However, scalar integers are a special case because they can be used
+  in both classification and regression problems, so you must tell the mini-batch
+  preprocessor whether you want to encode them or not. In the case that you have
+  already encoded the dependent variable yourself,  you can ignore this parameter.
+  Also, if you want to encode float values for some reason, cast them to text
+  first.
+    </dd>
 
 </dl>
 
@@ -494,7 +502,6 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.minibatch_preprocessor_dl(
     independent_varname         VARCHAR,
     buffer_size                 INTEGER,
     normalizing_const           DOUBLE PRECISION,
-    dependent_offset            INTEGER,
     one_hot_encode_int_dep_var  BOOLEAN
 ) RETURNS VOID AS $$
     PythonFunctionBodyOnly(utilities, minibatch_preprocessing)
@@ -512,22 +519,9 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.minibatch_preprocessor_dl(
     dependent_varname       VARCHAR,
     independent_varname     VARCHAR,
     buffer_size             INTEGER,
-    normalizing_const       DOUBLE PRECISION,
-    dependent_offset        INTEGER
-) RETURNS VOID AS $$
-  SELECT MADLIB_SCHEMA.minibatch_preprocessor_dl($1, $2, $3, $4, $5, $6, $7, FALSE);
-$$ LANGUAGE sql VOLATILE
-m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
-
-CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.minibatch_preprocessor_dl(
-    source_table            VARCHAR,
-    output_table            VARCHAR,
-    dependent_varname       VARCHAR,
-    independent_varname     VARCHAR,
-    buffer_size             INTEGER,
     normalizing_const       DOUBLE PRECISION
 ) RETURNS VOID AS $$
-  SELECT MADLIB_SCHEMA.minibatch_preprocessor_dl($1, $2, $3, $4, $5, $6, NULL, FALSE);
+  SELECT MADLIB_SCHEMA.minibatch_preprocessor_dl($1, $2, $3, $4, $5, $6, FALSE);
 $$ LANGUAGE sql VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
@@ -538,7 +532,7 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.minibatch_preprocessor_dl(
     independent_varname     VARCHAR,
     buffer_size             INTEGER
 ) RETURNS VOID AS $$
-  SELECT MADLIB_SCHEMA.minibatch_preprocessor_dl($1, $2, $3, $4, $5, 1.0, NULL, FALSE);
+  SELECT MADLIB_SCHEMA.minibatch_preprocessor_dl($1, $2, $3, $4, $5, 1.0, FALSE);
 $$ LANGUAGE sql VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
@@ -548,7 +542,7 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.minibatch_preprocessor_dl(
     dependent_varname       VARCHAR,
     independent_varname     VARCHAR
 ) RETURNS VOID AS $$
-  SELECT MADLIB_SCHEMA.minibatch_preprocessor_dl($1, $2, $3, $4, NULL, 1.0, NULL, FALSE);
+  SELECT MADLIB_SCHEMA.minibatch_preprocessor_dl($1, $2, $3, $4, NULL, 1.0, FALSE);
 $$ LANGUAGE sql VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
