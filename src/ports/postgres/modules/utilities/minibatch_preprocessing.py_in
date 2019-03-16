@@ -348,8 +348,7 @@ class MiniBatchPreProcessor:
 class MiniBatchPreProcessorDL(MiniBatchPreProcessor):
     def __init__(self, schema_madlib, source_table, output_table,
                  dependent_varname, independent_varname, buffer_size,
-                 normalizing_const=1.0, one_hot_encode_int_dep_var=False,
-                 **kwargs):
+                 normalizing_const=1.0, **kwargs):
         self.schema_madlib = schema_madlib
         self.source_table = source_table
         self.output_table = output_table
@@ -361,18 +360,13 @@ class MiniBatchPreProcessorDL(MiniBatchPreProcessor):
         self.output_summary_table = add_postfix(self.output_table, "_summary")
         self._validate_args()
         self.num_of_buffers = self._get_num_buffers()
-        self.to_one_hot_encode = one_hot_encode_int_dep_var
-        # self.to_one_hot_encode = self.should_one_hot_encode(one_hot_encode_int_dep_var)
-        if self.to_one_hot_encode:
-            if is_valid_psql_type(self.dependent_vartype, NUMERIC | ONLY_ARRAY):
-                # Assuming the input NUMERIC[] is already on_hot_encoded so casting to INTEGER[]
-                # self.dependent_varname = self.dependent_varname + '::INTEGER[]'
-                self.dependent_levels = None
-            else:
-                self.dependent_levels = get_distinct_col_levels(
-                self.source_table, self.dependent_varname, self.dependent_vartype)
-        else:
+        self.to_one_hot_encode = True
+        if is_valid_psql_type(self.dependent_vartype, NUMERIC | ONLY_ARRAY):
             self.dependent_levels = None
+        else:
+            self.dependent_levels = get_distinct_col_levels(
+                self.source_table, self.dependent_varname, self.dependent_vartype)
+
 
     def minibatch_preprocessor_dl(self):
         # Create a temp table that has independent var normalized.
@@ -380,6 +374,7 @@ class MiniBatchPreProcessorDL(MiniBatchPreProcessor):
 
         dependent_varname_with_offset = self.dependent_varname
         dep_var_array_expr = self.get_dep_var_array_expr()
+        # Assuming the input NUMERIC[] is already on_hot_encoded, so casting to INTEGER[]
         if is_valid_psql_type(self.dependent_vartype, NUMERIC | ONLY_ARRAY):
             dep_var_array_expr = dep_var_array_expr + '::INTEGER[]'
         scalar_mult_sql = """
@@ -418,6 +413,11 @@ class MiniBatchPreProcessorDL(MiniBatchPreProcessor):
         self._create_output_summary_table()
 
     def _create_output_summary_table(self):
+        class_level_str='NULL::TEXT'
+        if self.dependent_levels:
+            class_level_str=py_list_to_sql_string(
+                self.dependent_levels, array_type=self.dependent_vartype,
+                long_format=True)
         query = """
             CREATE TABLE {self.output_summary_table} AS
             SELECT
@@ -426,8 +426,10 @@ class MiniBatchPreProcessorDL(MiniBatchPreProcessor):
                 $__madlib__${self.dependent_varname}$__madlib__$::TEXT AS dependent_varname,
                 $__madlib__${self.independent_varname}$__madlib__$::TEXT AS independent_varname,
                 $__madlib__${self.dependent_vartype}$__madlib__$::TEXT AS dependent_vartype,
-                {self.buffer_size} AS buffer_size
-            """.format(self=self)
+                {class_level_str} AS class_values,
+                {self.buffer_size} AS buffer_size,
+                {self.normalizing_const} AS normalizing_const
+            """.format(self=self, class_level_str=class_level_str)
         plpy.execute(query)
 
     def _validate_args(self):
@@ -443,13 +445,14 @@ class MiniBatchPreProcessorDL(MiniBatchPreProcessor):
                 "one of {0}".format(','.join(NUMERIC)))
         self.dependent_vartype = get_expr_type(
             self.dependent_varname, self.source_table)
-        if is_valid_psql_type(self.dependent_vartype, NUMERIC | ONLY_ARRAY):
-            pass
-        else:
-            dep_valid_types = NUMERIC | TEXT | BOOLEAN
-            _assert(is_valid_psql_type(self.dependent_vartype, dep_valid_types),
-                    "Invalid dependent variable type, should be one of {0}".
-                    format(','.join(dep_valid_types)))
+        # The denpendent variable needs to be either:
+        # 1. NUMERIC, TEXT OR BOOLEAN, which we always one-hot encode
+        # 2. NUMERIC ARRAY, which we assume it is already one-hot encoded, and we
+        #    just cast it the INTEGER ARRAY
+        _assert((is_valid_psql_type(self.dependent_vartype, NUMERIC | TEXT | BOOLEAN) or
+                is_valid_psql_type(self.dependent_vartype, NUMERIC | ONLY_ARRAY)),
+                """Invalid dependent variable type, should be one of the type in this list:
+                numeric, text, boolean, or numeric array""")
         if self.buffer_size is not None:
             _assert(self.buffer_size > 0,
                     "minibatch_preprocessor_dl: The buffer size has to be a "
@@ -466,12 +469,6 @@ class MiniBatchPreProcessorDL(MiniBatchPreProcessor):
         self.buffer_size = buffer_size_calculator.calculate_default_buffer_size(
             self.buffer_size, num_rows_in_tbl, indepdent_var_dim[0])
         return ceil((1.0 * num_rows_in_tbl) / self.buffer_size)
-
-    # def should_one_hot_encode(self, one_hot_encode_int_dep_var):
-    #     return (is_psql_char_type(self.dependent_vartype) or
-    #             is_psql_boolean_type(self.dependent_vartype) or
-    #             (is_psql_numeric_type(self.dependent_vartype) and
-    #                 one_hot_encode_int_dep_var))
 
 
 class MiniBatchStandardizer:
@@ -787,6 +784,8 @@ class MiniBatchDocumentation:
         dependent_vartype         -- Type of the dependent variable from the
                                      original table.
         buffer_size               -- Buffer size used in preprocessing step.
+        normalizing_const         -- Normalizing constant used for standardizing
+                                     arrays in independent_varname.
 
         ---------------------------------------------------------------------------
         """.format(**locals())

@@ -101,6 +101,19 @@ SELECT minibatch_preprocessor_dl(
 SELECT assert(relative_error(MIN(x),0.2) < 0.00001, 'Independent var not normalized properly!') FROM (SELECT UNNEST(independent_var) as x FROM minibatch_preprocessor_dl_batch) a;
 SELECT assert(relative_error(MAX(x),46.6) < 0.00001, 'Independent var not normalized properly!') FROM (SELECT UNNEST(independent_var) as x FROM minibatch_preprocessor_dl_batch) a;
 
+-- Test summary table
+SELECT assert
+        (
+        source_table        = 'minibatch_preprocessor_dl_input' AND
+        output_table        = 'minibatch_preprocessor_dl_batch' AND
+        dependent_varname   = 'y' AND
+        independent_varname = 'x' AND
+        dependent_vartype   = 'integer' AND
+        class_values        = '{-6,-3,-1,0,2,3,4,5,6,7,8,9,10,12}' AND
+        buffer_size         = 4 AND  -- we sort the class values in python
+        normalizing_const   = 5,
+        'Summary Validation failed. Actual:' || __to_char(summary)
+        ) from (select * from minibatch_preprocessor_dl_batch_summary) summary;
 
 -- Test one-hot encoding for dependent_var
 -- test boolean type
@@ -116,6 +129,10 @@ SELECT assert(pg_typeof(dependent_var) = 'integer[]'::regtype, 'One-hot encode d
 SELECT assert(array_upper(dependent_var, 2) = 2, 'Incorrect one-hot encode dimension') FROM
   minibatch_preprocessor_dl_batch WHERE buffer_id = 0;
 SELECT assert(SUM(y) = 1, 'Incorrect one-hot encode format') FROM (SELECT buffer_id, UNNEST(dependent_var[1:1]) as y FROM minibatch_preprocessor_dl_batch) a WHERE buffer_id = 0;
+SELECT assert (dependent_vartype   = 'boolean' AND
+               class_values        = '{f,t}',
+               'Summary Validation failed. Actual:' || __to_char(summary)
+              ) from (select * from minibatch_preprocessor_dl_batch_summary) summary;
 
 -- test text type
 DROP TABLE IF EXISTS minibatch_preprocessor_dl_batch, minibatch_preprocessor_dl_batch_summary;
@@ -130,6 +147,10 @@ SELECT assert(pg_typeof(dependent_var) = 'integer[]'::regtype, 'One-hot encode d
 SELECT assert(array_upper(dependent_var, 2) = 3, 'Incorrect one-hot encode dimension') FROM
   minibatch_preprocessor_dl_batch WHERE buffer_id = 0;
 SELECT assert(SUM(y) = 1, 'Incorrect one-hot encode format') FROM (SELECT buffer_id, UNNEST(dependent_var[1:1]) as y FROM minibatch_preprocessor_dl_batch) a WHERE buffer_id = 0;
+SELECT assert (dependent_vartype   = 'text' AND
+               class_values        = '{a,b,c}',
+               'Summary Validation failed. Actual:' || __to_char(summary)
+              ) from (select * from minibatch_preprocessor_dl_batch_summary) summary;
 
 -- test double precision type
 DROP TABLE IF EXISTS minibatch_preprocessor_dl_batch, minibatch_preprocessor_dl_batch_summary;
@@ -144,7 +165,10 @@ SELECT assert(pg_typeof(dependent_var) = 'integer[]'::regtype, 'One-hot encode d
 SELECT assert(array_upper(dependent_var, 2) = 3, 'Incorrect one-hot encode dimension') FROM
   minibatch_preprocessor_dl_batch WHERE buffer_id = 0;
 SELECT assert(SUM(y) = 1, 'Incorrect one-hot encode format') FROM (SELECT buffer_id, UNNEST(dependent_var[1:1]) as y FROM minibatch_preprocessor_dl_batch) a WHERE buffer_id = 0;
-
+SELECT assert (dependent_vartype   = 'double precision' AND
+               class_values        = '{4.0,4.2,5.0}',
+               'Summary Validation failed. Actual:' || __to_char(summary)
+              ) from (select * from minibatch_preprocessor_dl_batch_summary) summary;
 
 -- test double precision array type
 DROP TABLE IF EXISTS minibatch_preprocessor_dl_batch, minibatch_preprocessor_dl_batch_summary;
@@ -159,6 +183,10 @@ SELECT assert(pg_typeof(dependent_var) = 'integer[]'::regtype, 'One-hot encode d
 SELECT assert(array_upper(dependent_var, 2) = 2, 'Incorrect one-hot encode dimension') FROM
   minibatch_preprocessor_dl_batch WHERE buffer_id = 0;
 SELECT assert(relative_error(SUM(y), SUM(y4)) < 0.000001, 'Incorrect one-hot encode value') FROM (SELECT UNNEST(dependent_var) AS y FROM minibatch_preprocessor_dl_batch) a, (SELECT UNNEST(y4) as y4 FROM minibatch_preprocessor_dl_input) b;
+SELECT assert (dependent_vartype   = 'double precision[]' AND
+               class_values        IS NULL,
+               'Summary Validation failed. Actual:' || __to_char(summary)
+              ) from (select * from minibatch_preprocessor_dl_batch_summary) summary;
 
 -- test integer array type
 DROP TABLE IF EXISTS minibatch_preprocessor_dl_batch, minibatch_preprocessor_dl_batch_summary;
