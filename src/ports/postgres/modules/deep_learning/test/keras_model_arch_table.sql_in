@@ -83,9 +83,6 @@ SELECT assert(COUNT(model_id) = 0, 'model id 3 should have been deleted!')
       /* Delete a second time, to make sure nothing weird happens.
        *  It should archrt to the user that the model_id wasn't found but not
        *  raise an exception or change anything. */
-SELECT delete_keras_model('test_keras_model_arch_table', 3);
-SELECT assert(COUNT(model_id) = 0, 'model id 3 should have been deleted!')
-    FROM test_keras_model_arch_table WHERE model_id = 3;
 SELECT delete_keras_model('test_keras_model_arch_table', 1);
 SELECT assert(COUNT(relname) = 0, 'Table test_keras_model_arch_table should have been deleted.')
     FROM pg_class where relname = 'test_keras_model_arch_table';
@@ -93,25 +90,13 @@ SELECT assert(COUNT(relname) = 0, 'Table test_keras_model_arch_table should have
 SELECT load_keras_model('test_keras_model_arch_table', '{"config" : [1,2,3]}');
 DELETE FROM test_keras_model_arch_table;
 
-/* Test deletion where empty table exists */
-SELECT delete_keras_model('test_keras_model_arch_table', 3);
-SELECT assert(COUNT(relname) = 0, 'Table test_keras_model_arch_table should have been deleted.') from pg_class where relname = 'test_keras_model_arch_table';
-
 /* Test deletion where invalid table exists */
-
 SELECT load_keras_model('test_keras_model_arch_table', '{"config" : [1,2,3]}');
 ALTER TABLE test_keras_model_arch_table DROP COLUMN model_id;
-CREATE FUNCTION trap_error(stmt TEXT) RETURNS INTEGER AS $$
-BEGIN
-    BEGIN
-        EXECUTE stmt;
-	EXCEPTION
-        WHEN OTHERS THEN
-            RETURN 1;
-    END;
-    RETURN 0;
-END;
-$$ LANGUAGE plpgsql;
+
+/* Test deletion where empty table exists */
+select assert(trap_error($$SELECT delete_keras_model('test_keras_model_arch_table', 3)$$) = 1,
+    'Deleting a model in an empty table should generate an exception.');
 
 SELECT assert(trap_error($$SELECT delete_keras_model('test_keras_model_arch_table', 1)$$) = 1,
     'Deleting an invalid table should generate an exception.');

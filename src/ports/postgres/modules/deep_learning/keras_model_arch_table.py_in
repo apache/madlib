@@ -1,0 +1,233 @@
+# coding=utf-8
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+"""
+@file keras_model_arch_table.py_in
+
+@brief keras model arch table management helper functions
+
+@namespace keras_model_arch_table
+"""
+
+from internal.db_utils import quote_literal
+import plpy
+from utilities.control import MinWarning
+from utilities.utilities import get_col_name_type_sql_string
+from utilities.utilities import unique_string
+from utilities.validate_args import columns_missing_from_table
+from utilities.validate_args import input_tbl_valid
+from utilities.validate_args import quote_ident
+from utilities.validate_args import table_exists
+
+class Format:
+    """Expected format of keras_model_arch_table.
+       Example uses:
+
+           from utilities.validate_args import columns_missing_from_table
+           from keras_model_arch_table import Format
+
+           # Validate names in cols list against actual table
+           missing_cols = columns_missing_from_table('my_arch_table', Format.col_names)
+
+           # Get model arch from keras model arch table, without hard coding column names
+           sql = "SELECT {arch} FROM {table} WHERE {id} = {my_id}"
+                 .format(arch=Format.model_arch,
+                         table='my_arch_table',
+                         id=Format.model_id,
+                         my_id=1)
+           arch = plpy.execute(sql)[0]
+
+    """
+    col_names = ('model_id', 'model_arch', 'model_weights', '__internal_madlib_id__')
+    col_types = ('SERIAL PRIMARY KEY', 'JSON', 'DOUBLE PRECISION[]', 'TEXT')
+    (model_id, model_arch, model_weights, __internal_madlib_id__) = col_names
+
+@MinWarning("warning")
+def _execute(sql,max_rows=0):
+    return plpy.execute(sql,max_rows)
+
+def load_keras_model(schema_madlib, keras_model_arch_table,
+                     model_arch, **kwargs):
+    model_arch_table = quote_ident(keras_model_arch_table)
+    if not table_exists(model_arch_table):
+        col_defs = get_col_name_type_sql_string(Format.col_names,
+                                                Format.col_types)
+
+        sql = "CREATE TABLE {model_arch_table} ({col_defs})" \
+              .format(**locals())
+
+        _execute(sql)
+        plpy.info("Keras Model Arch: Created new keras model arch table {0}." \
+            .format(model_arch_table))
+    else:
+        missing_cols = columns_missing_from_table(model_arch_table,
+                                                  Format.col_names)
+        if len(missing_cols) > 0:
+            plpy.error("Keras Model Arch: Invalid keras model arch table {0},"
+                       " missing columns: {1}".format(model_arch_table,
+                                                      missing_cols))
+
+    unique_str = unique_string(prefix_has_temp=False)
+
+    sql = """INSERT INTO {model_arch_table} ({model_arch_col}, {internal_id_col})
+                                    VALUES({model_arch}, '{unique_str}');
+             SELECT {model_id_col}, {model_arch_col}
+                 FROM {model_arch_table} WHERE {internal_id_col} = '{unique_str}'
+    """.format(model_arch_table=model_arch_table,
+               model_arch_col=Format.model_arch,
+               unique_str=unique_str,
+               model_arch=quote_literal(model_arch),
+               model_id_col=Format.model_id,
+               internal_id_col=Format.__internal_madlib_id__)
+    res = _execute(sql,1)
+
+    if len(res) != 1 or res[0][Format.model_arch] != model_arch:
+        raise Exception("Failed to insert new row in {0} table--try again?"
+                       .format(model_arch_table))
+    plpy.info("Keras Model Arch: Added model id {0} to {1} table".
+        format(res[0]['model_id'], model_arch_table))
+
+def delete_keras_model(schema_madlib, keras_model_arch_table,
+                       model_id, **kwargs):
+    model_arch_table = quote_ident(keras_model_arch_table)
+    input_tbl_valid(model_arch_table, "Keras Model Arch")
+
+    missing_cols = columns_missing_from_table(model_arch_table, Format.col_names)
+    if len(missing_cols) > 0:
+        plpy.error("Keras Model Arch: Invalid keras model arch table {0},"
+                   " missing columns: {1}".format(model_arch_table, missing_cols))
+
+    sql = """
+           DELETE FROM {model_arch_table} WHERE model_id={model_id}
+          """.format(model_arch_table=model_arch_table, model_id=model_id)
+    res = _execute(sql)
+
+    if res.nrows() > 0:
+        plpy.info("Keras Model Arch: Model id {0} has been deleted from {1}.".
+            format(model_id, model_arch_table))
+    else:
+        plpy.error("Keras Model Arch: Model id {0} not found".format(model_id))
+
+    sql = "SELECT model_id FROM {0}".format(model_arch_table)
+    res = _execute(sql)
+    if not res:
+        plpy.info("Keras Model Arch: Dropping empty keras model arch "\
+            "table {model_arch_table}".format(model_arch_table=model_arch_table))
+        sql = "DROP TABLE {0}".format(model_arch_table)
+        try:
+            _execute(sql)
+        except plpy.SPIError, e:
+            plpy.warning("Keras Model Arch: Unable to drop empty keras model "\
+                "arch table {0}".format(model_arch_table))
+
+class KerasModelArchDocumentation:
+    @staticmethod
+    def _returnHelpMsg(schema_madlib, message, summary, usage, method):
+        if not message:
+            return summary
+        elif message.lower() in ('usage', 'help', '?'):
+            return usage
+        return """
+            No such option. Use "SELECT {schema_madlib}.{method}()"
+            for help.
+        """.format(**locals())
+
+    @staticmethod
+    def load_keras_model_help(schema_madlib, message):
+        method = "load_keras_model"
+        summary = """
+        ----------------------------------------------------------------
+                            SUMMARY
+        ----------------------------------------------------------------
+        The architecture of the model to be used in madlib_keras_train()
+        function must be stored in a table, the details of which must be
+        provided as parameters to the madlib_keras_train module. This is
+        a helper function to help users insert JSON blobs of Keras model
+        architectures into a table.
+        If the output table already exists, the model_arch specified will
+        be added as a new row into the table. The output table could thus
+        act as a repository of Keras model architectures.
+
+        For more details on function usage:
+        SELECT {schema_madlib}.{method}('usage')
+        """.format(**locals())
+
+        usage = """
+        ---------------------------------------------------------------------------
+                                        USAGE
+        ---------------------------------------------------------------------------
+        SELECT {schema_madlib}.{method}(
+            keras_model_arch_table VARCHAR, -- Output table to load keras model arch.
+            model_arch             JSON     -- JSON of the model architecture to insert.
+        );
+
+
+        ---------------------------------------------------------------------------
+                                        OUTPUT
+        ---------------------------------------------------------------------------
+        The output table produced by load_keras_model contains the following columns:
+
+        'model_id'                -- SERIAL PRIMARY KEY. Model ID.
+        'model_arch'              -- JSON. JSON blob of the model architecture.
+        'model_weights'           -- DOUBLE PRECISION[]. weights of the model for warm start.
+                                  -- This is currently NULL.
+        '__internal_madlib_id__'  -- TEXT. Unique id for model arch.
+
+        """.format(**locals())
+
+        return KerasModelArchDocumentation._returnHelpMsg(
+            schema_madlib, message, summary, usage, method)
+# ---------------------------------------------------------------------
+
+    @staticmethod
+    def delete_keras_model_help(schema_madlib, message):
+        method = "delete_keras_model"
+        summary = """
+        ----------------------------------------------------------------
+                            SUMMARY
+        ----------------------------------------------------------------
+        Delete the model architecture corresponding to the provided model_id
+        from the model architecture repository table (keras_model_arch_table).
+
+        For more details on function usage:
+        SELECT {schema_madlib}.{method}('usage')
+        """.format(**locals())
+
+        usage = """
+        ---------------------------------------------------------------------------
+                                        USAGE
+        ---------------------------------------------------------------------------
+        SELECT {schema_madlib}.{method}(
+            keras_model_arch_table VARCHAR, -- Table containing Keras model architectures.
+            model_id               INTEGER  -- The id of the model arch to be deleted.
+        );
+
+
+        ---------------------------------------------------------------------------
+                                        OUTPUT
+        ---------------------------------------------------------------------------
+        This method deletes the row corresponding to the given model_id in
+        keras_model_arch_table. This also tries to drop the table if the table is
+        empty after dropping the model_id. If there are any views depending on the
+        table, a warning message is displayed and the table is not dropped.
+
+        ---------------------------------------------------------------------------
+        """.format(**locals())
+
+        return KerasModelArchDocumentation._returnHelpMsg(
+            schema_madlib, message, summary, usage, method)
