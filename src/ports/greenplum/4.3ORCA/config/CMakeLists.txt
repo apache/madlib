@@ -25,12 +25,12 @@ file(GLOB_RECURSE CONFIG_FILES
     "*.yml"
 )
 add_files(CONFIG_TARGET_FILES . "${CMAKE_CURRENT_BINARY_DIR}" ${CONFIG_FILES})
-add_custom_target(configFiles ALL DEPENDS ${CONFIG_TARGET_FILES})
+add_custom_target(configFilesgp43 ALL DEPENDS ${CONFIG_TARGET_FILES})
 
 
 # -- 2. Install config files to config ----------------------------
 
 install(FILES ${CONFIG_TARGET_FILES}
-    DESTINATION src/ports/greenplum/4.3ORCA/config
+    DESTINATION ports/greenplum/4.3ORCA/config
     COMPONENT core
 )
