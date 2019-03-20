@@ -55,7 +55,7 @@ MINIBATCH_OUTPUT_INDEPENDENT_COLNAME = "independent_varname"
 # These are readonly variables, do not modify
 #MADLIB-1300 Adding these variables for DL only at this time.
 # For release 2.0 These will be removed and above variables can
-# used for regular and DL minibatch.
+# be used for regular and DL minibatch.
 MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL = "dependent_var"
 MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL = "independent_var"
 
@@ -133,8 +133,6 @@ class MiniBatchPreProcessor:
                                      self.grouping_cols,
                                      [self.output_summary_table,
                                       self.output_standardization_table])
-
-
 
         num_of_dependent_cols = split_quoted_delimited_str(self.dependent_varname)
         valid_types = NUMERIC | TEXT | BOOLEAN
@@ -355,9 +353,14 @@ class MiniBatchPreProcessorDL(MiniBatchPreProcessor):
         self.dependent_varname = dependent_varname
         self.independent_varname = independent_varname
         self.buffer_size = buffer_size
-        self.normalizing_const = normalizing_const if normalizing_const else 1.0
+        self.normalizing_const = normalizing_const if normalizing_const is not None else 1.0
         self.module_name = "minibatch_preprocessor_DL"
         self.output_summary_table = add_postfix(self.output_table, "_summary")
+        self.independent_vartype = get_expr_type(self.independent_varname,
+                                                 self.source_table)
+        self.dependent_vartype = get_expr_type(self.dependent_varname,
+                                               self.source_table)
+
         self._validate_args()
         self.num_of_buffers = self._get_num_buffers()
         self.to_one_hot_encode = True
@@ -367,14 +370,12 @@ class MiniBatchPreProcessorDL(MiniBatchPreProcessor):
             self.dependent_levels = get_distinct_col_levels(
                 self.source_table, self.dependent_varname, self.dependent_vartype)
 
-
     def minibatch_preprocessor_dl(self):
         # Create a temp table that has independent var normalized.
         norm_tbl = unique_string(desp='normalized')
 
-        dependent_varname_with_offset = self.dependent_varname
         dep_var_array_expr = self.get_dep_var_array_expr()
-        # Assuming the input NUMERIC[] is already on_hot_encoded, so casting to INTEGER[]
+        # Assuming the input NUMERIC[] is already one_hot_encoded, so casting to INTEGER[]
         if is_valid_psql_type(self.dependent_vartype, NUMERIC | ONLY_ARRAY):
             dep_var_array_expr = dep_var_array_expr + '::INTEGER[]'
         scalar_mult_sql = """
@@ -383,7 +384,7 @@ class MiniBatchPreProcessorDL(MiniBatchPreProcessor):
                 {self.independent_varname}::REAL[], (1/{self.normalizing_const})::REAL) AS x_norm,
                 {dep_var_array_expr} AS y,
                 row_number() over() AS row_id
-            FROM {self.source_table}
+            FROM {self.source_table} order by random()
             """.format(**locals())
         plpy.execute(scalar_mult_sql)
         # Create the mini-batched output table
@@ -437,18 +438,22 @@ class MiniBatchPreProcessorDL(MiniBatchPreProcessor):
             self.source_table, self.output_table, self.independent_varname,
             self.dependent_varname, self.module_name, None,
             [self.output_summary_table])
-        self.independent_vartype = get_expr_type(
-            self.independent_varname, self.source_table)
+        num_of_independent_cols = split_quoted_delimited_str(self.independent_varname)
+        _assert(len(num_of_independent_cols) == 1,
+            "Invalid independent_varname: only one column name is allowed "
+            "as input.")
         _assert(is_valid_psql_type(self.independent_vartype,
                                    NUMERIC | ONLY_ARRAY),
                 "Invalid independent variable type, should be an array of "
                 "one of {0}".format(','.join(NUMERIC)))
-        self.dependent_vartype = get_expr_type(
-            self.dependent_varname, self.source_table)
         # The denpendent variable needs to be either:
         # 1. NUMERIC, TEXT OR BOOLEAN, which we always one-hot encode
         # 2. NUMERIC ARRAY, which we assume it is already one-hot encoded, and we
         #    just cast it the INTEGER ARRAY
+        num_of_dependent_cols = split_quoted_delimited_str(self.dependent_varname)
+        _assert(len(num_of_dependent_cols) == 1,
+            "Invalid dependent_varname: only one column name is allowed "
+            "as input.")
         _assert((is_valid_psql_type(self.dependent_vartype, NUMERIC | TEXT | BOOLEAN) or
                 is_valid_psql_type(self.dependent_vartype, NUMERIC | ONLY_ARRAY)),
                 """Invalid dependent variable type, should be one of the type in this list:
@@ -457,6 +462,9 @@ class MiniBatchPreProcessorDL(MiniBatchPreProcessor):
             _assert(self.buffer_size > 0,
                     "minibatch_preprocessor_dl: The buffer size has to be a "
                     "positive integer or NULL.")
+        _assert(self.normalizing_const > 0,
+                "minibatch_preprocessor_dl: The normalizing constant has to be a "
+                "positive integer or NULL.")
 
     def _get_num_buffers(self):
         num_rows_in_tbl = plpy.execute("""
@@ -754,9 +762,6 @@ class MiniBatchDocumentation:
             normalizing_const      -- DOUBLE PRECISON. Default 1.0. The
                                       normalizing constant to use for
                                       standardizing arrays in independent_varname.
-            one_hot_encode_int_dep_var -- BOOLEAN. Default FALSE. Flag to one-hot
-                                                      encode dependent variables that are
-                                                      scalar integers
         );
 
 
@@ -783,13 +788,15 @@ class MiniBatchDocumentation:
                                      table.
         dependent_vartype         -- Type of the dependent variable from the
                                      original table.
+        class_values              -- Class values of the dependent variable
+                                     (‘NULL’(as TEXT type) for non
+                                     categorical vars).
         buffer_size               -- Buffer size used in preprocessing step.
         normalizing_const         -- Normalizing constant used for standardizing
                                      arrays in independent_varname.
 
         ---------------------------------------------------------------------------
         """.format(**locals())
-
 
         if not message:
             return summary
