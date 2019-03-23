@@ -31,103 +31,21 @@ from keras.models import *
 from keras.optimizers import *
 from keras.regularizers import *
 
-from madlib_keras_helper import KerasWeightsSerializer
+from madlib_keras_helper import FitInputValidator
+from madlib_keras_helper import get_class_values_and_type
 from madlib_keras_helper import get_data_as_np_array
 from madlib_keras_wrapper import *
 
 from utilities.model_arch_info import get_input_shape
-from utilities.validate_args import input_tbl_valid
-from utilities.validate_args import output_tbl_valid
-from utilities.utilities import _assert
-from utilities.utilities import add_postfix
-from utilities.utilities import is_var_valid
 from utilities.utilities import madlib_version
-
-
-def _validate_input_table(source_table, independent_varname,
-                          dependent_varname):
-    _assert(is_var_valid(source_table, independent_varname),
-            "model_keras error: invalid independent_varname "
-            "('{independent_varname}') for source_table "
-            "({source_table})!".format(
-                independent_varname=independent_varname,
-                source_table=source_table))
-
-    _assert(is_var_valid(source_table, dependent_varname),
-            "model_keras error: invalid dependent_varname "
-            "('{dependent_varname}') for source_table "
-            "({source_table})!".format(
-                dependent_varname=dependent_varname, source_table=source_table))
-
-def _validate_input_args(
-    source_table, dependent_varname, independent_varname, model_arch_table,
-    validation_table, output_model_table, num_iterations):
-
-    module_name = 'model_keras'
-    _assert(num_iterations > 0,
-        "model_keras error: Number of iterations cannot be < 1.")
-
-    output_summary_model_table = add_postfix(output_model_table, "_summary")
-    input_tbl_valid(source_table, module_name)
-    # Source table and validation tables must have the same schema
-    _validate_input_table(source_table, independent_varname, dependent_varname)
-    if validation_table and validation_table.strip() != '':
-        input_tbl_valid(validation_table, module_name)
-        _validate_input_table(validation_table, independent_varname,
-                              dependent_varname)
-    # Validate model arch table's schema.
-    input_tbl_valid(model_arch_table, module_name)
-    # Validate output tables
-    output_tbl_valid(output_model_table, module_name)
-    output_tbl_valid(output_summary_model_table, module_name)
-
-def _validate_input_shapes(source_table, independent_varname, input_shape):
-    """
-    Validate if the input shape specified in model architecture is the same
-    as the shape of the image specified in the indepedent var of the input
-    table.
-    """
-    # The weird indexing with 'i+2' and 'i' below has two reasons:
-    # 1) The indexing for array_upper() starts from 1, but indexing in the
-    # input_shape list starts from 0.
-    # 2) Input_shape is only the image's dimension, whereas a row of
-    # independent varname in a table contains buffer size as the first
-    # dimension, followed by the image's dimension. So we must ignore
-    # the first dimension from independent varname.
-    array_upper_query = ", ".join("array_upper({0}, {1}) AS n_{2}".format(
-        independent_varname, i+2, i) for i in range(len(input_shape)))
-    query = """
-        SELECT {0}
-        FROM {1}
-        LIMIT 1
-    """.format(array_upper_query, source_table)
-    # This query will fail if an image in independent var does not have the
-    # same number of dimensions as the input_shape.
-    result = plpy.execute(query)[0]
-    _assert(len(result) == len(input_shape),
-        "model_keras error: The number of dimensions ({0}) of each image in" \
-        " model architecture and {1} in {2} ({3}) do not match.".format(
-            len(input_shape), independent_varname, source_table, len(result)))
-    for i in range(len(input_shape)):
-        key_name = "n_{0}".format(i)
-        if result[key_name] != input_shape[i]:
-            # Construct the shape in independent varname to display meaningful
-            # error msg.
-            input_shape_from_table = [result["n_{0}".format(i)]
-                for i in range(len(input_shape))]
-            plpy.error("model_keras error: Input shape {0} in the model" \
-                " architecture does not match the input shape {1} of column" \
-                " {2} in table {3}.".format(
-                    input_shape, input_shape_from_table, independent_varname,
-                    source_table))
 
 def fit(schema_madlib, source_table, model, dependent_varname,
         independent_varname, model_arch_table, model_arch_id, compile_params,
         fit_params, num_iterations, num_classes, use_gpu = True,
         validation_table=None, name="", description="", **kwargs):
-    _validate_input_args(source_table, dependent_varname, independent_varname,
-                         model_arch_table, validation_table,
-                         model, num_iterations)
+    fit_validator = FitInputValidator(
+        source_table, validation_table, model, model_arch_table,
+        dependent_varname, independent_varname, num_iterations)
 
     start_training_time = datetime.datetime.now()
 
@@ -147,10 +65,9 @@ def fit(schema_madlib, source_table, model, dependent_varname,
     query_result = query_result[0]
     model_arch = query_result['model_arch']
     input_shape = get_input_shape(model_arch)
-    _validate_input_shapes(source_table, independent_varname, input_shape)
+    fit_validator.validate_input_shapes(source_table, input_shape)
     if validation_table:
-        _validate_input_shapes(
-            validation_table, independent_varname, input_shape)
+        fit_validator.validate_input_shapes(validation_table, input_shape)
     model_weights_serialized = query_result['model_weights']
 
     # Convert model from json and initialize weights
@@ -233,13 +150,15 @@ def fit(schema_madlib, source_table, model, dependent_varname,
         plpy.info("Time for iteration {0}: {1} sec".
                   format(i + 1, end_iteration - start_iteration))
         aggregate_runtime.append(datetime.datetime.now())
-        avg_loss, avg_accuracy, model_state = KerasWeightsSerializer.deserialize_iteration_state(iteration_result)
+        avg_loss, avg_accuracy, model_state = \
+            KerasWeightsSerializer.deserialize_iteration_state(iteration_result)
         plpy.info("Average loss after training iteration {0}: {1}".format(
             i + 1, avg_loss))
         plpy.info("Average accuracy after training iteration {0}: {1}".format(
             i + 1, avg_accuracy))
         if validation_set_provided:
-            _, _, _, updated_weights = KerasWeightsSerializer.deserialize_weights(model_state, model_shapes)
+            _, _, _, updated_weights = \
+                KerasWeightsSerializer.deserialize_weights(model_state, model_shapes)
             master_model.set_weights(updated_weights)
             compile_params_args = convert_string_of_args_to_dict(compile_params)
             master_model.compile(**compile_params_args)
@@ -267,6 +186,8 @@ def fit(schema_madlib, source_table, model, dependent_varname,
     if validation_aggregate_loss and len(validation_aggregate_loss) > 0:
         final_validation_loss = validation_aggregate_loss[-1]
     version = madlib_version(schema_madlib)
+    class_values, class_values_type = get_class_values_and_type(
+        fit_validator.class_values_colname, fit_validator.source_summary_table)
     create_output_summary_table = plpy.prepare("""
         CREATE TABLE {0}_summary AS
         SELECT
@@ -296,16 +217,18 @@ def fit(schema_madlib, source_table, model, dependent_varname,
         $24 AS accuracy_validation,
         $25 AS loss_validation,
         $26 AS accuracy_iter_validation,
-        $27 AS loss_iter_validation
+        $27 AS loss_iter_validation,
+        $28 AS class_values
         """.format(model), ["TEXT", "INTEGER", "TEXT", "TIMESTAMP",
-                                 "TIMESTAMP", "TEXT", "TEXT","TEXT",
-                                 "TEXT", "TEXT", "TEXT", "TEXT", "INTEGER",
-                                 "TEXT", "TEXT", "TEXT", "INTEGER",
-                                 "INTEGER", "DOUBLE PRECISION",
-                                 "DOUBLE PRECISION", "DOUBLE PRECISION[]",
-                                 "DOUBLE PRECISION[]", "TIMESTAMP[]",
-                                 "DOUBLE PRECISION", "DOUBLE PRECISION",
-                                 "DOUBLE PRECISION[]", "DOUBLE PRECISION[]"])
+                            "TIMESTAMP", "TEXT", "TEXT","TEXT",
+                            "TEXT", "TEXT", "TEXT", "TEXT", "INTEGER",
+                            "TEXT", "TEXT", "TEXT", "INTEGER",
+                            "INTEGER", "DOUBLE PRECISION",
+                            "DOUBLE PRECISION", "DOUBLE PRECISION[]",
+                            "DOUBLE PRECISION[]", "TIMESTAMP[]",
+                            "DOUBLE PRECISION", "DOUBLE PRECISION",
+                            "DOUBLE PRECISION[]", "DOUBLE PRECISION[]",
+                            class_values_type])
     plpy.execute(
         create_output_summary_table,
         [
@@ -323,7 +246,8 @@ def fit(schema_madlib, source_table, model, dependent_varname,
             aggregate_runtime, final_validation_acc,
             final_validation_loss,
             validation_aggregate_accuracy,
-            validation_aggregate_loss
+            validation_aggregate_loss,
+            class_values
         ]
         )
 
@@ -391,7 +315,6 @@ def fit_transition(state, ind_var, dep_var, current_seg_id, num_classes,
     x_train = np.array(ind_var, dtype='float64').reshape(
         len(ind_var), *input_shape)
     y_train = np.array(dep_var)
-    y_train = keras_utils.to_categorical(y_train, num_classes)
 
     # Fit segment model on data
     start_fit = time.time()
@@ -576,7 +499,7 @@ def internal_keras_evaluate(x_test, y_test, model_arch, model_data, input_shape,
     x_test = np.array(x_test).reshape(len(x_test), input_shape[0], input_shape[1],
                                       input_shape[2])
     x_test = x_test.astype('float32')
-    y_test = keras_utils.to_categorical(np.array(y_test), 10)
+    y_test = np.array(y_test)
     with K.tf.device(device_name):
         res = model.evaluate(x_test, y_test)
     plpy.info('evaluate result from internal_keras_evaluate is {}'.format(res))
