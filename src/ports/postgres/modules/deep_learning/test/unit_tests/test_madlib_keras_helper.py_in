@@ -25,6 +25,8 @@ sys.path.append(path.dirname(path.dirname(path.dirname(path.dirname(path.abspath
 sys.path.append(path.dirname(path.dirname(path.dirname(path.abspath(__file__)))))
 
 from keras import utils as keras_utils
+from keras.models import *
+from keras.layers import *
 
 import unittest
 from mock import *
@@ -139,8 +141,8 @@ class MadlibKerasHelperTestCase(unittest.TestCase):
                          res)
 
     def test_get_data_as_np_array_one_image_per_row(self):
-        self.plpy_mock_execute.return_value = [{'x': [[1,2]], 'y': 0},
-                                               {'x': [[5,6]], 'y': 1}]
+        self.plpy_mock_execute.return_value = [{'x': [[1,2]], 'y': [[1, 0, 0]]},
+                                               {'x': [[5,6]], 'y': [[0, 1, 0]]}]
         x_res, y_res = self.subject.get_data_as_np_array('foo','y','x', [1,1,2],
                                                          3)
         self.assertEqual(np.array([[[[1, 2]]], [[[5, 6]]]]).tolist(),
@@ -149,8 +151,8 @@ class MadlibKerasHelperTestCase(unittest.TestCase):
                          y_res.tolist())
 
     def test_get_data_as_np_array_multiple_images_per_row(self):
-        self.plpy_mock_execute.return_value = [{'x': [[1,2], [3,4]], 'y': [0,2]},
-                                               {'x': [[5,6], [7,8]], 'y': [1,0]}]
+        self.plpy_mock_execute.return_value = [{'x': [[1,2], [3,4]], 'y': [[1,0,0],[0,0,1]]},
+                                               {'x': [[5,6], [7,8]], 'y': [[0,1,0],[1,0,0]]}]
         x_res, y_res = self.subject.get_data_as_np_array('foo','y','x', [1,1,2],
                                                          3)
         self.assertEqual(np.array([[[[1,2]]], [[[3,4]]],
@@ -161,8 +163,8 @@ class MadlibKerasHelperTestCase(unittest.TestCase):
                          y_res.tolist())
 
     def test_get_data_as_np_array_float_input_shape(self):
-        self.plpy_mock_execute.return_value = [{'x': [[1,2]], 'y': 0},
-                                               {'x': [[5,6]], 'y': 1}]
+        self.plpy_mock_execute.return_value = [{'x': [[1,2]], 'y': [[1, 0, 0]]},
+                                               {'x': [[5,6]], 'y': [[0, 1, 0]]}]
         x_res, y_res = self.subject.get_data_as_np_array('foo','y','x',
                                                          [1.5,1.9,2.3], 3)
         self.assertEqual(np.array([[[[1, 2]]], [[[5, 6]]]]).tolist(),
@@ -171,9 +173,45 @@ class MadlibKerasHelperTestCase(unittest.TestCase):
                          y_res.tolist())
 
     def test_get_data_as_np_array_invalid_input_shape(self):
-        self.plpy_mock_execute.return_value = [{'x': [[1,2]], 'y': 0},
-                                               {'x': [[5,6]], 'y': 1}]
+        self.plpy_mock_execute.return_value = [{'x': [[1,2]], 'y': [[1, 0, 0]]},
+                                               {'x': [[5,6]], 'y': [[0, 1, 0]]}]
         # we expect keras failure(ValueError) because we cannot reshape
         # the input which is of size 2 to input shape of 1,1,3
         with self.assertRaises(ValueError):
             self.subject.get_data_as_np_array('foo','y','x', [1,1,3], 3)
+
+    def test_validate_input_shapes_shapes_do_not_match(self):
+        self.plpy_mock_execute.return_value = [{'n_0': 32, 'n_1': 32}]
+        self.subject.FitInputValidator._validate_input_args = Mock()
+        input_validator_obj = self.subject.FitInputValidator('foo',
+                                                             'foo_valid',
+                                                             'model',
+                                                             'model_arch_table',
+                                                             'dependent_varname',
+                                                             'independent_varname',
+                                                             1)
+        with self.assertRaises(plpy.PLPYException):
+            input_validator_obj.validate_input_shapes('dummy_tbl', [32,32,3])
+
+        self.plpy_mock_execute.return_value = [{'n_0': 3, 'n_1': 32, 'n_2': 32}]
+        with self.assertRaises(plpy.PLPYException):
+            input_validator_obj.validate_input_shapes('dummy_tbl', [32,32,3])
+
+        self.plpy_mock_execute.return_value = [{'n_0': 3, 'n_1': None, 'n_2': None}]
+        with self.assertRaises(plpy.PLPYException):
+            input_validator_obj.validate_input_shapes('dummy_tbl', [3,32])
+
+    def test_validate_input_shapes_shapes_match(self):
+        self.plpy_mock_execute.return_value = [{'n_0': 32, 'n_1': 32, 'n_2': 3}]
+        self.subject.FitInputValidator._validate_input_args = Mock()
+        input_validator_obj = self.subject.FitInputValidator('foo',
+                                                             'foo_valid',
+                                                             'model',
+                                                             'model_arch_table',
+                                                             'dependent_varname',
+                                                             'independent_varname',
+                                                             1)
+        input_validator_obj.validate_input_shapes('dummy_tbl', [32,32,3])
+
+if __name__ == '__main__':
+    unittest.main()

@@ -28,10 +28,13 @@ from keras.optimizers import *
 import numpy as np
 
 from utilities.model_arch_info import get_input_shape
+from utilities.utilities import add_postfix
 from utilities.validate_args import input_tbl_valid
 from utilities.validate_args import output_tbl_valid
 
-from madlib_keras_helper import convert_string_of_args_to_dict
+from madlib_keras_wrapper import convert_string_of_args_to_dict
+from madlib_keras_helper import get_class_values_and_type
+from madlib_keras_helper import KerasWeightsSerializer
 
 def predict(schema_madlib, model_table, test_table, id_col, model_arch_table,
             model_arch_id, independent_varname, compile_params, output_table,
@@ -55,15 +58,23 @@ def predict(schema_madlib, model_table, test_table, id_col, model_arch_table,
     model_arch = query_result['model_arch']
     input_shape = get_input_shape(model_arch)
     compile_params = "$madlib$" + compile_params + "$madlib$"
-    predict_query = plpy.prepare("""create table {output_table} as
-        select {id_col}, (madlib.internal_keras_predict({independent_varname},
-                                             $MAD${model_arch}$MAD$,
-                                             $1,ARRAY{input_shape},
-                                             {compile_params}))[1] as prediction
+    model_summary_table = add_postfix(model_table, "_summary")
+    class_values, _ = get_class_values_and_type(model_summary_table)
+    predict_query = plpy.prepare("""
+        CREATE TABLE {output_table} AS
+        SELECT {id_col},
+            ({schema_madlib}.internal_keras_predict
+                ({independent_varname},
+                 $MAD${model_arch}$MAD$,
+                 $1,ARRAY{input_shape},
+                 {compile_params},
+                 ARRAY{class_values}::TEXT[])
+            )[1] as prediction
         from {test_table}""".format(**locals()), ["bytea"])
     plpy.execute(predict_query, [model_data])
 
-def internal_keras_predict(x_test, model_arch, model_data, input_shape, compile_params):
+def internal_keras_predict(x_test, model_arch, model_data, input_shape,
+                           compile_params, class_values):
     model = model_from_json(model_arch)
     compile_params = convert_string_of_args_to_dict(compile_params)
     device_name = '/cpu:0'
@@ -75,9 +86,40 @@ def internal_keras_predict(x_test, model_arch, model_data, input_shape, compile_
     model_shapes = []
     for weight_arr in model.get_weights():
         model_shapes.append(weight_arr.shape)
-    _,_,_, model_weights = deserialize_weights(model_data, model_shapes)
+    _,_,_, model_weights = KerasWeightsSerializer.deserialize_weights(
+        model_data, model_shapes)
     model.set_weights(model_weights)
     x_test = np.array(x_test).reshape(1, *input_shape)
     x_test /= 255
-    res = model.predict_classes(x_test)
-    return res
+    proba_argmax = model.predict_classes(x_test)
+    # proba_argmax is a list with exactly one element in it. That element
+    # refers to the index containing the largest probability value in the
+    # output of Keras' predict function.
+    return _get_class_label(class_values, proba_argmax[0])
+
+def _get_class_label(class_values, class_index):
+    """
+    Returns back the class label associated with the index returned by Keras'
+    predict_classes function. Keras' predict_classes function returns back
+    the index of the 1-hot encoded output that has the highest probability
+    value. We should infer the exact class label corresponding to the index
+    by looking at the class_values list (which is obtained from the
+    class_values column of the model summary table). If class_values is None,
+    we return the index as is.
+    Args:
+        @param class_values: list of class labels.
+        @param class_index: integer representing the index with max
+                            probability value.
+    Returns:
+        scalar. If class_values is None, returns class_index, else returns
+        class_values[class_index].
+    """
+    if class_values:
+        if class_index < len(class_values):
+            return class_values[class_index]
+        else:
+            plpy.error("Invalid class index {0} returned from Keras predict. "\
+                "Index value must be less than {1}".format(
+                    class_index, len(class_values)))
+    else:
+        return class_index

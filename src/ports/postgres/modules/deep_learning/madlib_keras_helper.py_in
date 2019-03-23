@@ -24,6 +24,14 @@ import plpy
 # Import needed for get_data_as_np_array()
 from keras import utils as keras_utils
 
+from utilities.minibatch_validation import validate_dependent_var_for_minibatch
+from utilities.utilities import _assert
+from utilities.utilities import add_postfix
+from utilities.utilities import is_var_valid
+from utilities.validate_args import get_expr_type
+from utilities.validate_args import input_tbl_valid
+from utilities.validate_args import output_tbl_valid
+
 #######################################################################
 ########### Helper functions to serialize and deserialize weights #####
 #######################################################################
@@ -174,21 +182,128 @@ def get_data_as_np_array(table_name, y, x, input_shape, num_classes):
     indep_len = len(val_data[0][x])
     pixels_per_image = int(input_shape[0] * input_shape[1] * input_shape[2])
     x_validation = np.ndarray((0,indep_len, pixels_per_image))
-    y_validation = np.ndarray((0,indep_len))
+    y_validation = np.ndarray((0,indep_len, num_classes))
     for i in range(len(val_data)):
         x_test = np.asarray((val_data[i][x],))
         x_test = x_test.reshape(1, indep_len, pixels_per_image)
         y_test = np.asarray((val_data[i][y],))
-        y_test = y_test.reshape(1, indep_len)
         x_validation=np.concatenate((x_validation, x_test))
         y_validation=np.concatenate((y_validation, y_test))
     num_test_examples = x_validation.shape[0]
     x_validation = x_validation.reshape(indep_len * num_test_examples, *input_shape)
     x_validation = x_validation.astype('float64')
-    y_validation = y_validation.reshape(indep_len * num_test_examples)
-
-    x_validation = x_validation.astype('float64')
-    #x_validation /= 255.0
-    y_validation = keras_utils.to_categorical(y_validation, num_classes)
+    y_validation = y_validation.reshape(indep_len * num_test_examples, num_classes)
 
     return x_validation, y_validation
+
+CLASS_VALUES_COLNAME = "class_values"
+class FitInputValidator:
+    def __init__(self, source_table, validation_table, output_model_table,
+                 model_arch_table, dependent_varname, independent_varname,
+                 num_iterations):
+        self.source_table = source_table
+        self.validation_table = validation_table
+        self.output_model_table = output_model_table
+        self.model_arch_table = model_arch_table
+        self.dependent_varname = dependent_varname
+        self.independent_varname = independent_varname
+        self.num_iterations = num_iterations
+        self.source_summary_table = None
+        if self.source_table:
+            self.source_summary_table = add_postfix(
+                self.source_table, "_summary")
+        if self.output_model_table:
+            self.output_summary_model_table = add_postfix(
+                self.output_model_table, "_summary")
+        self.module_name = 'model_keras'
+        self._validate_input_args()
+
+    def _validate_input_table(self, table):
+        _assert(is_var_valid(table, self.independent_varname),
+                "model_keras error: invalid independent_varname "
+                "('{independent_varname}') for table "
+                "({table}).".format(
+                    independent_varname=self.independent_varname,
+                    table=table))
+
+        _assert(is_var_valid(table, self.dependent_varname),
+                "model_keras error: invalid dependent_varname "
+                "('{dependent_varname}') for table "
+                "({table}).".format(
+                    dependent_varname=self.dependent_varname,
+                    table=table))
+
+    def _validate_input_args(self):
+        _assert(self.num_iterations > 0,
+            "model_keras error: Number of iterations cannot be < 1.")
+        input_tbl_valid(self.source_table, self.module_name)
+        input_tbl_valid(self.source_summary_table, self.module_name)
+        _assert(is_var_valid(
+            self.source_summary_table, CLASS_VALUES_COLNAME),
+                "model_keras error: invalid class_values varname "
+                "('{class_values}') for source_summary_table "
+                "({source_summary_table}).".format(
+                    class_values=CLASS_VALUES_COLNAME,
+                    source_summary_table=self.source_summary_table))
+        # Source table and validation tables must have the same schema
+        self._validate_input_table(self.source_table)
+        validate_dependent_var_for_minibatch(self.source_table,
+                                             self.dependent_varname)
+        if self.validation_table and self.validation_table.strip() != '':
+            input_tbl_valid(self.validation_table, self.module_name)
+            self._validate_input_table(self.validation_table)
+            validate_dependent_var_for_minibatch(self.validation_table,
+                                                 self.dependent_varname)
+        # Validate model arch table's schema.
+        input_tbl_valid(self.model_arch_table, self.module_name)
+        # Validate output tables
+        output_tbl_valid(self.output_model_table, self.module_name)
+        output_tbl_valid(self.output_summary_model_table, self.module_name)
+
+    def validate_input_shapes(self, table, input_shape):
+        """
+        Validate if the input shape specified in model architecture is the same
+        as the shape of the image specified in the indepedent var of the input
+        table.
+        """
+        # The weird indexing with 'i+2' and 'i' below has two reasons:
+        # 1) The indexing for array_upper() starts from 1, but indexing in the
+        # input_shape list starts from 0.
+        # 2) Input_shape is only the image's dimension, whereas a row of
+        # independent varname in a table contains buffer size as the first
+        # dimension, followed by the image's dimension. So we must ignore
+        # the first dimension from independent varname.
+        array_upper_query = ", ".join("array_upper({0}, {1}) AS n_{2}".format(
+            self.independent_varname, i+2, i) for i in range(len(input_shape)))
+        query = """
+            SELECT {0}
+            FROM {1}
+            LIMIT 1
+        """.format(array_upper_query, table)
+        # This query will fail if an image in independent var does not have the
+        # same number of dimensions as the input_shape.
+        result = plpy.execute(query)[0]
+        _assert(len(result) == len(input_shape),
+            "model_keras error: The number of dimensions ({0}) of each image" \
+            " in model architecture and {1} in {2} ({3}) do not match.".format(
+                len(input_shape), self.independent_varname, table, len(result)))
+        for i in range(len(input_shape)):
+            key_name = "n_{0}".format(i)
+            if result[key_name] != input_shape[i]:
+                # Construct the shape in independent varname to display
+                # meaningful error msg.
+                input_shape_from_table = [result["n_{0}".format(i)]
+                    for i in range(len(input_shape))]
+                plpy.error("model_keras error: Input shape {0} in the model" \
+                    " architecture does not match the input shape {1} of column" \
+                    " {2} in table {3}.".format(
+                        input_shape, input_shape_from_table,
+                        self.independent_varname, table))
+
+def get_class_values_and_type(source_summary_table):
+    class_values = plpy.execute("SELECT {0} AS class_values FROM {1}".
+        format(CLASS_VALUES_COLNAME, source_summary_table)
+        )[0]['class_values']
+    class_values_type = get_expr_type(CLASS_VALUES_COLNAME,
+                                      source_summary_table)
+    return class_values, class_values_type
