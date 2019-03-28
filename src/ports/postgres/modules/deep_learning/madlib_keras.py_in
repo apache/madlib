@@ -24,18 +24,22 @@ import plpy
 import sys
 import time
 
+# Do not remove `import keras` although it's not directly used in this file.
+# For ex if the user passes in the optimizer as keras.optimizers.SGD instead of just
+# SGD, then without this import this python file won't find the SGD module
+import keras
+
 from keras import backend as K
 from keras import utils as keras_utils
 from keras.layers import *
 from keras.models import *
 from keras.optimizers import *
 from keras.regularizers import *
-
+import madlib_keras_serializer
 from madlib_keras_helper import CLASS_VALUES_COLNAME
 from madlib_keras_helper import DEPENDENT_VARTYPE
 from madlib_keras_helper import NORMALIZING_CONST_COLNAME
 from madlib_keras_helper import FitInputValidator
-from madlib_keras_helper import get_data_as_np_array
 from madlib_keras_wrapper import *
 
 from utilities.model_arch_info import get_input_shape
@@ -59,6 +63,7 @@ def fit(schema_madlib, source_table, model, dependent_varname,
     use_gpu = bool(use_gpu)
 
     # Get the serialized master model
+    #TODO fix hardcoding of col names
     start_deserialization = time.time()
     model_arch_query = "SELECT model_arch, model_weights FROM {0} WHERE "\
         "id = {1}".format(model_arch_table, model_arch_id)
@@ -70,9 +75,9 @@ def fit(schema_madlib, source_table, model, dependent_varname,
     model_arch = query_result['model_arch']
     input_shape = get_input_shape(model_arch)
     num_classes = get_num_classes(model_arch)
-    fit_validator.validate_input_shapes(source_table, input_shape)
+    fit_validator.validate_input_shapes(source_table, input_shape, 2)
     if validation_table:
-        fit_validator.validate_input_shapes(validation_table, input_shape)
+        fit_validator.validate_input_shapes(validation_table, input_shape, 1)
     model_weights_serialized = query_result['model_weights']
 
     # Convert model from json and initialize weights
@@ -86,18 +91,13 @@ def fit(schema_madlib, source_table, model, dependent_varname,
 
     if model_weights_serialized:
         # If warm start from previously trained model, set weights
-        model_weights = KerasWeightsSerializer.deserialize_weights_orig(
+        model_weights = madlib_keras_serializer.deserialize_weights_orig(
             model_weights_serialized, model_shapes)
         master_model.set_weights(model_weights)
 
     # Construct validation dataset if provided
     validation_set_provided = bool(validation_table)
     validation_aggregate_accuracy = []; validation_aggregate_loss = []
-    x_validation = None; y_validation = None
-    if validation_set_provided:
-        x_validation,  y_validation = get_data_as_np_array(
-            validation_table, dependent_varname, independent_varname,
-            input_shape, num_classes)
 
     optimizers = get_optimizers()
 
@@ -136,7 +136,7 @@ def fit(schema_madlib, source_table, model, dependent_varname,
                    use_gpu, source_table), ["bytea"])
 
     # Define the state for the model and loss/accuracy storage lists
-    model_state = KerasWeightsSerializer.serialize_weights(
+    model_state = madlib_keras_serializer.serialize_weights(
         0, 0, 0, model_weights)
     aggregate_loss, aggregate_accuracy, aggregate_runtime = [], [], []
 
@@ -157,21 +157,22 @@ def fit(schema_madlib, source_table, model, dependent_varname,
         plpy.info("Time for iteration {0}: {1} sec".
                   format(i + 1, end_iteration - start_iteration))
         aggregate_runtime.append(datetime.datetime.now())
-        avg_loss, avg_accuracy, model_state = \
-            KerasWeightsSerializer.deserialize_iteration_state(iteration_result)
+        avg_loss, avg_accuracy, model_state = madlib_keras_serializer.deserialize_iteration_state(iteration_result)
         plpy.info("Average loss after training iteration {0}: {1}".format(
             i + 1, avg_loss))
         plpy.info("Average accuracy after training iteration {0}: {1}".format(
             i + 1, avg_accuracy))
         if validation_set_provided:
-            _, _, _, updated_weights = \
-                KerasWeightsSerializer.deserialize_weights(model_state, model_shapes)
+            _, _, _, updated_weights = madlib_keras_serializer.deserialize_weights(
+                model_state, model_shapes)
             master_model.set_weights(updated_weights)
-            (opt_name,final_args,compile_dict) = parse_compile_params(compile_params)
-            master_model.compile(optimizer=optimizers[opt_name](**final_args),
-                                 loss=compile_dict['loss'],
-                                 metrics=compile_dict['metrics'])
-            evaluate_result = master_model.evaluate(x_validation, y_validation)
+            evaluate_result = get_loss_acc_from_keras_eval(schema_madlib,
+                                                           validation_table,
+                                                           dependent_varname,
+                                                           independent_varname,
+                                                           compile_params_to_pass,
+                                                           model_arch, model_state,
+                                                           use_gpu)
             if len(evaluate_result) < 2:
                 plpy.error('Calling evaluate on validation data returned < 2 '
                            'metrics. Expected metrics are loss and accuracy')
@@ -183,7 +184,6 @@ def fit(schema_madlib, source_table, model, dependent_varname,
             validation_aggregate_loss.append(validation_loss)
         aggregate_loss.append(avg_loss)
         aggregate_accuracy.append(avg_accuracy)
-
 
     end_training_time = datetime.datetime.now()
 
@@ -276,6 +276,35 @@ def fit(schema_madlib, source_table, model, dependent_varname,
     plpy.execute(create_output_table, [model_state])
 
 
+def get_loss_acc_from_keras_eval(schema_madlib, table, dependent_varname,
+                                 independent_varname, compile_params, model_arch,
+                                 model_data, use_gpu):
+    """
+    This function will call the internal keras evaluate function to get the loss
+    and accuracy of each tuple which then gets averaged to get the final result.
+    :param schema_madlib:
+    :param table:
+    :param dependent_varname:
+    :param independent_varname:
+    :param compile_params:
+    :param model_arch:
+    :param model_data:
+    :return:
+    """
+    evaluate_query = plpy.prepare("""
+    select {schema_madlib}.array_avg(loss_acc, True) as final_loss_acc from
+    (
+        select ({schema_madlib}.internal_keras_evaluate({dependent_varname},
+                                            {independent_varname},
+                                            $MAD${model_arch}$MAD$,
+                                            $1, {compile_params},
+                                            {use_gpu}, gp_segment_id)) as loss_acc
+        from {table}
+    ) q""".format(**locals()), ["bytea"])
+    res = plpy.execute(evaluate_query, [model_data])
+    loss_acc = res[0]['final_loss_acc']
+    return loss_acc
+
 def fit_transition(state, ind_var, dep_var, current_seg_id, num_classes,
                    all_seg_ids, total_buffers_per_seg, architecture,
                    compile_params, fit_params, use_gpu, previous_state,
@@ -304,17 +333,16 @@ def fit_transition(state, ind_var, dep_var, current_seg_id, num_classes,
     start_transition = time.time()
     SD = kwargs['SD']
 
-    gpus_per_host = 4
     # Configure GPUs/CPUs
     device_name = get_device_name_for_keras(
-        use_gpu, current_seg_id, gpus_per_host)
+        use_gpu, current_seg_id)
 
     # Set up system if this is the first buffer on segment'
 
     if not state:
         set_keras_session(use_gpu)
         segment_model = model_from_json(architecture)
-        SD['model_shapes'] = KerasWeightsSerializer.get_model_shapes(segment_model)
+        SD['model_shapes'] = madlib_keras_serializer.get_model_shapes(segment_model)
         compile_and_set_weights(segment_model, compile_params, device_name,
                                 previous_state, SD['model_shapes'])
         SD['segment_model'] = segment_model
@@ -323,21 +351,18 @@ def fit_transition(state, ind_var, dep_var, current_seg_id, num_classes,
         agg_accuracy = 0
     else:
         segment_model = SD['segment_model']
-        # Since we deserialize everytime, the transition function might be slightly
-        # slower
-        agg_loss, agg_accuracy, _, _ = KerasWeightsSerializer.deserialize_weights(
+        #TODO we don't need to deserialize the weights here.
+        agg_loss, agg_accuracy, _, _ = madlib_keras_serializer.deserialize_weights(
             state, SD['model_shapes'])
 
-    input_shape = get_input_shape(architecture)
-
     # Prepare the data
-    x_train = np.array(ind_var, dtype='float64').reshape(
-        len(ind_var), *input_shape)
+    x_train = np.array(ind_var, dtype='float64')
     y_train = np.array(dep_var)
 
     # Fit segment model on data
     start_fit = time.time()
     with K.tf.device(device_name):
+        #TODO consider not doing this every time
         fit_params = parse_fit_params(fit_params)
         history = segment_model.fit(x_train, y_train, **fit_params)
         loss = history.history['loss'][0]
@@ -362,7 +387,7 @@ def fit_transition(state, ind_var, dep_var, current_seg_id, num_classes,
         agg_accuracy /= total_buffers
         clear_keras_session()
 
-    new_model_state = KerasWeightsSerializer.serialize_weights(
+    new_model_state = madlib_keras_serializer.serialize_weights(
         agg_loss, agg_accuracy, SD['buffer_count'], updated_weights)
 
     del x_train
@@ -380,8 +405,8 @@ def fit_merge(state1, state2, **kwargs):
         return state1 or state2
 
     # Deserialize states
-    loss1, accuracy1, buffer_count1, weights1 = KerasWeightsSerializer.deserialize_weights_merge(state1)
-    loss2, accuracy2, buffer_count2, weights2 = KerasWeightsSerializer.deserialize_weights_merge(state2)
+    loss1, accuracy1, buffer_count1, weights1 = madlib_keras_serializer.deserialize_weights_merge(state1)
+    loss2, accuracy2, buffer_count2, weights2 = madlib_keras_serializer.deserialize_weights_merge(state2)
         # plpy.info('merge buffer loss1 {}, accuracy1 {}, buffer count1 {}'.format(loss1, accuracy1, buffer_count1))
     # plpy.info('merge buffer loss2 {}, accuracy2 {}, buffer count2 {}'.format(loss2, accuracy2, buffer_count2))
 
@@ -407,7 +432,7 @@ def fit_merge(state1, state2, **kwargs):
     # avg_weights = [(merge_weight1 * e1) + (merge_weight2 * e2) for e1, e2 in zip(weights1, weights2)]
 
     # Return the merged state
-    return KerasWeightsSerializer.serialize_weights_merge(
+    return madlib_keras_serializer.serialize_weights_merge(
         avg_loss, avg_accuracy, total_buffers, avg_weights)
 
 def fit_final(state, **kwargs):
@@ -441,7 +466,7 @@ def evaluate(schema_madlib, model_table, source_table, id_col,
     model_shapes = []
     for weight_arr in model.get_weights():
         model_shapes.append(weight_arr.shape)
-    _, updated_weights = KerasWeightsSerializer.deserialize_weights(
+    _, updated_weights = madlib_keras_serializer.deserialize_weights(
         model_data, model_shapes)
     model.set_weights(updated_weights)
     optimizers = get_optimizers()
@@ -454,9 +479,7 @@ def evaluate(schema_madlib, model_table, source_table, id_col,
     input_shape = map(int, input_shape)
     x_validation,  y_validation = get_data_as_np_array(source_table,
                                                        dependent_varname,
-                                                       independent_varname,
-                                                       input_shape,
-                                                       num_classes)
+                                                       independent_varname)
 
     plpy.info('X shape : {0}'.format(x_validation.shape))
     plpy.info('Y shape : {0}'.format(y_validation.shape))
@@ -488,30 +511,22 @@ def evaluate1(schema_madlib, model_table, test_table, id_col, model_arch_table,
             model_arch_table, model_arch_id))
     query_result = query_result[0]
     model_arch = query_result['model_arch']
-    input_shape = get_input_shape(model_arch)
     compile_params = "$madlib$" + compile_params + "$madlib$"
-    # evaluate_query = plpy.prepare("""create table {output_table} as
-    evaluate_query = plpy.prepare("""
-        select {id_col}, (madlib.internal_keras_evaluate({independent_varname},
-                                             {dependent_varname},
-                                             $MAD${model_arch}$MAD$,
-                                             $1,ARRAY{input_shape},
-                                             {compile_params}))
-        from {test_table}""".format(**locals()), ["bytea"])
-    plpy.execute(evaluate_query, [model_data])
 
-def internal_keras_evaluate(x_test, y_test, model_arch, model_data, input_shape,
-                           compile_params):
-    device_name = '/cpu:0'
-    os.environ["CUDA_VISIBLE_DEVICES"] = '-1'
+    loss_acc = get_loss_acc_from_keras_eval(schema_madlib, test_table, dependent_varname,
+                                            independent_varname, compile_params, model_arch,
+                                            model_data, False)
+    #TODO remove these infos after adding create table command
+    plpy.info('len of evaluate result is {}'.format(len(loss_acc)))
+    plpy.info('evaluate result loss is {}'.format(loss_acc[0]))
+    plpy.info('evaluate result acc is {}'.format(loss_acc[1]))
 
-    model = model_from_json(model_arch)
-    plpy.info('model in str is {}'.format(str(model)))
-
-    model_shapes = []
-    for weight_arr in model.get_weights():
-        model_shapes.append(weight_arr.shape)
-    _, model_weights = KerasWeightsSerializer.deserialize_weights(
+def internal_keras_evaluate(dependent_var, independent_var, model_architecture,
+                            model_data, compile_params, use_gpu, seg, **kwargs):
+    device_name = get_device_name_for_keras(use_gpu, seg)
+    model = model_from_json(model_architecture)
+    model_shapes = madlib_keras_serializer.get_model_shapes(model)
+    _, _, _, model_weights = madlib_keras_serializer.deserialize_weights(
         model_data, model_shapes)
     model.set_weights(model_weights)
     optimizers = get_optimizers()
@@ -521,11 +536,16 @@ def internal_keras_evaluate(x_test, y_test, model_arch, model_data, input_shape,
                       loss=compile_dict['loss'],
                       metrics=compile_dict['metrics'])
 
-    x_test = np.array(x_test).reshape(len(x_test), input_shape[0], input_shape[1],
-                                      input_shape[2])
-    x_test = x_test.astype('float32')
-    y_test = np.array(y_test)
+    # Since the training data is batched but the validation data isn't, we have
+    # to make sure that the validation data np array has the same no of dimensions
+    # as training data. So we prepend 1 to both x and y np arrays using expand_dims.
+    independent_var = np.array(independent_var)
+    independent_var = np.expand_dims(independent_var, axis=0)
+    independent_var = independent_var.astype('float32')
+
+    dependent_var = np.array(dependent_var)
+    dependent_var = np.expand_dims(dependent_var, axis=0)
+
     with K.tf.device(device_name):
-        res = model.evaluate(x_test, y_test)
-    plpy.info('evaluate result from internal_keras_evaluate is {}'.format(res))
+        res = model.evaluate(independent_var, dependent_var)
     return res

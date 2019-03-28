@@ -17,25 +17,26 @@
 # specific language governing permissions and limitations
 # under the License.
 
-import numpy as np
-import os
-import plpy
-
 import ast
+import os
 
+# Do not remove `import keras` although it's not directly used in this file.
+# See madlib_keras.py_in for more details
+import keras
 from keras import backend as K
 from keras import utils as keras_utils
 from keras.optimizers import *
 
 import keras.optimizers as opt
 
-from madlib_keras_helper import KerasWeightsSerializer
+import madlib_keras_serializer
 from utilities.utilities import _assert
 
 #######################################################################
 ########### Keras specific functions #####
 #######################################################################
-def get_device_name_for_keras(use_gpu, seg, gpus_per_host):
+def get_device_name_for_keras(use_gpu, seg):
+    gpus_per_host = 4
     if use_gpu:
         device_name = '/gpu:0'
         os.environ["CUDA_VISIBLE_DEVICES"] = str(seg % gpus_per_host)
@@ -68,7 +69,7 @@ def compile_and_set_weights(segment_model, compile_params, device_name,
         segment_model.compile(optimizer=optimizers[opt_name](**final_args),
                               loss=compile_dict['loss'],
                               metrics=compile_dict['metrics'])
-        _, _, _, model_weights = KerasWeightsSerializer.deserialize_weights(
+        _, _, _, model_weights = madlib_keras_serializer.deserialize_weights(
             previous_state, model_shapes)
         segment_model.set_weights(model_weights)
 
@@ -87,7 +88,6 @@ def convert_string_of_args_to_dict(str_of_args):
     }
     result_str = ""
     key_str = ""
-    value_str = ""
     compile_dict = {}
     for char in str_of_args:
         if char in dual.keys():
@@ -107,7 +107,6 @@ def convert_string_of_args_to_dict(str_of_args):
         else:
             result_str += char
     value_str = result_str
-    result_str = ""
     compile_dict[key_str.strip()]=value_str.strip('\'')
     return compile_dict
 
@@ -139,7 +138,7 @@ def parse_fit_params(str_of_args):
         compile_dict[key] = ast.literal_eval(compile_dict[key])
     return compile_dict
 
-# Split and strip the whispace of key=value formatted strings
+# Split and strip the whitespace of key=value formatted strings
 def split_and_strip(x):
     y = x.split('=')
     return (y[0].strip(),y[1].strip())

@@ -29,13 +29,13 @@ import numpy as np
 
 from utilities.model_arch_info import get_input_shape
 from utilities.utilities import add_postfix
+from utilities.validate_args import get_col_value_and_type
 from utilities.validate_args import input_tbl_valid
 from utilities.validate_args import output_tbl_valid
+from madlib_keras_helper import CLASS_VALUES_COLNAME
 
 from madlib_keras_wrapper import compile_and_set_weights
-from madlib_keras_wrapper import convert_string_of_args_to_dict
-from madlib_keras_helper import CLASS_VALUES_COLNAME
-from madlib_keras_helper import KerasWeightsSerializer
+import madlib_keras_serializer
 
 MODULE_NAME = 'madlib_keras_predict'
 def predict(schema_madlib, model_table, test_table, id_col,
@@ -69,8 +69,8 @@ def predict(schema_madlib, model_table, test_table, id_col,
     input_shape = get_input_shape(model_arch)
     compile_params = "$madlib$" + compile_params + "$madlib$"
     model_summary_table = add_postfix(model_table, "_summary")
-    class_values = plpy.execute("SELECT {0} AS cv FROM {1}".format(
-        CLASS_VALUES_COLNAME, model_summary_table))[0]['cv']
+    class_values, _ = get_col_value_and_type(model_summary_table,
+                                             CLASS_VALUES_COLNAME)
     predict_query = plpy.prepare("""
         CREATE TABLE {output_table} AS
         SELECT {id_col},
@@ -89,7 +89,7 @@ def internal_keras_predict(x_test, model_arch, model_data, input_shape,
     model = model_from_json(model_arch)
     device_name = '/cpu:0'
     os.environ["CUDA_VISIBLE_DEVICES"] = '-1'
-    model_shapes = KerasWeightsSerializer.get_model_shapes(model)
+    model_shapes = madlib_keras_serializer.get_model_shapes(model)
     compile_and_set_weights(model, compile_params, device_name,
                             model_data, model_shapes)
 
