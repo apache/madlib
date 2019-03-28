@@ -21,6 +21,8 @@ import numpy as np
 import os
 import plpy
 
+import ast
+
 from keras import backend as K
 from keras import utils as keras_utils
 from keras.optimizers import *
@@ -56,8 +58,13 @@ def clear_keras_session():
 def compile_and_set_weights(segment_model, compile_params, device_name,
                             previous_state, model_shapes):
     with K.tf.device(device_name):
-        compile_params = convert_string_of_args_to_dict(compile_params)
-        segment_model.compile(**compile_params)
+
+        optimizers = get_optimizers()
+        (opt_name,final_args,compile_dict) = parse_compile_params(compile_params)
+
+        segment_model.compile(optimizer=optimizers[opt_name](**final_args),
+                                 loss=compile_dict['loss'],
+                                 metrics=compile_dict['metrics'])
         _, _, _, model_weights = KerasWeightsSerializer.deserialize_weights(
             previous_state, model_shapes)
         segment_model.set_weights(model_weights)
@@ -66,6 +73,7 @@ def compile_and_set_weights(segment_model, compile_params, device_name,
 """
 Used to convert compile_params and fit_params to actual argument dictionaries
 """
+
 def convert_string_of_args_to_dict(str_of_args):
     """Uses parenthases matching algorithm to intelligently convert
     a string with valid python code into an argument dictionary"""
@@ -76,6 +84,9 @@ def convert_string_of_args_to_dict(str_of_args):
         '{' : '}',
     }
     result_str = ""
+    key_str = ""
+    value_str = ""
+    compile_dict = {}
     for char in str_of_args:
         if char in dual.keys():
             stack.append(char)
@@ -85,7 +96,57 @@ def convert_string_of_args_to_dict(str_of_args):
                 stack.pop(-1)
             result_str += char
         elif not stack and char == "=":
-            result_str += ":"
+            key_str = result_str
+            result_str = ""
+        elif not stack and char == ",":
+            value_str = result_str
+            result_str = ""
+            compile_dict[key_str.strip()]=value_str.strip('\'')
         else:
             result_str += char
-    return eval('{' + result_str + '}')
+    value_str = result_str
+    result_str = ""
+    compile_dict[key_str.strip()]=value_str.strip('\'')
+    return compile_dict
+
+
+# Parse the compile parameters and the optimizer.
+# Optimizer name and its arguments are returned in addition to the rest of the
+# compile parameters.
+def parse_compile_params(str_of_args):
+
+    compile_dict = convert_string_of_args_to_dict(str_of_args)
+    compile_dict['metrics'] = ast.literal_eval(compile_dict['metrics']) if 'metrics' in compile_dict.keys() else None
+    compile_dict['loss_weights'] = ast.literal_eval(compile_dict['loss_weights']) if 'loss_weights' in compile_dict.keys() else None
+
+    opt_name = compile_dict['optimizer'].split('(')[0]
+    opt_params = compile_dict['optimizer'].split('(')[1][:-1]
+    opt_params_array = opt_params.split(',')
+    opt_params_clean = map(split_and_strip, opt_params_array)
+    key_value_params = { x[0] : x[1] for x in opt_params_clean}
+    final_args = { key: bool(value) if value == 'True' or value == 'False' else  float(value) for key,value in key_value_params.iteritems() }
+
+    return (opt_name,final_args,compile_dict)
+
+# Parse the fit parameters into a dictionary.
+def parse_fit_params(str_of_args):
+    compile_dict = convert_string_of_args_to_dict(str_of_args)
+    for key in compile_dict.keys():
+        compile_dict[key] = ast.literal_eval(compile_dict[key])
+    return compile_dict
+
+# Split and strip the whispace of key=value formatted strings
+def split_and_strip(x):
+    y = x.split('=')
+    return (y[0].strip(),y[1].strip())
+
+# Return the list of keras optimizers
+def get_optimizers():
+    import keras.optimizers as opt
+    optimizers = dict()
+    names = dir(opt)
+    for n in names:
+        o = eval('opt.' + n)
+        if o.__class__ == type and o.__base__ == opt.Optimizer:
+            optimizers[n] = o
+    return optimizers
