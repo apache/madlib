@@ -95,11 +95,16 @@ SELECT minibatch_preprocessor_dl(
   'y',
   'x',
   4,
-  5);
+  5,
+  16 -- num_classes
+  );
 
 -- Test that indepdendent vars get divided by 5, by verifying min value goes from 1 to 0.2, and max value from 233 to 46.6
 SELECT assert(relative_error(MIN(x),0.2) < 0.00001, 'Independent var not normalized properly!') FROM (SELECT UNNEST(independent_var) as x FROM minibatch_preprocessor_dl_batch) a;
 SELECT assert(relative_error(MAX(x),46.6) < 0.00001, 'Independent var not normalized properly!') FROM (SELECT UNNEST(independent_var) as x FROM minibatch_preprocessor_dl_batch) a;
+-- Test that 1-hot encoded array is of length 16 (num_classes)
+SELECT assert(array_upper(dependent_var, 2) = 16, 'Incorrect one-hot encode dimension with num_classes') FROM
+  minibatch_preprocessor_dl_batch WHERE buffer_id = 0;
 
 -- Test summary table
 SELECT assert
@@ -109,7 +114,7 @@ SELECT assert
         dependent_varname   = 'y' AND
         independent_varname = 'x' AND
         dependent_vartype   = 'integer' AND
-        class_values        = '{-6,-3,-1,0,2,3,4,5,6,7,8,9,10,12}' AND
+        class_values        = '{-6,-3,-1,0,2,3,4,5,6,7,8,9,10,12,NULL,NULL}' AND
         buffer_size         = 4 AND  -- we sort the class values in python
         normalizing_const   = 5,
         'Summary Validation failed. Actual:' || __to_char(summary)
@@ -205,3 +210,81 @@ SELECT assert (dependent_vartype   = 'integer[]' AND
                class_values        IS NULL,
                'Summary Validation failed. Actual:' || __to_char(summary)
               ) from (select * from minibatch_preprocessor_dl_batch_summary) summary;
+
+-- Test cases with NULL in class values
+DROP TABLE IF EXISTS minibatch_preprocessor_dl_input_null;
+CREATE TABLE minibatch_preprocessor_dl_input_null(id serial, x double precision[], label TEXT);
+INSERT INTO minibatch_preprocessor_dl_input_null(x, label) VALUES
+(ARRAY[1,2,3,4,5,6], 'a'),
+(ARRAY[11,2,3,4,5,6], 'a'),
+(ARRAY[11,22,33,4,5,6], NULL),
+(ARRAY[11,22,33,44,5,6], 'a'),
+(ARRAY[11,22,33,44,65,6], 'a'),
+(ARRAY[11,22,33,44,65,56], 'a'),
+(ARRAY[11,22,33,44,65,56], 'a'),
+(ARRAY[11,22,33,44,65,56], NULL),
+(ARRAY[11,22,33,44,65,56], 'a'),
+(ARRAY[11,22,33,44,65,56], 'a'),
+(ARRAY[11,22,33,44,65,56], NULL),
+(ARRAY[11,22,33,44,65,56], 'a'),
+(ARRAY[11,22,33,144,65,56], 'b'),
+(ARRAY[11,22,233,44,65,56], 'b'),
+(ARRAY[11,22,33,44,65,56], 'b'),
+(ARRAY[11,22,33,44,65,56], 'b'),
+(ARRAY[11,22,33,44,65,56], NULL);
+
+DROP TABLE IF EXISTS minibatch_preprocessor_dl_batch, minibatch_preprocessor_dl_batch_summary;
+SELECT minibatch_preprocessor_dl(
+  'minibatch_preprocessor_dl_input_null',
+  'minibatch_preprocessor_dl_batch',
+  'label',
+  'x',
+  4,
+  5,
+  5 -- num_classes
+  );
+-- Test summary table if class_values has NULL as a legitimate
+-- class label, and also two other NULLs because num_classes=5
+-- but table has only 3 distinct class labels (including NULL)
+SELECT assert
+        (
+        class_values        = '{NULL,a,b,NULL,NULL}',
+        'Summary Validation failed with NULL data. Actual:' || __to_char(summary)
+        ) from (select * from minibatch_preprocessor_dl_batch_summary) summary;
+
+SELECT assert(array_upper(dependent_var, 2) = 5, 'Incorrect one-hot encode dimension with NULL data') FROM
+  minibatch_preprocessor_dl_batch WHERE buffer_id = 0;
+
+-- Test the content of 1-hot encoded dep var when NULL is the
+-- class label.
+DROP TABLE IF EXISTS minibatch_preprocessor_dl_input_null;
+CREATE TABLE minibatch_preprocessor_dl_input_null(id serial, x double precision[], label TEXT);
+INSERT INTO minibatch_preprocessor_dl_input_null(x, label) VALUES
+(ARRAY[11,22,33,4,5,6], NULL);
+
+DROP TABLE IF EXISTS minibatch_preprocessor_dl_batch, minibatch_preprocessor_dl_batch_summary;
+SELECT minibatch_preprocessor_dl(
+  'minibatch_preprocessor_dl_input_null',
+  'minibatch_preprocessor_dl_batch',
+  'label',
+  'x',
+  4,
+  5,
+  3 -- num_classes
+  );
+
+-- class_values must be '{NULL,NULL,NULL}' where the first NULL
+-- is for the class label seen in data, and the other two NULLs
+-- are added as num_classes=3.
+SELECT assert
+        (
+        class_values        = '{NULL,NULL,NULL}',
+        'Summary Validation failed with NULL data. Actual:' || __to_char(summary)
+        ) from (select * from minibatch_preprocessor_dl_batch_summary) summary;
+
+SELECT assert(array_upper(dependent_var, 2) = 3, 'Incorrect one-hot encode dimension with NULL data') FROM
+  minibatch_preprocessor_dl_batch WHERE buffer_id = 0;
+-- NULL is treated as a class label, so it should show '1' for the
+-- first index
+SELECT assert(dependent_var = '{{1,0,0}}', 'Incorrect one-hot encode dimension with NULL data') FROM
+  minibatch_preprocessor_dl_batch WHERE buffer_id = 0;

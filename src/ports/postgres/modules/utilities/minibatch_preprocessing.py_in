@@ -86,7 +86,8 @@ class MiniBatchPreProcessor:
         self.to_one_hot_encode = self.should_one_hot_encode(one_hot_encode_int_dep_var)
         if self.to_one_hot_encode:
             self.dependent_levels = get_distinct_col_levels(
-            self.source_table, self.dependent_varname, self.dependent_vartype)
+                self.source_table, self.dependent_varname,
+                self.dependent_vartype)
         else:
             self.dependent_levels = None
         self._validate_minibatch_preprocessor_params()
@@ -343,10 +344,10 @@ class MiniBatchPreProcessor:
         plpy.execute(query)
 
 
-class MiniBatchPreProcessorDL(MiniBatchPreProcessor):
+class MiniBatchPreProcessorDL():
     def __init__(self, schema_madlib, source_table, output_table,
                  dependent_varname, independent_varname, buffer_size,
-                 normalizing_const=1.0, **kwargs):
+                 normalizing_const, num_classes, **kwargs):
         self.schema_madlib = schema_madlib
         self.source_table = source_table
         self.output_table = output_table
@@ -354,6 +355,7 @@ class MiniBatchPreProcessorDL(MiniBatchPreProcessor):
         self.independent_varname = independent_varname
         self.buffer_size = buffer_size
         self.normalizing_const = normalizing_const if normalizing_const is not None else 1.0
+        self.num_classes = num_classes
         self.module_name = "minibatch_preprocessor_DL"
         self.output_summary_table = add_postfix(self.output_table, "_summary")
         self.independent_vartype = get_expr_type(self.independent_varname,
@@ -363,26 +365,87 @@ class MiniBatchPreProcessorDL(MiniBatchPreProcessor):
 
         self._validate_args()
         self.num_of_buffers = self._get_num_buffers()
-        self.to_one_hot_encode = True
         if is_valid_psql_type(self.dependent_vartype, NUMERIC | ONLY_ARRAY):
             self.dependent_levels = None
         else:
             self.dependent_levels = get_distinct_col_levels(
-                self.source_table, self.dependent_varname, self.dependent_vartype)
+                self.source_table, self.dependent_varname,
+                self.dependent_vartype, include_nulls=True)
+            # if any class level was NULL in sql, that would show up as
+            # None in self.dependent_levels. Replace all None with NULL
+            # in the list.
+            self.dependent_levels = ['NULL' if level is None else level
+                for level in self.dependent_levels]
+            self._validate_num_classes()
+        # Find the number of padded zeros to include in 1-hot vector
+        self.padding_size = 0
+        # Try computing padding_size after running all necessary validations.
+        if self.num_classes and self.dependent_levels:
+            self.padding_size = self.num_classes - len(self.dependent_levels)
+
+    def _validate_num_classes(self):
+        if self.num_classes is not None and \
+            self.num_classes < len(self.dependent_levels):
+            plpy.error("{0}: Invalid num_classes value specified. It must "\
+                "be equal to or greater than distinct class values found "\
+                "in table ({1}).".format(
+                    self.module_name, len(self.dependent_levels)))
+
+    def get_one_hot_encoded_dep_var_expr(self):
+        """
+        :param dependent_varname: Name of the dependent variable
+        :param num_classes: Number of class values to consider in 1-hot
+        :return:
+            This function returns a tuple of
+            1. A string with transformed dependent varname depending on it's type
+            2. All the distinct dependent class levels encoded as a string
+
+            If dep_type == numeric[] , do not encode
+                    1. dependent_varname = rings
+                        transformed_value = ARRAY[rings]
+                    2. dependent_varname = ARRAY[a, b, c]
+                        transformed_value = ARRAY[a, b, c]
+            else if dep_type in ("text", "boolean"), encode:
+                    3. dependent_varname = rings (encoding)
+                        transformed_value = ARRAY[rings=1, rings=2, rings=3]
+        """
+        # Assuming the input NUMERIC[] is already one_hot_encoded,
+        # so casting to INTEGER[]
+        if is_valid_psql_type(self.dependent_vartype, NUMERIC | ONLY_ARRAY):
+            return "{0}::INTEGER[]".format(self.dependent_varname)
+
+        # For DL use case, we want to allow NULL as a valid class value,
+        # so the query must have 'IS NOT DISTINCT FROM' instead of '='
+        # like in the generic get_one_hot_encoded_expr() defined in
+        # db_utils.py_in. We also have this optional 'num_classes' param
+        # that affects the logic of 1-hot encoding. Since this is very
+        # specific to minibatch_preprocessing_dl for now, let's keep
+        # it here instead of refactoring it out to a generic helper function.
+        one_hot_encoded_expr = ["({0}) IS NOT DISTINCT FROM {1}".format(
+            self.dependent_varname, c) for c in self.dependent_levels]
+        if self.num_classes:
+            one_hot_encoded_expr.extend(['false'
+                for i in range(self.padding_size)])
+        return 'ARRAY[{0}]::INTEGER[]'.format(
+            ', '.join(one_hot_encoded_expr))
 
     def minibatch_preprocessor_dl(self):
         # Create a temp table that has independent var normalized.
         norm_tbl = unique_string(desp='normalized')
 
-        dep_var_array_expr = self.get_dep_var_array_expr()
-        # Assuming the input NUMERIC[] is already one_hot_encoded, so casting to INTEGER[]
-        if is_valid_psql_type(self.dependent_vartype, NUMERIC | ONLY_ARRAY):
-            dep_var_array_expr = dep_var_array_expr + '::INTEGER[]'
+        # Always one-hot encode the dependent var. For now, we are assuming
+        # that minibatch_preprocessor_dl will be used only for deep
+        # learning and mostly for classification. So make a strong
+        # assumption that it is only for classification, so one-hot
+        # encode the dep var, unless it's already a numeric array in
+        # which case we assume it's already one-hot encoded.
+        one_hot_dep_var_array_expr = \
+            self.get_one_hot_encoded_dep_var_expr()
         scalar_mult_sql = """
             CREATE TEMP TABLE {norm_tbl} AS
             SELECT {self.schema_madlib}.array_scalar_mult(
                 {self.independent_varname}::REAL[], (1/{self.normalizing_const})::REAL) AS x_norm,
-                {dep_var_array_expr} AS y,
+                {one_hot_dep_var_array_expr} AS y,
                 row_number() over() AS row_id
             FROM {self.source_table} order by random()
             """.format(**locals())
@@ -416,6 +479,11 @@ class MiniBatchPreProcessorDL(MiniBatchPreProcessor):
     def _create_output_summary_table(self):
         class_level_str='NULL::TEXT'
         if self.dependent_levels:
+            # Update dependent_levels to include NULL when
+            # num_classes > len(self.dependent_levels)
+            if self.num_classes:
+                self.dependent_levels.extend(['NULL'
+                    for i in range(self.padding_size)])
             class_level_str=py_list_to_sql_string(
                 self.dependent_levels, array_type=self.dependent_vartype,
                 long_format=True)
@@ -741,6 +809,11 @@ class MiniBatchDocumentation:
         The normalizing constant is parameterized, and can be specified based
         on the kind of image data used.
 
+        An optional param named num_classes can be used to specify the length
+        of the one-hot encoded array for the dependent variable. This value if
+        specified must be greater than equal to the total number of distinct
+        class values found in the input table.
+
         For more details on function usage:
         SELECT {schema_madlib}.{method}('usage')
         """.format(**locals())
@@ -762,6 +835,11 @@ class MiniBatchDocumentation:
             normalizing_const      -- DOUBLE PRECISON. Default 1.0. The
                                       normalizing constant to use for
                                       standardizing arrays in independent_varname.
+            num_classes            -- INTEGER. Default NULL. Number of class labels
+                                      to be considered for 1-hot encoding. If NULL,
+                                      the 1-hot encoded array length will be equal to
+                                      the number of distinct class values found in the
+                                      input table.
         );
 
 
