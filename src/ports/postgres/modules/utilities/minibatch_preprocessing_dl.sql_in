@@ -55,7 +55,8 @@ minibatch_preprocessor_dl( source_table,
                            dependent_varname,
                            independent_varname,
                            buffer_size,
-                           normalizing_const
+                           normalizing_const,
+                           num_classes
                         )
 </pre>
 
@@ -104,6 +105,12 @@ minibatch_preprocessor_dl( source_table,
   <dd>DOUBLE PRECISION, default: 1.0. The normalizing constant to divide
   each value in the independent_varname array by.  For example,
   you may need to use 255 for this value if the image data is in the form 0-255.
+  </dd>
+
+  <dt>num_classes (optional)</dt>
+  <dd>INTEGER, default: NULL. Number of class labels to be considered for 1-hot
+  encoding. If None, the 1-hot encoded array length will be equal to the number
+  of distinct class values found in the input table.
   </dd>
 </dl>
 
@@ -447,6 +454,55 @@ class_values        | {bird,cat,dog}
 buffer_size         | 10
 </pre>
 
+-#  Run the preprocessor for image data with num_classes greater than 3 (distinct class values found in table):
+<pre class="example">
+DROP TABLE IF EXISTS image_data_packed, image_data_packed_summary;
+SELECT madlib.minibatch_preprocessor_dl('image_data',         -- Source table
+                                        'image_data_packed',  -- Output table
+                                        'species',            -- Dependent variable
+                                        'rgb',                -- Independent variable
+                                        NULL,                 -- Buffer size
+                                        255,                  -- Normalizing constant
+                                        5                     -- Number of expected class values
+                                        );
+</pre>
+Here is a sample of the packed output table:
+<pre class="example">
+\\x on
+SELECT * FROM image_data_packed ORDER BY buffer_id;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]---+---------------------------------------------------------------------------------------------------------------------
+independent_var | {{0.639216,0.517647,0.87451,0.0862745,0.784314,...},...}
+dependent_var   | {{0,0,1,0,0},{1,0,0,0,0},{1,0,0,0,0},{1,0,0,0,0},...}
+buffer_id       | 0
+-[ RECORD 2 ]---+---------------------------------------------------------------------------------------------------------------------
+independent_var | {{0.866667,0.0666667,0.803922,0.239216,0.741176,...},...}
+dependent_var   | {{0,0,1,0,0},{0,0,1,0,0},{0,1,0,0,0},{0,1,0,0,0},...}
+buffer_id       | 1
+-[ RECORD 3 ]---+---------------------------------------------------------------------------------------------------------------------
+independent_var | {{0.184314,0.87451,0.227451,0.466667,0.203922,...},...}
+dependent_var   | {{1,0,0,0,0},{0,1,0,0,0},{1,0,0,0,0},{0,0,1,0,0},...}
+buffer_id       | 2
+</pre>
+
+Review the output summary table:
+<pre class="example">
+\\x on
+SELECT * FROM image_data_packed_summary;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]-------+-------------------------
+source_table        | image_data
+output_table        | image_data_packed
+dependent_varname   | species
+independent_varname | rgb
+dependent_vartype   | text
+class_values        | {bird,cat,dog,NULL,NULL}
+buffer_size         | 18
+normalizing_const   | 255.0
+</pre>
+
 @anchor related
 @par Related Topics
 
@@ -462,7 +518,8 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.minibatch_preprocessor_dl(
     dependent_varname           VARCHAR,
     independent_varname         VARCHAR,
     buffer_size                 INTEGER,
-    normalizing_const           DOUBLE PRECISION
+    normalizing_const           DOUBLE PRECISION,
+    num_classes                 INTEGER
 ) RETURNS VOID AS $$
     PythonFunctionBodyOnly(utilities, minibatch_preprocessing)
     from utilities.control import MinWarning
@@ -478,9 +535,21 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.minibatch_preprocessor_dl(
     output_table            VARCHAR,
     dependent_varname       VARCHAR,
     independent_varname     VARCHAR,
+    buffer_size             INTEGER,
+    normalizing_const       DOUBLE PRECISION
+) RETURNS VOID AS $$
+  SELECT MADLIB_SCHEMA.minibatch_preprocessor_dl($1, $2, $3, $4, $5, $6, NULL);
+$$ LANGUAGE sql VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.minibatch_preprocessor_dl(
+    source_table            VARCHAR,
+    output_table            VARCHAR,
+    dependent_varname       VARCHAR,
+    independent_varname     VARCHAR,
     buffer_size             INTEGER
 ) RETURNS VOID AS $$
-  SELECT MADLIB_SCHEMA.minibatch_preprocessor_dl($1, $2, $3, $4, $5, 1.0);
+  SELECT MADLIB_SCHEMA.minibatch_preprocessor_dl($1, $2, $3, $4, $5, 1.0, NULL);
 $$ LANGUAGE sql VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
@@ -490,7 +559,7 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.minibatch_preprocessor_dl(
     dependent_varname       VARCHAR,
     independent_varname     VARCHAR
 ) RETURNS VOID AS $$
-  SELECT MADLIB_SCHEMA.minibatch_preprocessor_dl($1, $2, $3, $4, NULL, 1.0);
+  SELECT MADLIB_SCHEMA.minibatch_preprocessor_dl($1, $2, $3, $4, NULL, 1.0, NULL);
 $$ LANGUAGE sql VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
