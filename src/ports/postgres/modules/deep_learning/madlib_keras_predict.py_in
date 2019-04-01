@@ -32,6 +32,7 @@ from utilities.utilities import add_postfix
 from utilities.validate_args import input_tbl_valid
 from utilities.validate_args import output_tbl_valid
 
+from madlib_keras_wrapper import compile_and_set_weights
 from madlib_keras_wrapper import convert_string_of_args_to_dict
 from madlib_keras_helper import get_class_values_and_type
 from madlib_keras_helper import KerasWeightsSerializer
@@ -76,19 +77,12 @@ def predict(schema_madlib, model_table, test_table, id_col, model_arch_table,
 def internal_keras_predict(x_test, model_arch, model_data, input_shape,
                            compile_params, class_values):
     model = model_from_json(model_arch)
-    compile_params = convert_string_of_args_to_dict(compile_params)
     device_name = '/cpu:0'
     os.environ["CUDA_VISIBLE_DEVICES"] = '-1'
+    model_shapes = KerasWeightsSerializer.get_model_shapes(model)
+    compile_and_set_weights(model, compile_params, device_name,
+                            model_data, model_shapes)
 
-    with K.tf.device(device_name):
-        model.compile(**compile_params)
-
-    model_shapes = []
-    for weight_arr in model.get_weights():
-        model_shapes.append(weight_arr.shape)
-    _,_,_, model_weights = KerasWeightsSerializer.deserialize_weights(
-        model_data, model_shapes)
-    model.set_weights(model_weights)
     x_test = np.array(x_test).reshape(1, *input_shape)
     x_test /= 255
     proba_argmax = model.predict_classes(x_test)
