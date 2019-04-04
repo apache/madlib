@@ -61,10 +61,10 @@ ALTER TABLE model_arch RENAME model_id TO id;
 -- Please do not break up the compile_params string
 -- It might break the assertion
 
-DROP TABLE IF EXISTS keras_out, keras_out_summary;
+DROP TABLE IF EXISTS keras_saved_out, keras_saved_out_summary;
 SELECT madlib_keras_fit(
     'cifar_10_sample_batched',
-    'keras_out',
+    'keras_saved_out',
     'dependent_var',
     'independent_var',
     'model_arch',
@@ -83,7 +83,7 @@ SELECT assert(
         end_training_time > start_training_time AND
         source_table = 'cifar_10_sample_batched' AND
         validation_table = 'cifar_10_sample_batched' AND
-        model = 'keras_out' AND
+        model = 'keras_saved_out' AND
         dependent_varname = 'dependent_var' AND
         independent_varname = 'independent_var' AND
         name is NULL AND
@@ -105,9 +105,13 @@ SELECT assert(
         array_upper(accuracy_iter_validation, 1) = 3 AND
         array_upper(loss_iter_validation, 1) = 3 ,
         'Keras model output Summary Validation failed. Actual:' || __to_char(summary))
-FROM (SELECT * FROM keras_out_summary) summary;
+FROM (SELECT * FROM keras_saved_out_summary) summary;
 
-SELECT assert(model_data IS NOT NULL , 'Keras model output validation failed') FROM (SELECT * FROM keras_out) k;
+SELECT assert(accuracy_validation > 0.9999,
+    'Validation accuracy after 3 iterations of training is only ' || __to_char(100*accuracy) || '%, should have reached 100%')
+    FROM keras_saved_out_summary;
+
+SELECT assert(model_data IS NOT NULL , 'Keras model output validation failed') FROM (SELECT * FROM keras_saved_out) k;
 
 
 -- Test for
@@ -184,24 +188,22 @@ SELECT assert(UPPER(atttypid::regtype::TEXT) =
         AND attname = 'prediction';
 
 -- Validate correct number of rows returned.
-SELECT assert(COUNT(*) = 2, "Output table of madlib_keras_predict should have two rows") FROM cifar10_predict;
+SELECT assert(COUNT(*)=2, 'Output table of madlib_keras_predict should have two rows') FROM cifar10_predict;
 
 -- First test that all values are in set of class values; if this breaks, it's definitely a problem.
 SELECT assert(prediction in (0,1),'Predicted value not in set of defined class values for model') FROM cifar10_predict;
 
--- Then test that each of the two images is correctly predicted.  If this breaks, it's likely a different problem, or
-   -- possibly due to the test model we chose not being trained well enough.  Based on current testing, it looks
-   -- reliable.
-SELECT assert(prediction=0,'Predicted value not in set of defined class values for model') FROM cifar10_predict WHERE id=1;
-SELECT assert(prediction=1,'Predicted value not in set of defined class values for model') FROM cifar10_predict WHERE id=2;
+-- Then test that each of the two images is correctly predicted.  If this breaks, it's likely a different problem.
+SELECT assert(prediction=0,'Incorrect prediction for first image.  Predicted: ' || __to_char(prediction) || ', Expected: 0') FROM cifar10_predict WHERE id=1;
+SELECT assert(prediction=1,'Incorrect prediction for second image.  Predicted: ' || __to_char(prediction) || ', Expected: 1') FROM cifar10_predict WHERE id=2;
 
-select assert(trap_error($$madlib_keras_predict(
-    'keras_out',
+select assert(trap_error($TRAP$madlib_keras_predict(
+    'keras_saved_out',
     'cifar_10_sample_batched',
     'id',
     'model_arch',
     1,
     'x',
     $$ optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['accuracy']$$::text,
-    'cifar10_predict');$$) = 1,
+    'cifar10_predict');$TRAP$) = 1,
     'Passing batched image table to predict should error out.');
