@@ -666,7 +666,7 @@ def _process_py_sql_files_in_modules(modset, args_dict):
             if madpack_cmd == 'install-check':
                 mask = maddir_mod_sql + '/' + module + '/test/*.ic.sql_in'
             else:
-                mask = maddir_mod_sql + '/' + module + '/test/*[!ic].sql_in'
+                mask = maddir_mod_sql + '/' + module + '/test/*.sql_in'
         elif calling_operation == UNIT_TEST:
             mask = maddir_mod_py + '/' + module + '/test/unit_tests/test_*.py'
         else:
@@ -674,6 +674,8 @@ def _process_py_sql_files_in_modules(modset, args_dict):
 
         # Loop through all SQL files for this module
         source_files = glob.glob(mask)
+        if calling_operation == INSTALL_DEV_CHECK and madpack_cmd != 'install-check':
+            source_files = [s for s in source_files if '.ic' not in s]
 
         # Do this error check only when running install/reinstall/upgrade
         if calling_operation == DB_CREATE_OBJECTS and not source_files:
