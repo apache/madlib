@@ -32,14 +32,16 @@ from keras.optimizers import *
 from keras.regularizers import *
 
 from madlib_keras_helper import CLASS_VALUES_COLNAME
+from madlib_keras_helper import DEPENDENT_VARTYPE
+from madlib_keras_helper import NORMALIZING_CONST_COLNAME
 from madlib_keras_helper import FitInputValidator
-from madlib_keras_helper import get_class_values_and_type
 from madlib_keras_helper import get_data_as_np_array
 from madlib_keras_wrapper import *
 
 from utilities.model_arch_info import get_input_shape
 from utilities.model_arch_info import get_num_classes
 from utilities.utilities import madlib_version
+from utilities.validate_args import get_col_value_and_type
 
 def fit(schema_madlib, source_table, model, dependent_varname,
         independent_varname, model_arch_table, model_arch_id, compile_params,
@@ -193,8 +195,12 @@ def fit(schema_madlib, source_table, model, dependent_varname,
     if validation_aggregate_loss and len(validation_aggregate_loss) > 0:
         final_validation_loss = validation_aggregate_loss[-1]
     version = madlib_version(schema_madlib)
-    class_values, class_values_type = get_class_values_and_type(
-        fit_validator.source_summary_table)
+    class_values, class_values_type = get_col_value_and_type(
+        fit_validator.source_summary_table, CLASS_VALUES_COLNAME)
+    norm_const, norm_const_type = get_col_value_and_type(
+        fit_validator.source_summary_table, NORMALIZING_CONST_COLNAME)
+    dep_vartype = plpy.execute("SELECT {0} AS dep FROM {1}".format(
+        DEPENDENT_VARTYPE, fit_validator.source_summary_table))[0]['dep']
     create_output_summary_table = plpy.prepare("""
         CREATE TABLE {0}_summary AS
         SELECT
@@ -225,8 +231,11 @@ def fit(schema_madlib, source_table, model, dependent_varname,
         $25 AS loss_validation,
         $26 AS accuracy_iter_validation,
         $27 AS loss_iter_validation,
-        $28 AS {1}
-        """.format(model, CLASS_VALUES_COLNAME),
+        $28 AS {1},
+        $29 AS {2},
+        $30 AS {3}
+        """.format(model, CLASS_VALUES_COLNAME, DEPENDENT_VARTYPE,
+                   NORMALIZING_CONST_COLNAME),
                    ["TEXT", "INTEGER", "TEXT", "TIMESTAMP",
                     "TIMESTAMP", "TEXT", "TEXT","TEXT",
                     "TEXT", "TEXT", "TEXT", "TEXT", "INTEGER",
@@ -236,7 +245,7 @@ def fit(schema_madlib, source_table, model, dependent_varname,
                     "DOUBLE PRECISION[]", "TIMESTAMP[]",
                     "DOUBLE PRECISION", "DOUBLE PRECISION",
                     "DOUBLE PRECISION[]", "DOUBLE PRECISION[]",
-                    class_values_type])
+                    class_values_type, "TEXT", norm_const_type])
     plpy.execute(
         create_output_summary_table,
         [
@@ -255,7 +264,9 @@ def fit(schema_madlib, source_table, model, dependent_varname,
             final_validation_loss,
             validation_aggregate_accuracy,
             validation_aggregate_loss,
-            class_values
+            class_values,
+            dep_vartype,
+            norm_const
         ]
         )
 
