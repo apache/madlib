@@ -126,7 +126,9 @@ def wcc(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
     comma_grouping_cols = '' if not grouping_cols else ',' + grouping_cols
 
     if not is_platform_pg():
-        plpy.execute("DROP TABLE IF EXISTS {edge_inverse}".format(**locals()))
+        # In Greenplum, to avoid redistribution of data when in later queries,
+        # edge_table is duplicated by creating a temporary table distributed
+        # on dest column
         plpy.execute(""" CREATE TEMP TABLE {edge_inverse} AS
                             SELECT * FROM {edge_table} DISTRIBUTED BY ({dest})
                      """.format(**locals()))
@@ -289,6 +291,9 @@ def wcc(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
                                 SELECT COUNT(*) AS cnt FROM {toupdate}
                             """.format(**locals()))[0]["cnt"]
 
+    if not is_platform_pg():
+        # Drop intermediate table created for Greenplum
+        plpy.execute("DROP TABLE IF EXISTS {0}".format(edge_inverse))
     plpy.execute("ALTER TABLE {0} RENAME TO {1}".format(newupdate, out_table))
     # Create summary table. We only need the vertex_id and grouping columns
     # in it.
