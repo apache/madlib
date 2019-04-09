@@ -37,24 +37,33 @@ from madlib_keras_wrapper import convert_string_of_args_to_dict
 from madlib_keras_helper import CLASS_VALUES_COLNAME
 from madlib_keras_helper import KerasWeightsSerializer
 
-def predict(schema_madlib, model_table, test_table, id_col, model_arch_table,
-            model_arch_id, independent_varname, compile_params, output_table,
-            **kwargs):
-    module_name = 'madlib_keras_predict'
-    input_tbl_valid(test_table, module_name)
-    input_tbl_valid(model_arch_table, module_name)
-    output_tbl_valid(output_table, module_name)
-
-    # _validate_input_args(test_table, model_arch_table, output_table)
+MODULE_NAME = 'madlib_keras_predict'
+def predict(schema_madlib, model_table, test_table, id_col,
+            independent_varname, output_table, **kwargs):
+    input_tbl_valid(model_table, MODULE_NAME)
+    model_summary_table = add_postfix(model_table, '_summary')
+    input_tbl_valid(model_summary_table, MODULE_NAME)
+    input_tbl_valid(test_table, MODULE_NAME)
+    output_tbl_valid(output_table, MODULE_NAME)
+    model_summary_dict = plpy.execute("SELECT * FROM {0}".format(
+        model_summary_table))[0]
+    model_arch_table = model_summary_dict['model_arch_table']
+    model_arch_id = model_summary_dict['model_arch_id']
+    compile_params = model_summary_dict['compile_params']
+    input_tbl_valid(model_arch_table, MODULE_NAME)
 
     model_data_query = "SELECT model_data from {0}".format(model_table)
     model_data = plpy.execute(model_data_query)[0]['model_data']
 
-    model_arch_query = "SELECT model_arch, model_weights FROM {0} " \
-                       "WHERE id = {1}".format(model_arch_table, model_arch_id)
+    model_arch_query = """
+        SELECT model_arch, model_weights
+        FROM {0}
+        WHERE id = {1}
+        """.format(model_arch_table, model_arch_id)
     query_result = plpy.execute(model_arch_query)
     if not  query_result or len(query_result) == 0:
-        plpy.error("no model arch found in table {0} with id {1}".format(model_arch_table, model_arch_id))
+        plpy.error("{0}: No model arch found in table {1} with id {2}".format(
+            MODULE_NAME, model_arch_table, model_arch_id))
     query_result = query_result[0]
     model_arch = query_result['model_arch']
     input_shape = get_input_shape(model_arch)
@@ -112,12 +121,11 @@ def _get_class_label(class_values, class_index):
     if not class_values:
         return class_index
     elif class_index != int(class_index):
-        plpy.error("Invalid class index {0} returned from Keras predict. "\
-                   "Index value must be an integer".format(
-                    class_index))
+        plpy.error("{0}: Invalid class index {1} returned from Keras predict."\
+            " Index value must be an integer".format(MODULE_NAME, class_index))
     elif class_index < 0 or class_index >= len(class_values):
-        plpy.error("Invalid class index {0} returned from Keras predict. "\
-                   "Index value must be less than {1}".format(
-                    class_index, len(class_values)))
+        plpy.error("{0}: Invalid class index {1} returned from Keras predict."\
+            " Index value must be less than {2}".format(
+                MODULE_NAME, class_index, len(class_values)))
     else:
         return class_values[class_index]
