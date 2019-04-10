@@ -439,58 +439,6 @@ def fit_merge(state1, state2, **kwargs):
 def fit_final(state, **kwargs):
     return state
 
-def evaluate(schema_madlib, model_table, source_table, id_col,
-             model_arch_table, model_arch_id, dependent_varname,
-             independent_varname, compile_params, output_table,
-             **kwargs):
-    module_name = 'madlib_keras_evaluate'
-    input_tbl_valid(source_table, module_name)
-    input_tbl_valid(model_arch_table, module_name)
-    output_tbl_valid(output_table, module_name)
-
-    # _validate_input_args(test_table, model_arch_table, output_table)
-    device_name = '/cpu:0'
-    os.environ["CUDA_VISIBLE_DEVICES"] = '-1'
-
-    model_data_query = "SELECT model_data from {0}".format(model_table)
-    model_data = plpy.execute(model_data_query)[0]['model_data']
-
-    model_arch_query = "SELECT model_arch, model_weights FROM {0} " \
-                       "WHERE id = {1}".format(model_arch_table, model_arch_id)
-    query_result = plpy.execute(model_arch_query)
-
-    query_result = query_result[0]
-    model_arch = query_result['model_arch']
-    input_shape = get_input_shape(model_arch)
-    model = model_from_json(model_arch)
-
-    model_shapes = []
-    for weight_arr in model.get_weights():
-        model_shapes.append(weight_arr.shape)
-    _, updated_weights = madlib_keras_serializer.deserialize_weights(
-        model_data, model_shapes)
-    model.set_weights(updated_weights)
-    optimizers = get_optimizers()
-    (opt_name,final_args,compile_dict) = parse_compile_params(compile_params)
-    with K.tf.device(device_name):
-        model.compile(optimizer=optimizers[opt_name](**final_args),
-                      loss=compile_dict['loss'],
-                      metrics=compile_dict['metrics'])
-
-    input_shape = map(int, input_shape)
-    x_validation,  y_validation = get_data_as_np_array(source_table,
-                                                       dependent_varname,
-                                                       independent_varname)
-
-    plpy.info('X shape : {0}'.format(x_validation.shape))
-    plpy.info('Y shape : {0}'.format(y_validation.shape))
-
-    with K.tf.device(device_name):
-        evaluate_result = model.evaluate(x_validation, y_validation)
-
-    plpy.info('evaluate result is {}'.format(evaluate_result))
-
-
 def evaluate1(schema_madlib, model_table, test_table, id_col, model_arch_table,
             model_arch_id, dependent_varname, independent_varname,
             compile_params, output_table, **kwargs):
