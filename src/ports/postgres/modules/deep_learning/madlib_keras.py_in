@@ -41,6 +41,7 @@ from madlib_keras_helper import DEPENDENT_VARTYPE
 from madlib_keras_helper import NORMALIZING_CONST_COLNAME
 from madlib_keras_helper import FitInputValidator
 from madlib_keras_wrapper import *
+from keras_model_arch_table import Format
 
 from utilities.model_arch_info import get_input_shape
 from utilities.model_arch_info import get_num_classes
@@ -63,22 +64,23 @@ def fit(schema_madlib, source_table, model, dependent_varname,
     use_gpu = bool(use_gpu)
 
     # Get the serialized master model
-    #TODO fix hardcoding of col names
     start_deserialization = time.time()
-    model_arch_query = "SELECT model_arch, model_weights FROM {0} WHERE "\
-        "id = {1}".format(model_arch_table, model_arch_id)
+    model_arch_query = "SELECT {0}, {1} FROM {2} WHERE {3} = {4}".format(
+                                        Format.MODEL_ARCH, Format.MODEL_WEIGHTS,
+                                        model_arch_table, Format.MODEL_ID,
+                                        model_arch_id)
     query_result = plpy.execute(model_arch_query)
     if not  query_result:
         plpy.error("no model arch found in table {0} with id {1}".format(
             model_arch_table, model_arch_id))
     query_result = query_result[0]
-    model_arch = query_result['model_arch']
+    model_arch = query_result[Format.MODEL_ARCH]
     input_shape = get_input_shape(model_arch)
     num_classes = get_num_classes(model_arch)
     fit_validator.validate_input_shapes(source_table, input_shape, 2)
     if validation_table:
         fit_validator.validate_input_shapes(validation_table, input_shape, 1)
-    model_weights_serialized = query_result['model_weights']
+    model_weights_serialized = query_result[Format.MODEL_WEIGHTS]
 
     # Convert model from json and initialize weights
     master_model = model_from_json(model_arch)
@@ -510,7 +512,7 @@ def evaluate1(schema_madlib, model_table, test_table, id_col, model_arch_table,
         plpy.error("no model arch found in table {0} with id {1}".format(
             model_arch_table, model_arch_id))
     query_result = query_result[0]
-    model_arch = query_result['model_arch']
+    model_arch = query_result[Format.MODEL_ARCH]
     compile_params = "$madlib$" + compile_params + "$madlib$"
 
     loss_acc = get_loss_acc_from_keras_eval(schema_madlib, test_table, dependent_varname,

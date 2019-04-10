@@ -55,7 +55,7 @@ class Format:
     """
     col_names = ('model_id', 'model_arch', 'model_weights', '__internal_madlib_id__')
     col_types = ('SERIAL PRIMARY KEY', 'JSON', 'DOUBLE PRECISION[]', 'TEXT')
-    (model_id, model_arch, model_weights, __internal_madlib_id__) = col_names
+    (MODEL_ID, MODEL_ARCH, MODEL_WEIGHTS, __INTERNAL_MADLIB_ID__) = col_names
 
 @MinWarning("warning")
 def _execute(sql,max_rows=0):
@@ -89,18 +89,18 @@ def load_keras_model(schema_madlib, keras_model_arch_table,
              SELECT {model_id_col}, {model_arch_col}
                  FROM {model_arch_table} WHERE {internal_id_col} = '{unique_str}'
     """.format(model_arch_table=model_arch_table,
-               model_arch_col=Format.model_arch,
+               model_arch_col=Format.MODEL_ARCH,
                unique_str=unique_str,
                model_arch=quote_literal(model_arch),
-               model_id_col=Format.model_id,
-               internal_id_col=Format.__internal_madlib_id__)
+               model_id_col=Format.MODEL_ID,
+               internal_id_col=Format.__INTERNAL_MADLIB_ID__)
     res = _execute(sql,1)
 
-    if len(res) != 1 or res[0][Format.model_arch] != model_arch:
+    if len(res) != 1 or res[0][Format.MODEL_ARCH] != model_arch:
         raise Exception("Failed to insert new row in {0} table--try again?"
                        .format(model_arch_table))
     plpy.info("Keras Model Arch: Added model id {0} to {1} table".
-        format(res[0]['model_id'], model_arch_table))
+        format(res[0][Format.MODEL_ID], model_arch_table))
 
 def delete_keras_model(schema_madlib, keras_model_arch_table,
                        model_id, **kwargs):
@@ -113,8 +113,9 @@ def delete_keras_model(schema_madlib, keras_model_arch_table,
                    " missing columns: {1}".format(model_arch_table, missing_cols))
 
     sql = """
-           DELETE FROM {model_arch_table} WHERE model_id={model_id}
-          """.format(model_arch_table=model_arch_table, model_id=model_id)
+           DELETE FROM {model_arch_table} WHERE {model_id_col}={model_id}
+          """.format(model_arch_table=model_arch_table, model_id_col=Format.MODEL_ID,
+                     model_id=model_id)
     res = _execute(sql)
 
     if res.nrows() > 0:
@@ -123,7 +124,7 @@ def delete_keras_model(schema_madlib, keras_model_arch_table,
     else:
         plpy.error("Keras Model Arch: Model id {0} not found".format(model_id))
 
-    sql = "SELECT model_id FROM {0}".format(model_arch_table)
+    sql = "SELECT {0} FROM {1}".format(Format.MODEL_ID, model_arch_table)
     res = _execute(sql)
     if not res:
         plpy.info("Keras Model Arch: Dropping empty keras model arch "\
