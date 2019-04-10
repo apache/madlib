@@ -6,14 +6,15 @@ import random
 from distutils.util import strtobool
 
 from validate_args import _get_table_schema_names
-from validate_args import get_first_schema
-from validate_args import get_cols
 from validate_args import cols_in_tbl_valid
 from validate_args import does_exclude_reserved
 from validate_args import explicit_bool_to_text
+from validate_args import get_cols
+from validate_args import get_first_schema
 from validate_args import input_tbl_valid
 from validate_args import is_var_valid
 from validate_args import output_tbl_valid
+from validate_args import quote_ident
 import plpy
 
 
@@ -220,6 +221,7 @@ def is_valid_psql_type(arg, valid_types):
     """
     if not arg or not valid_types:
         return False
+    arg = arg.lower()
     if ANY_ARRAY <= valid_types:
         return arg.rstrip().endswith('[]')
     if ONLY_ARRAY <= valid_types:
@@ -386,6 +388,92 @@ def py_list_to_sql_string(array, array_type=None, long_format=None):
             qd=quote_delimiter)
 # ------------------------------------------------------------------------
 
+def create_cols_from_array_sql_string(py_list, sql_array_col, colname,
+                                      coltype, has_one_ele,
+                                      module_name='Input Error'):
+    """
+    Create SQL string to convert array of elements into multiple columns.
+    @args:
+        @param: py_list, python list, if None, return sql_array_col as colname.
+                            The py_list can at most have one 'None' element that
+                            is converted to sql 'NULL'
+        @param: sql_array_col, str pointing to a column in table containing
+                               an array.
+        @param: colname, name of output column (can be treated as prefix
+                         to multiple cols if has_one_ele=False)
+        @param: coltype, Type of columns to be created
+        @param: has_one_ele, bool. if True, assumes sql_array_col has
+                    an array of exactly one element, which is treated as in
+                    index to get value from py_list. If False, then a new
+                    column is created for every element in py_list,
+                    whose corresponding values are obtained from sql_array_col.
+    @examples:
+        1) Input:
+                py_list = ['cat', 'dog']
+                sql_array_col = sqlcol
+                colname = prob
+                coltype = TEXT
+                has_one_ele = FALSE
+            Output:
+                CAST(sqlcol[1] AS TEXT) AS prob_cat, CAST(sqlcol[2] AS TEXT) AS prob_dog
+        2) Input:
+                py_list = ['cat', 'dog']
+                sql_array_col = sqlcol
+                colname = estimated_pred
+                coltype = TEXT
+                has_one_ele = TRUE
+            Output:
+                (ARRAY['cat','dog'])[sqlcol[1]+1]::TEXT AS estimated_pred
+
+    @returns:
+        @param, str, that can be used in a SQL query.
+
+    """
+    _assert(sql_array_col, "{0}: sql_array_col should be a valid string.".
+        format(module_name))
+    _assert(colname, "{0}: colname should be a valid string.".format(
+        module_name))
+    if py_list:
+        _assert(is_valid_psql_type(coltype, BOOLEAN | NUMERIC | TEXT),
+            "{0}: Invalid coltype parameter {1}.".format(
+                module_name, coltype))
+        _assert(py_list.count(None) <= 1,
+                "{0}: Input list should contain at most 1 None element.".
+                    format(module_name))
+        py_list = ['NULL' if ele is None else ele for ele in py_list]
+        if has_one_ele:
+            # Query to choose the value in the first element of
+            # sql_array_col which is the index to access in py_list.
+            # The value from that corresponding index in py_list is
+            # the value of colname.
+            py_list_sql_str = py_list_to_sql_string(py_list, coltype+'[]')
+            select_clause = "({0})[{1}[1]+1]::{2} AS {3}".format(
+                py_list_sql_str, sql_array_col, coltype, colname)
+        else:
+            # Create as many columns as the length of py_list. The
+            # colnames are created based on the elements in py_list,
+            # while the value for these colnames is obtained from
+            # sql_array_col.
+
+            # we cannot call sql quote_ident on the py_list entries because
+            # aliasing does not support quote_ident. Hence calling our
+            # python implementation of quote_ident
+            select_clause = ', '.join(
+                ['CAST({sql_array_col}[{j}] AS {coltype}) AS "{final_colname}"'.
+                    format(j=i + 1,
+                           final_colname=quote_ident("{0}_{1}".
+                               format(colname, str(suffix))).strip(' "'),
+                           sql_array_col=sql_array_col,
+                           coltype=coltype)
+                for i, suffix in enumerate(py_list)
+                ])
+    else:
+        if has_one_ele:
+            select_clause = '{0}[1]+1 AS {1}'.format(sql_array_col, colname)
+        else:
+            select_clause = '{0} AS {1}'.format(sql_array_col, colname)
+    return select_clause
+# ------------------------------------------------------------------------
 
 def _array_to_string(origin):
     """
