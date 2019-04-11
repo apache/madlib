@@ -175,6 +175,175 @@ class MadlibKerasFitTestCase(unittest.TestCase):
             [0,1,2], [3,3,3], 'dummy_model_json', "foo", "bar", False,
             'dummy_prev_state', **k))
 
+class MadlibKerasValidatorTestCase(unittest.TestCase):
+    def setUp(self):
+        self.plpy_mock = Mock(spec='error')
+        patches = {
+            'plpy': plpy
+        }
+
+        self.plpy_mock_execute = MagicMock()
+        plpy.execute = self.plpy_mock_execute
+
+        self.module_patcher = patch.dict('sys.modules', patches)
+        self.module_patcher.start()
+        from madlib_keras_validator import FitInputValidator
+        self.subject = FitInputValidator
+
+        self.model = Sequential()
+        self.model.add(Conv2D(2, kernel_size=(1, 1), activation='relu',
+                              input_shape=(1,1,1,), padding='same'))
+        self.model.add(Flatten())
+
+        self.compile_params = "'optimizer'=SGD(lr=0.01, decay=1e-6, nesterov=True), 'loss'='categorical_crossentropy', 'metrics'=['accuracy']"
+        self.fit_params = "'batch_size'=1, 'epochs'=1"
+        self.model_weights = [3,4,5,6]
+        self.loss = 1.3
+        self.accuracy = 0.34
+        self.all_seg_ids = [0,1,2]
+        self.total_buffers_per_seg = [3,3,3]
+
+    def tearDown(self):
+        self.module_patcher.stop()
+
+    def test_validate_input_shapes_shapes_do_not_match(self):
+        self.plpy_mock_execute.return_value = [{'n_0': 32, 'n_1': 32}]
+        self.subject._validate_input_args = Mock()
+        input_validator_obj = self.subject('foo',
+                                           'foo_valid',
+                                           'model',
+                                           'model_arch_table',
+                                           'dependent_varname',
+                                           'independent_varname',
+                                           1)
+        with self.assertRaises(plpy.PLPYException):
+            input_validator_obj.validate_input_shapes('dummy_tbl', [32,32,3], 2)
+
+        self.plpy_mock_execute.return_value = [{'n_0': 3, 'n_1': 32, 'n_2': 32}]
+        with self.assertRaises(plpy.PLPYException):
+            input_validator_obj.validate_input_shapes('dummy_tbl', [32,32,3], 2)
+
+        self.plpy_mock_execute.return_value = [{'n_0': 3, 'n_1': None, 'n_2': None}]
+        with self.assertRaises(plpy.PLPYException):
+            input_validator_obj.validate_input_shapes('dummy_tbl', [3,32], 2)
+
+    def test_validate_input_shapes_shapes_match(self):
+        self.plpy_mock_execute.return_value = [{'n_0': 32, 'n_1': 32, 'n_2': 3}]
+        self.subject._validate_input_args = Mock()
+        input_validator_obj = self.subject('foo',
+                                           'foo_valid',
+                                           'model',
+                                           'model_arch_table',
+                                           'dependent_varname',
+                                           'independent_varname',
+                                           1)
+        input_validator_obj.validate_input_shapes('dummy_tbl', [32,32,3], 1)
+
+class MadlibSerializerTestCase(unittest.TestCase):
+    def setUp(self):
+        self.plpy_mock = Mock(spec='error')
+        patches = {
+            'plpy': plpy
+        }
+
+        self.plpy_mock_execute = MagicMock()
+        plpy.execute = self.plpy_mock_execute
+
+        self.module_patcher = patch.dict('sys.modules', patches)
+        self.module_patcher.start()
+        import madlib_keras_serializer
+        self.subject = madlib_keras_serializer
+
+        self.model = Sequential()
+        self.model.add(Conv2D(2, kernel_size=(1, 1), activation='relu',
+                              input_shape=(1,1,1,), padding='same'))
+        self.model.add(Flatten())
+
+        self.compile_params = "'optimizer'=SGD(lr=0.01, decay=1e-6, nesterov=True), 'loss'='categorical_crossentropy', 'metrics'=['accuracy']"
+        self.fit_params = "'batch_size'=1, 'epochs'=1"
+        self.model_weights = [3,4,5,6]
+        self.loss = 1.3
+        self.accuracy = 0.34
+        self.all_seg_ids = [0,1,2]
+        self.total_buffers_per_seg = [3,3,3]
+
+    def tearDown(self):
+        self.module_patcher.stop()
+
+    def test_deserialize_weights_merge_null_state_returns_none(self):
+        self.assertEqual(None, self.subject.deserialize_weights_merge(None))
+
+    def test_deserialize_weights_merge_returns_not_none(self):
+        dummy_model_state = np.array([0,1,2,3,4,5,6], dtype=np.float32)
+        res = self.subject.deserialize_weights_merge(dummy_model_state.tostring())
+        self.assertEqual(0, res[0])
+        self.assertEqual(1, res[1])
+        self.assertEqual(2, res[2])
+        self.assertEqual([3,4,5,6], res[3].tolist())
+
+    def test_deserialize_weights_null_input_returns_none(self):
+        dummy_model_state = np.array([0,1,2,3,4,5,6], dtype=np.float32)
+        self.assertEqual(None, self.subject.deserialize_weights(dummy_model_state.tostring(), None))
+        self.assertEqual(None, self.subject.deserialize_weights(None, [1,2,3]))
+        self.assertEqual(None, self.subject.deserialize_weights(None, None))
+
+    def test_deserialize_weights_valid_input_returns_not_none(self):
+        dummy_model_state = np.array([0,1,2,3,4,5], dtype=np.float32)
+        dummy_model_shape = [(2, 1, 1, 1), (1,)]
+        res = self.subject.deserialize_weights(dummy_model_state.tostring(), dummy_model_shape)
+        self.assertEqual(0, res[0])
+        self.assertEqual(1, res[1])
+        self.assertEqual(2, res[2])
+        self.assertEqual([[[[3.0]]], [[[4.0]]]], res[3][0].tolist())
+        self.assertEqual([5], res[3][1].tolist())
+
+    def test_deserialize_weights_invalid_input_fails(self):
+        # pass an invalid state with missing model weights
+        invalid_model_state = np.array([0,1,2], dtype=np.float32)
+        dummy_model_shape = [(2, 1, 1, 1), (1,)]
+
+        # we expect keras failure(ValueError) because we cannot reshape
+        # model weights of size 0 into shape (2,2,3,1)
+        with self.assertRaises(ValueError):
+            self.subject.deserialize_weights(invalid_model_state.tostring(), dummy_model_shape)
+
+        invalid_model_state = np.array([0,1,2,3,4], dtype=np.float32)
+        dummy_model_shape = [(2, 2, 3, 1), (1,)]
+        # we expect keras failure(ValueError) because we cannot reshape
+        # model weights of size 2 into shape (2,2,3,1)
+        with self.assertRaises(ValueError):
+            self.subject.deserialize_weights(invalid_model_state.tostring(), dummy_model_shape)
+
+    def test_deserialize_iteration_state_none_input_returns_none(self):
+        self.assertEqual(None, self.subject.deserialize_iteration_state(None))
+
+    def test_deserialize_iteration_state_returns_valid_output(self):
+        dummy_iteration_state = np.array([0,1,2,3,4,5], dtype=np.float32)
+        res = self.subject.deserialize_iteration_state(
+            dummy_iteration_state.tostring())
+        self.assertEqual(0, res[0])
+        self.assertEqual(1, res[1])
+        self.assertEqual(res[2],
+                         np.array([0,0,0,3,4,5], dtype=np.float32).tostring())
+
+    def test_serialize_weights_none_weights_returns_none(self):
+        res = self.subject.serialize_weights(0,1,2,None)
+        self.assertEqual(None , res)
+
+    def test_serialize_weights_valid_output(self):
+        res = self.subject.serialize_weights(0,1,2,[np.array([1,3]),
+                                                    np.array([4,5])])
+        self.assertEqual(np.array([0,1,2,1,3,4,5], dtype=np.float32).tostring(),
+                         res)
+
+    def test_serialize_weights_merge_none_weights_returns_none(self):
+        res = self.subject.serialize_weights_merge(0,1,2,None)
+        self.assertEqual(None , res)
+
+    def test_serialize_weights_merge_valid_output(self):
+        res = self.subject.serialize_weights_merge(0,1,2,np.array([1,3,4,5]))
+        self.assertEqual(np.array([0,1,2,1,3,4,5], dtype=np.float32).tostring(),
+                         res)
 
 class MadlibKerasPredictTestCase(unittest.TestCase):
     def setUp(self):
