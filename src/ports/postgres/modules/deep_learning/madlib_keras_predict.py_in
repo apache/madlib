@@ -27,8 +27,9 @@ from keras.models import *
 from keras.optimizers import *
 import numpy as np
 
+from madlib_keras_helper import expand_input_dims
 from madlib_keras_helper import PredictParamsProcessor
-from madlib_keras_helper import MODEL_DATA_CNAME
+from madlib_keras_helper import MODEL_DATA_COLNAME
 from madlib_keras_wrapper import compile_and_set_weights
 from utilities.model_arch_info import get_input_shape
 from utilities.utilities import add_postfix
@@ -64,7 +65,8 @@ def predict(schema_madlib, model_table, test_table, id_col,
     dependent_vartype = param_proc.get_dependent_vartype()
     model_data = param_proc.get_model_data()
     model_arch = param_proc.get_model_arch()
-
+    normalizing_const = param_proc.get_normalizing_const()
+    # TODO: Validate input shape as part of MADLIB-1312
     input_shape = get_input_shape(model_arch)
     compile_params = "$madlib$" + compile_params + "$madlib$"
 
@@ -102,23 +104,26 @@ def predict(schema_madlib, model_table, test_table, id_col,
                         {0},
                         ARRAY{input_shape},
                         {compile_params},
-                        {is_response})
+                        {is_response},
+                        {normalizing_const})
                    ) AS {intermediate_col}
         FROM {test_table}, {model_table}
         ) q
-        """.format(MODEL_DATA_CNAME, **locals()))
+        """.format(MODEL_DATA_COLNAME, **locals()))
 
 def internal_keras_predict(x_test, model_arch, model_data, input_shape,
-                           compile_params, is_response):
+                           compile_params, is_response, normalizing_const):
     model = model_from_json(model_arch)
     device_name = '/cpu:0'
     os.environ["CUDA_VISIBLE_DEVICES"] = '-1'
     model_shapes = madlib_keras_serializer.get_model_shapes(model)
     compile_and_set_weights(model, compile_params, device_name,
                             model_data, model_shapes)
-
-    x_test = np.array(x_test).reshape(1, *input_shape)
-    x_test /= 255
+    # Since the test data isn't mini-batched,
+    # we have to make sure that the test data np array has the same
+    # number of dimensions as input_shape. So we add a dimension to x.
+    x_test = expand_input_dims(x_test, target_type='float32')
+    x_test /= normalizing_const
     if is_response:
         proba_argmax = model.predict_classes(x_test)
         # proba_argmax is a list with exactly one element in it. That element
