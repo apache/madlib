@@ -46,6 +46,7 @@ from keras_model_arch_table import Format
 
 from utilities.model_arch_info import get_input_shape
 from utilities.model_arch_info import get_num_classes
+from utilities.utilities import is_platform_pg
 from utilities.utilities import madlib_version
 from utilities.validate_args import get_col_value_and_type
 
@@ -102,39 +103,48 @@ def fit(schema_madlib, source_table, model, dependent_varname,
     validation_set_provided = bool(validation_table)
     validation_aggregate_accuracy = []; validation_aggregate_loss = []
 
-    # Compute total buffers on each segment
-    total_buffers_per_seg = plpy.execute(
-        """ SELECT gp_segment_id, count(*) AS total_buffers_per_seg
-            FROM {0}
-            GROUP BY gp_segment_id
-        """.format(source_table))
-    seg_nums = [int(each_buffer["gp_segment_id"])
-        for each_buffer in total_buffers_per_seg]
+    optimizers = get_optimizers()
+
+    if is_platform_pg():
+        total_buffers_per_seg = plpy.execute(
+            """ SELECT count(*) AS total_buffers_per_seg
+                FROM {0}
+            """.format(source_table))
+        seg_nums = "[]::integer[]"
+        gp_segment_id_col = -1
+    else:
+        # Compute total buffers on each segment
+        total_buffers_per_seg = plpy.execute(
+            """ SELECT gp_segment_id, count(*) AS total_buffers_per_seg
+                FROM {0}
+                GROUP BY gp_segment_id
+            """.format(source_table))
+        seg_nums = [int(each_buffer["gp_segment_id"])
+            for each_buffer in total_buffers_per_seg]
+        # gp_segment_id is an implicit column in GPDB tables.
+        gp_segment_id_col = "gp_segment_id"
+
     total_buffers_per_seg = [int(each_buffer["total_buffers_per_seg"])
         for each_buffer in total_buffers_per_seg]
-
     # Prepare the SQL for running distributed training via UDA
     compile_params_to_pass = "$madlib$" + compile_params + "$madlib$"
     fit_params_to_pass = "$madlib$" + fit_params + "$madlib$"
     run_training_iteration = plpy.prepare("""
-        SELECT {0}.fit_step(
-            {1}::REAL[],
-            {2}::SMALLINT[],
-            gp_segment_id,
-            {3}::INTEGER,
-            ARRAY{4},
-            ARRAY{5},
-            $MAD${6}$MAD$::TEXT,
-            {7}::TEXT,
-            {8}::TEXT,
-            {9},
+        SELECT {schema_madlib}.fit_step(
+            {independent_varname}::REAL[],
+            {dependent_varname}::SMALLINT[],
+            {gp_segment_id_col},
+            {num_classes}::INTEGER,
+            ARRAY{seg_nums},
+            ARRAY{total_buffers_per_seg},
+            $MAD${model_arch}$MAD$::TEXT,
+            {compile_params_to_pass}::TEXT,
+            {fit_params_to_pass}::TEXT,
+            {use_gpu},
             $1
         ) AS iteration_result
-        FROM {10}
-        """.format(schema_madlib, independent_varname, dependent_varname,
-                   num_classes, seg_nums, total_buffers_per_seg, model_arch,
-                   compile_params_to_pass, fit_params_to_pass,
-                   use_gpu, source_table), ["bytea"])
+        FROM {source_table}
+        """.format(**locals()), ["bytea"])
 
     # Define the state for the model and loss/accuracy storage lists
     model_state = madlib_keras_serializer.serialize_weights(
@@ -167,13 +177,10 @@ def fit(schema_madlib, source_table, model, dependent_varname,
             _, _, _, updated_weights = madlib_keras_serializer.deserialize_weights(
                 model_state, model_shapes)
             master_model.set_weights(updated_weights)
-            evaluate_result = get_loss_acc_from_keras_eval(schema_madlib,
-                                                           validation_table,
-                                                           dependent_varname,
-                                                           independent_varname,
-                                                           compile_params_to_pass,
-                                                           model_arch, model_state,
-                                                           use_gpu)
+            evaluate_result = get_loss_acc_from_keras_eval(
+                schema_madlib, validation_table, dependent_varname,
+                independent_varname, compile_params_to_pass, model_arch,
+                model_state, use_gpu, gp_segment_id_col)
             if len(evaluate_result) < 2:
                 plpy.error('Calling evaluate on validation data returned < 2 '
                            'metrics. Expected metrics are loss and accuracy')
@@ -279,7 +286,7 @@ def fit(schema_madlib, source_table, model, dependent_varname,
 
 def get_loss_acc_from_keras_eval(schema_madlib, table, dependent_varname,
                                  independent_varname, compile_params, model_arch,
-                                 model_data, use_gpu):
+                                 model_data, use_gpu, gp_segment_id_col):
     """
     This function will call the internal keras evaluate function to get the loss
     and accuracy of each tuple which then gets averaged to get the final result.
@@ -299,7 +306,7 @@ def get_loss_acc_from_keras_eval(schema_madlib, table, dependent_varname,
                                             {independent_varname},
                                             $MAD${model_arch}$MAD$,
                                             $1, {compile_params},
-                                            {use_gpu}, gp_segment_id)) as loss_acc
+                                            {use_gpu}, {gp_segment_id_col})) as loss_acc
         from {table}
     ) q""".format(**locals()), ["bytea"])
     res = plpy.execute(evaluate_query, [model_data])
@@ -333,7 +340,16 @@ def fit_transition(state, ind_var, dep_var, current_seg_id, num_classes,
 
     start_transition = time.time()
     SD = kwargs['SD']
-
+    is_pg = False
+    if current_seg_id == -1:
+        is_pg = True
+    if is_pg:
+        # This is postgres
+        total_buffers = total_buffers_per_seg[0]
+    else:
+        # This is GPDB
+        total_buffers = total_buffers_per_seg[all_seg_ids.index(
+            current_seg_id)]
     # Configure GPUs/CPUs
     device_name = get_device_name_and_set_cuda_env(use_gpu, current_seg_id)
 
@@ -378,14 +394,16 @@ def fit_transition(state, ind_var, dep_var, current_seg_id, num_classes,
     with K.tf.device(device_name):
         updated_weights = segment_model.get_weights()
 
-    total_buffers = total_buffers_per_seg[all_seg_ids.index(current_seg_id)]
     if SD['buffer_count'] == total_buffers:
         if total_buffers == 0:
             plpy.error('total buffers is 0')
 
         agg_loss /= total_buffers
         agg_accuracy /= total_buffers
-        clear_keras_session()
+        if not is_pg:
+            # In GPDB, each segment would have a keras session, so clear
+            # them after the last buffer is processed.
+            clear_keras_session()
 
     new_model_state = madlib_keras_serializer.serialize_weights(
         agg_loss, agg_accuracy, SD['buffer_count'], updated_weights)
