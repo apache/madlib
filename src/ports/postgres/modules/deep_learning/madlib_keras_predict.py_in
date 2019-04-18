@@ -28,9 +28,9 @@ from keras.optimizers import *
 import numpy as np
 
 from madlib_keras_helper import expand_input_dims
-from madlib_keras_helper import PredictParamsProcessor
 from madlib_keras_helper import MODEL_DATA_COLNAME
 from madlib_keras_wrapper import compile_and_set_weights
+from predict_input_params import PredictParamsProcessor
 from utilities.model_arch_info import get_input_shape
 from utilities.utilities import add_postfix
 from utilities.utilities import create_cols_from_array_sql_string
@@ -50,6 +50,41 @@ def validate_pred_type(pred_type, class_values):
         plpy.error({"{0}: The output will have {1} columns, exceeding the "\
             " max number of columns that can be created (1600)".format(
                 MODULE_NAME, len(class_values)+1)})
+
+def _strip_trailing_nulls_from_class_values(class_values):
+    """
+        class_values is a list of unique class levels in training data. This
+        could have multiple Nones in it, and this function strips out all the
+        Nones that occur after the first element in the list.
+        Examples:
+            1) input class_values = ['cat', 'dog']
+               output class_values = ['cat', 'dog']
+
+            2) input class_values = [None, 'cat', 'dog']
+               output class_values = [None, 'cat', 'dog']
+
+            3) input class_values = [None, 'cat', 'dog', None, None]
+               output class_values = [None, 'cat', 'dog']
+
+            4) input class_values = ['cat', 'dog', None, None]
+               output class_values = ['cat', 'dog']
+
+            5) input class_values = [None, None]
+               output class_values = [None]
+        @args:
+            @param: class_values, list
+        @returns:
+            updated class_values list
+    """
+    num_of_valid_class_values = 0
+    if class_values is not None:
+        for ele in class_values:
+            if ele is None and num_of_valid_class_values > 0:
+                break
+            num_of_valid_class_values += 1
+        # Pass only the valid class_values for creating columns
+        class_values = class_values[:num_of_valid_class_values]
+    return class_values
 
 def predict(schema_madlib, model_table, test_table, id_col,
             independent_varname, output_table, pred_type, **kwargs):
@@ -80,14 +115,7 @@ def predict(schema_madlib, model_table, test_table, id_col,
         pred_col_name = "prob"
         pred_col_type = 'double precision'
 
-    num_of_valid_class_values = 0
-    if class_values is not None:
-        for ele in class_values:
-            if ele is None and num_of_valid_class_values > 0:
-                break
-            num_of_valid_class_values += 1
-        # Pass only the valid class_values for creating columns
-        class_values = class_values[:num_of_valid_class_values]
+    class_values = _strip_trailing_nulls_from_class_values(class_values)
 
     prediction_select_clause = create_cols_from_array_sql_string(
         class_values, intermediate_col, pred_col_name,
