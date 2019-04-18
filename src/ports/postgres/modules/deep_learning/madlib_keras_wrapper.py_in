@@ -28,6 +28,7 @@ from keras import utils as keras_utils
 from keras.optimizers import *
 
 import keras.optimizers as opt
+import keras.losses as losses
 
 import madlib_keras_serializer
 from utilities.utilities import _assert
@@ -62,13 +63,7 @@ def clear_keras_session():
 def compile_and_set_weights(segment_model, compile_params, device_name,
                             previous_state, model_shapes):
     with K.tf.device(device_name):
-
-        optimizers = get_optimizers()
-        (opt_name,final_args,compile_dict) = parse_compile_params(compile_params)
-
-        segment_model.compile(optimizer=optimizers[opt_name](**final_args),
-                              loss=compile_dict['loss'],
-                              metrics=compile_dict['metrics'])
+        compile_model(segment_model, compile_params)
         _, _, _, model_weights = madlib_keras_serializer.deserialize_weights(
             previous_state, model_shapes)
         segment_model.set_weights(model_weights)
@@ -111,25 +106,60 @@ def convert_string_of_args_to_dict(str_of_args):
     return compile_dict
 
 # Parse the compile parameters and the optimizer.
-# Optimizer name and its arguments are returned in addition to the rest of the
-# compile parameters.
 def parse_compile_params(str_of_args):
+    """
+    Args:
+        @param: str_of_args     The string of arguments given by the user
+    Returns:
+        opt_name:               Name of the optimizer
+        opt_args:               Arguments for the optimizer
+        compile_dict:           Dictionary of arguments for keras.compile
+    """
 
     compile_dict = convert_string_of_args_to_dict(str_of_args)
+
+    opt_name,opt_args = parse_optimizer(compile_dict)
+    compile_dict['loss'] = parse_loss(compile_dict)
+
     compile_dict['metrics'] = ast.literal_eval(compile_dict['metrics']) if 'metrics' in compile_dict.keys() else None
     compile_dict['loss_weights'] = ast.literal_eval(compile_dict['loss_weights']) if 'loss_weights' in compile_dict.keys() else None
 
-    opt_name = compile_dict['optimizer'].split('(')[0]
+    return (opt_name,opt_args,compile_dict)
+
+# Parse the optimizer name and params.
+def parse_optimizer(compile_dict):
+    """
+    Args:
+        @param: compile_dict    Dictionary of arguments for keras.compile
+    Returns:
+        opt_name:               Name of the optimizer
+        opt_args:               Arguments for the optimizer
+    """
+    opt_split = compile_dict['optimizer'].split('(')
+    opt_name = opt_split[0]
     optimizers = get_optimizers()
     _assert(opt_name in optimizers,
             "model_keras error: invalid optimizer name: {0}".format(opt_name))
-    opt_params = compile_dict['optimizer'].split('(')[1][:-1]
-    opt_params_array = opt_params.split(',')
-    opt_params_clean = map(split_and_strip, opt_params_array)
-    key_value_params = { x[0] : x[1] for x in opt_params_clean}
-    final_args = { key: bool(value) if value == 'True' or value == 'False' else  float(value) for key,value in key_value_params.iteritems() }
+    if len(opt_split) == 1:
+        final_args = None
+    else:
+        opt_params = opt_split[1][:-1]
+        opt_params_array = opt_params.split(',')
+        opt_params_clean = map(split_and_strip, opt_params_array)
+        key_value_params = { x[0] : x[1] for x in opt_params_clean}
+        final_args = { key: bool(value) if value == 'True' or value == 'False'
+                       else float(value)
+                       for key,value in key_value_params.iteritems() }
+    return (opt_name,final_args)
 
-    return (opt_name,final_args,compile_dict)
+# Parse the loss function.
+def parse_loss(compile_dict):
+    loss_split = compile_dict['loss'].split('.')
+    if (len(loss_split) == 2 and
+        loss_split[0] == 'losses' and
+        loss_split[1] in dir(losses)):
+        retrun eval('losses.'+loss_split[1])
+    return compile_dict['loss']
 
 # Parse the fit parameters into a dictionary.
 def parse_fit_params(str_of_args):
@@ -152,3 +182,12 @@ def get_optimizers():
         if optimizer.__class__ == type and optimizer.__base__ == opt.Optimizer:
             optimizers[n] = optimizer
     return optimizers
+
+# Run the keras.compile with the given parameters
+def compile_model(model, compile_params):
+    optimizers = get_optimizers()
+    (opt_name,final_args,compile_dict) = parse_compile_params(compile_params)
+    optimizer = optimizers[opt_name](**final_args) if final_args else opt_name
+    model.compile(optimizer=optimizer,
+                  loss=compile_dict['loss'],
+                  metrics=compile_dict['metrics'])
