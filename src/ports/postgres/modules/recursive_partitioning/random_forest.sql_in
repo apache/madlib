@@ -17,6 +17,7 @@ m4_include(`SQLCommon.m4')
 
 <div class="toc"><b>Contents</b><ul>
 <li class="level1"><a href="#train">Training Function</a></li>
+<li class="level1"><a href="#runtime">Run-time and Memory Usage</a></li>
 <li class="level1"><a href="#predict">Prediction Function</a></li>
 <li class="level1"><a href="#get_tree">Tree Display</a></li>
 <li class="level1"><a href="#get_importance">Importance Display</a></li>
@@ -139,7 +140,8 @@ forest_train(training_table_name,
 
   <DT>num_random_features (optional)</DT>
   <DD>INTEGER, default: sqrt(n) for classification, n/3
-  for regression. This is the number of features to randomly
+  for regression, where n is the number of features.
+  This parameter is the number of features to randomly
   select at each split.</DD>
 
   <DT>importance (optional)</DT>
@@ -154,7 +156,8 @@ forest_train(training_table_name,
 
   <DT>num_permutations (optional)</DT>
   <DD>INTEGER, default: 1. Number of times to permute each feature value while
-      calculating the out-of-bag variable importance.
+      calculating the out-of-bag variable importance.  Only applies when
+      the 'importance' parameter is set to true.
 
     @note Variable importance for a feature is determined by permuting the variable
     and computing the drop in predictive accuracy using out-of-bag samples [1].
@@ -174,7 +177,10 @@ forest_train(training_table_name,
   <DD>INTEGER, default: 7. Maximum depth of any node of a tree,
       with the root node counted as depth 0. A deeper tree can
       lead to better prediction but will also result in
-      longer processing time and higher memory usage.</DD>
+      longer processing time and higher memory usage.
+      Current allowed maximum is 15.  Note that since random forest
+      is an ensemble method, individual trees typically do not need
+      to be deep.</DD>
 
   <DT>min_split (optional)</DT>
   <DD>INTEGER, default: 20. Minimum number of observations that must exist
@@ -477,11 +483,30 @@ forest_train(training_table_name,
   </DD>
 </DL>
 
-@note The main parameters that affect memory usage are: depth of
-tree (‘max_tree_depth’), number of features, number of values per
-categorical feature, and number of bins for continuous features (‘num_splits’).
-If you are hitting memory limits, consider reducing one or
-more of these parameters.
+@anchor runtime
+@par Run-time and Memory Usage
+
+The number of features and the number of class values per categorical feature have a direct
+impact on run-time and memory.  In addition, here is a summary of the main parameters
+in the training function that affect run-time and memory:
+
+| Parameter | Run-time | Memory | Notes |
+| :------ | :------ | :------ | :------ |
+| 'num_trees' | High | No or little effect. | Linear with number of trees.  Notes that trees train sequentially one after another, though each tree is trained in parallel. |
+| 'importance' | Moderate | No or little effect. | Depends on number of features and 'num_permutations' parameter. |
+| 'num_permutations' | Moderate | No or little effect. | Depends on number of features. |
+| 'max_tree_depth' | High | High | Deeper trees can take longer to run and use more memory. |
+| 'min_split' | No or little effect, unless very small. | No or little effect, unless very small. | If too small, can impact run-time by building trees that are very thick. |
+| 'min_bucket' | No or little effect, unless very small. | No or little effect, unless very small. | If too small, can impact run-time by building trees that are very thick. |
+| 'num_splits' | High | High | Depends on number of continuous variables.  Effectively adds more features as the binning becomes more granular. |
+| 'sample_ratio' | High | High | Reduces run time by using only some of the data. |
+
+If you experience long run-times or are hitting memory limits, consider reducing one or
+more of these parameters. One approach when building a random forest model is to start
+with a small number of trees and a low maximum depth value, and use suggested defaults for
+other parameters. This will give you a sense of run-time and test set accuracy.
+Then you can change number of trees and maximum depth in a systematic way as required
+to improve accuracy.
 
 @anchor predict
 @par Prediction Function
@@ -1446,7 +1471,7 @@ File random_forest.sql_in documenting the training function
   *        are to be used as predictors (except the ones included in
   *        the next argument). Boolean, integer, and text columns are
   *        considered categorical columns.
-  * @param list_of_features_to_exclude OPTIONAL. List of column names
+  * @param list_of_features_to_exclude List of column names
   *        (comma-separated string) to exlude from the predictors list.
   * @param grouping_cols OPTIONAL. List of column names (comma-separated
   *        string) to group the data by. This will lead to creating
