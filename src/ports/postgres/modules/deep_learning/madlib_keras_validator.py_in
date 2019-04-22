@@ -17,7 +17,16 @@
 # specific language governing permissions and limitations
 # under the License.
 
+import plpy
 from madlib_keras_helper import CLASS_VALUES_COLNAME
+from madlib_keras_helper import COMPILE_PARAMS_COLNAME
+from madlib_keras_helper import DEPENDENT_VARNAME_COLNAME
+from madlib_keras_helper import DEPENDENT_VARTYPE_COLNAME
+from madlib_keras_helper import MODEL_ARCH_ID_COLNAME
+from madlib_keras_helper import MODEL_ARCH_TABLE_COLNAME
+from madlib_keras_helper import MODEL_DATA_COLNAME
+from madlib_keras_helper import NORMALIZING_CONST_COLNAME
+
 from utilities.minibatch_validation import validate_dependent_var_for_minibatch
 from utilities.utilities import _assert
 from utilities.utilities import add_postfix
@@ -25,10 +34,126 @@ from utilities.utilities import is_var_valid
 from utilities.utilities import is_valid_psql_type
 from utilities.utilities import NUMERIC
 from utilities.utilities import ONLY_ARRAY
+from utilities.validate_args import columns_exist_in_table
 from utilities.validate_args import get_expr_type
 from utilities.validate_args import input_tbl_valid
 from utilities.validate_args import output_tbl_valid
-import plpy
+
+
+def _validate_input_shapes(table, independent_varname, input_shape, offset):
+    """
+    Validate if the input shape specified in model architecture is the same
+    as the shape of the image specified in the indepedent var of the input
+    table.
+    offset: This offset is the index of the start of the image array. We also
+    need to consider that sql array indexes start from 1
+    For ex if the image is of shape [32,32,3] and is minibatched, the image will
+    look like [10, 32, 32, 3]. The offset in this case is 1 (start the index at 1) +
+    1 (ignore the buffer size 10) = 2.
+    If the image is not batched then it will look like [32, 32 ,3] and the offset in
+    this case is 1 (start the index at 1).
+    """
+    array_upper_query = ", ".join("array_upper({0}, {1}) AS n_{2}".format(
+        independent_varname, i+offset, i) for i in range(len(input_shape)))
+    query = """
+        SELECT {0}
+        FROM {1}
+        LIMIT 1
+    """.format(array_upper_query, table)
+    # This query will fail if an image in independent var does not have the
+    # same number of dimensions as the input_shape.
+    result = plpy.execute(query)[0]
+    _assert(len(result) == len(input_shape),
+        "model_keras error: The number of dimensions ({0}) of each image"
+        " in model architecture and {1} in {2} ({3}) do not match.".format(
+            len(input_shape), independent_varname, table, len(result)))
+    for i in range(len(input_shape)):
+        key_name = "n_{0}".format(i)
+        if result[key_name] != input_shape[i]:
+            # Construct the shape in independent varname to display
+            # meaningful error msg.
+            input_shape_from_table = [result["n_{0}".format(i)]
+                for i in range(len(input_shape))]
+            plpy.error("model_keras error: Input shape {0} in the model"
+                " architecture does not match the input shape {1} of column"
+                " {2} in table {3}.".format(
+                    input_shape, input_shape_from_table,
+                    independent_varname, table))
+
+class PredictInputValidator:
+    def __init__(self, test_table, model_table, id_col, independent_varname,
+                 output_table, pred_type, module_name):
+        self.test_table = test_table
+        self.model_table = model_table
+        self.id_col = id_col
+        self.independent_varname = independent_varname
+        self.output_table = output_table
+        self.pred_type = pred_type
+        if self.model_table:
+            self.model_summary_table = add_postfix(
+                self.model_table, "_summary")
+        self.module_name = module_name
+        self._validate_input_args()
+
+    def _validate_input_args(self):
+        input_tbl_valid(self.model_table, self.module_name)
+        self._validate_model_data_col()
+        input_tbl_valid(self.model_summary_table, self.module_name)
+        self._validate_summary_tbl_cols()
+        input_tbl_valid(self.test_table, self.module_name)
+        self._validate_test_tbl_cols()
+        output_tbl_valid(self.output_table, self.module_name)
+
+    def _validate_model_data_col(self):
+        _assert(is_var_valid(self.model_table, MODEL_DATA_COLNAME),
+                "{module_name} error: invalid model_data "
+                "('{model_data}') in model table ({table}).".format(
+                    module_name=self.module_name,
+                    model_data=MODEL_DATA_COLNAME,
+                    table=self.model_table))
+
+    def _validate_test_tbl_cols(self):
+        _assert(is_var_valid(self.test_table, self.independent_varname),
+                "{module_name} error: invalid independent_varname "
+                "('{independent_varname}') for test table "
+                "({table}).".format(
+                    module_name=self.module_name,
+                    independent_varname=self.independent_varname,
+                    table=self.test_table))
+
+        _assert(is_var_valid(self.test_table, self.id_col),
+                "{module_name} error: invalid id column "
+                "('{id_col}') for test table ({table}).".format(
+                    module_name=self.module_name,
+                    id_col=self.id_col,
+                    table=self.test_table))
+
+    def _validate_summary_tbl_cols(self):
+        cols_to_check_for = [CLASS_VALUES_COLNAME,
+                             COMPILE_PARAMS_COLNAME,
+                             DEPENDENT_VARNAME_COLNAME,
+                             DEPENDENT_VARTYPE_COLNAME,
+                             MODEL_ARCH_ID_COLNAME,
+                             MODEL_ARCH_TABLE_COLNAME,
+                             NORMALIZING_CONST_COLNAME]
+        _assert(columns_exist_in_table(
+            self.model_summary_table, cols_to_check_for, cols_to_check_for),
+            "{0} error: One or more expected columns missing in model "
+            "summary table ('{1}'). The expected columns are {2}.".format(
+                self.module_name, self.model_summary_table, cols_to_check_for))
+
+    def validate_pred_type(self, class_values):
+        if not self.pred_type in ['prob', 'response']:
+            plpy.error("{0}: Invalid value for pred_type param ({1}). Must be "\
+                "either response or prob.".format(self.module_name, self.pred_type))
+        if self.pred_type == 'prob' and class_values and len(class_values)+1 >= 1600:
+            plpy.error({"{0}: The output will have {1} columns, exceeding the "\
+                " max number of columns that can be created (1600)".format(
+                    self.module_name, len(class_values)+1)})
+
+    def validate_input_shape(self, input_shape_from_arch):
+        _validate_input_shapes(self.test_table, self.independent_varname,
+                               input_shape_from_arch, 1)
 
 class FitInputValidator:
     def __init__(self, source_table, validation_table, output_model_table,
@@ -105,42 +230,10 @@ class FitInputValidator:
                         self.dependent_varname, self.validation_table))
 
 
-    def validate_input_shapes(self, table, input_shape, offset):
-        """
-        Validate if the input shape specified in model architecture is the same
-        as the shape of the image specified in the indepedent var of the input
-        table.
-        offset: This offset is the index of the start of the image array. We also
-        need to consider that sql array indexes start from 1
-        For ex if the image is of shape [32,32,3] and is minibatched, the image will
-        look like [10, 32, 32, 3]. The offset in this case is 1 (start the index at 1) +
-        1 (ignore the buffer size 10) = 2.
-        If the image is not batched then it will look like [32, 32 ,3] and the offset in
-        this case is 1 (start the index at 1).
-        """
-        array_upper_query = ", ".join("array_upper({0}, {1}) AS n_{2}".format(
-            self.independent_varname, i+offset, i) for i in range(len(input_shape)))
-        query = """
-            SELECT {0}
-            FROM {1}
-            LIMIT 1
-        """.format(array_upper_query, table)
-        # This query will fail if an image in independent var does not have the
-        # same number of dimensions as the input_shape.
-        result = plpy.execute(query)[0]
-        _assert(len(result) == len(input_shape),
-            "model_keras error: The number of dimensions ({0}) of each image" \
-            " in model architecture and {1} in {2} ({3}) do not match.".format(
-                len(input_shape), self.independent_varname, table, len(result)))
-        for i in range(len(input_shape)):
-            key_name = "n_{0}".format(i)
-            if result[key_name] != input_shape[i]:
-                # Construct the shape in independent varname to display
-                # meaningful error msg.
-                input_shape_from_table = [result["n_{0}".format(i)]
-                    for i in range(len(input_shape))]
-                plpy.error("model_keras error: Input shape {0} in the model" \
-                    " architecture does not match the input shape {1} of column" \
-                    " {2} in table {3}.".format(
-                        input_shape, input_shape_from_table,
-                        self.independent_varname, table))
+    def validate_input_shapes(self, input_shape):
+        _validate_input_shapes(self.source_table, self.independent_varname,
+                               input_shape, 2)
+        if self.validation_table:
+            _validate_input_shapes(
+                self.validation_table, self.independent_varname,
+                input_shape, 1)
