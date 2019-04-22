@@ -29,6 +29,7 @@ import numpy as np
 
 from madlib_keras_helper import expand_input_dims
 from madlib_keras_helper import MODEL_DATA_COLNAME
+from madlib_keras_validator import PredictInputValidator
 from madlib_keras_wrapper import compile_and_set_weights
 from predict_input_params import PredictParamsProcessor
 from utilities.model_arch_info import get_input_shape
@@ -41,15 +42,6 @@ from utilities.validate_args import output_tbl_valid
 import madlib_keras_serializer
 
 MODULE_NAME = 'madlib_keras_predict'
-
-def validate_pred_type(pred_type, class_values):
-    if not pred_type in ['prob', 'response']:
-        plpy.error("{0}: Invalid value for pred_type param ({1}). Must be "\
-            "either response or prob.".format(MODULE_NAME, pred_type))
-    if pred_type == 'prob' and class_values and len(class_values)+1 >= 1600:
-        plpy.error({"{0}: The output will have {1} columns, exceeding the "\
-            " max number of columns that can be created (1600)".format(
-                MODULE_NAME, len(class_values)+1)})
 
 def _strip_trailing_nulls_from_class_values(class_values):
     """
@@ -88,24 +80,23 @@ def _strip_trailing_nulls_from_class_values(class_values):
 
 def predict(schema_madlib, model_table, test_table, id_col,
             independent_varname, output_table, pred_type, **kwargs):
-    # Refactor and add more validation as part of MADLIB-1312.
-    input_tbl_valid(model_table, MODULE_NAME)
-    input_tbl_valid(test_table, MODULE_NAME)
-    output_tbl_valid(output_table, MODULE_NAME)
-    param_proc = PredictParamsProcessor(model_table, MODULE_NAME)
+    input_validator = PredictInputValidator(
+        test_table, model_table, id_col, independent_varname,
+        output_table, pred_type, MODULE_NAME)
 
+    param_proc = PredictParamsProcessor(model_table, MODULE_NAME)
     class_values = param_proc.get_class_values()
+    input_validator.validate_pred_type(class_values)
     compile_params = param_proc.get_compile_params()
     dependent_varname = param_proc.get_dependent_varname()
     dependent_vartype = param_proc.get_dependent_vartype()
     model_data = param_proc.get_model_data()
     model_arch = param_proc.get_model_arch()
     normalizing_const = param_proc.get_normalizing_const()
-    # TODO: Validate input shape as part of MADLIB-1312
     input_shape = get_input_shape(model_arch)
+    input_validator.validate_input_shape(input_shape)
     compile_params = "$madlib$" + compile_params + "$madlib$"
 
-    validate_pred_type(pred_type, class_values)
     is_response = True if pred_type == 'response' else False
     intermediate_col = unique_string()
     if is_response:
