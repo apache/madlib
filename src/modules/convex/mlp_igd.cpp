@@ -107,7 +107,7 @@ mlp_igd_transition::run(AnyType &args) {
                                 layer_start + j * state.task.model.u[k].rows() + i);
                         }
                     }
-                    layer_start = state.task.model.u[k].rows() * state.task.model.u[k].cols();
+                    layer_start += state.task.model.u[k].rows() * state.task.model.u[k].cols();
                 }
             } else {
                 // initialize the model with appropriate coefficients
@@ -219,7 +219,7 @@ mlp_minibatch_transition::run(AnyType &args) {
                                 layer_start + j * state.model.u[k].rows() + i);
                         }
                     }
-                    layer_start = state.model.u[k].rows() * state.model.u[k].cols();
+                    layer_start += state.model.u[k].rows() * state.model.u[k].cols();
                 }
             } else {
                 // initialize the model with appropriate coefficients
