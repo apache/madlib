@@ -38,7 +38,7 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.madlib_keras_fit(
     compile_params          VARCHAR,
     fit_params              VARCHAR,
     num_iterations          INTEGER,
-    use_gpu                 BOOLEAN,
+    gpus_per_host           INTEGER,
     validation_table        VARCHAR,
     name                    VARCHAR,
     description             VARCHAR
@@ -60,10 +60,11 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.madlib_keras_fit(
     compile_params          VARCHAR,
     fit_params              VARCHAR,
     num_iterations          INTEGER,
-    use_gpu                 BOOLEAN,
+    gpus_per_host           INTEGER,
     validation_table        VARCHAR
 ) RETURNS VOID AS $$
-    SELECT MADLIB_SCHEMA.madlib_keras_fit($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NULL, NULL);
+    SELECT MADLIB_SCHEMA.madlib_keras_fit($1, $2, $3, $4, $5, $6, $7, $8, $9,
+                                          $10, $11, NULL, NULL);
 $$ LANGUAGE sql VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA');
 
@@ -77,7 +78,7 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.madlib_keras_fit(
     compile_params          VARCHAR,
     fit_params              VARCHAR,
     num_iterations          INTEGER,
-    use_gpu                 BOOLEAN
+    gpus_per_host           INTEGER
 ) RETURNS VOID AS $$
     SELECT MADLIB_SCHEMA.madlib_keras_fit($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULL, NULL, NULL);
 $$ LANGUAGE sql VOLATILE
@@ -94,7 +95,7 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.madlib_keras_fit(
     fit_params              VARCHAR,
     num_iterations          INTEGER
 ) RETURNS VOID AS $$
-    SELECT MADLIB_SCHEMA.madlib_keras_fit($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, NULL, NULL, NULL);
+    SELECT MADLIB_SCHEMA.madlib_keras_fit($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, NULL, NULL, NULL);
 $$ LANGUAGE sql VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA');
 
@@ -109,7 +110,7 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.fit_transition(
     architecture               TEXT,
     compile_params             TEXT,
     fit_params                 TEXT,
-    use_gpu                    BOOLEAN,
+    gpus_per_host              INTEGER,
     previous_state             BYTEA
 ) RETURNS BYTEA AS $$
 PythonFunctionBodyOnlyNoSchema(`deep_learning', `madlib_keras')
@@ -146,7 +147,7 @@ DROP AGGREGATE IF EXISTS MADLIB_SCHEMA.fit_step(
   TEXT,
   TEXT,
   TEXT,
-  BOOLEAN,
+  INTEGER,
   BYTEA);
 CREATE AGGREGATE MADLIB_SCHEMA.fit_step(
     /* ind_var */                REAL[],
@@ -158,12 +159,12 @@ CREATE AGGREGATE MADLIB_SCHEMA.fit_step(
     /* architecture */           TEXT,
     /* compile_params */         TEXT,
     /* fit_params */             TEXT,
-    /* use_gpu */                BOOLEAN,
+    /* gpus_per_host  */         INTEGER,
     /* previous_state */         BYTEA
 )(
     STYPE=BYTEA,
     SFUNC=MADLIB_SCHEMA.fit_transition,
-    m4_ifdef(`__POSTGRESQL__', `', `prefunc=MADLIB_SCHEMA.fit_merge,')
+    PREFUNC=MADLIB_SCHEMA.fit_merge,
     FINALFUNC=MADLIB_SCHEMA.fit_final
 );
 
@@ -174,7 +175,7 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.madlib_keras_predict(
     independent_varname     VARCHAR,
     output_table            VARCHAR,
     pred_type               VARCHAR,
-    use_gpu                 BOOLEAN
+    gpus_per_host           INTEGER
 ) RETURNS VOID AS $$
     PythonFunctionBodyOnly(`deep_learning', `madlib_keras_predict')
     with AOControl(False):
@@ -185,7 +186,7 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.madlib_keras_predict(
                independent_varname,
                output_table,
                pred_type,
-               use_gpu)
+               gpus_per_host)
 $$ LANGUAGE plpythonu VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
@@ -197,7 +198,7 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.madlib_keras_predict(
     output_table            VARCHAR,
     pred_type               VARCHAR
 ) RETURNS VOID AS $$
-    SELECT MADLIB_SCHEMA.madlib_keras_predict($1, $2, $3, $4, $5, $6, TRUE);
+    SELECT MADLIB_SCHEMA.madlib_keras_predict($1, $2, $3, $4, $5, $6, 0);
 $$ LANGUAGE sql VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA');
 
@@ -208,7 +209,7 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.madlib_keras_predict(
     independent_varname     VARCHAR,
     output_table            VARCHAR
 ) RETURNS VOID AS $$
-    SELECT MADLIB_SCHEMA.madlib_keras_predict($1, $2, $3, $4, $5, NULL, TRUE);
+    SELECT MADLIB_SCHEMA.madlib_keras_predict($1, $2, $3, $4, $5, NULL, 0);
 $$ LANGUAGE sql VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA');
 
@@ -219,7 +220,7 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.internal_keras_predict(
    input_shape        INTEGER[],
    is_response        BOOLEAN,
    normalizing_const  DOUBLE PRECISION,
-   use_gpu            BOOLEAN,
+   gpus_per_host      INTEGER,
    seg                INTEGER
 ) RETURNS DOUBLE PRECISION[] AS $$
     PythonFunctionBodyOnly(`deep_learning', `madlib_keras_predict')
@@ -231,7 +232,7 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.internal_keras_predict(
                input_shape,
                is_response,
                normalizing_const,
-               use_gpu,
+               gpus_per_host,
                seg)
 $$ LANGUAGE plpythonu VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
@@ -268,7 +269,7 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.internal_keras_evaluate(
    model_architecture TEXT,
    model_data bytea,
    compile_params TEXT,
-   use_gpu BOOLEAN,
+   gpus_per_host INTEGER,
    seg_ids_val INTEGER[],
    rows_per_seg_val INTEGER[],
    current_seg INTEGER
