@@ -47,13 +47,14 @@ from keras_model_arch_table import Format
 from utilities.model_arch_info import get_input_shape
 from utilities.model_arch_info import get_num_classes
 from utilities.utilities import is_platform_pg
+from utilities.utilities import get_segments_per_host
 from utilities.utilities import madlib_version
 from utilities.validate_args import get_col_value_and_type
 from utilities.validate_args import quote_ident
 
 def fit(schema_madlib, source_table, model, dependent_varname,
         independent_varname, model_arch_table, model_arch_id, compile_params,
-        fit_params, num_iterations, use_gpu = True,
+        fit_params, num_iterations, gpus_per_host = 0,
         validation_table=None, name="", description="", **kwargs):
 
     source_table = quote_ident(source_table)
@@ -66,7 +67,20 @@ def fit(schema_madlib, source_table, model, dependent_varname,
         dependent_varname, independent_varname, num_iterations)
 
     start_training_time = datetime.datetime.now()
-    use_gpu = bool(use_gpu)
+
+    gpus_per_host = 0 if gpus_per_host is None else gpus_per_host
+    segments_per_host = get_segments_per_host()
+
+    if 0 < gpus_per_host < segments_per_host:
+        plpy.warning('The number of gpus per host is less than the number of '
+                     'segments per host. The support for this case is '
+                     'experimental and it may fail.')
+
+    #TODO add a unit test for this in a future PR
+    # save the original value of the env variable so that we can reset it later.
+    original_cuda_env = None
+    if CUDA_VISIBLE_DEVICES_KEY in os.environ:
+        original_cuda_env = os.environ[CUDA_VISIBLE_DEVICES_KEY]
 
     # Get the serialized master model
     start_deserialization = time.time()
@@ -88,10 +102,11 @@ def fit(schema_madlib, source_table, model, dependent_varname,
     #TODO: Refactor the pg related logic in a future PR when we think
     # about making the fit function easier to read and maintain.
     if is_platform_pg():
-        set_keras_session(use_gpu)
+        set_keras_session(gpus_per_host, segments_per_host)
     else:
-        # Disable GPU on master for gpdb
-        os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+        # we want to disable gpu on gpdb's master node because GPUs will only be used
+        # for segment nodes.
+        set_cuda_env('-1')
 
     # Compute total images on each segment
     gp_segment_id_col,\
@@ -137,7 +152,8 @@ def fit(schema_madlib, source_table, model, dependent_varname,
             $MAD${model_arch}$MAD$::TEXT,
             {compile_params_to_pass}::TEXT,
             {fit_params_to_pass}::TEXT,
-            {use_gpu},
+            {gpus_per_host},
+            {segments_per_host},
             $1
         ) AS iteration_result
         FROM {source_table}
@@ -176,7 +192,9 @@ def fit(schema_madlib, source_table, model, dependent_varname,
                                                            independent_varname,
                                                            compile_params_to_pass,
                                                            model_arch, model_state,
-                                                           use_gpu, seg_ids_val,
+                                                           gpus_per_host,
+                                                           segments_per_host,
+                                                           seg_ids_val,
                                                            rows_per_seg_val,
                                                            gp_segment_id_col)
             end_val = time.time()
@@ -286,6 +304,9 @@ def fit(schema_madlib, source_table, model, dependent_varname,
     if is_platform_pg():
         clear_keras_session()
 
+    #TODO add a unit test for this in a future PR
+    reset_cuda_env(original_cuda_env)
+
 def get_images_per_seg(source_table, dependent_varname):
     """
     Compute total images in each segment, by querying source_table.  For
@@ -316,7 +337,7 @@ def get_images_per_seg(source_table, dependent_varname):
                    for each_segment in total_images_per_seg]
         gp_segment_id_col = 'gp_segment_id'
     return gp_segment_id_col, seg_ids_train, total_images_per_seg
- 
+
 def get_rows_per_seg_from_db(table_name):
     """
     This function queries the given table and returns the total rows per segment.
@@ -350,8 +371,8 @@ def get_rows_per_seg_from_db(table_name):
 
 def fit_transition(state, ind_var, dep_var, current_seg_id, num_classes,
                    all_seg_ids, total_images_per_seg, architecture,
-                   compile_params, fit_params, use_gpu, previous_state,
-                   **kwargs):
+                   compile_params, fit_params, gpus_per_host, segments_per_host,
+                   previous_state, **kwargs):
 
     """
 
@@ -365,7 +386,7 @@ def fit_transition(state, ind_var, dep_var, current_seg_id, num_classes,
     :param architecture:
     :param compile_params:
     :param fit_params:
-    :param use_gpu:
+    :param gpus_per_host:
     :param previous_state:
     :param kwargs:
     :return:
@@ -375,16 +396,15 @@ def fit_transition(state, ind_var, dep_var, current_seg_id, num_classes,
 
     start_transition = time.time()
     SD = kwargs['SD']
-    # Configure GPUs/CPUs
-    device_name = get_device_name_and_set_cuda_env(use_gpu, current_seg_id)
-
+    device_name = get_device_name_and_set_cuda_env(gpus_per_host,
+                                                   current_seg_id)
     # Set up system if this is the first buffer on segment'
-
     if not state:
         if not is_platform_pg():
-            set_keras_session(use_gpu)
+            set_keras_session(gpus_per_host, segments_per_host)
         segment_model = model_from_json(architecture)
         SD['model_shapes'] = madlib_keras_serializer.get_model_shapes(segment_model)
+        # Configure GPUs/CPUs
         compile_and_set_weights(segment_model, compile_params, device_name,
                                 previous_state, SD['model_shapes'])
         SD['segment_model'] = segment_model
@@ -524,7 +544,8 @@ def evaluate1(schema_madlib, model_table, test_table, id_col, model_arch_table,
 
     loss_acc = get_loss_acc_from_keras_eval(schema_madlib, test_table, dependent_varname,
                                             independent_varname, compile_params, model_arch,
-                                            model_data, False)
+                                            model_data, False, None)
+
     #TODO remove these infos after adding create table command
     plpy.info('len of evaluate result is {}'.format(len(loss_acc)))
     plpy.info('evaluate result loss is {}'.format(loss_acc[0]))
@@ -532,7 +553,8 @@ def evaluate1(schema_madlib, model_table, test_table, id_col, model_arch_table,
 
 def get_loss_acc_from_keras_eval(schema_madlib, table, dependent_varname,
                                  independent_varname, compile_params, model_arch,
-                                 model_data, use_gpu, seg_ids_val,
+                                 model_data, gpus_per_host, segments_per_host,
+                                 seg_ids_val,
                                  rows_per_seg_val, gp_segment_id_col):
     """
     This function will call the internal keras evaluate function to get the loss
@@ -545,10 +567,11 @@ def get_loss_acc_from_keras_eval(schema_madlib, table, dependent_varname,
                                             {independent_varname},
                                             $MAD${model_arch}$MAD$,
                                             $1, {compile_params},
-                                            {use_gpu}, 
-                                            ARRAY{seg_ids_val}, 
+                                            {gpus_per_host},
+                                            {segments_per_host},
+                                            ARRAY{seg_ids_val},
                                             ARRAY{rows_per_seg_val},
-                                            {gp_segment_id_col})) as loss_acc 
+                                            {gp_segment_id_col})) as loss_acc
         from {table}
     ) q""".format(**locals()), ["bytea"])
     res = plpy.execute(evaluate_query, [model_data])
@@ -557,14 +580,16 @@ def get_loss_acc_from_keras_eval(schema_madlib, table, dependent_varname,
 
 
 def internal_keras_evaluate(dependent_var, independent_var, model_architecture,
-                            model_data, compile_params, use_gpu, seg_ids_val,
+                            model_data, compile_params, gpus_per_host,
+                            segments_per_host, seg_ids_val,
                             rows_per_seg_val, current_seg, **kwargs):
     SD = kwargs['SD']
-    device_name = get_device_name_and_set_cuda_env(use_gpu, current_seg)
+    device_name = get_device_name_and_set_cuda_env(gpus_per_host,
+                                                   current_seg)
 
     if 'segment_model' not in SD:
         if not is_platform_pg():
-            set_keras_session(use_gpu)
+            set_keras_session(gpus_per_host, segments_per_host)
         model = model_from_json(model_architecture)
         model_shapes = madlib_keras_serializer.get_model_shapes(model)
         _, _, _, model_weights = madlib_keras_serializer.deserialize_weights(

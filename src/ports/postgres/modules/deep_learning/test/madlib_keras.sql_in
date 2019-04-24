@@ -112,7 +112,7 @@ SELECT madlib_keras_fit(
     $$ optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['accuracy']$$::text,
     $$ batch_size=2, epochs=1, verbose=0 $$::text,
     3,
-    FALSE,
+    NULL,
     'cifar_10_sample_val');
 
 SELECT assert(
@@ -151,7 +151,7 @@ FROM (SELECT * FROM keras_saved_out_summary) summary;
 
 SELECT assert(model_data IS NOT NULL , 'Keras model output validation failed') FROM (SELECT * FROM keras_saved_out) k;
 
--- Fit with use_gpu set to TRUE must error out on machines
+-- Fit with gpus_per_host set to 2 must error out on machines
 -- that don't have GPUs. Since Jenkins builds are run on docker containers
 -- that don't have GPUs, these queries must error out.
 DROP TABLE IF EXISTS keras_saved_out_gpu, keras_saved_out_gpu_summary;
@@ -165,18 +165,18 @@ SELECT assert(trap_error($TRAP$madlib_keras_fit(
     $$ optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['accuracy']$$::text,
     $$ batch_size=2, epochs=1, verbose=0 $$::text,
     3,
-    TRUE,
+    2,
     'cifar_10_sample_val');$TRAP$) = 1,
-       'Fit with use_gpu=True must error out.');
+       'Fit with gpus_per_host=2 must error out.');
 
--- Prediction with use_gpu set to TRUE must error out on machines
+-- Prediction with gpus_per_host set to 2 must error out on machines
 -- that don't have GPUs. Since Jenkins builds are run on docker containers
 -- that don't have GPUs, these queries must error out.
 
 -- IMPRORTANT: The following test must be run when we have a valid
 -- keras_saved_out model table. Otherwise, it will fail because of a
 -- non-existent model table, while we want to trap failure due to
--- use_gpu=TRUE
+-- gpus_per_host=2
 DROP TABLE IF EXISTS cifar10_predict_gpu;
 SELECT assert(trap_error($TRAP$madlib_keras_predict(
     'keras_saved_out',
@@ -185,8 +185,8 @@ SELECT assert(trap_error($TRAP$madlib_keras_predict(
     'x',
     'cifar10_predict_gpu',
     NULL,
-    TRUE);$TRAP$) = 1,
-    'Prediction with use_gpu=TRUE must error out.');
+    2);$TRAP$) = 1,
+    'Prediction with gpus_per_host=2 must error out.');
 
 -- Test for
   -- Non null name and description columns
@@ -202,7 +202,7 @@ SELECT madlib_keras_fit(
     $$ optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['accuracy']$$::text,
     $$ batch_size=2, epochs=1, verbose=0 $$::text,
     2,
-    FALSE,
+    NULL,
     NULL,
     'model name', 'model desc');
 SELECT assert(
@@ -248,7 +248,7 @@ SELECT madlib_keras_predict(
     'x',
     'cifar10_predict',
     NULL,
-    FALSE);
+    0);
 
 -- Validate that prediction output table exists and has correct schema
 SELECT assert(UPPER(atttypid::regtype::TEXT) = 'INTEGER', 'id column should be INTEGER type')
@@ -276,7 +276,7 @@ SELECT assert(trap_error($TRAP$madlib_keras_predict(
     'x',
     'cifar10_predict',
     NULL,
-    FALSE);$TRAP$) = 1,
+    0);$TRAP$) = 1,
     'Passing batched image table to predict should error out.');
 
 -- Compile and fit parameter tests
@@ -291,7 +291,7 @@ SELECT madlib_keras_fit(
     $$ optimizer='SGD', loss=losses.categorical_crossentropy, metrics=['accuracy']$$::text,
     $$ batch_size=2, epochs=1, verbose=0 $$::text,
     1,
-    FALSE,
+    NULL,
     NULL,
     'model name', 'model desc');
 
@@ -306,7 +306,7 @@ SELECT madlib_keras_fit(
     $$ optimizer='Adam()', loss=losses.categorical_crossentropy, metrics=['accuracy']$$::text,
     $$ batch_size=2, epochs=1, verbose=0 $$::text,
     1,
-    FALSE,
+    NULL,
     NULL,
     'model name', 'model desc');
 
@@ -322,7 +322,7 @@ SELECT madlib_keras_fit(
     $$ batch_size=2, epochs=1, verbose=0 $$::text,
 
     1,
-    FALSE,
+    0,
     NULL,
     'model name', 'model desc');
 
@@ -337,7 +337,7 @@ SELECT madlib_keras_fit(
     $$ optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), metrics=['accuracy'], loss_weights=[2], sample_weight_mode=None, loss='categorical_crossentropy' $$::text,
     $$ epochs=10, verbose=0, shuffle=True, initial_epoch=1, steps_per_epoch=2 $$::text,
     1,
-    FALSE,
+    NULL,
     NULL,
     'model name', 'model desc');
 
@@ -357,7 +357,7 @@ select assert(trap_error($TRAP$madlib_keras_fit(
            $$ optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['accuracy']$$::text,
            $$ batch_size=2, epochs=1, verbose=0 $$::text,
            2,
-           FALSE,
+           NULL,
           'cifar_10_sample_val_failure');$TRAP$) = 1,
        'Passing y of type non numeric array to fit should error out.');
 
@@ -370,7 +370,7 @@ SELECT madlib_keras_predict(
     'x',
     'cifar10_predict',
     'prob',
-    FALSE);
+    0);
 
 SELECT assert(UPPER(atttypid::regtype::TEXT) =
     'DOUBLE PRECISION', 'column prob_0 should be double precision type')
@@ -437,8 +437,7 @@ SELECT madlib_keras_fit(
     1,
     $$ optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['accuracy']$$::text,
     $$ batch_size=2, epochs=1, verbose=0 $$::text,
-    3,
-    FALSE);
+    3);
 -- Assert fit has correct class_values
 SELECT assert(
     dependent_vartype = 'text' AND
@@ -455,7 +454,7 @@ SELECT madlib_keras_predict(
     'x',
     'cifar10_predict',
     'prob',
-    FALSE);
+    0);
 
 -- Validate the output datatype of newly created prediction columns
 -- for prediction type = 'prob' and class_values 'TEXT' with NULL as a valid
@@ -489,7 +488,7 @@ SELECT madlib_keras_predict(
     'x',
     'cifar10_predict',
     'response',
-    FALSE);
+    0);
 
 -- Validate the output datatype of newly created prediction columns
 -- for prediction type = 'response' and class_values 'TEXT' with NULL
@@ -513,7 +512,7 @@ SELECT madlib_keras_predict(
     'x',
     'cifar10_predict',
     'prob',
-    FALSE);
+    0);
 
 -- Validate the output datatype of newly created prediction column
 -- for prediction type = 'response' and class_value = NULL
@@ -532,7 +531,7 @@ SELECT madlib_keras_predict(
     'x',
     'cifar10_predict',
     'response',
-    FALSE);
+    0);
 
 -- Validate the output datatype of newly created prediction column
 -- for prediction type = 'response' and class_value = NULL
@@ -570,8 +569,7 @@ SELECT madlib_keras_fit(
     1,
     $$ optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['accuracy']$$::text,
     $$ batch_size=2, epochs=1, verbose=0 $$::text,
-    3,
-    FALSE);
+    3);
 
 -- Assert fit has correct class_values
 SELECT assert(
@@ -589,7 +587,7 @@ SELECT madlib_keras_predict(
     'x',
     'cifar10_predict',
     'prob',
-    FALSE);
+    0);
 
 -- Validate the output datatype of newly created prediction column
 -- for prediction type = 'prob' and class_values 'INT' with NULL
@@ -613,7 +611,7 @@ SELECT madlib_keras_predict(
     'x',
     'cifar10_predict',
     'response',
-    FALSE);
+    0);
 
 -- Validate the output datatype of newly created prediction column
 -- for prediction type = 'response' and class_values 'TEXT' with NULL
@@ -669,8 +667,7 @@ SELECT madlib_keras_fit(
     1,
     $$ optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['accuracy']$$::text,
     $$ batch_size=2, epochs=1, verbose=0 $$::text,
-    3,
-    FALSE);
+    3);
 
 -- Predict with correctly shaped data, must go thru.
 DROP TABLE IF EXISTS cifar10_predict;
@@ -681,7 +678,7 @@ SELECT madlib_keras_predict(
     'x',
     'cifar10_predict',
     'prob',
-    FALSE);
+    0);
 
 -- Prediction with incorrectly shaped data must error out.
 DROP TABLE IF EXISTS cifar10_predict;
@@ -692,5 +689,5 @@ SELECT assert(trap_error($TRAP$madlib_keras_predict(
         'x',
         'cifar10_predict',
         'prob',
-        FALSE);$TRAP$) = 1,
+        0);$TRAP$) = 1,
     'Input shape is (32, 32, 3) but model was trained with (3, 32, 32). Should have failed.');
