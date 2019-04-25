@@ -144,6 +144,42 @@ FROM (SELECT * FROM keras_saved_out_summary) summary;
 
 SELECT assert(model_data IS NOT NULL , 'Keras model output validation failed') FROM (SELECT * FROM keras_saved_out) k;
 
+-- Fit with use_gpu set to TRUE must error out on machines
+-- that don't have GPUs. Since Jenkins builds are run on docker containers
+-- that don't have GPUs, these queries must error out.
+DROP TABLE IF EXISTS keras_saved_out_gpu, keras_saved_out_gpu_summary;
+SELECT assert(trap_error($TRAP$madlib_keras_fit(
+    'cifar_10_sample_batched',
+    'keras_saved_out_gpu',
+    'dependent_var',
+    'independent_var',
+    'model_arch',
+    1,
+    $$ optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['accuracy']$$::text,
+    $$ batch_size=2, epochs=1, verbose=0 $$::text,
+    3,
+    TRUE,
+    'cifar_10_sample_val');$TRAP$) = 1,
+       'Fit with use_gpu=True must error out.');
+
+-- Prediction with use_gpu set to TRUE must error out on machines
+-- that don't have GPUs. Since Jenkins builds are run on docker containers
+-- that don't have GPUs, these queries must error out.
+
+-- IMPRORTANT: The following test must be run when we have a valid
+-- keras_saved_out model table. Otherwise, it will fail because of a
+-- non-existent model table, while we want to trap failure due to
+-- use_gpu=TRUE
+DROP TABLE IF EXISTS cifar10_predict_gpu;
+SELECT assert(trap_error($TRAP$madlib_keras_predict(
+    'keras_saved_out',
+    'cifar_10_sample',
+    'id',
+    'x',
+    'cifar10_predict_gpu',
+    NULL,
+    TRUE);$TRAP$) = 1,
+    'Prediction with use_gpu=TRUE must error out.');
 
 -- Test for
   -- Non null name and description columns
@@ -203,7 +239,9 @@ SELECT madlib_keras_predict(
     'cifar_10_sample',
     'id',
     'x',
-    'cifar10_predict');
+    'cifar10_predict',
+    NULL,
+    FALSE);
 
 -- Validate that prediction output table exists and has correct schema
 SELECT assert(UPPER(atttypid::regtype::TEXT) = 'INTEGER', 'id column should be INTEGER type')
@@ -223,12 +261,15 @@ SELECT assert(estimated_dependent_var IN (0,1),
               'Predicted value not in set of defined class values for model')
 FROM cifar10_predict;
 
-select assert(trap_error($TRAP$madlib_keras_predict(
+DROP TABLE IF EXISTS cifar10_predict;
+SELECT assert(trap_error($TRAP$madlib_keras_predict(
     'keras_saved_out',
     'cifar_10_sample_batched',
     'id',
     'x',
-    'cifar10_predict');$TRAP$) = 1,
+    'cifar10_predict',
+    NULL,
+    FALSE);$TRAP$) = 1,
     'Passing batched image table to predict should error out.');
 
 -- Compile and fit parameter tests
@@ -321,7 +362,8 @@ SELECT madlib_keras_predict(
     'id',
     'x',
     'cifar10_predict',
-    'prob');
+    'prob',
+    FALSE);
 
 SELECT assert(UPPER(atttypid::regtype::TEXT) =
     'DOUBLE PRECISION', 'column prob_0 should be double precision type')
@@ -405,7 +447,8 @@ SELECT madlib_keras_predict(
     'id',
     'x',
     'cifar10_predict',
-    'prob');
+    'prob',
+    FALSE);
 
 -- Validate the output datatype of newly created prediction columns
 -- for prediction type = 'prob' and class_values 'TEXT' with NULL as a valid
@@ -438,7 +481,8 @@ SELECT madlib_keras_predict(
     'id',
     'x',
     'cifar10_predict',
-    'response');
+    'response',
+    FALSE);
 
 -- Validate the output datatype of newly created prediction columns
 -- for prediction type = 'response' and class_values 'TEXT' with NULL
@@ -461,7 +505,8 @@ SELECT madlib_keras_predict(
     'id',
     'x',
     'cifar10_predict',
-    'prob');
+    'prob',
+    FALSE);
 
 -- Validate the output datatype of newly created prediction column
 -- for prediction type = 'response' and class_value = NULL
@@ -479,7 +524,8 @@ SELECT madlib_keras_predict(
     'id',
     'x',
     'cifar10_predict',
-    'response');
+    'response',
+    FALSE);
 
 -- Validate the output datatype of newly created prediction column
 -- for prediction type = 'response' and class_value = NULL
@@ -535,7 +581,8 @@ SELECT madlib_keras_predict(
     'id',
     'x',
     'cifar10_predict',
-    'prob');
+    'prob',
+    FALSE);
 
 -- Validate the output datatype of newly created prediction column
 -- for prediction type = 'prob' and class_values 'INT' with NULL
@@ -558,7 +605,8 @@ SELECT madlib_keras_predict(
     'id',
     'x',
     'cifar10_predict',
-    'response');
+    'response',
+    FALSE);
 
 -- Validate the output datatype of newly created prediction column
 -- for prediction type = 'response' and class_values 'TEXT' with NULL
@@ -625,7 +673,8 @@ SELECT madlib_keras_predict(
     'id',
     'x',
     'cifar10_predict',
-    'prob');
+    'prob',
+    FALSE);
 
 -- Prediction with incorrectly shaped data must error out.
 DROP TABLE IF EXISTS cifar10_predict;
@@ -635,5 +684,6 @@ SELECT assert(trap_error($TRAP$madlib_keras_predict(
         'id',
         'x',
         'cifar10_predict',
-        'prob');$TRAP$) = 1,
+        'prob',
+        FALSE);$TRAP$) = 1,
     'Input shape is (32, 32, 3) but model was trained with (3, 32, 32). Should have failed.');
