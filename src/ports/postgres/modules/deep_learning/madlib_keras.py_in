@@ -49,11 +49,18 @@ from utilities.model_arch_info import get_num_classes
 from utilities.utilities import is_platform_pg
 from utilities.utilities import madlib_version
 from utilities.validate_args import get_col_value_and_type
+from utilities.validate_args import quote_ident
 
 def fit(schema_madlib, source_table, model, dependent_varname,
         independent_varname, model_arch_table, model_arch_id, compile_params,
         fit_params, num_iterations, use_gpu = True,
         validation_table=None, name="", description="", **kwargs):
+
+    source_table = quote_ident(source_table)
+    dependent_varname = quote_ident(dependent_varname)
+    independent_varname = quote_ident(independent_varname)
+    model_arch_table = quote_ident(model_arch_table)
+
     fit_validator = FitInputValidator(
         source_table, validation_table, model, model_arch_table,
         dependent_varname, independent_varname, num_iterations)
@@ -82,12 +89,25 @@ def fit(schema_madlib, source_table, model, dependent_varname,
     # about making the fit function easier to read and maintain.
     if is_platform_pg():
         set_keras_session(use_gpu)
+        # Compute total images in dataset
+        total_images_per_seg = plpy.execute(
+            """ SELECT SUM(ARRAY_LENGTH({0}, 1)) AS total_images_per_seg
+                FROM {1}
+            """.format(dependent_varname, source_table))
+        seg_ids_train = "[]::integer[]"
         gp_segment_id_col =  -1
     else:
+        # Compute total images on each segment
+        total_images_per_seg = plpy.execute(
+            """ SELECT gp_segment_id, SUM(ARRAY_LENGTH({0}, 1)) AS total_images_per_seg
+                FROM {1}
+                GROUP BY gp_segment_id
+            """.format(dependent_varname, source_table))
+        seg_ids_train = [int(each_segment["gp_segment_id"])
+                   for each_segment in total_images_per_seg]
         gp_segment_id_col = 'gp_segment_id'
         # Disable GPU on master for gpdb
         os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
-    seg_ids_train, rows_per_seg_train = get_rows_per_seg_from_db(source_table)
     if validation_table:
         seg_ids_val, rows_per_seg_val = get_rows_per_seg_from_db(validation_table)
 
@@ -110,6 +130,9 @@ def fit(schema_madlib, source_table, model, dependent_varname,
     validation_set_provided = bool(validation_table)
     validation_aggregate_accuracy = []; validation_aggregate_loss = []
 
+    total_images_per_seg = [int(each_segment["total_images_per_seg"])
+        for each_segment in total_images_per_seg]
+
     # Prepare the SQL for running distributed training via UDA
     compile_params_to_pass = "$madlib$" + compile_params + "$madlib$"
     fit_params_to_pass = "$madlib$" + fit_params + "$madlib$"
@@ -120,7 +143,7 @@ def fit(schema_madlib, source_table, model, dependent_varname,
             {gp_segment_id_col},
             {num_classes}::INTEGER,
             ARRAY{seg_ids_train},
-            ARRAY{rows_per_seg_train},
+            ARRAY{total_images_per_seg},
             $MAD${model_arch}$MAD$::TEXT,
             {compile_params_to_pass}::TEXT,
             {fit_params_to_pass}::TEXT,
@@ -305,7 +328,7 @@ def get_rows_per_seg_from_db(table_name):
 
 
 def fit_transition(state, ind_var, dep_var, current_seg_id, num_classes,
-                   all_seg_ids, total_buffers_per_seg, architecture,
+                   all_seg_ids, total_images_per_seg, architecture,
                    compile_params, fit_params, use_gpu, previous_state,
                    **kwargs):
 
@@ -317,7 +340,7 @@ def fit_transition(state, ind_var, dep_var, current_seg_id, num_classes,
     :param current_seg_id:
     :param num_classes:
     :param all_seg_ids:
-    :param total_buffers_per_seg:
+    :param total_images_per_seg:
     :param architecture:
     :param compile_params:
     :param fit_params:
@@ -344,13 +367,14 @@ def fit_transition(state, ind_var, dep_var, current_seg_id, num_classes,
         compile_and_set_weights(segment_model, compile_params, device_name,
                                 previous_state, SD['model_shapes'])
         SD['segment_model'] = segment_model
-        SD['buffer_count'] = 0
+        image_count = 0
         agg_loss = 0
         agg_accuracy = 0
+        agg_image_count = 0
     else:
         segment_model = SD['segment_model']
         #TODO we don't need to deserialize the weights here.
-        agg_loss, agg_accuracy, _, _ = madlib_keras_serializer.deserialize_weights(
+        agg_loss, agg_accuracy, agg_image_count, _ = madlib_keras_serializer.deserialize_weights(
             state, SD['model_shapes'])
 
     # Prepare the data
@@ -367,79 +391,92 @@ def fit_transition(state, ind_var, dep_var, current_seg_id, num_classes,
         accuracy = history.history['acc'][0]
     end_fit = time.time()
 
-    # Re-serialize the weights
-    # Update buffer count, check if we are done
-    SD['buffer_count'] += 1
-    agg_loss += loss
-    agg_accuracy += accuracy
+    image_count = len(x_train)
+    # Aggregating number of images, loss and accuracy
+    agg_image_count += image_count
+    agg_loss += (image_count * loss)
+    agg_accuracy += (image_count * accuracy)
 
     with K.tf.device(device_name):
         updated_weights = segment_model.get_weights()
     if is_platform_pg():
-        total_buffers_per_seg = total_buffers_per_seg[0]
+        total_images = total_images_per_seg[0]
     else:
-        total_buffers_per_seg = total_buffers_per_seg[all_seg_ids.index(current_seg_id)]
-    if total_buffers_per_seg == 0:
+        total_images = total_images_per_seg[all_seg_ids.index(current_seg_id)]
+    if total_images == 0:
         plpy.error('Got 0 rows. Expected at least 1.')
 
-    if SD['buffer_count'] == total_buffers_per_seg:
-        agg_loss /= total_buffers_per_seg
-        agg_accuracy /= total_buffers_per_seg
+    # Re-serialize the weights
+    # Update image count, check if we are done
+    if agg_image_count == total_images:
+        if total_images == 0:
+            plpy.error('Total images is 0')
+        # Once done with all images on a segment, we update weights
+        # with the total number of images here instead of the merge function.
+        # The merge function only deals with aggregating them.
+        updated_weights = [ total_images * w for w in updated_weights ]
         if not is_platform_pg():
             # In GPDB, each segment would have a keras session, so clear
             # them after the last buffer is processed.
             clear_keras_session()
+    elif agg_image_count > total_images:
+        plpy.error('Processed {0} images, but there were supposed to be only {1}!'
+            .format(agg_image_count,total_images))
 
     new_model_state = madlib_keras_serializer.serialize_weights(
-        agg_loss, agg_accuracy, SD['buffer_count'], updated_weights)
+            agg_loss, agg_accuracy, agg_image_count, updated_weights)
+
 
     del x_train
     del y_train
 
     end_transition = time.time()
-    plpy.info("Processed buffer {0}: Fit took {1} sec, Total was {2} sec".format(
-        SD['buffer_count'], end_fit - start_fit, end_transition - start_transition))
+    plpy.info("Processed {0} images: Fit took {1} sec, Total was {2} sec".format(
+        image_count, end_fit - start_fit, end_transition - start_transition))
 
     return new_model_state
 
 def fit_merge(state1, state2, **kwargs):
+
     # Return if called early
     if not state1 or not state2:
         return state1 or state2
 
     # Deserialize states
-    loss1, accuracy1, buffer_count1, weights1 = madlib_keras_serializer.deserialize_weights_merge(state1)
-    loss2, accuracy2, buffer_count2, weights2 = madlib_keras_serializer.deserialize_weights_merge(state2)
-        # plpy.info('merge buffer loss1 {}, accuracy1 {}, buffer count1 {}'.format(loss1, accuracy1, buffer_count1))
-    # plpy.info('merge buffer loss2 {}, accuracy2 {}, buffer count2 {}'.format(loss2, accuracy2, buffer_count2))
+    loss1, accuracy1, image_count1, weights1 = madlib_keras_serializer.deserialize_weights_merge(state1)
+    loss2, accuracy2, image_count2, weights2 = madlib_keras_serializer.deserialize_weights_merge(state2)
 
-    # Compute total buffer counts
-    # buffer_count1, buffer_count2 = state1[2], state2[2]
-    total_buffers = (buffer_count1 + buffer_count2) * 1.0
-    if total_buffers == 0:
-        plpy.error('total buffers in merge is 0')
-    merge_weight1 = buffer_count1 / total_buffers
-    merge_weight2 = buffer_count2 / total_buffers
+    # Compute total image counts
+    image_count = (image_count1 + image_count2) * 1.0
+    plpy.info("FIT_MERGE: Mergeing {0} + {1} = {2} images".format(image_count1,image_count2,image_count))
+    if image_count == 0:
+        plpy.error('total images in merge is 0')
 
-    # Average the losses
-    # loss1, loss2 = state1[0], state2[0]
-    avg_loss = merge_weight1*loss1 + merge_weight2*loss2
+    # Aggregate the losses
+    total_loss = loss1 + loss2
 
-    # Average the accuracies
-    # accuracy1, accuracy2 = state1[1], state2[1]
-    avg_accuracy = merge_weight1*accuracy1 + merge_weight2*accuracy2
+    # Aggregate the accuracies
+    total_accuracy = accuracy1 + accuracy2
 
-    # Average the weights
-    # weights1, weights2 = state1[3:], state2[3:]
-    avg_weights = merge_weight1*weights1 + merge_weight2*weights2
-    # avg_weights = [(merge_weight1 * e1) + (merge_weight2 * e2) for e1, e2 in zip(weights1, weights2)]
+    # Aggregate the weights
+    total_weights = weights1 + weights2
 
     # Return the merged state
     return madlib_keras_serializer.serialize_weights_merge(
-        avg_loss, avg_accuracy, total_buffers, avg_weights)
+        total_loss, total_accuracy, image_count, total_weights)
 
 def fit_final(state, **kwargs):
-    return state
+    # Return if called early
+    if not state:
+        return state
+
+    loss, accuracy, image_count, weights = madlib_keras_serializer.deserialize_weights_merge(state)
+    # Averaging the accuracy, loss and weights
+    loss /= image_count
+    accuracy /= image_count
+    weights /= image_count
+    return madlib_keras_serializer.serialize_weights_merge(
+        loss, accuracy, image_count, weights)
 
 def evaluate1(schema_madlib, model_table, test_table, id_col, model_arch_table,
             model_arch_id, dependent_varname, independent_varname,
