@@ -17,7 +17,7 @@
  * specific language governing permissions and limitations
  * under the License.
  *
- * @file minibatch_preprocessing_dl.sql_in
+ * @file input_preprocessor_dl.sql_in
  * @brief TODO
  * @date December 2018
  *
@@ -27,13 +27,13 @@
 m4_include(`SQLCommon.m4')
 
 /**
-@addtogroup grp_minibatch_preprocessing_dl
+@addtogroup grp_input_preprocessor_dl
 
 @brief Utility that prepares input image data for use by models
 that support mini-batch as an optimization option.
 
 <div class="toc"><b>Contents</b><ul>
-<li class="level1"><a href="#minibatch_preprocessor_dl">Mini-Batch Preprocessor for Image Data</a></li>
+<li class="level1"><a href="#input_preprocessor_dl">Input Preprocessor for Image Data</a></li>
 <li class="level1"><a href="#example">Examples</a></li>
 <li class="level1"><a href="#related">Related Topics</a></li>
 </ul></div>
@@ -50,7 +50,7 @@ for image data.  A separate more general minibatch_preprocessor() is also
 available for other MADlib modules using non-image input data.
 
 <pre class="syntax">
-minibatch_preprocessor_dl( source_table,
+training_preprocessor_dl( source_table,
                            output_table,
                            dependent_varname,
                            independent_varname,
@@ -95,7 +95,7 @@ minibatch_preprocessor_dl( source_table,
   output table.  The default value is computed considering size of
   the source table, number of independent variables,
   and number of segments in the database cluster.
-  @note minibatch_preprocessor_dl tries to pack data and distribute it
+  @note input_preprocessor_dl tries to pack data and distribute it
   evenly based on the number of input rows. Sometimes you don't
   necessarily get the exact same number of rows in one pack as you specified
   in buffer_size.
@@ -128,7 +128,7 @@ minibatch_preprocessor_dl( source_table,
         <td>ANYARRAY[]. Packed array of dependent variables.
         The dependent variable is always one-hot encoded as an
         INTEGER[] array. For now, we are assuming that
-        minibatch_preprocessor_dl will be used
+        input_preprocessor_dl will be used
         only for classification problems using deep learning. So
         the dependent variable is one-hot encoded, unless it's already a
         numeric array in which case we assume it's already one-hot
@@ -259,7 +259,7 @@ SELECT * FROM image_data;
 -#  Run the preprocessor for image data:
 <pre class="example">
 DROP TABLE IF EXISTS image_data_packed, image_data_packed_summary;
-SELECT madlib.minibatch_preprocessor_dl('image_data',         -- Source table
+SELECT madlib.input_preprocessor_dl('image_data',         -- Source table
                                         'image_data_packed',  -- Output table
                                         'species',            -- Dependent variable
                                         'rgb',                -- Independent variable
@@ -397,7 +397,7 @@ SELECT * FROM image_data;
 -#  Run the preprocessor for image data:
 <pre class="example">
 DROP TABLE IF EXISTS image_data_packed, image_data_packed_summary;
-SELECT madlib.minibatch_preprocessor_dl('image_data',         -- Source table
+SELECT madlib.input_preprocessor_dl('image_data',         -- Source table
                                         'image_data_packed',  -- Output table
                                         'species',            -- Dependent variable
                                         'rgb',                -- Independent variable
@@ -429,7 +429,7 @@ buffer_id       | 2
 but if you have occasion to change it:
 <pre class="example">
 DROP TABLE IF EXISTS image_data_packed, image_data_packed_summary;
-SELECT madlib.minibatch_preprocessor_dl('image_data',         -- Source table
+SELECT madlib.input_preprocessor_dl('image_data',         -- Source table
                                         'image_data_packed',  -- Output table
                                         'species',            -- Dependent variable
                                         'rgb',                -- Independent variable
@@ -462,7 +462,7 @@ buffer_size         | 10
 -#  Run the preprocessor for image data with num_classes greater than 3 (distinct class values found in table):
 <pre class="example">
 DROP TABLE IF EXISTS image_data_packed, image_data_packed_summary;
-SELECT madlib.minibatch_preprocessor_dl('image_data',         -- Source table
+SELECT madlib.input_preprocessor_dl('image_data',         -- Source table
                                         'image_data_packed',  -- Output table
                                         'species',            -- Dependent variable
                                         'rgb',                -- Independent variable
@@ -510,13 +510,59 @@ normalizing_const   | 255.0
 @anchor related
 @par Related Topics
 
-minibatch_preprocessing_dl.sql_in
+input_preprocessor_dl.sql_in
 
 minibatch_preprocessing.sql_in
 
 */
 
-CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.minibatch_preprocessor_dl(
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.validation_preprocessor_dl(
+    source_table                VARCHAR,
+    output_table                VARCHAR,
+    dependent_varname           VARCHAR,
+    independent_varname         VARCHAR,
+    training_preprocessor_table VARCHAR,
+    buffer_size                 INTEGER
+) RETURNS VOID AS $$
+    PythonFunctionBodyOnly(deep_learning, input_data_preprocessor)
+    from utilities.control import MinWarning
+    with AOControl(False):
+        with MinWarning('error'):
+            validation_preprocessor_obj = input_data_preprocessor.ValidationDataPreprocessorDL(**globals())
+            validation_preprocessor_obj.validation_preprocessor_dl()
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.validation_preprocessor_dl(
+    source_table                VARCHAR,
+    output_table                VARCHAR,
+    dependent_varname           VARCHAR,
+    independent_varname         VARCHAR,
+    training_preprocessor_table VARCHAR
+) RETURNS VOID AS $$
+  SELECT MADLIB_SCHEMA.validation_preprocessor_dl($1, $2, $3, $4, $5, NULL);
+$$ LANGUAGE sql VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.validation_preprocessor_dl(
+    message VARCHAR
+) RETURNS VARCHAR AS $$
+    PythonFunctionBodyOnly(deep_learning, input_data_preprocessor)
+    return input_data_preprocessor.InputDataPreprocessorDocumentation.validation_preprocessor_dl_help(schema_madlib, message)
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.validation_preprocessor_dl()
+RETURNS VARCHAR AS $$
+    PythonFunctionBodyOnly(deep_learning, input_data_preprocessor)
+    return input_data_preprocessor.InputDataPreprocessorDocumentation.validation_preprocessor_dl_help(schema_madlib, '')
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+-------------------------------------------------------------------------------
+
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.training_preprocessor_dl(
     source_table                VARCHAR,
     output_table                VARCHAR,
     dependent_varname           VARCHAR,
@@ -525,16 +571,16 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.minibatch_preprocessor_dl(
     normalizing_const           DOUBLE PRECISION,
     num_classes                 INTEGER
 ) RETURNS VOID AS $$
-    PythonFunctionBodyOnly(utilities, minibatch_preprocessing)
+    PythonFunctionBodyOnly(deep_learning, input_data_preprocessor)
     from utilities.control import MinWarning
     with AOControl(False):
         with MinWarning('error'):
-            minibatch_preprocessor_obj = minibatch_preprocessing.MiniBatchPreProcessorDL(**globals())
-            minibatch_preprocessor_obj.minibatch_preprocessor_dl()
+            training_preprocessor_obj = input_data_preprocessor.TrainingDataPreprocessorDL(**globals())
+            training_preprocessor_obj.training_preprocessor_dl()
 $$ LANGUAGE plpythonu VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
-CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.minibatch_preprocessor_dl(
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.training_preprocessor_dl(
     source_table            VARCHAR,
     output_table            VARCHAR,
     dependent_varname       VARCHAR,
@@ -542,43 +588,43 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.minibatch_preprocessor_dl(
     buffer_size             INTEGER,
     normalizing_const       DOUBLE PRECISION
 ) RETURNS VOID AS $$
-  SELECT MADLIB_SCHEMA.minibatch_preprocessor_dl($1, $2, $3, $4, $5, $6, NULL);
+  SELECT MADLIB_SCHEMA.training_preprocessor_dl($1, $2, $3, $4, $5, $6, NULL);
 $$ LANGUAGE sql VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
-CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.minibatch_preprocessor_dl(
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.training_preprocessor_dl(
     source_table            VARCHAR,
     output_table            VARCHAR,
     dependent_varname       VARCHAR,
     independent_varname     VARCHAR,
     buffer_size             INTEGER
 ) RETURNS VOID AS $$
-  SELECT MADLIB_SCHEMA.minibatch_preprocessor_dl($1, $2, $3, $4, $5, 1.0, NULL);
+  SELECT MADLIB_SCHEMA.training_preprocessor_dl($1, $2, $3, $4, $5, 1.0, NULL);
 $$ LANGUAGE sql VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
-CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.minibatch_preprocessor_dl(
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.training_preprocessor_dl(
     source_table            VARCHAR,
     output_table            VARCHAR,
     dependent_varname       VARCHAR,
     independent_varname     VARCHAR
 ) RETURNS VOID AS $$
-  SELECT MADLIB_SCHEMA.minibatch_preprocessor_dl($1, $2, $3, $4, NULL, 1.0, NULL);
+  SELECT MADLIB_SCHEMA.training_preprocessor_dl($1, $2, $3, $4, NULL, 1.0, NULL);
 $$ LANGUAGE sql VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
-CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.minibatch_preprocessor_dl(
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.training_preprocessor_dl(
     message VARCHAR
 ) RETURNS VARCHAR AS $$
-    PythonFunctionBodyOnly(utilities, minibatch_preprocessing)
-    return minibatch_preprocessing.MiniBatchDocumentation.minibatch_preprocessor_dl_help(schema_madlib, message)
+    PythonFunctionBodyOnly(deep_learning, input_data_preprocessor)
+    return input_data_preprocessor.InputDataPreprocessorDocumentation.training_preprocessor_dl_help(schema_madlib, message)
 $$ LANGUAGE plpythonu VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
-CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.minibatch_preprocessor_dl()
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.training_preprocessor_dl()
 RETURNS VARCHAR AS $$
-    PythonFunctionBodyOnly(utilities, minibatch_preprocessing)
-    return minibatch_preprocessing.MiniBatchDocumentation.minibatch_preprocessor_dl_help(schema_madlib, '')
+    PythonFunctionBodyOnly(deep_learning, input_data_preprocessor)
+    return input_data_preprocessor.InputDataPreprocessorDocumentation.training_preprocessor_dl_help(schema_madlib, '')
 $$ LANGUAGE plpythonu VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
