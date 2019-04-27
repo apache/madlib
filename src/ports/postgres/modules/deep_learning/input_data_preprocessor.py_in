@@ -1,0 +1,457 @@
+# coding=utf-8
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+
+"""
+@file input_data_preprocessor.py_in
+
+"""
+from math import ceil
+import plpy
+
+from internal.db_utils import get_distinct_col_levels
+from internal.db_utils import quote_literal
+from utilities.minibatch_preprocessing import MiniBatchBufferSizeCalculator
+from utilities.utilities import _assert
+from utilities.utilities import add_postfix
+from utilities.utilities import is_platform_pg
+from utilities.utilities import is_psql_char_type
+from utilities.utilities import is_valid_psql_type
+from utilities.utilities import BOOLEAN, NUMERIC, ONLY_ARRAY, TEXT
+from utilities.utilities import py_list_to_sql_string
+from utilities.utilities import split_quoted_delimited_str
+from utilities.utilities import unique_string
+from utilities.utilities import validate_module_input_params
+
+from utilities.validate_args import _tbl_dimension_rownum
+from utilities.validate_args import input_tbl_valid
+from utilities.validate_args import get_expr_type
+
+from madlib_keras_helper import CLASS_VALUES_COLNAME
+from madlib_keras_helper import DEPENDENT_VARNAME_COLNAME
+from madlib_keras_helper import DEPENDENT_VARTYPE_COLNAME
+from madlib_keras_helper import INDEPENDENT_VARNAME_COLNAME
+from madlib_keras_helper import NORMALIZING_CONST_COLNAME
+from madlib_keras_helper import strip_trailing_nulls_from_class_values
+
+# These are readonly variables, do not modify
+# MADLIB-1300 Adding these variables for DL only at this time.
+MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL = "dependent_var"
+MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL = "independent_var"
+NUM_CLASSES_COLNAME = "num_classes"
+
+class InputDataPreprocessorDL():
+    def __init__(self, schema_madlib, source_table, output_table,
+                 dependent_varname, independent_varname, buffer_size,
+                 normalizing_const, num_classes, module_name):
+        self.schema_madlib = schema_madlib
+        self.source_table = source_table
+        self.output_table = output_table
+        self.dependent_varname = dependent_varname
+        self.independent_varname = independent_varname
+        self.buffer_size = buffer_size
+        self.normalizing_const = normalizing_const if normalizing_const is not None else 1.0
+        self.num_classes = num_classes
+        self.module_name = module_name
+        self.output_summary_table = add_postfix(self.output_table, "_summary")
+        self.independent_vartype = get_expr_type(self.independent_varname,
+                                                 self.source_table)
+        self.dependent_vartype = get_expr_type(self.dependent_varname,
+                                               self.source_table)
+
+        self._validate_args()
+        self.num_of_buffers = self._get_num_buffers()
+        self.dependent_levels = None
+        # The number of padded zeros to include in 1-hot vector
+        self.padding_size = 0
+
+    def _set_one_hot_encoding_variables(self):
+        if self.dependent_levels:
+            # if any class level was NULL in sql, that would show up as
+            # None in self.dependent_levels. Replace all None with NULL
+            # in the list.
+            self.dependent_levels = ['NULL' if level is None else level
+                for level in self.dependent_levels]
+            self._validate_num_classes()
+            # Try computing padding_size after running all necessary validations.
+            if self.num_classes:
+                self.padding_size = self.num_classes - len(self.dependent_levels)
+
+    def _validate_num_classes(self):
+        if self.num_classes is not None and \
+            self.num_classes < len(self.dependent_levels):
+            plpy.error("{0}: Invalid num_classes value specified. It must "\
+                "be equal to or greater than distinct class values found "\
+                "in table ({1}).".format(
+                    self.module_name, len(self.dependent_levels)))
+
+    def get_one_hot_encoded_dep_var_expr(self):
+        """
+        :param dependent_varname: Name of the dependent variable
+        :param num_classes: Number of class values to consider in 1-hot
+        :return:
+            This function returns a tuple of
+            1. A string with transformed dependent varname depending on it's type
+            2. All the distinct dependent class levels encoded as a string
+
+            If dep_type == numeric[] , do not encode
+                    1. dependent_varname = rings
+                        transformed_value = ARRAY[rings]
+                    2. dependent_varname = ARRAY[a, b, c]
+                        transformed_value = ARRAY[a, b, c]
+            else if dep_type in ("text", "boolean"), encode:
+                    3. dependent_varname = rings (encoding)
+                        transformed_value = ARRAY[rings=1, rings=2, rings=3]
+        """
+        # Assuming the input NUMERIC[] is already one_hot_encoded,
+        # so casting to INTEGER[]
+        if is_valid_psql_type(self.dependent_vartype, NUMERIC | ONLY_ARRAY):
+            return "{0}::INTEGER[]".format(self.dependent_varname)
+
+        # For DL use case, we want to allow NULL as a valid class value,
+        # so the query must have 'IS NOT DISTINCT FROM' instead of '='
+        # like in the generic get_one_hot_encoded_expr() defined in
+        # db_utils.py_in. We also have this optional 'num_classes' param
+        # that affects the logic of 1-hot encoding. Since this is very
+        # specific to input_preprocessor_dl for now, let's keep
+        # it here instead of refactoring it out to a generic helper function.
+        one_hot_encoded_expr = ["({0}) IS NOT DISTINCT FROM {1}".format(
+            self.dependent_varname, c) for c in self.dependent_levels]
+        if self.num_classes:
+            one_hot_encoded_expr.extend(['false'
+                for i in range(self.padding_size)])
+        return 'ARRAY[{0}]::INTEGER[]'.format(
+            ', '.join(one_hot_encoded_expr))
+
+    def input_preprocessor_dl(self, order_by_random=True):
+        self._set_one_hot_encoding_variables()
+        # Create a temp table that has independent var normalized.
+        norm_tbl = unique_string(desp='normalized')
+
+        # Always one-hot encode the dependent var. For now, we are assuming
+        # that input_preprocessor_dl will be used only for deep
+        # learning and mostly for classification. So make a strong
+        # assumption that it is only for classification, so one-hot
+        # encode the dep var, unless it's already a numeric array in
+        # which case we assume it's already one-hot encoded.
+        one_hot_dep_var_array_expr = \
+            self.get_one_hot_encoded_dep_var_expr()
+        order_by_clause = " ORDER BY RANDOM() " if order_by_random else ""
+        scalar_mult_sql = """
+            CREATE TEMP TABLE {norm_tbl} AS
+            SELECT {self.schema_madlib}.array_scalar_mult(
+                {self.independent_varname}::REAL[], (1/{self.normalizing_const})::REAL) AS x_norm,
+                {one_hot_dep_var_array_expr} AS y,
+                row_number() over() AS row_id
+            FROM {self.source_table} {order_by_clause}
+            """.format(**locals())
+        plpy.execute(scalar_mult_sql)
+        # Create the mini-batched output table
+        if is_platform_pg():
+            distributed_by_clause = ''
+        else:
+            distributed_by_clause= ' DISTRIBUTED BY (buffer_id) '
+        sql = """
+            CREATE TABLE {self.output_table} AS
+            SELECT * FROM
+            (
+                SELECT {self.schema_madlib}.agg_array_concat(
+                    ARRAY[{norm_tbl}.x_norm::REAL[]]) AS {x},
+                    {self.schema_madlib}.agg_array_concat(
+                    ARRAY[{norm_tbl}.y]) AS {y},
+                    ({norm_tbl}.row_id%{self.num_of_buffers})::smallint AS buffer_id
+                FROM {norm_tbl}
+                GROUP BY buffer_id
+            ) b
+            {distributed_by_clause}
+            """.format(x=MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL,
+                       y=MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL,
+                       **locals())
+        plpy.execute(sql)
+        plpy.execute("DROP TABLE IF EXISTS {0}".format(norm_tbl))
+        # Create summary table
+        self._create_output_summary_table()
+
+    def _create_output_summary_table(self):
+        class_level_str='NULL::TEXT'
+        if self.dependent_levels:
+            # Update dependent_levels to include NULL when
+            # num_classes > len(self.dependent_levels)
+            if self.num_classes:
+                self.dependent_levels.extend(['NULL'
+                    for i in range(self.padding_size)])
+            class_level_str=py_list_to_sql_string(
+                self.dependent_levels, array_type=self.dependent_vartype,
+                long_format=True)
+        if self.num_classes is None:
+            self.num_classes = 'NULL'
+        query = """
+            CREATE TABLE {self.output_summary_table} AS
+            SELECT
+                $__madlib__${self.source_table}$__madlib__$::TEXT AS source_table,
+                $__madlib__${self.output_table}$__madlib__$::TEXT AS output_table,
+                $__madlib__${self.dependent_varname}$__madlib__$::TEXT AS {dependent_varname_colname},
+                $__madlib__${self.independent_varname}$__madlib__$::TEXT AS {independent_varname_colname},
+                $__madlib__${self.dependent_vartype}$__madlib__$::TEXT AS {dependent_vartype_colname},
+                {class_level_str} AS {class_values_colname},
+                {self.buffer_size} AS buffer_size,
+                {self.normalizing_const} AS {normalizing_const_colname},
+                {self.num_classes} AS {num_classes_colname}
+            """.format(self=self, class_level_str=class_level_str,
+                       dependent_varname_colname=DEPENDENT_VARNAME_COLNAME,
+                       independent_varname_colname=INDEPENDENT_VARNAME_COLNAME,
+                       dependent_vartype_colname=DEPENDENT_VARTYPE_COLNAME,
+                       class_values_colname=CLASS_VALUES_COLNAME,
+                       normalizing_const_colname=NORMALIZING_CONST_COLNAME,
+                       num_classes_colname=NUM_CLASSES_COLNAME)
+        plpy.execute(query)
+
+    def _validate_args(self):
+        validate_module_input_params(
+            self.source_table, self.output_table, self.independent_varname,
+            self.dependent_varname, self.module_name, None,
+            [self.output_summary_table])
+        num_of_independent_cols = split_quoted_delimited_str(self.independent_varname)
+        _assert(len(num_of_independent_cols) == 1,
+            "Invalid independent_varname: only one column name is allowed "
+            "as input.")
+        _assert(is_valid_psql_type(self.independent_vartype,
+                                   NUMERIC | ONLY_ARRAY),
+                "Invalid independent variable type, should be an array of "
+                "one of {0}".format(','.join(NUMERIC)))
+        # The denpendent variable needs to be either:
+        # 1. NUMERIC, TEXT OR BOOLEAN, which we always one-hot encode
+        # 2. NUMERIC ARRAY, which we assume it is already one-hot encoded, and we
+        #    just cast it the INTEGER ARRAY
+        num_of_dependent_cols = split_quoted_delimited_str(self.dependent_varname)
+        _assert(len(num_of_dependent_cols) == 1,
+            "Invalid dependent_varname: only one column name is allowed "
+            "as input.")
+        _assert((is_valid_psql_type(self.dependent_vartype, NUMERIC | TEXT | BOOLEAN) or
+                is_valid_psql_type(self.dependent_vartype, NUMERIC | ONLY_ARRAY)),
+                """Invalid dependent variable type, should be one of the type in this list:
+                numeric, text, boolean, or numeric array""")
+        if self.buffer_size is not None:
+            _assert(self.buffer_size > 0,
+                    "{0}: The buffer size has to be a "
+                    "positive integer or NULL.".format(self.module_name))
+        _assert(self.normalizing_const > 0,
+                "{0}: The normalizing constant has to be a "
+                "positive integer or NULL.".format(self.module_name))
+
+    def _get_num_buffers(self):
+        num_rows_in_tbl = plpy.execute("""
+                SELECT count(*) AS cnt FROM {0}
+            """.format(self.source_table))[0]['cnt']
+        buffer_size_calculator = MiniBatchBufferSizeCalculator()
+        indepdent_var_dim = _tbl_dimension_rownum(
+            self.schema_madlib, self.source_table,
+            self.independent_varname, skip_row_count=True)
+        self.buffer_size = buffer_size_calculator.calculate_default_buffer_size(
+            self.buffer_size, num_rows_in_tbl, indepdent_var_dim[0])
+        return ceil((1.0 * num_rows_in_tbl) / self.buffer_size)
+
+class ValidationDataPreprocessorDL(InputDataPreprocessorDL):
+    def __init__(self, schema_madlib, source_table, output_table,
+                 dependent_varname, independent_varname,
+                 training_preprocessor_table, buffer_size, **kwargs):
+        self.module_name = "validation_preprocessor_DL"
+        self.training_preprocessor_table = training_preprocessor_table
+        summary_table = self._validate_and_process_training_preprocessor_table()
+        num_classes = summary_table[NUM_CLASSES_COLNAME]
+        InputDataPreprocessorDL.__init__(
+            self, schema_madlib, source_table, output_table,
+            dependent_varname, independent_varname, buffer_size,
+            summary_table[NORMALIZING_CONST_COLNAME], num_classes,
+            self.module_name)
+        # Update value of dependent_levels from training batch summary table.
+        self.dependent_levels = self._get_dependent_levels(
+            summary_table[CLASS_VALUES_COLNAME],
+            summary_table[DEPENDENT_VARTYPE_COLNAME])
+
+    def _get_dependent_levels(self, training_dependent_levels,
+                              training_dependent_vartype):
+        # Validate that dep var type is exactly the same as what was in
+        # trainig_preprocessor_table's input.
+        _assert(self.dependent_vartype == training_dependent_vartype,
+            "{0}: the dependent variable's type in {1} must be {2}.".format(
+                self.module_name, self.source_table,
+                training_dependent_vartype))
+        # training_dependent_levels is the class_values column from the
+        # training batch summary table. This already has the padding with
+        # NULLs in it based on num_classes that was provided to
+        # training_preprocessor_dl(). We have to work our way backwards
+        # to strip out those trailing NULLs from class_values, since
+        # they will anyway get added later in
+        # InputDataPreprocessorDL._set_one_hot_encoding_variables.
+        dependent_levels = strip_trailing_nulls_from_class_values(
+            training_dependent_levels)
+        if is_psql_char_type(self.dependent_vartype):
+            dependent_levels = [quote_literal(level) if level is not None else level for level in dependent_levels]
+        return dependent_levels
+
+    def _validate_and_process_training_preprocessor_table(self):
+        input_tbl_valid(self.training_preprocessor_table, self.module_name)
+        training_summary_table = add_postfix(
+            self.training_preprocessor_table, "_summary")
+        input_tbl_valid(training_summary_table, self.module_name)
+        summary_table = plpy.execute("SELECT * FROM {0} LIMIT 1".format(
+            training_summary_table))[0]
+        _assert(NORMALIZING_CONST_COLNAME in summary_table,
+            "{0}: Expected column {1} in {2}.".format(
+                self.module_name, NORMALIZING_CONST_COLNAME,
+                training_summary_table))
+        _assert(CLASS_VALUES_COLNAME in summary_table,
+            "{0}: Expected column {1} in {2}.".format(
+                self.module_name, CLASS_VALUES_COLNAME,
+                training_summary_table))
+        _assert(NUM_CLASSES_COLNAME in summary_table,
+            "{0}: Expected column {1} in {2}.".format(
+                self.module_name, NUM_CLASSES_COLNAME,
+                training_summary_table))
+        _assert(DEPENDENT_VARTYPE_COLNAME in summary_table,
+            "{0}: Expected column {1} in {2}.".format(
+                self.module_name, DEPENDENT_VARTYPE_COLNAME,
+                training_summary_table))
+        return summary_table
+
+    def validation_preprocessor_dl(self):
+        self.input_preprocessor_dl(order_by_random=False)
+
+class TrainingDataPreprocessorDL(InputDataPreprocessorDL):
+    def __init__(self, schema_madlib, source_table, output_table,
+                 dependent_varname, independent_varname, buffer_size,
+                 normalizing_const, num_classes, **kwargs):
+        InputDataPreprocessorDL.__init__(
+            self, schema_madlib, source_table, output_table,
+            dependent_varname, independent_varname, buffer_size,
+            normalizing_const, num_classes, "training_preprocessor_DL")
+        # Update default value of dependent_levels in superclass
+        self.dependent_levels = self._get_dependent_levels()
+
+    def _get_dependent_levels(self):
+        if is_valid_psql_type(self.dependent_vartype, NUMERIC | ONLY_ARRAY):
+            dependent_levels = None
+        else:
+            dependent_levels = get_distinct_col_levels(
+                self.source_table, self.dependent_varname,
+                self.dependent_vartype, include_nulls=True)
+        return dependent_levels
+
+    def training_preprocessor_dl(self):
+        self.input_preprocessor_dl(order_by_random=True)
+
+class InputDataPreprocessorDocumentation:
+    @staticmethod
+    def validation_preprocessor_dl_help(schema_madlib, message):
+        return "TODO: Fix me"
+
+    @staticmethod
+    def training_preprocessor_dl_help(schema_madlib, message):
+        method = "training_preprocessor_dl"
+        summary = """
+        ----------------------------------------------------------------
+                            SUMMARY
+        ----------------------------------------------------------------
+        For Deep Learning based techniques such as Convolutional Neural Nets,
+        the input data is mostly images. These images can be represented as an
+        array of numbers where each element represents a pixel/color intensity.
+        It is standard practice to normalize the image data before use.
+        minibatch_preprocessor() is for general use-cases, but for deep learning
+        based use-cases we provide training_preprocessor_dl() that is
+        light-weight and is specific to image datasets.
+
+        The normalizing constant is parameterized, and can be specified based
+        on the kind of image data used.
+
+        An optional param named num_classes can be used to specify the length
+        of the one-hot encoded array for the dependent variable. This value if
+        specified must be greater than equal to the total number of distinct
+        class values found in the input table.
+
+        For more details on function usage:
+        SELECT {schema_madlib}.{method}('usage')
+        """.format(**locals())
+
+        usage = """
+        ---------------------------------------------------------------------------
+                                        USAGE
+        ---------------------------------------------------------------------------
+        SELECT {schema_madlib}.{method}(
+            source_table,          -- TEXT. Name of the table containing input
+                                      data.  Can also be a view
+            output_table,          -- TEXT. Name of the output table for
+                                      mini-batching
+            dependent_varname,     -- TEXT. Name of the dependent variable column
+            independent_varname,   -- TEXT. Name of the independent variable
+                                      column
+            buffer_size            -- INTEGER. Default computed automatically.
+                                      Number of source input rows to pack into a buffer
+            normalizing_const      -- DOUBLE PRECISON. Default 1.0. The
+                                      normalizing constant to use for
+                                      standardizing arrays in independent_varname.
+            num_classes            -- INTEGER. Default NULL. Number of class labels
+                                      to be considered for 1-hot encoding. If NULL,
+                                      the 1-hot encoded array length will be equal to
+                                      the number of distinct class values found in the
+                                      input table.
+        );
+
+
+        ---------------------------------------------------------------------------
+                                        OUTPUT
+        ---------------------------------------------------------------------------
+        The output table produced by MiniBatch Preprocessor contains the
+        following columns:
+
+        buffer_id               -- INTEGER.  Unique id for packed table.
+        dependent_varname       -- ANYARRAY[]. Packed array of dependent variables.
+        independent_varname     -- REAL[]. Packed array of independent
+                                   variables.
+
+        ---------------------------------------------------------------------------
+        The algorithm also creates a summary table named <output_table>_summary
+        that has the following columns:
+
+        source_table              -- Source table name.
+        output_table              -- Output table name from preprocessor.
+        dependent_varname         -- Dependent variable values from the original table
+                                     (encoded by one_hot_encode, if specified).
+        independent_varname       -- Independent variable values from the original
+                                     table.
+        dependent_vartype         -- Type of the dependent variable from the
+                                     original table.
+        class_values              -- Class values of the dependent variable
+                                     (‘NULL’(as TEXT type) for non
+                                     categorical vars).
+        buffer_size               -- Buffer size used in preprocessing step.
+        normalizing_const         -- Normalizing constant used for standardizing
+                                     arrays in independent_varname.
+
+        ---------------------------------------------------------------------------
+        """.format(**locals())
+
+        if not message:
+            return summary
+        elif message.lower() in ('usage', 'help', '?'):
+            return usage
+        return """
+            No such option. Use "SELECT {schema_madlib}.training_preprocessor_dl()"
+            for help.
+        """.format(**locals())
