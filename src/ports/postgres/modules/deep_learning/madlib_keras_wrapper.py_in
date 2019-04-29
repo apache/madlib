@@ -19,6 +19,7 @@
 
 import ast
 import os
+import plpy
 
 # Do not remove `import keras` although it's not directly used in this file.
 # See madlib_keras.py_in for more details
@@ -102,15 +103,15 @@ def convert_string_of_args_to_dict(str_of_args):
         elif not stack and char == ",":
             value_str = result_str
             result_str = ""
-            compile_dict[key_str.strip()]=value_str.strip('\'')
+            compile_dict[key_str.strip()]=value_str.strip().strip('\'')
         else:
             result_str += char
     value_str = result_str
-    compile_dict[key_str.strip()]=value_str.strip('\'')
+    compile_dict[key_str.strip()]=value_str.strip().strip('\'')
     return compile_dict
 
 # Parse the compile parameters and the optimizer.
-def parse_compile_params(str_of_args):
+def parse_and_validate_compile_params(str_of_args):
     """
     Args:
         @param: str_of_args     The string of arguments given by the user
@@ -124,10 +125,14 @@ def parse_compile_params(str_of_args):
 
     opt_name,opt_args = parse_optimizer(compile_dict)
     compile_dict['loss'] = parse_loss(compile_dict)
+    literal_eval_compile_params = ['metrics', 'loss_weights',
+                                   'weighted_metrics', 'sample_weight_mode']
+    accepted_compile_params = literal_eval_compile_params + ['optimizer', 'loss']
 
-    compile_dict['metrics'] = ast.literal_eval(compile_dict['metrics']) if 'metrics' in compile_dict.keys() else None
-    compile_dict['loss_weights'] = ast.literal_eval(compile_dict['loss_weights']) if 'loss_weights' in compile_dict.keys() else None
-
+    compile_dict = validate_and_literal_eval_keys(compile_dict,
+                                                  literal_eval_compile_params,
+                                                  accepted_compile_params)
+    validate_compile_param_types(compile_dict)
     return (opt_name,opt_args,compile_dict)
 
 # Parse the optimizer name and params.
@@ -178,11 +183,33 @@ def parse_loss(compile_dict):
     return compile_dict['loss']
 
 # Parse the fit parameters into a dictionary.
-def parse_fit_params(str_of_args):
-    compile_dict = convert_string_of_args_to_dict(str_of_args)
-    for key in compile_dict.keys():
-        compile_dict[key] = ast.literal_eval(compile_dict[key])
-    return compile_dict
+def parse_and_validate_fit_params(fit_param_str):
+    fit_params_dict = convert_string_of_args_to_dict(fit_param_str)
+
+    literal_eval_fit_params = ['batch_size','epochs','verbose','shuffle',
+                           'class_weight','initial_epoch','steps_per_epoch']
+    accepted_fit_params = literal_eval_fit_params + ['shuffle']
+
+    fit_params_dict = validate_and_literal_eval_keys(fit_params_dict,
+                                                     literal_eval_fit_params,
+                                                     accepted_fit_params)
+    return fit_params_dict
+
+# Validate the keys of the given dictionary and run literal_eval on the
+# user-defined subset
+def validate_and_literal_eval_keys(keys_dict, literal_eval_list, accepted_list):
+
+    for ckey in keys_dict.keys():
+        _assert(ckey in accepted_list,
+            "{0} is not accepted as a parameter yet. "
+            "Please review the user docs".format(ckey))
+        if ckey in literal_eval_list:
+            try:
+                keys_dict[ckey] = ast.literal_eval(keys_dict[ckey])
+            except ValueError:
+                plpy.error(("invalid input value for parameter {0}, "
+                            "please refer to the documentation").format(ckey))
+    return keys_dict
 
 # Split and strip the whitespace of key=value formatted strings
 def split_and_strip(x):
@@ -202,8 +229,32 @@ def get_optimizers():
 # Run the keras.compile with the given parameters
 def compile_model(model, compile_params):
     optimizers = get_optimizers()
-    (opt_name,final_args,compile_dict) = parse_compile_params(compile_params)
-    optimizer = optimizers[opt_name](**final_args) if final_args else opt_name
-    model.compile(optimizer=optimizer,
-                  loss=compile_dict['loss'],
-                  metrics=compile_dict['metrics'])
+    (opt_name,final_args,compile_dict) = parse_and_validate_compile_params(compile_params)
+    compile_dict['optimizer'] = optimizers[opt_name](**final_args) if final_args else opt_name
+    model.compile(**compile_dict)
+
+def validate_compile_param_types(compile_dict):
+
+    _assert(compile_dict['metrics'] is None or
+            type(compile_dict['metrics']) is list,
+            "wrong input type for compile parameter metrics: multi-output model"
+            "and user defined metrics are not supported yet, please pass a list")
+
+    _assert('loss_weights' not in compile_dict.keys() or
+            compile_dict['loss_weights'] is None or
+            type(compile_dict['loss_weights']) is list or
+            type(compile_dict['loss_weights']) is dict,
+            "wrong input type for compile parameter loss_weights: only list "
+            "and dictionary are supported for now")
+
+    _assert('weighted_metrics' not in compile_dict.keys() or
+            compile_dict['weighted_metrics'] is None or
+            type(compile_dict['weighted_metrics']) is list,
+            "wrong input type for compile parameter weighted_metrics: only list "
+            "is supported for now")
+
+    _assert('sample_weight_mode' not in compile_dict.keys() or
+            compile_dict['sample_weight_mode'] is None or
+            compile_dict['sample_weight_mode'] == "temporal",
+            """compile parameter sample_weight_mode can only be "temporal" or None""")
+
