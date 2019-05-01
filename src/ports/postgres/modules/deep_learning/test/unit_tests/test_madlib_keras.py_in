@@ -285,7 +285,7 @@ class MadlibKerasFitTestCase(unittest.TestCase):
             None, self.independent_var , self.dependent_var, 0, 2, self.all_seg_ids, total_images_per_seg,
             self.model.to_json(), self.compile_params, self.fit_params, False,
             previous_state.tostring(), **k)
- 
+
 
     def test_fit_merge(self):
         image_count = self.total_images_per_seg[0]
@@ -301,7 +301,7 @@ class MadlibKerasFitTestCase(unittest.TestCase):
         agg_accuracy = state[1]
         image_count_total = state[2]
         weights = np.rint(state[3:]).astype(np.int)
-       
+
         self.assertEqual( 2*image_count+30 , image_count_total )
         self.assertAlmostEqual( 5.0*self.loss, agg_loss, 2)
         self.assertAlmostEqual( 5.0*self.accuracy, agg_accuracy, 2)
@@ -318,7 +318,7 @@ class MadlibKerasFitTestCase(unittest.TestCase):
         agg_accuracy = state[1]
         image_count_total = state[2]
         weights = np.rint(state[3:]).astype(np.int)
-       
+
         self.assertEqual(image_count, image_count_total)
         self.assertAlmostEqual(self.loss, agg_loss, 2)
         self.assertAlmostEqual(self.accuracy, agg_accuracy, 2)
@@ -335,7 +335,7 @@ class MadlibKerasFitTestCase(unittest.TestCase):
         agg_accuracy = state[1]
         image_count_total = state[2]
         weights = np.rint(state[3:]).astype(np.int)
-       
+
         self.assertEqual(image_count, image_count_total)
         self.assertAlmostEqual(self.loss, agg_loss, 2)
         self.assertAlmostEqual(self.accuracy, agg_accuracy, 2)
@@ -350,7 +350,7 @@ class MadlibKerasFitTestCase(unittest.TestCase):
         input_state = [image_count*self.loss, image_count*self.accuracy, image_count]
         input_state.extend(mult(image_count,self.model_weights))
         input_state = np.array(input_state, dtype=np.float32)
-        
+
         output_state = self.subject.fit_final(input_state.tostring())
         output_state = np.fromstring(output_state, dtype=np.float32)
         agg_loss = output_state[0]
@@ -442,6 +442,79 @@ class MadlibKerasFitTestCase(unittest.TestCase):
                             literal_eval_fit_params,
                             accepted_fit_params)
         self.assertDictEqual(result_params, target_dict)
+
+## Negative Tests
+    def test_parse_and_validate_compile_params_dict_metrics_fail(self):
+        test_str = "optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics={'0':'accuracy'}"
+
+        with self.assertRaises(plpy.PLPYException):
+            self.subject.parse_and_validate_compile_params(test_str)
+
+    def test_parse_and_validate_compile_params_tensor_loss_weights_fail(self):
+
+        test_str = "optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['accuracy'], loss_weights = keras.layers.Input(shape=(32,))"
+
+        with self.assertRaises(plpy.PLPYException):
+            self.subject.parse_and_validate_compile_params(test_str)
+
+
+    def test_parse_and_validate_compile_params_list_dict_sample_weight_mode_fail(self):
+        test_str = "optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['accuracy'], sample_weight_mode = [0,1]"
+
+        with self.assertRaises(plpy.PLPYException):
+            self.subject.parse_and_validate_compile_params(test_str)
+
+        test_str = "optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['accuracy'], sample_weight_mode = {'0':'1'}"
+
+        with self.assertRaises(plpy.PLPYException):
+            self.subject.parse_and_validate_compile_params(test_str)
+
+
+    def test_parse_and_validate_compile_params_target_tensors_fail(self):
+        test_str = "optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['accuracy'], target_tensors = keras.layers.Input(shape=(32,))"
+
+        with self.assertRaises(plpy.PLPYException):
+            self.subject.parse_and_validate_compile_params(test_str)
+
+    def test_parse_and_validate_fit_params_callbacks_fail(self):
+
+        test_str = "batch_size=2, epochs=1, verbose=0, callbacks=keras.callbacks.Callback()"
+        with self.assertRaises(plpy.PLPYException):
+            self.subject.parse_and_validate_fit_params(test_str)
+
+    def test_parse_and_validate_fit_params_validation_split_fail(self):
+
+        test_str = "batch_size=2, epochs=1, verbose=0, validation_split=0.1"
+        with self.assertRaises(plpy.PLPYException):
+            self.subject.parse_and_validate_fit_params(test_str)
+
+    def test_parse_and_validate_fit_params_validation_data_fail(self):
+
+        test_str = "batch_size=2, epochs=1, verbose=0, validation_data=(1,2,3)"
+        with self.assertRaises(plpy.PLPYException):
+            self.subject.parse_and_validate_fit_params(test_str)
+
+    def test_parse_and_validate_fit_params_sample_weight_fail(self):
+
+        test_str = "batch_size=2, epochs=1, verbose=0, sample_weight=np.array([1,2,3])"
+        with self.assertRaises(plpy.PLPYException):
+            self.subject.parse_and_validate_fit_params(test_str)
+
+    def test_parse_and_validate_fit_params_validation_steps_fail(self):
+
+        test_str = "batch_size=2, epochs=1, verbose=0, validation_steps=1"
+        with self.assertRaises(plpy.PLPYException):
+            self.subject.parse_and_validate_fit_params(test_str)
+
+    def test_parse_and_validate_fit_params_validation_freq_fail(self):
+
+        test_str = "batch_size=2, epochs=1, verbose=0, validation_freq=1"
+        with self.assertRaises(plpy.PLPYException):
+            self.subject.parse_and_validate_fit_params(test_str)
+
+        test_str = "batch_size=2, epochs=1, verbose=0, validation_freq=[1]"
+        with self.assertRaises(plpy.PLPYException):
+            self.subject.parse_and_validate_fit_params(test_str)
 
 class MadlibKerasValidatorTestCase(unittest.TestCase):
     def setUp(self):
