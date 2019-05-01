@@ -82,6 +82,10 @@ class InputDataPreprocessorDL():
         self.padding_size = 0
 
     def _set_one_hot_encoding_variables(self):
+        """
+            Set variables such as dependent_levels and padding_size.
+            If necessary, NULLs are padded to dependent_levels list.
+        """
         if self.dependent_levels:
             # if any class level was NULL in sql, that would show up as
             # None in self.dependent_levels. Replace all None with NULL
@@ -140,6 +144,14 @@ class InputDataPreprocessorDL():
             ', '.join(one_hot_encoded_expr))
 
     def input_preprocessor_dl(self, order_by_random=True):
+        """
+            Creates the output and summary table that does the following
+            pre-processing operations on the input data:
+            1) Normalizes the independent variable.
+            2) Minibatches the normalized independent variable.
+            3) One-hot encodes the dependent variable.
+            4) Minibatches the one-hot encoded dependent variable.
+        """
         self._set_one_hot_encoding_variables()
         # Create a temp table that has independent var normalized.
         norm_tbl = unique_string(desp='normalized')
@@ -271,6 +283,10 @@ class ValidationDataPreprocessorDL(InputDataPreprocessorDL):
     def __init__(self, schema_madlib, source_table, output_table,
                  dependent_varname, independent_varname,
                  training_preprocessor_table, buffer_size, **kwargs):
+        """
+            This prepares the variables that are required by
+            InputDataPreprocessorDL.
+        """
         self.module_name = "validation_preprocessor_DL"
         self.training_preprocessor_table = training_preprocessor_table
         summary_table = self._validate_and_process_training_preprocessor_table()
@@ -287,6 +303,15 @@ class ValidationDataPreprocessorDL(InputDataPreprocessorDL):
 
     def _get_dependent_levels(self, training_dependent_levels,
                               training_dependent_vartype):
+        """
+            Return the distinct dependent levels to be considered for
+            one-hot encoding the dependent var. This is inferred from
+            the class_values column in the training_preprocessor_table
+            summary table. Note that class_values in that summary table
+            already has padding in it, so we have to strip it out here
+            in that case.
+            This function also quotes class levels if they are text.
+        """
         # Validate that dep var type is exactly the same as what was in
         # trainig_preprocessor_table's input.
         _assert(self.dependent_vartype == training_dependent_vartype,
@@ -307,6 +332,12 @@ class ValidationDataPreprocessorDL(InputDataPreprocessorDL):
         return dependent_levels
 
     def _validate_and_process_training_preprocessor_table(self):
+        """
+            Validate training_preprocessor_table param passed. That and
+            the corresponding summary tables must exist. The summary
+            table must also have columns such as normalizing_const,
+            class_values, num_classes and dependent_vartype in it.
+        """
         input_tbl_valid(self.training_preprocessor_table, self.module_name)
         training_summary_table = add_postfix(
             self.training_preprocessor_table, "_summary")
@@ -338,6 +369,10 @@ class TrainingDataPreprocessorDL(InputDataPreprocessorDL):
     def __init__(self, schema_madlib, source_table, output_table,
                  dependent_varname, independent_varname, buffer_size,
                  normalizing_const, num_classes, **kwargs):
+        """
+            This prepares the variables that are required by
+            InputDataPreprocessorDL.
+        """
         InputDataPreprocessorDL.__init__(
             self, schema_madlib, source_table, output_table,
             dependent_varname, independent_varname, buffer_size,
@@ -346,6 +381,11 @@ class TrainingDataPreprocessorDL(InputDataPreprocessorDL):
         self.dependent_levels = self._get_dependent_levels()
 
     def _get_dependent_levels(self):
+        """
+            Return the distinct dependent levels to be considered for
+            one-hot encoding the dependent var. class level values of
+            type text are quoted.
+        """
         if is_valid_psql_type(self.dependent_vartype, NUMERIC | ONLY_ARRAY):
             dependent_levels = None
         else:
@@ -360,7 +400,95 @@ class TrainingDataPreprocessorDL(InputDataPreprocessorDL):
 class InputDataPreprocessorDocumentation:
     @staticmethod
     def validation_preprocessor_dl_help(schema_madlib, message):
-        return "TODO: Fix me"
+        method = "validation_preprocessor_dl"
+        summary = """
+        ----------------------------------------------------------------
+                            SUMMARY
+        ----------------------------------------------------------------
+        For Deep Learning based techniques such as Convolutional Neural Nets,
+        the input data is mostly images. These images can be represented as an
+        array of numbers where each element represents a pixel/color intensity.
+        It is standard practice to normalize the image data before use.
+        minibatch_preprocessor() is for general use-cases, but for deep learning
+        based use-cases we provide training_preprocessor_dl() that is
+        light-weight and is specific to image datasets.
+
+        If you want to evaluate the model, a validation dataset has to
+        be prepared. This validation data has to be in the same format
+        as the corresponding batched training data used for training, i.e.,
+        the two datasets must be normalized using the same normalizing
+        constant, and the one-hot encoding of the dependent variable must
+        follow the same convention. validation_preprocessor_dl() can be
+        used to pre-process the validation data. To ensure that the format
+        is similar to the corresponding training data, this function takes
+        the output table name of training_preprocessor_dl() as an input
+        param.
+
+        For more details on function usage:
+        SELECT {schema_madlib}.{method}('usage')
+        """.format(**locals())
+
+        usage = """
+        ---------------------------------------------------------------------------
+                                        USAGE
+        ---------------------------------------------------------------------------
+        SELECT {schema_madlib}.{method}(
+            source_table,          -- TEXT. Name of the table containing input
+                                      data.  Can also be a view.
+            output_table,          -- TEXT. Name of the output table for
+                                      mini-batching.
+            dependent_varname,     -- TEXT. Name of the dependent variable column.
+            independent_varname,   -- TEXT. Name of the independent variable
+                                      column.
+            training_preprocessor_table, -- TEXT. packed training data table.
+            buffer_size            -- INTEGER. Default computed automatically.
+                                      Number of source input rows to pack into a buffer.
+        );
+
+
+        ---------------------------------------------------------------------------
+                                        OUTPUT
+        ---------------------------------------------------------------------------
+        The output table produced by validation_preprocessor_dl contains the
+        following columns:
+
+        buffer_id               -- INTEGER.  Unique id for packed table.
+        dependent_varname       -- ANYARRAY[]. Packed array of dependent variables.
+        independent_varname     -- REAL[]. Packed array of independent
+                                   variables.
+
+        ---------------------------------------------------------------------------
+        The algorithm also creates a summary table named <output_table>_summary
+        that has the following columns:
+
+        source_table              -- Source table name.
+        output_table              -- Output table name from preprocessor.
+        dependent_varname         -- Dependent variable values from the original table
+                                     (encoded by one_hot_encode, if specified).
+        independent_varname       -- Independent variable values from the original
+                                     table.
+        dependent_vartype         -- Type of the dependent variable from the
+                                     original table.
+        class_values              -- Class values of the dependent variable
+                                     (‘NULL’(as TEXT type) for non
+                                     categorical vars).
+        buffer_size               -- Buffer size used in preprocessing step.
+        normalizing_const         -- Normalizing constant used for standardizing.
+                                     arrays in independent_varname.
+        num_classes               -- num_classes value passed by user while
+                                     generating training_preprocessor_table.
+
+        ---------------------------------------------------------------------------
+        """.format(**locals())
+
+        if not message:
+            return summary
+        elif message.lower() in ('usage', 'help', '?'):
+            return usage
+        return """
+            No such option. Use "SELECT {schema_madlib}.{method}()"
+            for help.
+        """.format(**locals())
 
     @staticmethod
     def training_preprocessor_dl_help(schema_madlib, message):
@@ -395,14 +523,14 @@ class InputDataPreprocessorDocumentation:
         ---------------------------------------------------------------------------
         SELECT {schema_madlib}.{method}(
             source_table,          -- TEXT. Name of the table containing input
-                                      data.  Can also be a view
+                                      data.  Can also be a view.
             output_table,          -- TEXT. Name of the output table for
-                                      mini-batching
-            dependent_varname,     -- TEXT. Name of the dependent variable column
+                                      mini-batching.
+            dependent_varname,     -- TEXT. Name of the dependent variable column.
             independent_varname,   -- TEXT. Name of the independent variable
-                                      column
+                                      column.
             buffer_size            -- INTEGER. Default computed automatically.
-                                      Number of source input rows to pack into a buffer
+                                      Number of source input rows to pack into a buffer.
             normalizing_const      -- DOUBLE PRECISON. Default 1.0. The
                                       normalizing constant to use for
                                       standardizing arrays in independent_varname.
@@ -443,6 +571,7 @@ class InputDataPreprocessorDocumentation:
         buffer_size               -- Buffer size used in preprocessing step.
         normalizing_const         -- Normalizing constant used for standardizing
                                      arrays in independent_varname.
+        num_classes               -- num_classes input param passed to function.
 
         ---------------------------------------------------------------------------
         """.format(**locals())
@@ -452,6 +581,6 @@ class InputDataPreprocessorDocumentation:
         elif message.lower() in ('usage', 'help', '?'):
             return usage
         return """
-            No such option. Use "SELECT {schema_madlib}.training_preprocessor_dl()"
+            No such option. Use "SELECT {schema_madlib}.{method}()"
             for help.
         """.format(**locals())
