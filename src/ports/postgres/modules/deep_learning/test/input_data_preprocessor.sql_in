@@ -60,6 +60,27 @@ FROM data_preprocessor_input_batch WHERE buffer_id=1;
 SELECT assert(array_upper(independent_var, 1)=4, 'Incorrect buffer size.')
 FROM data_preprocessor_input_batch WHERE buffer_id=3;
 
+DROP TABLE IF EXISTS validation_out, validation_out_summary;
+SELECT validation_preprocessor_dl(
+  'data_preprocessor_input',
+  'validation_out',
+  'id',
+  'x',
+  'data_preprocessor_input_batch',
+  5);
+
+SELECT assert(count(*)=4, 'Incorrect number of buffers in validation_out.')
+FROM validation_out;
+
+SELECT assert(array_upper(independent_var, 2)=6, 'Incorrect buffer size.')
+FROM validation_out WHERE buffer_id=0;
+
+SELECT assert(array_upper(independent_var, 1)=5, 'Incorrect buffer size.')
+FROM validation_out WHERE buffer_id=1;
+
+SELECT assert(array_upper(independent_var, 1)=4, 'Incorrect buffer size.')
+FROM validation_out WHERE buffer_id=3;
+
 DROP TABLE IF EXISTS data_preprocessor_input_batch, data_preprocessor_input_batch_summary;
 SELECT training_preprocessor_dl(
   'data_preprocessor_input',
@@ -116,9 +137,49 @@ SELECT assert
         dependent_vartype   = 'integer' AND
         class_values        = '{-6,-3,-1,0,2,3,4,5,6,7,8,9,10,12,NULL,NULL}' AND
         buffer_size         = 4 AND  -- we sort the class values in python
-        normalizing_const   = 5,
+        normalizing_const   = 5 AND
+        num_classes         = 16,
         'Summary Validation failed. Actual:' || __to_char(summary)
         ) from (select * from data_preprocessor_input_batch_summary) summary;
+
+-- Test for validation data where the input table has only a subset of
+-- the classes compared to the original training data
+-- (data_preprocessor_input_batch). The one hot encoding must be based
+-- on class_values from data_preprocessor_input_batch_summary rather
+-- than the class levels found in validation_input.
+DROP TABLE IF EXISTS validation_input;
+CREATE TABLE validation_input(id serial, x_new double precision[], y_new INTEGER, y1 BOOLEAN, y2 TEXT, y3 DOUBLE PRECISION, y4 DOUBLE PRECISION[], y5 INTEGER[]);
+INSERT INTO validation_input(x_new, y_new, y1, y2, y3, y4, y5) VALUES
+(ARRAY[1,2,3,4,5,6], 4, TRUE, 'a', 4.0, ARRAY[1.0, 0.0], ARRAY[1,0]);
+DROP TABLE IF EXISTS validation_out, validation_out_summary;
+SELECT validation_preprocessor_dl(
+  'validation_input',
+  'validation_out',
+  'y_new',
+  'x_new',
+  'data_preprocessor_input_batch');
+-- Hard code 5.0 as the normalizing constant, based on the previous
+-- query's input param, to test if normalization is correct.
+SELECT assert(abs(x_new[1]/5.0-independent_var[1][1]) < 0.0000001, 'Incorrect normalizing in validation table.')
+FROM validation_input, validation_out;
+-- Validate if one hot encoding is as expected.
+SELECT assert(dependent_var = '{{0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0}}', 'Incorrect one-hot encode dimension with num_classes') FROM
+  validation_out WHERE buffer_id = 0;
+
+-- Test summary table
+SELECT assert
+        (
+        source_table        = 'validation_input' AND
+        output_table        = 'validation_out' AND
+        dependent_varname   = 'y_new' AND
+        independent_varname = 'x_new' AND
+        dependent_vartype   = 'integer' AND
+        class_values        = '{-6,-3,-1,0,2,3,4,5,6,7,8,9,10,12,NULL,NULL}' AND
+        buffer_size         = 1 AND  -- we sort the class values in python
+        normalizing_const   = 5 AND
+        num_classes         = 16,
+        'Summary Validation failed. Actual:' || __to_char(summary)
+        ) from (select * from validation_out_summary) summary;
 
 -- Test one-hot encoding for dependent_var
 -- test boolean type
@@ -135,10 +196,30 @@ SELECT assert(array_upper(dependent_var, 2) = 2, 'Incorrect one-hot encode dimen
   data_preprocessor_input_batch WHERE buffer_id = 0;
 SELECT assert(SUM(y) = 1, 'Incorrect one-hot encode format') FROM (SELECT buffer_id, UNNEST(dependent_var[1:1]) as y FROM data_preprocessor_input_batch) a WHERE buffer_id = 0;
 SELECT assert (dependent_vartype   = 'boolean' AND
-               class_values        = '{f,t}',
+               class_values        = '{f,t}' AND
+               num_classes         = 2,
                'Summary Validation failed. Actual:' || __to_char(summary)
               ) from (select * from data_preprocessor_input_batch_summary) summary;
 
+-- Test to assert the output summary table for validation has the correct
+-- num_classes and class_values
+DROP TABLE IF EXISTS validation_input;
+CREATE TABLE validation_input(id serial, x_new double precision[], y INTEGER, y_new BOOLEAN, y2 TEXT, y3 DOUBLE PRECISION, y4 DOUBLE PRECISION[], y5 INTEGER[]);
+INSERT INTO validation_input(x_new, y, y_new, y2, y3, y4, y5) VALUES
+(ARRAY[1,2,3,4,5,6], 4, TRUE, 'a', 4.0, ARRAY[1.0, 0.0], ARRAY[1,0]);
+DROP TABLE IF EXISTS validation_out, validation_out_summary;
+SELECT validation_preprocessor_dl(
+  'validation_input',
+  'validation_out',
+  'y_new',
+  'x_new',
+  'data_preprocessor_input_batch');
+
+SELECT assert (dependent_vartype   = 'boolean' AND
+               class_values        = '{f,t}' AND
+               num_classes         = 2,
+               'Summary Validation failed. Actual:' || __to_char(summary)
+              ) from (select * from validation_out_summary) summary;
 -- test text type
 DROP TABLE IF EXISTS data_preprocessor_input_batch, data_preprocessor_input_batch_summary;
 SELECT training_preprocessor_dl(
@@ -153,9 +234,22 @@ SELECT assert(array_upper(dependent_var, 2) = 3, 'Incorrect one-hot encode dimen
   data_preprocessor_input_batch WHERE buffer_id = 0;
 SELECT assert(SUM(y) = 1, 'Incorrect one-hot encode format') FROM (SELECT buffer_id, UNNEST(dependent_var[1:1]) as y FROM data_preprocessor_input_batch) a WHERE buffer_id = 0;
 SELECT assert (dependent_vartype   = 'text' AND
-               class_values        = '{a,b,c}',
+               class_values        = '{a,b,c}' AND
+               num_classes         = 3,
                'Summary Validation failed. Actual:' || __to_char(summary)
               ) from (select * from data_preprocessor_input_batch_summary) summary;
+
+-- data_preprocessor_input_batch was created for boolean dependent var,
+-- trying to create validation data using this table for reference, but
+-- passing a non-boolean dep var should error out.
+select assert(trap_error($TRAP$validation_preprocessor_dl(
+  'validation_input',
+  'validation_out',
+  'y_new',
+  'x_new',
+  'data_preprocessor_input_batch');$TRAP$) = 1,
+    'Passing integer dep var while expecting boolean dep var should error out.');
+
 
 -- test double precision type
 DROP TABLE IF EXISTS data_preprocessor_input_batch, data_preprocessor_input_batch_summary;
@@ -171,7 +265,8 @@ SELECT assert(array_upper(dependent_var, 2) = 3, 'Incorrect one-hot encode dimen
   data_preprocessor_input_batch WHERE buffer_id = 0;
 SELECT assert(SUM(y) = 1, 'Incorrect one-hot encode format') FROM (SELECT buffer_id, UNNEST(dependent_var[1:1]) as y FROM data_preprocessor_input_batch) a WHERE buffer_id = 0;
 SELECT assert (dependent_vartype   = 'double precision' AND
-               class_values        = '{4.0,4.2,5.0}',
+               class_values        = '{4.0,4.2,5.0}' AND
+               num_classes         = 3,
                'Summary Validation failed. Actual:' || __to_char(summary)
               ) from (select * from data_preprocessor_input_batch_summary) summary;
 
@@ -189,9 +284,21 @@ SELECT assert(array_upper(dependent_var, 2) = 2, 'Incorrect one-hot encode dimen
   data_preprocessor_input_batch WHERE buffer_id = 0;
 SELECT assert(relative_error(SUM(y), SUM(y4)) < 0.000001, 'Incorrect one-hot encode value') FROM (SELECT UNNEST(dependent_var) AS y FROM data_preprocessor_input_batch) a, (SELECT UNNEST(y4) as y4 FROM data_preprocessor_input) b;
 SELECT assert (dependent_vartype   = 'double precision[]' AND
-               class_values        IS NULL,
+               class_values        IS NULL AND
+               num_classes         IS NULL,
                'Summary Validation failed. Actual:' || __to_char(summary)
               ) from (select * from data_preprocessor_input_batch_summary) summary;
+
+DROP TABLE IF EXISTS validation_out, validation_out_summary;
+SELECT validation_preprocessor_dl(
+  'validation_input',
+  'validation_out',
+  'y4',
+  'x_new',
+  'data_preprocessor_input_batch');
+
+SELECT assert(dependent_var = '{{1,0}}', 'Incorrect one-hot encoding for already encoded dep var') FROM
+  validation_out WHERE buffer_id = 0;
 
 -- test integer array type
 DROP TABLE IF EXISTS data_preprocessor_input_batch, data_preprocessor_input_batch_summary;
@@ -207,7 +314,8 @@ SELECT assert(array_upper(dependent_var, 2) = 2, 'Incorrect one-hot encode dimen
   data_preprocessor_input_batch WHERE buffer_id = 0;
 SELECT assert(relative_error(SUM(y), SUM(y5)) < 0.000001, 'Incorrect one-hot encode value') FROM (SELECT UNNEST(dependent_var) AS y FROM data_preprocessor_input_batch) a, (SELECT UNNEST(y5) as y5 FROM data_preprocessor_input) b;
 SELECT assert (dependent_vartype   = 'integer[]' AND
-               class_values        IS NULL,
+               class_values        IS NULL AND
+               num_classes         IS NULL,
                'Summary Validation failed. Actual:' || __to_char(summary)
               ) from (select * from data_preprocessor_input_batch_summary) summary;
 
@@ -255,6 +363,42 @@ SELECT assert
 SELECT assert(array_upper(dependent_var, 2) = 5, 'Incorrect one-hot encode dimension with NULL data') FROM
   data_preprocessor_input_batch WHERE buffer_id = 0;
 
+-- The same tests, but for validation.
+DROP TABLE IF EXISTS data_preprocessor_input_validation_null;
+CREATE TABLE data_preprocessor_input_validation_null(id serial, x double precision[], label TEXT);
+INSERT INTO data_preprocessor_input_validation_null(x, label) VALUES
+(ARRAY[1,2,3,4,5,6], 'a'),
+(ARRAY[11,2,3,4,5,6], 'b'),
+(ARRAY[11,2,3,4,5,6], 'b'),
+(ARRAY[111,22,33,4,5,6], NULL);
+DROP TABLE IF EXISTS validation_out_batch, validation_out_batch_summary;
+SELECT validation_preprocessor_dl(
+  'data_preprocessor_input_validation_null',
+  'validation_out_batch',
+  'label',
+  'x',
+  'data_preprocessor_input_batch',
+  1
+  );
+
+-- Test summary table if class_values has NULL as a legitimate
+-- class label, and also two other NULLs because num_classes=5
+-- but table has only 3 distinct class labels (including NULL)
+SELECT assert
+        (
+        class_values        = '{NULL,a,b,NULL,NULL}',
+        'Summary Validation failed with NULL data. Actual:' || __to_char(summary)
+        ) from (select * from validation_out_batch_summary) summary;
+
+-- Validate one hot encoding for specific row is correct
+SELECT assert(dependent_var = '{{0,1,0,0,0}}', 'Incorrect normalizing in validation table.')
+FROM data_preprocessor_input_validation_null, validation_out_batch
+WHERE x[1]=1 AND abs(x[1]/5.0 - independent_var[1][1]) < 0.000001;
+-- Assert one-hot encoding for NULL label
+SELECT assert(dependent_var = '{{1,0,0,0,0}}', 'Incorrect normalizing in validation table.')
+FROM data_preprocessor_input_validation_null, validation_out_batch
+WHERE x[1]=111 AND abs(x[1]/5.0 - independent_var[1][1]) < 0.000001;
+
 -- Test the content of 1-hot encoded dep var when NULL is the
 -- class label.
 DROP TABLE IF EXISTS data_preprocessor_input_null;
@@ -288,3 +432,45 @@ SELECT assert(array_upper(dependent_var, 2) = 3, 'Incorrect one-hot encode dimen
 -- first index
 SELECT assert(dependent_var = '{{1,0,0}}', 'Incorrect one-hot encode dimension with NULL data') FROM
   data_preprocessor_input_batch WHERE buffer_id = 0;
+
+-- The same tests for validation.
+DROP TABLE IF EXISTS validation_out_batch, validation_out_batch_summary;
+SELECT validation_preprocessor_dl(
+  'data_preprocessor_input_null',
+  'validation_out_batch',
+  'label',
+  'x',
+  'data_preprocessor_input_batch',
+  4
+  );
+
+-- class_values must be '{NULL,NULL,NULL}' where the first NULL
+-- is for the class label seen in data, and the other two NULLs
+-- are added as num_classes=3.
+SELECT assert
+        (
+        class_values        = '{NULL,NULL,NULL}',
+        'Summary Validation failed with NULL data. Actual:' || __to_char(summary)
+        ) from (select * from validation_out_batch_summary) summary;
+
+SELECT assert(array_upper(dependent_var, 2) = 3, 'Incorrect one-hot encode dimension with NULL data') FROM
+  validation_out_batch WHERE buffer_id = 0;
+-- NULL is treated as a class label, so it should show '1' for the
+-- first index
+SELECT assert(dependent_var = '{{1,0,0}}', 'Incorrect one-hot encode dimension with NULL data') FROM
+  validation_out_batch WHERE buffer_id = 0;
+
+-- Test if validation class values is not a subset of training data class values.
+DROP TABLE IF EXISTS data_preprocessor_input_validation_null;
+CREATE TABLE data_preprocessor_input_validation_null(id serial, x double precision[], label TEXT);
+INSERT INTO data_preprocessor_input_validation_null(x, label) VALUES
+(ARRAY[11,2,3,4,5,6], 'bbbb');
+DROP TABLE IF EXISTS validation_out_batch, validation_out_batch_summary;
+select assert(trap_error($TRAP$validation_preprocessor_dl(
+  'data_preprocessor_input_validation_null',
+  'validation_out_batch',
+  'label',
+  'x',
+  'data_preprocessor_input_batch',
+  1);$TRAP$) = 1,
+    'validation class values should be a subset of training data class values.');
