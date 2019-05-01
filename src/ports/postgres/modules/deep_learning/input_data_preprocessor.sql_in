@@ -29,11 +29,13 @@ m4_include(`SQLCommon.m4')
 /**
 @addtogroup grp_input_preprocessor_dl
 
-@brief Utility that prepares input image data for use by models
-that support mini-batch as an optimization option.
+@brief Utilities that prepare input image data for use by deep learning
+modules.
 
 <div class="toc"><b>Contents</b><ul>
-<li class="level1"><a href="#input_preprocessor_dl">Input Preprocessor for Image Data</a></li>
+<li class="level1"><a href="#training_preprocessor_dl">Input Preprocessor for Training Image Data</a></li>
+<li class="level1"><a href="#validation_preprocessor_dl">Input Preprocessor for Validation Image Data</a></li>
+<li class="level1"><a href="#output">Output Tables</a></li>
 <li class="level1"><a href="#example">Examples</a></li>
 <li class="level1"><a href="#related">Related Topics</a></li>
 </ul></div>
@@ -45,18 +47,20 @@ pixel in the image. It is standard practice to normalize the image data before
 training. The normalizing constant is parameterized, and can be set depending on
 the format of image data used.
 
-This mini-batch preprocessor is a lightweight version designed specifically
-for image data.  A separate more general minibatch_preprocessor() is also
-available for other MADlib modules using non-image input data.
+@anchor training_preprocessor_dl
+@par Function for Processing Training Image Data
+training_preprocessor_dl() pre-processes input image data to be
+used for training a deep learning model, while validation_preprocessor_dl()
+pre-processes validation image data used for model evaluation.
 
 <pre class="syntax">
-training_preprocessor_dl( source_table,
-                           output_table,
-                           dependent_varname,
-                           independent_varname,
-                           buffer_size,
-                           normalizing_const,
-                           num_classes
+training_preprocessor_dl(source_table,
+                         output_table,
+                         dependent_varname,
+                         independent_varname,
+                         buffer_size,
+                         normalizing_const,
+                         num_classes
                         )
 </pre>
 
@@ -114,9 +118,72 @@ training_preprocessor_dl( source_table,
   </dd>
 </dl>
 
-<b>Output tables</b>
+@anchor validation_preprocessor_dl
+@par Function for Processing Validation Image Data
+<pre class="syntax">
+validation_preprocessor_dl(source_table,
+                           output_table,
+                           dependent_varname,
+                           independent_varname,
+                           training_preprocessor_table,
+                           buffer_size
+                          )
+</pre>
+
+\b Arguments
+<dl class="arglist">
+  <dt>source_table</dt>
+  <dd>TEXT. Name of the table containing input data.  Can also be a view.
+  </dd>
+
+  <dt>output_table</dt>
+  <dd>TEXT.  Name of the output table from the preprocessor which
+  will be used as input to algorithms that support mini-batching.
+  Note that the arrays packed into the output table are shuffled
+  and normalized (by dividing each element in the independent variable array
+  by the optional "normalizing_const" parameter), so they will not match
+  up in an obvious way with the rows in the source table.
+  </dd>
+
+  <dt>dependent_varname</dt>
+  <dd>TEXT. Name of the dependent variable column.
+  @note The mini-batch preprocessor automatically encodes
+  dependent variables of all types.  The exception is numeric array types
+  (integer and float), where we assume these are already 1-hot encoded,
+  so these will just be passed through as is.
+  </dd>
+
+  <dt>independent_varname</dt>
+  <dd>TEXT. Name of the independent variable column. The column must be
+  a numeric array type.
+  </dd>
+
+  <dt>training_preprocessor_table</dt>
+  <dd>TEXT. The output table obatined after running training_preprocessor_dl().
+  Validation data is pre-processed based on how the training data was
+  pre-processed, i.e., values such as normalizing constant and dependent
+  levels are inferred from the output of training_preprocessor_dl().
+  </dd>
+
+  <dt>buffer_size (optional)</dt>
+  <dd>INTEGER, default: computed.  Buffer size is the
+  number of rows from the
+  source table that are packed into one row of the preprocessor
+  output table.  The default value is computed considering size of
+  the source table, number of independent variables,
+  and number of segments in the database cluster.
+  @note input_preprocessor_dl tries to pack data and distribute it
+  evenly based on the number of input rows. Sometimes you don't
+  necessarily get the exact same number of rows in one pack as you specified
+  in buffer_size.
+  </dd>
+</dl>
+
+@anchor output
+@par Output Tables
 <br>
-    The output table produced by the mini-batch preprocessor contains the following columns:
+    The output tables produced by both training_preprocessor_dl and
+    validation_preprocessor_dl contain the following columns:
     <table class="output">
       <tr>
         <th>buffer_id</th>
@@ -142,7 +209,9 @@ training_preprocessor_dl( source_table,
       </tr>
     </table>
 
-A summary table named \<output_table\>_summary is also created, which has the following columns:
+A summary table named \<output_table\>_summary is also created, which
+has the following columns (the columns are the same for both
+validation_preprocessor_dl and training_preprocessor_dl):
     <table class="output">
     <tr>
         <th>source_table</th>
@@ -165,8 +234,23 @@ A summary table named \<output_table\>_summary is also created, which has the fo
         <td>Type of the dependent variable from the source table.</td>
     </tr>
     <tr>
+        <th>class_values</th>
+        <td>The dependent level values that one-hot encoding maps to.</td>
+    </tr>
+    <tr>
         <th>buffer_size</th>
         <td>Buffer size used in preprocessing step.</td>
+    </tr>
+    <tr>
+        <th>normalizing_const</th>
+        <td>The value used to normalize the input image data.</td>
+    </tr>
+    <tr>
+        <th>num_classes</th>
+        <td>Number of dependent levels the one-hot encoding is created
+        for. NULLs are padded at the end if the number of distinct class
+        levels found in the input data is lesser than num_classes parameter
+        passed to training_preprocessor_dl.</td>
     </tr>
    </table>
 
@@ -256,10 +340,10 @@ SELECT * FROM image_data;
  {{{141,35,191},{146,240,141}},{{207,239,166},{102,194,121}}} | bird
 (52 rows)
 </pre>
--#  Run the preprocessor for image data:
+-#  Run the preprocessor for training image data:
 <pre class="example">
 DROP TABLE IF EXISTS image_data_packed, image_data_packed_summary;
-SELECT madlib.input_preprocessor_dl('image_data',         -- Source table
+SELECT madlib.training_preprocessor_dl('image_data',         -- Source table
                                         'image_data_packed',  -- Output table
                                         'species',            -- Dependent variable
                                         'rgb',                -- Independent variable
@@ -311,6 +395,62 @@ independent_varname | rgb
 dependent_vartype   | text
 class_values        | {bird,cat,dog}
 buffer_size         | 18
+normalizing_const   | 255.0
+num_classes         |
+</pre>
+
+-#  Run the preprocessor for validation image data:
+<pre class="example">
+DROP TABLE IF EXISTS val_image_data_packed, val_image_data_packed_summary;
+SELECT madlib.validation_preprocessor_dl(
+      'image_data',             -- Source table
+      'val_image_data_packed',  -- Output table
+      'species',                -- Dependent variable
+      'rgb',                    -- Independent variable
+      'image_data_packed',      -- packed training data table
+      2                         -- Buffer size
+      );
+</pre>
+We can choose to use a new buffer size compared to the
+training_preprocessor_dl run. Other parameters such as num_classes and
+normalizing_const that were passed to training_preprocessor_dl are
+automatically inferred using the image_data_packed param that is passed.
+Here is a sample of the packed output table:
+<pre class="example">
+\\x on
+SELECT * FROM val_image_data_packed ORDER BY buffer_id;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]---+---------------------------------------------------------------------------------------------------------------------
+independent_var | {{{{0.270588,0.0666667,0.435294},{0.4,0.133333,0.207843}},{{0.588235,0.933333,0.556863},...}
+dependent_var   | {{1,0,0},{0,1,0}}
+buffer_id       | 0
+-[ RECORD 2 ]---+---------------------------------------------------------------------------------------------------------------------
+independent_var | {{{{0.301961,0.337255,0.427451},{0.317647,0.909804,0.835294}},{{0.933333,0.247059,0.886275},...}
+dependent_var   | {{1,0,0},{1,0,0}}
+buffer_id       | 1
+-[ RECORD 3 ]---+---------------------------------------------------------------------------------------------------------------------
+independent_var | {{{{0.556863,0.956863,0.117647},{0.764706,0.929412,0.160784}},{{0.0235294,0.886275,0.0196078},...}
+dependent_var   | {{1,0,0},{1,0,0}}
+buffer_id       | 2
+...
+</pre>
+Review the output summary table:
+<pre class="example">
+\\x on
+SELECT * FROM val_image_data_packed_summary;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]-------+----------------------
+source_table        | image_data
+output_table        | val_image_data_packed
+dependent_varname   | species
+independent_varname | rgb
+dependent_vartype   | text
+class_values        | {bird,cat,dog}
+buffer_size         | 2
+normalizing_const   | 255.0
+num_classes         |
 </pre>
 
 -#  Load data in another format.  Create an artificial 2x2 resolution color image
@@ -394,10 +534,10 @@ SELECT * FROM image_data;
 (52 rows)
 </pre>
 
--#  Run the preprocessor for image data:
+-#  Run the preprocessor for training image data:
 <pre class="example">
 DROP TABLE IF EXISTS image_data_packed, image_data_packed_summary;
-SELECT madlib.input_preprocessor_dl('image_data',         -- Source table
+SELECT madlib.training_preprocessor_dl('image_data',         -- Source table
                                         'image_data_packed',  -- Output table
                                         'species',            -- Dependent variable
                                         'rgb',                -- Independent variable
@@ -425,11 +565,41 @@ dependent_var   | {{0,1,0},{0,1,0},{0,1,0},{0,0,1},{0,0,1},...}
 buffer_id       | 2
 </pre>
 
+-#  Run the preprocessor for validation image data:
+<pre class="example">
+DROP TABLE IF EXISTS val_image_data_packed, val_image_data_packed_summary;
+SELECT madlib.validation_preprocessor_dl(
+    'image_data',             -- Source table
+    'val_image_data_packed',  -- Output table
+    'species',                -- Dependent variable
+    'rgb',                    -- Independent variable
+    'image_data_packed',      -- packed training data table
+    NULL                      -- Buffer size
+    );
+</pre>
+Here is a sample of the packed output summary table:
+<pre class="example">
+\\x on
+SELECT * FROM val_image_data_packed_summary;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]-------+----------------------
+source_table        | image_data
+output_table        | val_image_data_packed
+dependent_varname   | species
+independent_varname | rgb
+dependent_vartype   | text
+class_values        | {bird,cat,dog}
+buffer_size         | 18
+normalizing_const   | 255.0
+num_classes         |
+</pre>
+
 -# Generally the default buffer size will work well,
 but if you have occasion to change it:
 <pre class="example">
 DROP TABLE IF EXISTS image_data_packed, image_data_packed_summary;
-SELECT madlib.input_preprocessor_dl('image_data',         -- Source table
+SELECT madlib.training_preprocessor_dl('image_data',         -- Source table
                                         'image_data_packed',  -- Output table
                                         'species',            -- Dependent variable
                                         'rgb',                -- Independent variable
@@ -462,7 +632,7 @@ buffer_size         | 10
 -#  Run the preprocessor for image data with num_classes greater than 3 (distinct class values found in table):
 <pre class="example">
 DROP TABLE IF EXISTS image_data_packed, image_data_packed_summary;
-SELECT madlib.input_preprocessor_dl('image_data',         -- Source table
+SELECT madlib.training_preprocessor_dl('image_data',         -- Source table
                                         'image_data_packed',  -- Output table
                                         'species',            -- Dependent variable
                                         'rgb',                -- Independent variable
