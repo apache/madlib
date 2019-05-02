@@ -51,11 +51,34 @@ from utilities.utilities import is_platform_pg
 from utilities.utilities import get_segments_per_host
 from utilities.utilities import madlib_version
 from utilities.validate_args import get_col_value_and_type
+from utilities.validate_args import get_expr_type
 from utilities.validate_args import quote_ident
+
+def get_source_summary_table_dict(fit_validator):
+    source_summary = plpy.execute("""
+            SELECT
+                {class_values} AS class_values,
+                {norm_const} AS norm_const,
+                {dep_vartype} AS dep_vartype,
+                {dep_varname} AS dependent_varname_in_source_table,
+                {indep_varname} AS independent_varname_in_source_table
+            FROM {tbl}
+        """.format(class_values=CLASS_VALUES_COLNAME,
+                   norm_const=NORMALIZING_CONST_COLNAME,
+                   dep_vartype=DEPENDENT_VARTYPE_COLNAME,
+                   dep_varname='dependent_varname',
+                   indep_varname='independent_varname',
+                   tbl=fit_validator.source_summary_table))[0]
+    source_summary['class_values_type'] = get_expr_type(
+        CLASS_VALUES_COLNAME, fit_validator.source_summary_table)
+    source_summary['norm_const_type'] = get_expr_type(
+        NORMALIZING_CONST_COLNAME, fit_validator.source_summary_table)
+    return source_summary
 
 def fit(schema_madlib, source_table, model,model_arch_table,
         model_arch_id, compile_params, fit_params, num_iterations,
-        gpus_per_host = 0, validation_table=None, name="",
+        gpus_per_host = 0, validation_table=None,
+        metrics_compute_frequency=None, name="",
         description="", **kwargs):
     source_table = quote_ident(source_table)
     dependent_varname = MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL
@@ -64,7 +87,10 @@ def fit(schema_madlib, source_table, model,model_arch_table,
 
     fit_validator = FitInputValidator(
         source_table, validation_table, model, model_arch_table,
-        dependent_varname, independent_varname, num_iterations)
+        dependent_varname, independent_varname, num_iterations,
+        metrics_compute_frequency)
+    if metrics_compute_frequency is None:
+        metrics_compute_frequency = num_iterations
 
     start_training_time = datetime.datetime.now()
 
@@ -134,7 +160,7 @@ def fit(schema_madlib, source_table, model,model_arch_table,
 
     # Construct validation dataset if provided
     validation_set_provided = bool(validation_table)
-    validation_aggregate_accuracy = []; validation_aggregate_loss = []
+    validation_metrics = []; validation_loss = []
 
     # Prepare the SQL for running distributed training via UDA
     compile_params_to_pass = "$madlib$" + compile_params + "$madlib$"
@@ -160,143 +186,138 @@ def fit(schema_madlib, source_table, model,model_arch_table,
     # Define the state for the model and loss/accuracy storage lists
     model_state = madlib_keras_serializer.serialize_weights(
         0, 0, 0, model_weights)
-    aggregate_loss, aggregate_accuracy, aggregate_runtime = [], [], []
+    training_loss, training_metrics, aggregate_runtime = [], [], []
+    metrics_iters = []
 
     plpy.info("Model architecture size: {}KB".format(len(model_arch)/1024))
     plpy.info("Model state (serialized) size: {}MB".format(
         len(model_state)/1024/1024))
 
     # Run distributed training for specified number of iterations
-    for i in range(num_iterations):
+    for i in range(1, num_iterations+1):
         start_iteration = time.time()
-        iteration_result = plpy.execute(run_training_iteration, [model_state])[0]['iteration_result']
+        iteration_result = plpy.execute(run_training_iteration,
+                                        [model_state])[0]['iteration_result']
         end_iteration = time.time()
         plpy.info("Time for iteration {0}: {1} sec".
-                  format(i + 1, end_iteration - start_iteration))
+                  format(i, end_iteration - start_iteration))
         aggregate_runtime.append(datetime.datetime.now())
-        avg_loss, avg_accuracy, model_state = madlib_keras_serializer.deserialize_iteration_state(iteration_result)
+        avg_loss, avg_metric, model_state = madlib_keras_serializer.\
+            deserialize_iteration_state(iteration_result)
         plpy.info("Average loss after training iteration {0}: {1}".format(
-            i + 1, avg_loss))
+            i, avg_loss))
         plpy.info("Average accuracy after training iteration {0}: {1}".format(
-            i + 1, avg_accuracy))
-        if validation_set_provided:
-            _, _, _, updated_weights = madlib_keras_serializer.deserialize_weights(
-                model_state, model_shapes)
-            master_model.set_weights(updated_weights)
-            start_val = time.time()
-            evaluate_result = get_loss_acc_from_keras_eval(schema_madlib,
-                                                           validation_table,
-                                                           dependent_varname,
-                                                           independent_varname,
-                                                           compile_params_to_pass,
-                                                           model_arch, model_state,
-                                                           gpus_per_host,
-                                                           segments_per_host,
-                                                           seg_ids_val,
-                                                           images_per_seg_val,
-                                                           gp_segment_id_col)
-            end_val = time.time()
-            plpy.info("Time for validation in iteration {0}: {1} sec". format(i + 1, end_val - start_val))
-            if len(evaluate_result) < 2:
-                plpy.error('Calling evaluate on validation data returned < 2 '
-                           'metrics. Expected metrics are loss and accuracy')
-            validation_loss = evaluate_result[0]
-            validation_accuracy = evaluate_result[1]
-            plpy.info("Validation set accuracy after iteration {0}: {1}".
-                      format(i + 1, validation_accuracy))
-            validation_aggregate_accuracy.append(validation_accuracy)
-            validation_aggregate_loss.append(validation_loss)
-        aggregate_loss.append(avg_loss)
-        aggregate_accuracy.append(avg_accuracy)
+            i, avg_metric))
+
+        if should_compute_metrics_this_iter(i, metrics_compute_frequency,
+                                            num_iterations):
+            # TODO: Do we need this code?
+            # _, _, _, updated_weights = madlib_keras_serializer.deserialize_weights(
+            #     model_state, model_shapes)
+            # master_model.set_weights(updated_weights)
+            # Compute loss/accuracy for training data.
+            # TODO: Uncomment this once JIRA MADLIB-1332 is merged to master
+            # compute_loss_and_metrics(
+            #     schema_madlib, source_table, dependent_varname,
+            #     independent_varname, compile_params_to_pass, model_arch,
+            #     model_state, gpus_per_host, segments_per_host, seg_ids_val,
+            #     images_per_seg_val, gp_segment_id_col,
+            #     training_metrics, training_loss,
+            #     i, "Training")
+            metrics_iters.append(i)
+            if validation_set_provided:
+                # Compute loss/accuracy for validation data.
+                compute_loss_and_metrics(
+                    schema_madlib, validation_table, dependent_varname,
+                    independent_varname, compile_params_to_pass, model_arch,
+                    model_state, gpus_per_host, segments_per_host, seg_ids_val,
+                    images_per_seg_val, gp_segment_id_col,
+                    validation_metrics, validation_loss,
+                    i, "Validation")
+        training_loss.append(avg_loss)
+        training_metrics.append(avg_metric)
 
     end_training_time = datetime.datetime.now()
 
-    final_validation_acc = None
-    if validation_aggregate_accuracy and len(validation_aggregate_accuracy) > 0:
-        final_validation_acc = validation_aggregate_accuracy[-1]
-
-    final_validation_loss = None
-    if validation_aggregate_loss and len(validation_aggregate_loss) > 0:
-        final_validation_loss = validation_aggregate_loss[-1]
     version = madlib_version(schema_madlib)
-    class_values, class_values_type = get_col_value_and_type(
-        fit_validator.source_summary_table, CLASS_VALUES_COLNAME)
-    norm_const, norm_const_type = get_col_value_and_type(
-        fit_validator.source_summary_table, NORMALIZING_CONST_COLNAME)
-    dep_vartype = plpy.execute("SELECT {0} AS dep FROM {1}".format(
-        DEPENDENT_VARTYPE_COLNAME, fit_validator.source_summary_table))[0]['dep']
-    dependent_varname_in_source_table = quote_ident(plpy.execute("SELECT {0} FROM {1}".format(
-        'dependent_varname', fit_validator.source_summary_table))[0]['dependent_varname'])
-    independent_varname_in_source_table = quote_ident(plpy.execute("SELECT {0} FROM {1}".format(
-        'independent_varname', fit_validator.source_summary_table))[0]['independent_varname'])
+    src_summary_dict = get_source_summary_table_dict(fit_validator)
+    class_values = src_summary_dict['class_values']
+    class_values_type = src_summary_dict['class_values_type']
+    norm_const = src_summary_dict['norm_const']
+    norm_const_type = src_summary_dict['norm_const_type']
+    dep_vartype = src_summary_dict['dep_vartype']
+    dependent_varname_in_source_table = src_summary_dict['dependent_varname_in_source_table']
+    independent_varname_in_source_table = src_summary_dict['independent_varname_in_source_table']
+    # Define some constants to be inserted into the summary table.
+    model_type = "madlib_keras"
+    model_size = sys.getsizeof(model)
+    metrics_iters = metrics_iters if metrics_iters else 'NULL'
+    # We always compute the training loss and metrics, at least once.
+    training_metrics_final = training_metrics[-1]
+    training_loss_final = training_loss[-1]
+    training_metrics = training_metrics if training_metrics else 'NULL'
+    training_loss = training_loss if training_loss else 'NULL'
+    # Validation loss and metrics are computed only if validation_table
+    # is provided.
+    if validation_set_provided:
+        validation_metrics_final = validation_metrics[-1]
+        validation_loss_final = validation_loss[-1]
+        validation_metrics = 'ARRAY{0}'.format(validation_metrics)
+        validation_loss = 'ARRAY{0}'.format(validation_loss)
+        # Must quote the string before inserting to table. Explicitly
+        # quoting it here since this can also take a NULL value, done
+        # in the else part.
+        validation_table = "$MAD${0}$MAD$".format(validation_table)
+    else:
+        validation_metrics = validation_loss = 'NULL'
+        validation_metrics_final = validation_loss_final = 'NULL'
+        validation_table = 'NULL'
+
     create_output_summary_table = plpy.prepare("""
-        CREATE TABLE {0}_summary AS
+        CREATE TABLE {output_summary_model_table} AS
         SELECT
-        $1 AS model_arch_table,
-        $2 AS model_arch_id,
-        $3 AS model_type,
-        $4 AS start_training_time,
-        $5 AS end_training_time,
-        $6 AS source_table,
-        $7 AS validation_table,
-        $8 AS model,
-        $9 AS dependent_varname,
-        $10 AS independent_varname,
-        $11 AS name,
-        $12 AS description,
-        $13 AS model_size,
-        $14 AS madlib_version,
-        $15 AS compile_params,
-        $16 AS fit_params,
-        $17 AS num_iterations,
-        $18 AS num_classes,
-        $19 AS accuracy,
-        $20 AS loss,
-        $21 AS accuracy_iter,
-        $22 AS loss_iter,
-        $23 AS time_iter,
-        $24 AS accuracy_validation,
-        $25 AS loss_validation,
-        $26 AS accuracy_iter_validation,
-        $27 AS loss_iter_validation,
-        $28 AS {1},
-        $29 AS {2},
-        $30 AS {3}
-        """.format(model, CLASS_VALUES_COLNAME, DEPENDENT_VARTYPE_COLNAME,
-                   NORMALIZING_CONST_COLNAME),
-                   ["TEXT", "INTEGER", "TEXT", "TIMESTAMP",
-                    "TIMESTAMP", "TEXT", "TEXT","TEXT",
-                    "TEXT", "TEXT", "TEXT", "TEXT", "INTEGER",
-                    "TEXT", "TEXT", "TEXT", "INTEGER",
-                    "INTEGER", "DOUBLE PRECISION",
-                    "DOUBLE PRECISION", "DOUBLE PRECISION[]",
-                    "DOUBLE PRECISION[]", "TIMESTAMP[]",
-                    "DOUBLE PRECISION", "DOUBLE PRECISION",
-                    "DOUBLE PRECISION[]", "DOUBLE PRECISION[]",
-                    class_values_type, "TEXT", norm_const_type])
-    plpy.execute(
-        create_output_summary_table,
-        [
-            model_arch_table, model_arch_id,
-            "madlib_keras",
-            start_training_time, end_training_time,
-            source_table, validation_table,
-            model, dependent_varname_in_source_table,
-            independent_varname_in_source_table, name, description,
-            sys.getsizeof(model), version, compile_params,
-            fit_params, num_iterations, num_classes,
-            aggregate_accuracy[-1],
-            aggregate_loss[-1],
-            aggregate_accuracy, aggregate_loss,
-            aggregate_runtime, final_validation_acc,
-            final_validation_loss,
-            validation_aggregate_accuracy,
-            validation_aggregate_loss,
-            class_values,
-            dep_vartype,
-            norm_const
-        ]
-        )
+            $MAD${source_table}$MAD$::TEXT AS source_table,
+            $MAD${model}$MAD$::TEXT AS model,
+            $MAD${dependent_varname_in_source_table}$MAD$::TEXT AS dependent_varname,
+            $MAD${independent_varname_in_source_table}$MAD$::TEXT AS independent_varname,
+            $MAD${model_arch_table}$MAD$::TEXT AS model_arch_table,
+            {model_arch_id} AS model_arch_id,
+            $1 AS compile_params,
+            $2 AS fit_params,
+            {num_iterations} AS num_iterations,
+            {validation_table}::TEXT AS validation_table,
+            {metrics_compute_frequency} AS metrics_compute_frequency,
+            $3 AS name,
+            $4 AS description,
+            '{model_type}'::TEXT AS model_type,
+            {model_size} AS model_size,
+            '{start_training_time}'::TIMESTAMP AS start_training_time,
+            '{end_training_time}'::TIMESTAMP AS end_training_time,
+            $5 AS time_iter,
+            '{version}'::TEXT AS madlib_version,
+            {num_classes} AS num_classes,
+            $6 AS {class_values_colname},
+            '{dep_vartype}' AS {dependent_vartype_colname},
+            {norm_const} AS {normalizing_const_colname},
+            {training_metrics_final} AS training_metrics_final,
+            {training_loss_final} AS training_loss_final,
+            ARRAY{training_metrics}::DOUBLE PRECISION[] AS training_metrics,
+            ARRAY{training_loss}::DOUBLE PRECISION[] AS training_loss,
+            {validation_metrics_final} AS validation_metrics_final,
+            {validation_loss_final} AS validation_loss_final,
+            {validation_metrics}::DOUBLE PRECISION[] AS validation_metrics,
+            {validation_loss}::DOUBLE PRECISION[] AS validation_loss,
+            ARRAY{metrics_iters}::INTEGER[] AS metrics_iters
+        """.format(output_summary_model_table=fit_validator.output_summary_model_table,
+                   class_values_colname=CLASS_VALUES_COLNAME,
+                   dependent_vartype_colname=DEPENDENT_VARTYPE_COLNAME,
+                   normalizing_const_colname=NORMALIZING_CONST_COLNAME,
+                   **locals()),
+                   ["TEXT", "TEXT", "TEXT","TEXT", "TIMESTAMP[]",
+                    class_values_type])
+    plpy.execute(create_output_summary_table,
+                 [compile_params, fit_params, name,
+                  description, aggregate_runtime, class_values])
 
     create_output_table = plpy.prepare("""
         CREATE TABLE {0} AS
@@ -308,6 +329,61 @@ def fit(schema_madlib, source_table, model,model_arch_table,
 
     #TODO add a unit test for this in a future PR
     reset_cuda_env(original_cuda_env)
+
+def compute_loss_and_metrics(schema_madlib, table, dependent_varname,
+                             independent_varname, compile_params, model_arch,
+                             model_state, gpus_per_host, segments_per_host,
+                             seg_ids_val, rows_per_seg_val,
+                             gp_segment_id_col, metrics_list, loss_list,
+                             curr_iter, dataset_name):
+    """
+    Compute the loss and metric using a given model (model_state) on the
+    given dataset (table.)
+    """
+    start_val = time.time()
+    evaluate_result = get_loss_acc_from_keras_eval(schema_madlib,
+                                                   table,
+                                                   dependent_varname,
+                                                   independent_varname,
+                                                   compile_params,
+                                                   model_arch, model_state,
+                                                   gpus_per_host,
+                                                   segments_per_host,
+                                                   seg_ids_val,
+                                                   rows_per_seg_val,
+                                                   gp_segment_id_col)
+    end_val = time.time()
+    plpy.info("Time for evaluation in iteration {0}: {1} sec.". format(
+        curr_iter, end_val - start_val))
+    if len(evaluate_result) < 2:
+        plpy.error('Calling evaluate on table {0} returned < 2 '
+                   'metrics. Expected both loss and a metric.'.format(
+            table))
+    loss = evaluate_result[0]
+    metric = evaluate_result[1]
+    plpy.info("{0} set metric after iteration {1}: {2}.".
+              format(dataset_name, curr_iter, metric))
+    plpy.info("{0} set loss after iteration {1}: {2}.".
+              format(dataset_name, curr_iter, loss))
+    metrics_list.append(metric)
+    loss_list.append(loss)
+
+def should_compute_metrics_this_iter(curr_iter, metrics_compute_frequency,
+                                     num_iterations):
+    """
+    Check if we want to compute loss/accuracy for the current iteration
+    :param curr_iter:
+    :param metrics_compute_frequency:
+    :param num_iterations:
+    :return: Returns a boolean
+            return TRUE, if it is the last iteration, or if metrics_compute_frequency
+            iterations have elapsed since the last time it was computed.
+            return FALSE otherwise.
+    """
+    # Compute loss/accuracy every metrics_compute_frequency'th iteration,
+    # and also for the last iteration.
+    return (curr_iter)%metrics_compute_frequency == 0 or \
+           curr_iter == num_iterations
 
 def get_images_per_seg(source_table, dependent_varname):
     """

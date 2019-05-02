@@ -34,6 +34,7 @@ from utilities.utilities import is_var_valid
 from utilities.utilities import is_valid_psql_type
 from utilities.utilities import NUMERIC
 from utilities.utilities import ONLY_ARRAY
+from utilities.validate_args import cols_in_tbl_valid
 from utilities.validate_args import columns_exist_in_table
 from utilities.validate_args import get_expr_type
 from utilities.validate_args import input_tbl_valid
@@ -157,13 +158,14 @@ class PredictInputValidator:
 class FitInputValidator:
     def __init__(self, source_table, validation_table, output_model_table,
                  model_arch_table, dependent_varname, independent_varname,
-                 num_iterations):
+                 num_iterations, metrics_compute_frequency):
         self.source_table = source_table
         self.validation_table = validation_table
         self.output_model_table = output_model_table
         self.model_arch_table = model_arch_table
         self.dependent_varname = dependent_varname
         self.independent_varname = independent_varname
+        self.metrics_compute_frequency = metrics_compute_frequency
         self.num_iterations = num_iterations
         self.source_summary_table = None
         if self.source_table:
@@ -172,36 +174,42 @@ class FitInputValidator:
         if self.output_model_table:
             self.output_summary_model_table = add_postfix(
                 self.output_model_table, "_summary")
-        self.module_name = 'model_keras'
+        self.module_name = 'madlib_keras_fit'
         self._validate_input_args()
 
     def _validate_input_table(self, table):
         _assert(is_var_valid(table, self.independent_varname),
-                "model_keras error: invalid independent_varname "
+                "{module_name}: invalid independent_varname "
                 "('{independent_varname}') for table "
                 "({table}).".format(
+                    module_name=self.module_name,
                     independent_varname=self.independent_varname,
                     table=table))
 
         _assert(is_var_valid(table, self.dependent_varname),
-                "model_keras error: invalid dependent_varname "
+                "{module_name}: invalid dependent_varname "
                 "('{dependent_varname}') for table "
                 "({table}).".format(
+                    module_name=self.module_name,
                     dependent_varname=self.dependent_varname,
                     table=table))
 
+    def _is_valid_metrics_compute_frequency(self):
+        return self.metrics_compute_frequency is None or \
+               (self.metrics_compute_frequency >= 1 and \
+               self.metrics_compute_frequency <= self.num_iterations)
+
     def _validate_input_args(self):
         _assert(self.num_iterations > 0,
-            "model_keras error: Number of iterations cannot be < 1.")
+            "{0}: Number of iterations cannot be < 1.".format(self.module_name))
+        _assert(self._is_valid_metrics_compute_frequency(),
+            "{0}: metrics_compute_frequency must be in the range (1 - {1}).".format(
+                self.module_name, self.num_iterations))
         input_tbl_valid(self.source_table, self.module_name)
         input_tbl_valid(self.source_summary_table, self.module_name)
-        _assert(is_var_valid(
-            self.source_summary_table, CLASS_VALUES_COLNAME),
-                "model_keras error: invalid class_values varname "
-                "('{class_values}') for source_summary_table "
-                "({source_summary_table}).".format(
-                    class_values=CLASS_VALUES_COLNAME,
-                    source_summary_table=self.source_summary_table))
+        cols_in_tbl_valid(self.source_summary_table, [CLASS_VALUES_COLNAME,
+            NORMALIZING_CONST_COLNAME, DEPENDENT_VARTYPE_COLNAME,
+            'dependent_varname', 'independent_varname'], self.module_name)
         # Source table and validation tables must have the same schema
         self._validate_input_table(self.source_table)
         validate_dependent_var_for_minibatch(self.source_table,
