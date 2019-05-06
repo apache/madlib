@@ -6,15 +6,17 @@ machine learning methods for structured and unstructured data.
 
 [![master build status](https://builds.apache.org/buildStatus/icon?job=madlib-master-build&style=plastic)](https://builds.apache.org/job/madlib-master-build)
 
-
 Installation and Contribution
 ==============================
-See the project website  [`MADlib Home`](http://madlib.apache.org/) for links to the
-latest binary and source packages. For installation and contribution guides,
-and other useful information
-please refer to the [`MADlib Wiki`](https://cwiki.apache.org/confluence/display/MADLIB/)
+See the project website  [MADlib Home](http://madlib.apache.org/) for links to the
+latest binary and source packages.
 
-[`Compiling from source on Linux`](https://cwiki.apache.org/confluence/display/MADLIB/Installation+Guide#InstallationGuide-CompileFromSourceCompilingFromSource) details are 
+We appreciate all forms of project contributions to MADlib including bug reports, providing help to new users, documentation, or code patches. Please refer to [Contribution Guidelines](https://cwiki.apache.org/confluence/display/MADLIB/Contribution+Guidelines) for instructions.
+
+For more installation and contribution guides,
+please refer to the [MADlib Wiki](https://cwiki.apache.org/confluence/display/MADLIB/).
+
+[Compiling from source on Linux](https://cwiki.apache.org/confluence/display/MADLIB/Installation+Guide#InstallationGuide-CompileFromSourceCompilingFromSource) details are
 also on the wiki.
 
 
