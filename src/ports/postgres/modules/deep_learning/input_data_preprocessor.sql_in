@@ -33,25 +33,33 @@ m4_include(`SQLCommon.m4')
 modules.
 
 <div class="toc"><b>Contents</b><ul>
-<li class="level1"><a href="#training_preprocessor_dl">Input Preprocessor for Training Image Data</a></li>
-<li class="level1"><a href="#validation_preprocessor_dl">Input Preprocessor for Validation Image Data</a></li>
+<li class="level1"><a href="#training_preprocessor_dl">Preprocessor for Training Image Data</a></li>
+<li class="level1"><a href="#validation_preprocessor_dl">Preprocessor for Validation Image Data</a></li>
 <li class="level1"><a href="#output">Output Tables</a></li>
 <li class="level1"><a href="#example">Examples</a></li>
 <li class="level1"><a href="#related">Related Topics</a></li>
 </ul></div>
 
-For deep learning based techniques such as convolutional neural nets, the input
-data is often images. These images can be represented as an array of numbers
-where each element represents grayscale or RGB channel values for each
-pixel in the image. It is standard practice to normalize the image data before
-training. The normalizing constant is parameterized, and can be set depending on
+For deep learning based techniques such as
+convolutional neural nets, the input
+data is often images. These images can be
+represented as an array of numbers
+where each element represents grayscale,
+RGB or other channel values for each
+pixel in the image. It is standard practice to
+normalize the image data before training.
+The normalizing constant in this module is parameterized,
+so it can be set depending on
 the format of image data used.
 
+There are two versions of the preprocessor:
+training_preprocessor_dl() preprocesses input image data to be
+used for training a deep learning model, while
+validation_preprocessor_dl() preprocesses validation
+image data used for model evaluation.
+
 @anchor training_preprocessor_dl
-@par Function for Processing Training Image Data
-training_preprocessor_dl() pre-processes input image data to be
-used for training a deep learning model, while validation_preprocessor_dl()
-pre-processes validation image data used for model evaluation.
+@par Preprocessor for Training Image Data
 
 <pre class="syntax">
 training_preprocessor_dl(source_table,
@@ -67,21 +75,28 @@ training_preprocessor_dl(source_table,
 \b Arguments
 <dl class="arglist">
   <dt>source_table</dt>
-  <dd>TEXT. Name of the table containing input data.  Can also be a view.
+  <dd>TEXT. Name of the table containing training dataset.
+  Can also be a view.
   </dd>
 
   <dt>output_table</dt>
-  <dd>TEXT.  Name of the output table from the preprocessor which
+  <dd>TEXT.  Name of the output table from the training preprocessor which
   will be used as input to algorithms that support mini-batching.
   Note that the arrays packed into the output table are shuffled
   and normalized (by dividing each element in the independent variable array
-  by the optional "normalizing_const" parameter), so they will not match
+  by the optional 'normalizing_const' parameter), so they will not match
   up in an obvious way with the rows in the source table.
+
+  In the case a validation data set is used (see
+  later on this page), this output table is also used
+  as an input to the validation preprocessor
+  so that the validation and training image data are
+  both preprocessed in an identical manner.
   </dd>
 
   <dt>dependent_varname</dt>
   <dd>TEXT. Name of the dependent variable column.
-  @note The mini-batch preprocessor automatically encodes
+  @note The mini-batch preprocessor automatically 1-hot encodes
   dependent variables of all types.  The exception is numeric array types
   (integer and float), where we assume these are already 1-hot encoded,
   so these will just be passed through as is.
@@ -99,27 +114,28 @@ training_preprocessor_dl(source_table,
   output table.  The default value is computed considering size of
   the source table, number of independent variables,
   and number of segments in the database cluster.
-  @note input_preprocessor_dl tries to pack data and distribute it
-  evenly based on the number of input rows. Sometimes you don't
-  necessarily get the exact same number of rows in one pack as you specified
-  in buffer_size.
+  @note The preprocessor tries to pack data and distribute it
+  evenly based on the number of input rows. Sometimes you won't
+  necessarily get the exact number of
+  rows specified by the 'buffer_size' parameter.
   </dd>
 
   <dt>normalizing_const (optional)</dt>
   <dd>DOUBLE PRECISION, default: 1.0. The normalizing constant to divide
-  each value in the independent_varname array by.  For example,
-  you may need to use 255 for this value if the image data is in the form 0-255.
+  each value in the 'independent_varname' array by.  For example,
+  you would use 255 for this value if the image data is in the form 0-255.
   </dd>
 
   <dt>num_classes (optional)</dt>
-  <dd>INTEGER, default: NULL. Number of class labels to be considered for 1-hot
-  encoding. If NULL, the 1-hot encoded array length will be equal to the number
+  <dd>INTEGER, default: NULL. Number of class labels for 1-hot
+  encoding. If NULL, the 1-hot encoded array
+  length will be equal to the number
   of distinct class values found in the input table.
   </dd>
 </dl>
 
 @anchor validation_preprocessor_dl
-@par Function for Processing Validation Image Data
+@par Preprocessor for Validation Image Data
 <pre class="syntax">
 validation_preprocessor_dl(source_table,
                            output_table,
@@ -133,21 +149,22 @@ validation_preprocessor_dl(source_table,
 \b Arguments
 <dl class="arglist">
   <dt>source_table</dt>
-  <dd>TEXT. Name of the table containing input data.  Can also be a view.
+  <dd>TEXT. Name of the table containing validation dataset.
+  Can also be a view.
   </dd>
 
   <dt>output_table</dt>
-  <dd>TEXT.  Name of the output table from the preprocessor which
-  will be used as input to algorithms that support mini-batching.
-  Note that the arrays packed into the output table are shuffled
-  and normalized (by dividing each element in the independent variable array
-  by the optional "normalizing_const" parameter), so they will not match
-  up in an obvious way with the rows in the source table.
+  <dd>TEXT.  Name of the output table from the validation
+  preprocessor which will be used as input to algorithms that support mini-batching.  The arrays packed into the output table are
+  normalized using the same normalizing constant from the
+  training preprocessor as specified in
+  the 'training_preprocessor_table' parameter described below.
+  Validation data is not shuffled.
   </dd>
 
   <dt>dependent_varname</dt>
   <dd>TEXT. Name of the dependent variable column.
-  @note The mini-batch preprocessor automatically encodes
+  @note The mini-batch preprocessor automatically 1-hot encodes
   dependent variables of all types.  The exception is numeric array types
   (integer and float), where we assume these are already 1-hot encoded,
   so these will just be passed through as is.
@@ -159,31 +176,34 @@ validation_preprocessor_dl(source_table,
   </dd>
 
   <dt>training_preprocessor_table</dt>
-  <dd>TEXT. The output table obatined after running training_preprocessor_dl().
-  Validation data is pre-processed based on how the training data was
-  pre-processed, i.e., values such as normalizing constant and dependent
-  levels are inferred from the output of training_preprocessor_dl().
+  <dd>TEXT. The output table obtained by
+  running training_preprocessor_dl().
+  Validation data is preprocessed in the same way as
+  training data, i.e., same normalizing constant and dependent
+  variable class values.
   </dd>
 
-  <dt>buffer_size (optional)</dt>
+ <dt>buffer_size (optional)</dt>
   <dd>INTEGER, default: computed.  Buffer size is the
   number of rows from the
   source table that are packed into one row of the preprocessor
   output table.  The default value is computed considering size of
   the source table, number of independent variables,
   and number of segments in the database cluster.
-  @note input_preprocessor_dl tries to pack data and distribute it
-  evenly based on the number of input rows. Sometimes you don't
-  necessarily get the exact same number of rows in one pack as you specified
-  in buffer_size.
+  @note The preprocessor tries to pack data and distribute it
+  evenly based on the number of input rows. Sometimes you won't
+  necessarily get the exact number of
+  rows specified in by the 'buffer_size' parameter.
   </dd>
+
+
 </dl>
 
 @anchor output
 @par Output Tables
 <br>
-    The output tables produced by both training_preprocessor_dl and
-    validation_preprocessor_dl contain the following columns:
+    The output tables produced by both training_preprocessor_dl() and
+    validation_preprocessor_dl() contain the following columns:
     <table class="output">
       <tr>
         <th>buffer_id</th>
@@ -195,7 +215,7 @@ validation_preprocessor_dl(source_table,
         <td>ANYARRAY[]. Packed array of dependent variables.
         The dependent variable is always one-hot encoded as an
         INTEGER[] array. For now, we are assuming that
-        input_preprocessor_dl will be used
+        input_preprocessor_dl() will be used
         only for classification problems using deep learning. So
         the dependent variable is one-hot encoded, unless it's already a
         numeric array in which case we assume it's already one-hot
@@ -210,8 +230,8 @@ validation_preprocessor_dl(source_table,
     </table>
 
 A summary table named \<output_table\>_summary is also created, which
-has the following columns (the columns are the same for both
-validation_preprocessor_dl and training_preprocessor_dl):
+has the following columns (the columns are the same for
+both validation_preprocessor_dl() and training_preprocessor_dl() ):
     <table class="output">
     <tr>
         <th>source_table</th>
@@ -249,8 +269,8 @@ validation_preprocessor_dl and training_preprocessor_dl):
         <th>num_classes</th>
         <td>Number of dependent levels the one-hot encoding is created
         for. NULLs are padded at the end if the number of distinct class
-        levels found in the input data is lesser than num_classes parameter
-        passed to training_preprocessor_dl.</td>
+        levels found in the input data is lesser than 'num_classes' parameter
+        specified in training_preprocessor_dl().</td>
     </tr>
    </table>
 
@@ -396,10 +416,13 @@ dependent_vartype   | text
 class_values        | {bird,cat,dog}
 buffer_size         | 18
 normalizing_const   | 255.0
-num_classes         |
+num_classes         | 3
 </pre>
 
--#  Run the preprocessor for validation image data:
+-#  Run the preprocessor for the validation dataset.
+In this example, we use the same images for
+validation to demonstrate, but normally validation data
+is different than training data:
 <pre class="example">
 DROP TABLE IF EXISTS val_image_data_packed, val_image_data_packed_summary;
 SELECT madlib.validation_preprocessor_dl(
@@ -407,7 +430,7 @@ SELECT madlib.validation_preprocessor_dl(
       'val_image_data_packed',  -- Output table
       'species',                -- Dependent variable
       'rgb',                    -- Independent variable
-      'image_data_packed',      -- packed training data table
+      'image_data_packed',      -- From training preprocessor step
       2                         -- Buffer size
       );
 </pre>
@@ -450,7 +473,7 @@ dependent_vartype   | text
 class_values        | {bird,cat,dog}
 buffer_size         | 2
 normalizing_const   | 255.0
-num_classes         |
+num_classes         | 3
 </pre>
 
 -#  Load data in another format.  Create an artificial 2x2 resolution color image
@@ -565,7 +588,10 @@ dependent_var   | {{0,1,0},{0,1,0},{0,1,0},{0,0,1},{0,0,1},...}
 buffer_id       | 2
 </pre>
 
--#  Run the preprocessor for validation image data:
+-#  Run the preprocessor for the validation dataset.
+In this example, we use the same images for
+validation to demonstrate, but normally validation data
+is different than training data:
 <pre class="example">
 DROP TABLE IF EXISTS val_image_data_packed, val_image_data_packed_summary;
 SELECT madlib.validation_preprocessor_dl(
@@ -573,7 +599,7 @@ SELECT madlib.validation_preprocessor_dl(
     'val_image_data_packed',  -- Output table
     'species',                -- Dependent variable
     'rgb',                    -- Independent variable
-    'image_data_packed',      -- packed training data table
+    'image_data_packed',      -- From training preprocessor step
     NULL                      -- Buffer size
     );
 </pre>
@@ -592,7 +618,7 @@ dependent_vartype   | text
 class_values        | {bird,cat,dog}
 buffer_size         | 18
 normalizing_const   | 255.0
-num_classes         |
+num_classes         | 3
 </pre>
 
 -# Generally the default buffer size will work well,
@@ -627,6 +653,8 @@ independent_varname | rgb
 dependent_vartype   | text
 class_values        | {bird,cat,dog}
 buffer_size         | 10
+normalizing_const   | 255.0
+num_classes         | 3
 </pre>
 
 -#  Run the preprocessor for image data with num_classes greater than 3 (distinct class values found in table):
@@ -675,12 +703,11 @@ dependent_vartype   | text
 class_values        | {bird,cat,dog,NULL,NULL}
 buffer_size         | 18
 normalizing_const   | 255.0
+num_classes         | 5
 </pre>
 
 @anchor related
 @par Related Topics
-
-input_preprocessor_dl.sql_in
 
 minibatch_preprocessing.sql_in
 
