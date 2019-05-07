@@ -36,6 +36,7 @@ from utilities.utilities import is_valid_psql_type
 from utilities.utilities import BOOLEAN, NUMERIC, ONLY_ARRAY, TEXT
 from utilities.utilities import py_list_to_sql_string
 from utilities.utilities import split_quoted_delimited_str
+from utilities.utilities import strip_end_quotes
 from utilities.utilities import unique_string
 from utilities.utilities import validate_module_input_params
 
@@ -69,13 +70,15 @@ class InputDataPreprocessorDL(object):
         self.normalizing_const = normalizing_const if normalizing_const is not None else 1.0
         self.num_classes = num_classes
         self.module_name = module_name
-        self.output_summary_table = add_postfix(self.output_table, "_summary")
-        self.independent_vartype = get_expr_type(self.independent_varname,
-                                                 self.source_table)
-        self.dependent_vartype = get_expr_type(self.dependent_varname,
-                                               self.source_table)
+        self.output_summary_table = None
+        self.dependent_vartype = None
+        self.independent_vartype = None
+        if self.output_table:
+            self.output_summary_table = add_postfix(self.output_table, "_summary")
 
+        ## Validating input args prior to using them in _set_validate_vartypes()
         self._validate_args()
+        self._set_validate_vartypes()
         self.num_of_buffers = self._get_num_buffers()
         self.dependent_levels = None
         # The number of padded zeros to include in 1-hot vector
@@ -208,6 +211,8 @@ class InputDataPreprocessorDL(object):
             if self.num_classes:
                 self.dependent_levels.extend(['NULL'
                     for i in range(self.padding_size)])
+            else:
+                self.num_classes = len(self.dependent_levels)
             class_level_str=py_list_to_sql_string(
                 self.dependent_levels, array_type=self.dependent_vartype,
                 long_format=True)
@@ -239,26 +244,6 @@ class InputDataPreprocessorDL(object):
             self.source_table, self.output_table, self.independent_varname,
             self.dependent_varname, self.module_name, None,
             [self.output_summary_table])
-        num_of_independent_cols = split_quoted_delimited_str(self.independent_varname)
-        _assert(len(num_of_independent_cols) == 1,
-            "Invalid independent_varname: only one column name is allowed "
-            "as input.")
-        _assert(is_valid_psql_type(self.independent_vartype,
-                                   NUMERIC | ONLY_ARRAY),
-                "Invalid independent variable type, should be an array of "
-                "one of {0}".format(','.join(NUMERIC)))
-        # The denpendent variable needs to be either:
-        # 1. NUMERIC, TEXT OR BOOLEAN, which we always one-hot encode
-        # 2. NUMERIC ARRAY, which we assume it is already one-hot encoded, and we
-        #    just cast it the INTEGER ARRAY
-        num_of_dependent_cols = split_quoted_delimited_str(self.dependent_varname)
-        _assert(len(num_of_dependent_cols) == 1,
-            "Invalid dependent_varname: only one column name is allowed "
-            "as input.")
-        _assert((is_valid_psql_type(self.dependent_vartype, NUMERIC | TEXT | BOOLEAN) or
-                is_valid_psql_type(self.dependent_vartype, NUMERIC | ONLY_ARRAY)),
-                """Invalid dependent variable type, should be one of the type in this list:
-                numeric, text, boolean, or numeric array""")
         if self.buffer_size is not None:
             _assert(self.buffer_size > 0,
                     "{0}: The buffer size has to be a "
@@ -266,6 +251,39 @@ class InputDataPreprocessorDL(object):
         _assert(self.normalizing_const > 0,
                 "{0}: The normalizing constant has to be a "
                 "positive integer or NULL.".format(self.module_name))
+
+    def _set_validate_vartypes(self):
+        self.independent_vartype = get_expr_type(self.independent_varname,
+                                                     self.source_table)
+        self.dependent_vartype = get_expr_type(self.dependent_varname,
+                                                   self.source_table)
+        num_of_independent_cols = split_quoted_delimited_str(self.independent_varname)
+        _assert(len(num_of_independent_cols) == 1,
+                "Invalid independent_varname: only one column name is allowed "
+                "as input.")
+        _assert(is_valid_psql_type(self.independent_vartype,
+                                   NUMERIC | ONLY_ARRAY),
+                "Invalid independent variable type, should be an array of "
+                "one of {0}".format(','.join(NUMERIC)))
+        # The dependent variable needs to be either:
+        # 1. NUMERIC, TEXT OR BOOLEAN, which we always one-hot encode
+        # 2. NUMERIC ARRAY, which we assume it is already one-hot encoded, and we
+        #    just cast it the INTEGER ARRAY
+        num_of_dependent_cols = split_quoted_delimited_str(self.dependent_varname)
+        _assert(len(num_of_dependent_cols) == 1,
+                "Invalid dependent_varname: only one column name is allowed "
+                "as input.")
+        _assert((is_valid_psql_type(self.dependent_vartype, NUMERIC | TEXT | BOOLEAN) or
+                 is_valid_psql_type(self.dependent_vartype, NUMERIC | ONLY_ARRAY)),
+                """Invalid dependent variable type, should be one of the type in this list:
+                numeric, text, boolean, or numeric array""")
+
+    def get_distinct_dependent_levels(self, table, dependent_varname,
+                                      dependent_vartype):
+        # Refactoring this out into the parent class to ensure include_nulls
+        # is passed in as true for both training and validation tables
+        return get_distinct_col_levels(table, dependent_varname,
+            dependent_vartype, include_nulls=True)
 
     def _get_num_buffers(self):
         num_rows_in_tbl = plpy.execute("""
@@ -287,7 +305,7 @@ class ValidationDataPreprocessorDL(InputDataPreprocessorDL):
             This prepares the variables that are required by
             InputDataPreprocessorDL.
         """
-        self.module_name = "validation_preprocessor_DL"
+        self.module_name = "validation_preprocessor_dl"
         self.training_preprocessor_table = training_preprocessor_table
         summary_table = self._validate_and_process_training_preprocessor_table()
         num_classes = summary_table[NUM_CLASSES_COLNAME]
@@ -327,8 +345,23 @@ class ValidationDataPreprocessorDL(InputDataPreprocessorDL):
         # InputDataPreprocessorDL._set_one_hot_encoding_variables.
         dependent_levels = strip_trailing_nulls_from_class_values(
             training_dependent_levels)
+        if training_dependent_levels:
+            dependent_levels_val_data = self.get_distinct_dependent_levels(
+                self.source_table, self.dependent_varname,
+                self.dependent_vartype)
+            unquoted_dependent_levels_val_data = [strip_end_quotes(level, "'")
+                                                  for level in dependent_levels_val_data]
+            # Assert to check if the class values in validation data is a subset
+            # of the class values in training data.
+            _assert(set(unquoted_dependent_levels_val_data).issubset(set(dependent_levels)),
+                    "{0}: the class values in {1} ({2}) should be a "
+                    "subset of class values in {3} ({4})".format(
+                        self.module_name, self.source_table,
+                        unquoted_dependent_levels_val_data,
+                        self.training_preprocessor_table, dependent_levels))
         if is_psql_char_type(self.dependent_vartype):
-            dependent_levels = [quote_literal(level) if level is not None else level for level in dependent_levels]
+            dependent_levels = [quote_literal(level) if level is not None else level
+                                for level in dependent_levels]
         return dependent_levels
 
     def _validate_and_process_training_preprocessor_table(self):
@@ -376,7 +409,7 @@ class TrainingDataPreprocessorDL(InputDataPreprocessorDL):
         InputDataPreprocessorDL.__init__(
             self, schema_madlib, source_table, output_table,
             dependent_varname, independent_varname, buffer_size,
-            normalizing_const, num_classes, "training_preprocessor_DL")
+            normalizing_const, num_classes, "training_preprocessor_dl")
         # Update default value of dependent_levels in superclass
         self.dependent_levels = self._get_dependent_levels()
 
