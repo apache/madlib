@@ -135,20 +135,28 @@ def pivot(schema_madlib, source_table, out_table, index, pivot_cols,
         agg_dict = parse_aggregates(pvals, aggregate_func)
 
         validate_output_types(source_table, agg_dict, is_array_output)
+        distinct_values = {}
+        for pcol in pcols:
+            # Find the distinct values of pivot_cols
+            distinct_pcol_values_sql = "(SELECT DISTINCT {pcol} AS {pcol}_values FROM {source_table})tmp_x".format(**locals())
 
-        # Find the distinct values of pivot_cols
-        array_agg_str = ', '.join("array_agg(DISTINCT {pcol}) AS {pcol}_values".
-                                  format(pcol=pcol) for pcol in pcols)
-        if keep_null:
-            # Some platforms don't include NULL values as part of the array_agg(DISTINCT ...)
-            # Below clause checks explicitly for NULL values
-            null_str = ", " + ', '.join(
-                "bool_or(CASE WHEN {pcol} IS NULL THEN True ELSE False END)"
-                "AS {pcol}_isnull".format(pcol=pcol) for pcol in pcols)
-        else:
-            null_str = ""
-        distinct_values = plpy.execute("SELECT {0} {1} FROM {2}".
-                                       format(array_agg_str, null_str, source_table))[0]
+            array_agg_str = "array_agg({pcol}_values) AS {pcol}_values".format(pcol=pcol)
+            pcol_name = "{pcol}_values".format(**locals())
+            distinct_values[pcol_name] = (
+                plpy.execute(""" SELECT {array_agg_str}
+                                 FROM {distinct_pcol_values_sql}
+                             """.format(**locals())))[0][pcol_name]
+            if keep_null:
+                # Some platforms don't include NULL values as part of the array_agg(DISTINCT ...)
+                # Below clause checks explicitly for NULL values
+                pcol_null_name = "{pcol}_isnull".format(**locals())
+                distinct_values[pcol_null_name] = (
+                    plpy.execute("""
+                        SELECT bool_or(CASE WHEN {pcol} IS NULL THEN True
+                                                                ELSE False END)
+                                AS {pcol}_isnull
+                        FROM {source_table}
+                    """.format(**locals())))[0][pcol_null_name]
 
         # Collect the distinct values for every pivot column into a dictionary
         pcol_distinct_values = {}
