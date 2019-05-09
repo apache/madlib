@@ -96,8 +96,8 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.fit_transition(
     dep_var                    SMALLINT[],
     current_seg_id             INTEGER,
     num_classes                INTEGER,
-    all_seg_ids                INTEGER[],
-    total_images_per_seg       INTEGER[],
+    seg_ids                    INTEGER[],
+    images_per_seg             INTEGER[],
     architecture               TEXT,
     compile_params             TEXT,
     fit_params                 TEXT,
@@ -147,8 +147,8 @@ CREATE AGGREGATE MADLIB_SCHEMA.fit_step(
     /* dep_var */                SMALLINT[],
     /* current_seg_id */         INTEGER,
     /* num_classes */            INTEGER,
-    /* all_seg_ids*/             INTEGER[],
-    /* total_buffers_per_seg*/   INTEGER[],
+    /* seg_ids*/                 INTEGER[],
+    /* images_per_seg*/          INTEGER[],
     /* architecture */           TEXT,
     /* compile_params */         TEXT,
     /* fit_params */             TEXT,
@@ -257,20 +257,69 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.madlib_keras_evaluate1(
 $$ LANGUAGE plpythonu VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
-CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.internal_keras_evaluate(
-   dependent_var double precision [],
-   independent_var double precision [],
-   model_architecture TEXT,
-   model_data bytea,
-   compile_params TEXT,
-   gpus_per_host INTEGER,
-   segments_per_host INTEGER,
-   seg_ids_val INTEGER[],
-   rows_per_seg_val INTEGER[],
-   current_seg INTEGER
-) RETURNS DOUBLE PRECISION[] AS $$
-    PythonFunctionBodyOnly(`deep_learning', `madlib_keras')
-    with AOControl(False):
-        return madlib_keras.internal_keras_evaluate(**globals())
-$$ LANGUAGE plpythonu VOLATILE
-m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.internal_keras_eval_transition(
+    state                              REAL[3],
+    dependent_var                      SMALLINT[],
+    independent_var                    REAL[],
+    model_architecture                 TEXT,
+    model_data                         BYTEA,
+    compile_params                     TEXT,
+    gpus_per_host                      INTEGER,
+    segments_per_host                  INTEGER,
+    seg_ids                            INTEGER[],
+    images_per_seg                     INTEGER[],
+    current_seg_id                     INTEGER
+) RETURNS REAL[3] AS $$
+PythonFunctionBodyOnlyNoSchema(`deep_learning', `madlib_keras')
+    return madlib_keras.internal_keras_eval_transition(**globals())
+$$ LANGUAGE plpythonu STRICT
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.internal_keras_eval_merge(
+    state1          REAL[3],
+    state2          REAL[3]
+) RETURNS REAL[3] AS $$
+PythonFunctionBodyOnlyNoSchema(`deep_learning', `madlib_keras')
+    return madlib_keras.internal_keras_eval_merge(**globals())
+$$ LANGUAGE plpythonu
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.internal_keras_eval_final(
+    state REAL[3]
+) RETURNS REAL[2] AS $$
+PythonFunctionBodyOnlyNoSchema(`deep_learning', `madlib_keras')
+    return madlib_keras.internal_keras_eval_final(**globals())
+$$ LANGUAGE plpythonu
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `') STRICT;
+
+DROP AGGREGATE IF EXISTS MADLIB_SCHEMA.internal_keras_evaluate(
+                                       SMALLINT[],
+                                       REAL[],
+                                       TEXT,
+                                       BYTEA,
+                                       TEXT,
+                                       BOOLEAN,
+                                       INTEGER[],
+                                       INTEGER[],
+                                       INTEGER
+);
+
+CREATE AGGREGATE MADLIB_SCHEMA.internal_keras_evaluate(
+    /* dependent_var */                SMALLINT[],
+    /* independent_var */              REAL[],
+    /* model_architecture */           TEXT,
+    /* model_data */                   BYTEA,
+    /* compile_params */               TEXT,
+    /* gpus_per_host */                INTEGER,
+    /* segments_per_host */            INTEGER,
+    /* seg_ids */                      INTEGER[],
+    /* images_per_seg*/                INTEGER[],
+    /* current_seg_id */               INTEGER
+)(
+    STYPE=REAL[3],
+    INITCOND='{0,0,0}',
+    SFUNC=MADLIB_SCHEMA.internal_keras_eval_transition,
+    m4_ifdef(`__POSTGRESQL__', `', `prefunc=MADLIB_SCHEMA.internal_keras_eval_merge,')
+    FINALFUNC=MADLIB_SCHEMA.internal_keras_eval_final
+);
+
