@@ -40,7 +40,6 @@ from input_data_preprocessor import MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL
 from input_data_preprocessor import MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL
 from madlib_keras_helper import CLASS_VALUES_COLNAME
 from madlib_keras_helper import DEPENDENT_VARTYPE_COLNAME
-from madlib_keras_helper import expand_input_dims
 from madlib_keras_helper import NORMALIZING_CONST_COLNAME
 from madlib_keras_validator import FitInputValidator
 from madlib_keras_wrapper import *
@@ -53,7 +52,6 @@ from utilities.utilities import get_segments_per_host
 from utilities.utilities import madlib_version
 from utilities.validate_args import get_col_value_and_type
 from utilities.validate_args import quote_ident
-
 
 def fit(schema_madlib, source_table, model,model_arch_table,
         model_arch_id, compile_params, fit_params, num_iterations,
@@ -113,10 +111,11 @@ def fit(schema_madlib, source_table, model,model_arch_table,
     # Compute total images on each segment
     gp_segment_id_col,\
     seg_ids_train,\
-    total_images_per_seg = get_images_per_seg(source_table, dependent_varname)
+    images_per_seg_train = get_images_per_seg(source_table, dependent_varname)
 
     if validation_table:
-        seg_ids_val, rows_per_seg_val = get_rows_per_seg_from_db(validation_table)
+        _, seg_ids_val,\
+        images_per_seg_val = get_images_per_seg(validation_table, dependent_varname)
 
     # Convert model from json and initialize weights
     master_model = model_from_json(model_arch)
@@ -137,9 +136,6 @@ def fit(schema_madlib, source_table, model,model_arch_table,
     validation_set_provided = bool(validation_table)
     validation_aggregate_accuracy = []; validation_aggregate_loss = []
 
-    total_images_per_seg = [int(each_segment["total_images_per_seg"])
-        for each_segment in total_images_per_seg]
-
     # Prepare the SQL for running distributed training via UDA
     compile_params_to_pass = "$madlib$" + compile_params + "$madlib$"
     fit_params_to_pass = "$madlib$" + fit_params + "$madlib$"
@@ -150,7 +146,7 @@ def fit(schema_madlib, source_table, model,model_arch_table,
             {gp_segment_id_col},
             {num_classes}::INTEGER,
             ARRAY{seg_ids_train},
-            ARRAY{total_images_per_seg},
+            ARRAY{images_per_seg_train},
             $MAD${model_arch}$MAD$::TEXT,
             {compile_params_to_pass}::TEXT,
             {fit_params_to_pass}::TEXT,
@@ -197,7 +193,7 @@ def fit(schema_madlib, source_table, model,model_arch_table,
                                                            gpus_per_host,
                                                            segments_per_host,
                                                            seg_ids_val,
-                                                           rows_per_seg_val,
+                                                           images_per_seg_val,
                                                            gp_segment_id_col)
             end_val = time.time()
             plpy.info("Time for validation in iteration {0}: {1} sec". format(i + 1, end_val - start_val))
@@ -327,59 +323,30 @@ def get_images_per_seg(source_table, dependent_varname):
     segment array.
     """
     if is_platform_pg():
-        total_images_per_seg = plpy.execute(
-            """ SELECT SUM(ARRAY_LENGTH({0}, 1)) AS total_images_per_seg
+        res = plpy.execute(
+            """ SELECT SUM(ARRAY_LENGTH({0}, 1)) AS images_per_seg
                 FROM {1}
             """.format(dependent_varname, source_table))
-        seg_ids_train = "[]::integer[]"
-        gp_segment_id_col =  -1
+        images_per_seg = [int(res[0]['images_per_seg'])]
+        seg_ids = [0]
+        gp_segment_id_col = -1
     else:
-        total_images_per_seg = plpy.execute(
-            """ SELECT gp_segment_id, SUM(ARRAY_LENGTH({0}, 1)) AS total_images_per_seg
+        images_per_seg = plpy.execute(
+            """ SELECT gp_segment_id, SUM(ARRAY_LENGTH({0}, 1)) AS images_per_seg
                 FROM {1}
                 GROUP BY gp_segment_id
             """.format(dependent_varname, source_table))
-        seg_ids_train = [int(each_segment["gp_segment_id"])
-                   for each_segment in total_images_per_seg]
+        seg_ids = [int(each_segment["gp_segment_id"])
+                   for each_segment in images_per_seg]
+        images_per_seg = [int(each_segment["images_per_seg"])
+            for each_segment in images_per_seg]
         gp_segment_id_col = 'gp_segment_id'
-    return gp_segment_id_col, seg_ids_train, total_images_per_seg
-
-def get_rows_per_seg_from_db(table_name):
-    """
-    This function queries the given table and returns the total rows per segment.
-    Since we cannot pass a dictionary to the keras fit step function we create arrays
-    out of the segment numbers and the rows per segment values.
-    This function assumes that the table is not empty.
-    :param table_name:
-    :return: Returns two arrays
-    1. An array containing all the segment numbers in ascending order
-    1. An array containing the total rows for each of the segments in the
-    segment array
-    """
-    if is_platform_pg():
-        rows = plpy.execute(
-            """ SELECT count(*) AS rows_per_seg
-                FROM {0}
-            """.format(table_name))
-        seg_ids = "[]::integer[]"
-    else:
-        # Compute total buffers on each segment
-        rows = plpy.execute(
-            """ SELECT gp_segment_id, count(*) AS rows_per_seg
-                FROM {0}
-                GROUP BY gp_segment_id
-            """.format(table_name))
-        seg_ids = [int(row["gp_segment_id"]) for row in rows]
-
-    rows = [int(row["rows_per_seg"]) for row in rows]
-    return seg_ids, rows
-
+    return gp_segment_id_col, seg_ids, images_per_seg
 
 def fit_transition(state, ind_var, dep_var, current_seg_id, num_classes,
-                   all_seg_ids, total_images_per_seg, architecture,
+                   seg_ids, images_per_seg, architecture,
                    compile_params, fit_params, gpus_per_host, segments_per_host,
                    previous_state, **kwargs):
-
     """
 
     :param state:
@@ -387,8 +354,8 @@ def fit_transition(state, ind_var, dep_var, current_seg_id, num_classes,
     :param dep_var:
     :param current_seg_id:
     :param num_classes:
-    :param all_seg_ids:
-    :param total_images_per_seg:
+    :param seg_ids:
+    :param images_per_seg:
     :param architecture:
     :param compile_params:
     :param fit_params:
@@ -447,9 +414,9 @@ def fit_transition(state, ind_var, dep_var, current_seg_id, num_classes,
     with K.tf.device(device_name):
         updated_weights = segment_model.get_weights()
     if is_platform_pg():
-        total_images = total_images_per_seg[0]
+        total_images = images_per_seg[0]
     else:
-        total_images = total_images_per_seg[all_seg_ids.index(current_seg_id)]
+        total_images = images_per_seg[seg_ids.index(current_seg_id)]
     if total_images == 0:
         plpy.error('Got 0 rows. Expected at least 1.')
 
@@ -495,9 +462,6 @@ def fit_merge(state1, state2, **kwargs):
 
     # Compute total image counts
     image_count = (image_count1 + image_count2) * 1.0
-    plpy.info("FIT_MERGE: Mergeing {0} + {1} = {2} images".format(image_count1,image_count2,image_count))
-    if image_count == 0:
-        plpy.error('total images in merge is 0')
 
     # Aggregate the losses
     total_loss = loss1 + loss2
@@ -518,6 +482,9 @@ def fit_final(state, **kwargs):
         return state
 
     loss, accuracy, image_count, weights = madlib_keras_serializer.deserialize_weights_merge(state)
+    if image_count == 0:
+        plpy.error("fit_final: Total images processed is 0")
+
     # Averaging the accuracy, loss and weights
     loss /= image_count
     accuracy /= image_count
@@ -558,42 +525,45 @@ def evaluate1(schema_madlib, model_table, test_table, id_col, model_arch_table,
     plpy.info('evaluate result acc is {}'.format(loss_acc[1]))
 
 def get_loss_acc_from_keras_eval(schema_madlib, table, dependent_varname,
-                                 independent_varname, compile_params, model_arch,
-                                 model_data, gpus_per_host, segments_per_host,
-                                 seg_ids_val,
-                                 rows_per_seg_val, gp_segment_id_col):
+                                 independent_varname, compile_params,
+                                 model_arch, model_data, gpus_per_host,
+                                 segments_per_host, seg_ids, images_per_seg,
+                                 gp_segment_id_col):
     """
     This function will call the internal keras evaluate function to get the loss
     and accuracy of each tuple which then gets averaged to get the final result.
     """
     evaluate_query = plpy.prepare("""
-    select {schema_madlib}.array_avg(loss_acc, True) as final_loss_acc from
-    (
-        select ({schema_madlib}.internal_keras_evaluate({dependent_varname},
-                                            {independent_varname},
+    -- TODO:  really, we should not be casting integers and big integers to smallint's
+    --  The right solution is either to change the datatype of the agg function from
+    --  SMALLINT to INTEGER, or change the output of minibatch util to produce SMALLINT
+    --  For the first, we should change fit_step also
+    select ({schema_madlib}.internal_keras_evaluate({dependent_varname}::SMALLINT[],
+                                            {independent_varname}::REAL[],
                                             $MAD${model_arch}$MAD$,
-                                            $1, {compile_params},
+                                            $1,
+                                            {compile_params},
                                             {gpus_per_host},
                                             {segments_per_host},
-                                            ARRAY{seg_ids_val},
-                                            ARRAY{rows_per_seg_val},
+                                            ARRAY{seg_ids},
+                                            ARRAY{images_per_seg},
                                             {gp_segment_id_col})) as loss_acc
         from {table}
-    ) q""".format(**locals()), ["bytea"])
+    """.format(**locals()), ["bytea"])
     res = plpy.execute(evaluate_query, [model_data])
-    loss_acc = res[0]['final_loss_acc']
+    loss_acc = res[0]['loss_acc']
     return loss_acc
 
-
-def internal_keras_evaluate(dependent_var, independent_var, model_architecture,
-                            model_data, compile_params, gpus_per_host,
-                            segments_per_host, seg_ids_val,
-                            rows_per_seg_val, current_seg, **kwargs):
+def internal_keras_eval_transition(state, dependent_var, independent_var,
+                                   model_architecture, model_data, compile_params,
+                                   gpus_per_host, segments_per_host, seg_ids,
+                                   images_per_seg, current_seg_id, **kwargs):
     SD = kwargs['SD']
-    device_name = get_device_name_and_set_cuda_env(gpus_per_host,
-                                                   current_seg)
+    device_name = get_device_name_and_set_cuda_env(gpus_per_host, current_seg_id)
 
-    if 'segment_model' not in SD:
+    agg_loss, agg_accuracy, agg_image_count = state
+
+    if not agg_image_count:
         if not is_platform_pg():
             set_keras_session(gpus_per_host, segments_per_host)
         model = model_from_json(model_architecture)
@@ -604,32 +574,70 @@ def internal_keras_evaluate(dependent_var, independent_var, model_architecture,
         with K.tf.device(device_name):
             compile_model(model, compile_params)
         SD['segment_model'] = model
-        SD['row_count'] = 0
+        # These should already be 0, but just in case make sure
+        agg_accuracy = 0
+        agg_loss = 0
     else:
+        # Same model every time, no need to re-compile or update weights
         model = SD['segment_model']
-    SD['row_count'] += 1
 
-    # Since the training data is batched but the validation data isn't,
-    # we have to make sure that the validation data np array has the same
-    # number of dimensions as training data. So we prepend a dimension to
-    # both x and y np arrays using expand_dims.
-    independent_var = expand_input_dims(independent_var, target_type='float32')
-    dependent_var = expand_input_dims(dependent_var)
+    x_val = np.array(independent_var)
+    y_val = np.array(dependent_var)
 
     with K.tf.device(device_name):
-        res = model.evaluate(independent_var, dependent_var)
-    if is_platform_pg():
-        total_rows = rows_per_seg_val[0]
-    else:
-        total_rows = rows_per_seg_val[seg_ids_val.index(current_seg)]
+        res = model.evaluate(x_val, y_val)
 
-    if is_last_row_in_seg(SD['row_count'], total_rows):
+    loss, accuracy = res
+
+    image_count = len(dependent_var)
+
+    agg_image_count += image_count
+    agg_loss += (image_count * loss)
+    agg_accuracy += (image_count * accuracy)
+
+    if is_platform_pg():
+        total_images = images_per_seg[0]
+    else:
+        total_images = images_per_seg[seg_ids.index(current_seg_id)]
+
+    if agg_image_count == total_images:
         SD.pop('segment_model', None)
         if not is_platform_pg():
             clear_keras_session()
+    elif agg_image_count > total_images:
+        plpy.error("Evaluated too many images.")
 
-    return res
+    state[0] = agg_loss
+    state[1] = agg_accuracy
+    state[2] = agg_image_count
 
+    return state
 
-def is_last_row_in_seg(row_count, total_rows):
-    return row_count == total_rows
+def internal_keras_eval_merge(state1, state2, **kwargs):
+    # If either state is None, return the other one
+    if not state1 or not state2:
+        return state1 or state2
+
+    loss1, accuracy1, image_count1 = state1
+    loss2, accuracy2, image_count2 = state2
+
+    merged_loss = loss1 + loss2
+    merged_accuracy = accuracy1 + accuracy2
+
+    total_image_count = image_count1 + image_count2
+
+    merged_state = [ merged_loss, merged_accuracy , total_image_count ]
+
+    return merged_state
+
+def internal_keras_eval_final(state, **kwargs):
+    loss, accuracy, image_count = state
+
+    if image_count == 0:
+        plpy.error("internal_keras_eval_final: Total images processed is 0")
+
+    loss /= image_count
+    accuracy /= image_count
+
+    state = loss, accuracy, image_count
+    return state
