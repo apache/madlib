@@ -161,17 +161,19 @@ def parse_and_validate_compile_params(str_of_args):
         compile_dict:           Dictionary of arguments for keras.compile
     """
 
-    compile_dict = convert_string_of_args_to_dict(str_of_args)
-
-    opt_name,opt_args = parse_optimizer(compile_dict)
-    compile_dict['loss'] = parse_loss(compile_dict)
     literal_eval_compile_params = ['metrics', 'loss_weights',
                                    'weighted_metrics', 'sample_weight_mode']
     accepted_compile_params = literal_eval_compile_params + ['optimizer', 'loss']
 
+    compile_dict = convert_string_of_args_to_dict(str_of_args)
     compile_dict = validate_and_literal_eval_keys(compile_dict,
                                                   literal_eval_compile_params,
                                                   accepted_compile_params)
+
+    _assert('optimizer' in compile_dict, "optimizer is a required parameter for compile")
+    opt_name, opt_args = parse_optimizer(compile_dict)
+
+    _assert('loss' in compile_dict, "loss is a required parameter for compile")
     validate_compile_param_types(compile_dict)
     return (opt_name,opt_args,compile_dict)
 
@@ -213,27 +215,28 @@ def parse_optimizer(compile_dict):
                 final_args[key] = float(value)
     return (opt_name,final_args)
 
-# Parse the loss function.
-def parse_loss(compile_dict):
-    loss_split = compile_dict['loss'].split('.')
-    if (len(loss_split) == 2 and
-        loss_split[0] == 'losses' and
-        loss_split[1] in dir(losses)):
-        return eval('losses.'+loss_split[1])
-    return compile_dict['loss']
 
 # Parse the fit parameters into a dictionary.
 def parse_and_validate_fit_params(fit_param_str):
-    fit_params_dict = convert_string_of_args_to_dict(fit_param_str)
 
-    literal_eval_fit_params = ['batch_size','epochs','verbose','shuffle',
-                           'class_weight','initial_epoch','steps_per_epoch']
-    accepted_fit_params = literal_eval_fit_params + ['shuffle']
+    if fit_param_str:
+        fit_params_dict = convert_string_of_args_to_dict(fit_param_str)
 
-    fit_params_dict = validate_and_literal_eval_keys(fit_params_dict,
-                                                     literal_eval_fit_params,
-                                                     accepted_fit_params)
-    return fit_params_dict
+        literal_eval_fit_params = ['batch_size','epochs','verbose',
+                               'class_weight','initial_epoch','steps_per_epoch']
+        accepted_fit_params = literal_eval_fit_params + ['shuffle']
+
+        fit_params_dict = validate_and_literal_eval_keys(fit_params_dict,
+                                                         literal_eval_fit_params,
+                                                         accepted_fit_params)
+        if 'shuffle' in fit_params_dict:
+            shuffle_value = fit_params_dict['shuffle']
+            if shuffle_value == 'True' or shuffle_value == 'False':
+                fit_params_dict['shuffle'] = bool(shuffle_value)
+
+        return fit_params_dict
+    else:
+        return {}
 
 # Validate the keys of the given dictionary and run literal_eval on the
 # user-defined subset
@@ -275,7 +278,8 @@ def compile_model(model, compile_params):
 
 def validate_compile_param_types(compile_dict):
 
-    _assert(compile_dict['metrics'] is None or
+    _assert('metrics' not in compile_dict.keys() or
+            compile_dict['metrics'] is None or
             type(compile_dict['metrics']) is list,
             "wrong input type for compile parameter metrics: multi-output model"
             "and user defined metrics are not supported yet, please pass a list")

@@ -414,6 +414,28 @@ class MadlibKerasWrapperTestCase(unittest.TestCase):
     def tearDown(self):
         self.module_patcher.stop()
 
+    def test_get_gpu_memory_fraction(self):
+
+        gpus_per_host = 4
+        segments_per_host = 4
+        result = self.subject.get_gpu_memory_fraction(gpus_per_host, segments_per_host)
+        self.assertEqual(result, 0.9)
+
+        gpus_per_host = 10
+        segments_per_host = 4
+        result = self.subject.get_gpu_memory_fraction(gpus_per_host, segments_per_host)
+        self.assertEqual(result, 0.9)
+
+        gpus_per_host = 2
+        segments_per_host = 6
+        result = self.subject.get_gpu_memory_fraction(gpus_per_host, segments_per_host)
+        self.assertEqual(result, 0.3)
+
+        gpus_per_host = 1
+        segments_per_host = 4
+        result = self.subject.get_gpu_memory_fraction(gpus_per_host, segments_per_host)
+        self.assertEqual(result, 0.225)
+
     def test_get_device_name_and_set_cuda_env_postgres(self):
         self.subject.is_platform_pg = Mock(return_value = True)
 
@@ -447,19 +469,7 @@ class MadlibKerasWrapperTestCase(unittest.TestCase):
     def test_split_and_strip(self):
         self.assertEqual(('a','b'), self.subject.split_and_strip(' a = b '))
 
-    def test_parse_and_validate_fit_params(self):
-        result = {'batch_size':2, 'epochs':1, 'verbose':0}
-        self.assertDictEqual(result, self.subject.parse_and_validate_fit_params('batch_size=2, epochs=1, verbose=0'))
-
     def test_parse_optimizer(self):
-
-        import keras.losses as losses
-
-        loss_func = losses.categorical_crossentropy
-        compile_dict = {'loss':'losses.categorical_crossentropy'}
-        self.assertEqual(self.subject.parse_loss(compile_dict), loss_func)
-
-    def test_parse_loss(self):
         opt_name = 'SGD'
         final_args = {'lr':0.01, 'decay':1e-6, 'nesterov':True}
         compile_dict = {}
@@ -469,22 +479,7 @@ class MadlibKerasWrapperTestCase(unittest.TestCase):
         self.assertEqual(result_name, opt_name)
         self.assertDictEqual(result_params, final_args)
 
-    def test_parse_and_validate_compile_params(self):
-
-        test_str = "optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['accuracy']"
-        compile_dict = {'optimizer':'SGD(lr=0.01, decay=1e-6, nesterov=True)', 'metrics':['accuracy'], 'loss':'categorical_crossentropy'}
-        opt_name,opt_args,result_params = self.subject.parse_and_validate_compile_params(test_str)
-        self.assertDictEqual(result_params, compile_dict)
-
-    def test_parse_and_validate_fit_params(self):
-
-        test_str = "batch_size=2, epochs=1, verbose=0"
-        fit_dict = {'batch_size':2, 'epochs':1, 'verbose':0}
-        result_params = self.subject.parse_and_validate_fit_params(test_str)
-        self.assertDictEqual(result_params, fit_dict)
-
     def test_validate_and_literal_eval_keys(self):
-
         test_dict = {'batch_size':'2', 'epochs':'1', 'verbose':'0'}
         target_dict = {'batch_size':2, 'epochs':1, 'verbose':0}
         literal_eval_fit_params = ['batch_size','epochs','verbose','shuffle',
@@ -496,58 +491,129 @@ class MadlibKerasWrapperTestCase(unittest.TestCase):
                             accepted_fit_params)
         self.assertDictEqual(result_params, target_dict)
 
-    def test_get_gpu_memory_fraction(self):
+    def test_parse_and_validate_fit_params(self):
+        result = {'batch_size':2, 'epochs':1, 'verbose':0}
+        self.assertDictEqual(result, self.subject.parse_and_validate_fit_params('batch_size=2, epochs=1, verbose=0'))
 
-        gpus_per_host = 4
-        segments_per_host = 4
-        result = self.subject.get_gpu_memory_fraction(gpus_per_host, segments_per_host)
-        self.assertEqual(result, 0.9)
+    def test_parse_and_validate_fit_params(self):
+        test_str = "batch_size=2, epochs=1, verbose=0"
+        fit_dict = {'batch_size':2, 'epochs':1, 'verbose':0}
+        result_params = self.subject.parse_and_validate_fit_params(test_str)
+        self.assertDictEqual(result_params, fit_dict)
 
-        gpus_per_host = 10
-        segments_per_host = 4
-        result = self.subject.get_gpu_memory_fraction(gpus_per_host, segments_per_host)
-        self.assertEqual(result, 0.9)
+        test_str = "batch_size=2, epochs=1, verbose=0, shuffle = 'batch'"
+        fit_dict = {'batch_size':2, 'epochs':1, 'verbose':0, 'shuffle':'batch'}
+        result_params = self.subject.parse_and_validate_fit_params(test_str)
+        self.assertDictEqual(result_params, fit_dict)
 
-        gpus_per_host = 2
-        segments_per_host = 6
-        result = self.subject.get_gpu_memory_fraction(gpus_per_host, segments_per_host)
-        self.assertEqual(result, 0.3)
+        test_str = "batch_size=2, epochs=1, verbose=0, shuffle = True"
+        fit_dict = {'batch_size':2, 'epochs':1, 'verbose':0, 'shuffle':True}
+        result_params = self.subject.parse_and_validate_fit_params(test_str)
+        self.assertDictEqual(result_params, fit_dict)
 
-        gpus_per_host = 1
-        segments_per_host = 4
-        result = self.subject.get_gpu_memory_fraction(gpus_per_host, segments_per_host)
-        self.assertEqual(result, 0.225)
+        test_str = ""
+        fit_dict = {}
+        result_params = self.subject.parse_and_validate_fit_params(test_str)
+        self.assertDictEqual(result_params, fit_dict)
 
+    def test_parse_and_validate_fit_params_duplicate_params(self):
+        test_str = "batch_size=1, batch_size=10, verbose=0"
+        fit_dict = {'batch_size':10, 'verbose':0}
+        result_params = self.subject.parse_and_validate_fit_params(test_str)
+        self.assertDictEqual(result_params, fit_dict)
 
-    ## Negative Tests
+    def test_parse_and_validate_fit_params_invalid_fit_param_fail(self):
+        test_str = "does_not_exist=2, epochs=1, verbose=0"
+        with self.assertRaises(plpy.PLPYException) as error:
+            self.subject.parse_and_validate_fit_params(test_str)
+
+        self.assertIn('not accepted', str(error.exception))
+
+        test_str = "batch_size=not_lit_eval(1), epochs=1, verbose=0"
+        with self.assertRaises(plpy.PLPYException) as error:
+            self.subject.parse_and_validate_fit_params(test_str)
+
+        self.assertIn('invalid input value', str(error.exception))
+
+    def test_parse_and_validate_compile_params(self):
+        test_str = "optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), " \
+                   "loss='categorical_crossentropy', metrics=['accuracy']"
+        compile_dict = {'optimizer':'SGD(lr=0.01, decay=1e-6, nesterov=True)',
+                        'metrics':['accuracy'], 'loss':'categorical_crossentropy'}
+        opt_name,opt_args,result_params = self.subject.parse_and_validate_compile_params(test_str)
+        self.assertDictEqual(result_params, compile_dict)
+
+        # Test without the metrics
+        test_str = "optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), " \
+                   "loss='categorical_crossentropy'"
+        compile_dict = {'optimizer':'SGD(lr=0.01, decay=1e-6, nesterov=True)',
+                        'loss':'categorical_crossentropy'}
+        opt_name,opt_args,result_params = self.subject.parse_and_validate_compile_params(test_str)
+        self.assertDictEqual(result_params, compile_dict)
+
+    def test_parse_and_validate_compile_params_default_optimizer_pass(self):
+        test_str = "optimizer='SGD', loss='categorical_crossentropy'"
+        _,_,result_dict = self.subject.parse_and_validate_compile_params(test_str)
+        self.assertEqual('SGD', result_dict['optimizer'])
+
+        test_str = "optimizer='sgd()', loss='categorical_crossentropy'"
+        _,_,result_dict = self.subject.parse_and_validate_compile_params(test_str)
+        self.assertEqual('sgd()', result_dict['optimizer'])
+
+    def test_parse_and_validate_compile_params_duplicate_loss(self):
+        test_str = "optimizer='SGD', loss='loss1', metrics=['accuracy'], loss='loss2'"
+        _,_,result_dict = self.subject.parse_and_validate_compile_params(test_str)
+        self.assertEqual('loss2', result_dict['loss'])
+
+    def test_parse_and_validate_compile_params_no_optimizer_fail(self):
+        test_str = "loss='categorical_crossentropy', metrics=['accuracy']"
+
+        with self.assertRaises(plpy.PLPYException):
+            self.subject.parse_and_validate_compile_params(test_str)
+
+    def test_parse_and_validate_compile_params_no_loss_fail(self):
+        test_str = "optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), " \
+                   "metrics=['accuracy']"
+
+        with self.assertRaises(plpy.PLPYException):
+            self.subject.parse_and_validate_compile_params(test_str)
+
     def test_parse_and_validate_compile_params_dict_metrics_fail(self):
-        test_str = "optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics={'0':'accuracy'}"
+        test_str = "optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), " \
+                   "loss='categorical_crossentropy', metrics={'0':'accuracy'}"
 
         with self.assertRaises(plpy.PLPYException):
             self.subject.parse_and_validate_compile_params(test_str)
 
     def test_parse_and_validate_compile_params_tensor_loss_weights_fail(self):
 
-        test_str = "optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['accuracy'], loss_weights = keras.layers.Input(shape=(32,))"
+        test_str = "optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True)," \
+                   " loss='categorical_crossentropy', metrics=['accuracy']," \
+                   " loss_weights = keras.layers.Input(shape=(32,))"
 
         with self.assertRaises(plpy.PLPYException):
             self.subject.parse_and_validate_compile_params(test_str)
-
 
     def test_parse_and_validate_compile_params_list_dict_sample_weight_mode_fail(self):
-        test_str = "optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['accuracy'], sample_weight_mode = [0,1]"
+        test_str = "optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True)," \
+                   " loss='categorical_crossentropy', metrics=['accuracy']," \
+                   " sample_weight_mode = [0,1]"
 
         with self.assertRaises(plpy.PLPYException):
             self.subject.parse_and_validate_compile_params(test_str)
 
-        test_str = "optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['accuracy'], sample_weight_mode = {'0':'1'}"
+        test_str = "optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True)," \
+                   " loss='categorical_crossentropy', metrics=['accuracy']," \
+                   " sample_weight_mode = {'0':'1'}"
 
         with self.assertRaises(plpy.PLPYException):
             self.subject.parse_and_validate_compile_params(test_str)
 
 
     def test_parse_and_validate_compile_params_target_tensors_fail(self):
-        test_str = "optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['accuracy'], target_tensors = keras.layers.Input(shape=(32,))"
+        test_str = "optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True)," \
+                   " loss='categorical_crossentropy', metrics=['accuracy']," \
+                   " target_tensors = keras.layers.Input(shape=(32,))"
 
         with self.assertRaises(plpy.PLPYException):
             self.subject.parse_and_validate_compile_params(test_str)
@@ -583,7 +649,6 @@ class MadlibKerasWrapperTestCase(unittest.TestCase):
             self.subject.parse_and_validate_fit_params(test_str)
 
     def test_parse_and_validate_fit_params_validation_freq_fail(self):
-
         test_str = "batch_size=2, epochs=1, verbose=0, validation_freq=1"
         with self.assertRaises(plpy.PLPYException):
             self.subject.parse_and_validate_fit_params(test_str)
@@ -591,6 +656,41 @@ class MadlibKerasWrapperTestCase(unittest.TestCase):
         test_str = "batch_size=2, epochs=1, verbose=0, validation_freq=[1]"
         with self.assertRaises(plpy.PLPYException):
             self.subject.parse_and_validate_fit_params(test_str)
+
+    def test_parse_and_validate_compile_params_syntax_error_fail(self):
+        #missing end parentheses
+        test_str = "optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True"
+        with self.assertRaises(ValueError) as error:
+            self.subject.parse_and_validate_compile_params(test_str)
+        self.assertIn('could not convert string to float', str(error.exception))
+
+        #missing beginning parentheses
+        test_str = "optimizer=SGDlr=0.01, decay=1e-6, nesterov=True)," \
+                   " loss='categorical_crossentropy'"
+        with self.assertRaises(plpy.PLPYException) as error:
+            self.subject.parse_and_validate_compile_params(test_str)
+        self.assertIn('not accepted', str(error.exception))
+
+        #missing comma
+        test_str = "optimizer=SGD(lr=0.01 decay=1e-6, nesterov=True)," \
+                   " loss='categorical_crossentropy'"
+        with self.assertRaises(ValueError) as error:
+            self.subject.parse_and_validate_compile_params(test_str)
+        self.assertIn('invalid literal for float', str(error.exception))
+
+        test_str = ""
+        with self.assertRaises(plpy.PLPYException) as error:
+            self.subject.parse_and_validate_compile_params(test_str)
+        self.assertIn('not accepted', str(error.exception))
+
+    def test_parse_and_validate_fit_params_invalid_optimizer_fail(self):
+        test_str = "optimizer='SGD1', loss='categorical_crossentropy'"
+        with self.assertRaises(plpy.PLPYException) as error:
+            self.subject.parse_and_validate_compile_params(test_str)
+        self.assertIn('invalid optimizer', str(error.exception))
+
+
+
 
 class MadlibKerasValidatorTestCase(unittest.TestCase):
     def setUp(self):
