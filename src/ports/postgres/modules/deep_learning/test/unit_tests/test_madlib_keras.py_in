@@ -417,6 +417,111 @@ class MadlibKerasFitTestCase(unittest.TestCase):
         with self.assertRaises(plpy.PLPYException):
             result = self.subject.fit_final(input_state.tostring())
 
+class MadlibKerasPredictTestCase(unittest.TestCase):
+    def setUp(self):
+        self.plpy_mock = Mock(spec='error')
+        patches = {
+            'plpy': plpy
+        }
+
+        self.plpy_mock_execute = MagicMock()
+        plpy.execute = self.plpy_mock_execute
+
+        self.module_patcher = patch.dict('sys.modules', patches)
+        self.module_patcher.start()
+        import madlib_keras_predict
+        self.subject = madlib_keras_predict
+
+        self.model = Sequential()
+        self.model.add(Conv2D(2, kernel_size=(1, 1), activation='relu',
+                              input_shape=(1,1,1,), padding='same'))
+        self.model.add(Flatten())
+
+        self.all_seg_ids = [0,1,2]
+
+        self.independent_var = [[[240]]]
+        self.total_images_per_seg = [3,3,4]
+        self.subject.K.set_session = Mock()
+        self.subject.clear_keras_session = Mock()
+
+
+    def tearDown(self):
+        self.module_patcher.stop()
+
+    def test_predict_first_image_pass_gpdb(self):
+        self.subject.is_platform_pg = Mock(return_value = False)
+        model_weights = [1,2,3,4,5,6]
+        serialized_weights = [0, 0, 0] # not used
+        serialized_weights.extend(model_weights)
+        serialized_weights = np.array(serialized_weights, dtype=np.float32).tostring()
+
+        k = {'SD': {}}
+        is_response = True
+        result = self.subject.internal_keras_predict(
+            self.independent_var, self.model.to_json(),
+            serialized_weights, is_response, 255, 0, self.all_seg_ids,
+            self.total_images_per_seg, 0, 4, **k)
+        self.assertEqual(1, len(result))
+        self.assertEqual(1,  k['SD']['row_count'])
+        self.assertEqual(True, 'segment_model_predict' in k['SD'])
+
+    def test_predict_middle_image_pass_gpdb(self):
+        self.subject.is_platform_pg = Mock(return_value = False)
+
+        k = {'SD': { 'row_count': 1}}
+        k['SD']['segment_model_predict'] = self.model
+        is_response = True
+        result = self.subject.internal_keras_predict(
+            self.independent_var, None, None, is_response, 255, 0,
+            self.all_seg_ids, self.total_images_per_seg, 0, 4, **k)
+        self.assertEqual(1, len(result))
+        self.assertEqual(2,  k['SD']['row_count'])
+        self.assertEqual(True, 'segment_model_predict' in k['SD'])
+
+    def test_predict_last_image_pass_gpdb(self):
+        self.subject.is_platform_pg = Mock(return_value = False)
+        self.model.add(Dense(3))
+
+        k = {'SD': { 'row_count': 2}}
+        k['SD']['segment_model_predict'] = self.model
+        is_response = True
+        result = self.subject.internal_keras_predict(
+            self.independent_var, None, None, is_response, 255, 0,
+            self.all_seg_ids, self.total_images_per_seg, 0, 4, **k)
+        self.assertEqual(1, len(result))
+        self.assertEqual(False, 'row_count' in k['SD'])
+        self.assertEqual(False, 'segment_model_predict' in k['SD'])
+
+        k = {'SD': { 'row_count': 2}}
+        k['SD']['segment_model_predict'] = self.model
+        is_response = False
+        result = self.subject.internal_keras_predict(
+            self.independent_var, None, None, is_response, 255, 0,
+            self.all_seg_ids, self.total_images_per_seg, 0, 4, **k)
+
+        # we except len(result) to be 3 because we have 3 dense layers in the
+        # architecture
+        self.assertEqual(3, len(result))
+        self.assertEqual(False, 'row_count' in k['SD'])
+        self.assertEqual(False, 'segment_model_predict' in k['SD'])
+
+
+    def test_predict_error_should_clear_sd(self):
+        self.subject.is_platform_pg = Mock(return_value = False)
+        self.model.add(Dense(3))
+
+        # inject error by passing 0 as the normalizing const so that we get a
+        # divide by zero error
+        normalizing_const = 0
+        k = {'SD':{}}
+        is_response = True
+        with self.assertRaises(plpy.PLPYException):
+            self.subject.internal_keras_predict(
+                self.independent_var, None, None, is_response, normalizing_const,
+                0, self.all_seg_ids, self.total_images_per_seg, 0, 4, **k)
+        self.assertEqual(False, 'row_count' in k['SD'])
+        self.assertEqual(False, 'segment_model_predict' in k['SD'])
+
 class MadlibKerasWrapperTestCase(unittest.TestCase):
     def setUp(self):
         self.plpy_mock = Mock(spec='error')

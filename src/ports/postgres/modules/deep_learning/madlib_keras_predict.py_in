@@ -37,10 +37,11 @@ from predict_input_params import PredictParamsProcessor
 from utilities.model_arch_info import get_input_shape
 from utilities.utilities import add_postfix
 from utilities.utilities import create_cols_from_array_sql_string
+from utilities.utilities import get_segments_per_host
 from utilities.utilities import is_platform_pg
 from utilities.utilities import unique_string
 
-import madlib_keras_serializer
+from madlib_keras_wrapper import *
 
 MODULE_NAME = 'madlib_keras_predict'
 
@@ -78,49 +79,133 @@ def predict(schema_madlib, model_table, test_table, id_col,
         class_values, intermediate_col, pred_col_name,
         pred_col_type, is_response, MODULE_NAME)
 
-    segment_id = -1 if is_platform_pg() else '{0}.gp_segment_id'.format(
-        test_table)
+    gp_segment_id_col, seg_ids_test, \
+    images_per_seg_test = get_images_per_seg_for_non_minibatched_data(test_table)
+    segments_per_host = get_segments_per_host()
 
-    plpy.execute("""
+    if is_platform_pg():
+        set_keras_session(gpus_per_host, segments_per_host)
+    else:
+        # we want to disable gpu on gpdb's master node because GPUs will only be used
+        # for segment nodes.
+        set_cuda_env('-1')
+
+    predict_query = plpy.prepare("""
         CREATE TABLE {output_table} AS
         SELECT {id_col}, {prediction_select_clause}
         FROM (
             SELECT {test_table}.{id_col},
                    ({schema_madlib}.internal_keras_predict
                        ({independent_varname},
-                        $MAD${model_arch}$MAD$,
-                        {0},
-                        ARRAY{input_shape},
+                        $1,
+                        $2,
                         {is_response},
                         {normalizing_const},
+                        {gp_segment_id_col},
+                        ARRAY{seg_ids_test},
+                        ARRAY{images_per_seg_test},
                         {gpus_per_host},
-                        {segment_id})
+                        {segments_per_host})
                    ) AS {intermediate_col}
-        FROM {test_table}, {model_table}
+        FROM {test_table}
         ) q
-        """.format(MODEL_DATA_COLNAME, **locals()))
+        """.format(**locals()), ["text", "bytea"])
+    plpy.execute(predict_query, [model_arch, model_data])
 
-def internal_keras_predict(x_test, model_arch, model_data, input_shape,
-                           is_response, normalizing_const, gpus_per_host, seg):
-    model = model_from_json(model_arch)
-    device_name = get_device_name_and_set_cuda_env(gpus_per_host, seg)
-    model_shapes = madlib_keras_serializer.get_model_shapes(model)
-    set_model_weights(model, device_name, model_data, model_shapes)
-    # Since the test data isn't mini-batched,
-    # we have to make sure that the test data np array has the same
-    # number of dimensions as input_shape. So we add a dimension to x.
-    x_test = expand_input_dims(x_test, target_type='float32')
-    x_test /= normalizing_const
-    if is_response:
-        proba_argmax = model.predict_classes(x_test)
-        # proba_argmax is a list with exactly one element in it. That element
-        # refers to the index containing the largest probability value in the
-        # output of Keras' predict function.
-        return proba_argmax
+    if is_platform_pg():
+        clear_keras_session()
+
+def get_images_per_seg_for_non_minibatched_data(table_name):
+    """
+    This function queries the given table and returns the total rows per segment.
+    Since we cannot pass a dictionary to the keras fit step function we create arrays
+    out of the segment numbers and the rows per segment values.
+    This function assumes that the table is not empty.
+    :param table_name:
+    :return: gp segment id col name and two arrays
+    1. An array containing all the segment numbers in ascending order
+    2. An array containing the total rows for each of the segments in the
+    segment array
+    """
+    if is_platform_pg():
+        images_per_seg = plpy.execute(
+            """ SELECT count(*) AS images_per_seg
+                FROM {0}
+            """.format(table_name))
+        seg_ids = [0]
+        gp_segment_id_col = -1
     else:
-        probs = model.predict_proba(x_test)
-        # probs is a list containing a list of probability values, of all
-        # class levels. Since we are assuming each input is a single image,
-        # and not mini-batched, this list contains exactly one list in it,
-        # so return back the first list in probs.
-        return probs[0]
+        # Compute total buffers on each segment
+        images_per_seg = plpy.execute(
+            """ SELECT gp_segment_id, count(*) AS images_per_seg
+                FROM {0}
+                GROUP BY gp_segment_id
+            """.format(table_name))
+        seg_ids = [int(image["gp_segment_id"]) for image in images_per_seg]
+        gp_segment_id_col = '{0}.gp_segment_id'.format(table_name)
+
+    images_per_seg = [int(image["images_per_seg"]) for image in images_per_seg]
+    return gp_segment_id_col, seg_ids, images_per_seg
+
+def internal_keras_predict(independent_var, model_architecture, model_data,
+                           is_response, normalizing_const, current_seg_id, seg_ids,
+                           images_per_seg, gpus_per_host, segments_per_host,
+                           **kwargs):
+    SD = kwargs['SD']
+    model_key = 'segment_model_predict'
+    row_count_key = 'row_count'
+    try:
+        device_name = get_device_name_and_set_cuda_env(gpus_per_host,
+                                                       current_seg_id)
+        if model_key not in SD:
+            if not is_platform_pg():
+                set_keras_session(gpus_per_host, segments_per_host)
+            model = model_from_json(model_architecture)
+            model_shapes = madlib_keras_serializer.get_model_shapes(model)
+            set_model_weights(model, device_name, model_data, model_shapes)
+            SD[model_key] = model
+            SD[row_count_key] = 0
+        else:
+            model = SD[model_key]
+        SD[row_count_key] += 1
+
+        # Since the test data isn't mini-batched,
+        # we have to make sure that the test data np array has the same
+        # number of dimensions as input_shape. So we add a dimension to x.
+        independent_var = expand_input_dims(independent_var, target_type='float32')
+        independent_var /= normalizing_const
+
+        if is_response:
+            with K.tf.device(device_name):
+                y_prob = model.predict(independent_var)
+                proba_argmax = y_prob.argmax(axis=-1)
+            # proba_argmax is a list with exactly one element in it. That element
+            # refers to the index containing the largest probability value in the
+            # output of Keras' predict function.
+            result = proba_argmax
+        else:
+            with K.tf.device(device_name):
+                probs = model.predict(independent_var)
+            # probs is a list containing a list of probability values, of all
+            # class levels. Since we are assuming each input is a single image,
+            # and not mini-batched, this list contains exactly one list in it,
+            # so return back the first list in probs.
+            result = probs[0]
+
+        if is_platform_pg():
+            total_images = images_per_seg[0]
+        else:
+            total_images = images_per_seg[seg_ids.index(current_seg_id)]
+
+        if SD[row_count_key] == total_images:
+            SD.pop(model_key, None)
+            SD.pop(row_count_key, None)
+            if not is_platform_pg():
+                clear_keras_session()
+        return result
+    except Exception as ex:
+        SD.pop(model_key, None)
+        SD.pop(row_count_key, None)
+        if not is_platform_pg():
+            clear_keras_session()
+        plpy.error(ex)
