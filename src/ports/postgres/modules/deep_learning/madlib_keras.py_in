@@ -168,15 +168,14 @@ def fit(schema_madlib, source_table, model,model_arch_table,
     fit_params_to_pass = "$madlib$" + fit_params + "$madlib$"
     run_training_iteration = plpy.prepare("""
         SELECT {schema_madlib}.fit_step(
-            {independent_varname}::REAL[],
             {dependent_varname}::SMALLINT[],
-            {gp_segment_id_col},
-            {num_classes}::INTEGER,
-            ARRAY{seg_ids_train},
-            ARRAY{images_per_seg_train},
+            {independent_varname}::REAL[],
             $MAD${model_arch}$MAD$::TEXT,
             {compile_params_to_pass}::TEXT,
             {fit_params_to_pass}::TEXT,
+            {gp_segment_id_col},
+            ARRAY{seg_ids_train},
+            ARRAY{images_per_seg_train},
             {gpus_per_host},
             {segments_per_host},
             $1
@@ -420,28 +419,11 @@ def get_images_per_seg(source_table, dependent_varname):
         gp_segment_id_col = 'gp_segment_id'
     return gp_segment_id_col, seg_ids, images_per_seg
 
-def fit_transition(state, ind_var, dep_var, current_seg_id, num_classes,
-                   seg_ids, images_per_seg, architecture,
-                   compile_params, fit_params, gpus_per_host, segments_per_host,
+def fit_transition(state, dependent_var, independent_var, model_architecture,
+                   compile_params, fit_params, current_seg_id, seg_ids,
+                   images_per_seg, gpus_per_host, segments_per_host,
                    previous_state, **kwargs):
-    """
-
-    :param state:
-    :param ind_var:
-    :param dep_var:
-    :param current_seg_id:
-    :param num_classes:
-    :param seg_ids:
-    :param images_per_seg:
-    :param architecture:
-    :param compile_params:
-    :param fit_params:
-    :param gpus_per_host:
-    :param previous_state:
-    :param kwargs:
-    :return:
-    """
-    if not ind_var or not dep_var:
+    if not independent_var or not dependent_var:
         return state
 
     start_transition = time.time()
@@ -452,7 +434,7 @@ def fit_transition(state, ind_var, dep_var, current_seg_id, num_classes,
     if not state:
         if not is_platform_pg():
             set_keras_session(gpus_per_host, segments_per_host)
-        segment_model = model_from_json(architecture)
+        segment_model = model_from_json(model_architecture)
         SD['model_shapes'] = madlib_keras_serializer.get_model_shapes(segment_model)
         # Configure GPUs/CPUs
         compile_and_set_weights(segment_model, compile_params, device_name,
@@ -469,8 +451,8 @@ def fit_transition(state, ind_var, dep_var, current_seg_id, num_classes,
             state, SD['model_shapes'])
 
     # Prepare the data
-    x_train = np.array(ind_var, dtype='float64')
-    y_train = np.array(dep_var)
+    x_train = np.array(independent_var, dtype='float64')
+    y_train = np.array(dependent_var)
 
     # Fit segment model on data
     start_fit = time.time()
@@ -604,7 +586,7 @@ def evaluate1(schema_madlib, model_table, test_table, id_col, model_arch_table,
 def get_loss_acc_from_keras_eval(schema_madlib, table, dependent_varname,
                                  independent_varname, compile_params,
                                  model_arch, model_data, gpus_per_host,
-                                 segments_per_host, seg_ids, images_per_seg,
+                                 segments_per_host, seg_ids_val, images_per_seg_val,
                                  gp_segment_id_col):
     """
     This function will call the internal keras evaluate function to get the loss
@@ -615,16 +597,18 @@ def get_loss_acc_from_keras_eval(schema_madlib, table, dependent_varname,
     --  The right solution is either to change the datatype of the agg function from
     --  SMALLINT to INTEGER, or change the output of minibatch util to produce SMALLINT
     --  For the first, we should change fit_step also
-    select ({schema_madlib}.internal_keras_evaluate({dependent_varname}::SMALLINT[],
+    select ({schema_madlib}.internal_keras_evaluate(
+                                            {dependent_varname}::SMALLINT[],
                                             {independent_varname}::REAL[],
                                             $MAD${model_arch}$MAD$,
                                             $1,
                                             {compile_params},
+                                            {gp_segment_id_col},
+                                            ARRAY{seg_ids_val},
+                                            ARRAY{images_per_seg_val},
                                             {gpus_per_host},
-                                            {segments_per_host},
-                                            ARRAY{seg_ids},
-                                            ARRAY{images_per_seg},
-                                            {gp_segment_id_col})) as loss_acc
+                                            {segments_per_host}
+                                            )) as loss_acc
         from {table}
     """.format(**locals()), ["bytea"])
     res = plpy.execute(evaluate_query, [model_data])
@@ -633,8 +617,8 @@ def get_loss_acc_from_keras_eval(schema_madlib, table, dependent_varname,
 
 def internal_keras_eval_transition(state, dependent_var, independent_var,
                                    model_architecture, model_data, compile_params,
-                                   gpus_per_host, segments_per_host, seg_ids,
-                                   images_per_seg, current_seg_id, **kwargs):
+                                   current_seg_id, seg_ids, images_per_seg,
+                                   gpus_per_host, segments_per_host, **kwargs):
     SD = kwargs['SD']
     device_name = get_device_name_and_set_cuda_env(gpus_per_host, current_seg_id)
 
