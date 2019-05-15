@@ -201,7 +201,6 @@ def fit(schema_madlib, source_table, model,model_arch_table,
         end_iteration = time.time()
         plpy.info("Time for iteration {0}: {1} sec".
                   format(i, end_iteration - start_iteration))
-        aggregate_runtime.append(datetime.datetime.now())
         avg_loss, avg_metric, model_state = madlib_keras_serializer.\
             deserialize_iteration_state(iteration_result)
         plpy.info("Average loss after training iteration {0}: {1}".format(
@@ -216,14 +215,14 @@ def fit(schema_madlib, source_table, model,model_arch_table,
             #     model_state, model_shapes)
             # master_model.set_weights(updated_weights)
             # Compute loss/accuracy for training data.
-            # TODO: Uncomment this once JIRA MADLIB-1332 is merged to master
-            # compute_loss_and_metrics(
-            #     schema_madlib, source_table, dependent_varname,
-            #     independent_varname, compile_params_to_pass, model_arch,
-            #     model_state, gpus_per_host, segments_per_host, seg_ids_val,
-            #     images_per_seg_val, gp_segment_id_col,
-            #     training_metrics, training_loss,
-            #     i, "Training")
+            aggregate_runtime.append(datetime.datetime.now())
+            compute_loss_and_metrics(
+                schema_madlib, source_table, dependent_varname,
+                independent_varname, compile_params_to_pass, model_arch,
+                model_state, gpus_per_host, segments_per_host, seg_ids_train,
+                images_per_seg_train, gp_segment_id_col,
+                training_metrics, training_loss,
+                i, "Training")
             metrics_iters.append(i)
             if validation_set_provided:
                 # Compute loss/accuracy for validation data.
@@ -234,8 +233,6 @@ def fit(schema_madlib, source_table, model,model_arch_table,
                     images_per_seg_val, gp_segment_id_col,
                     validation_metrics, validation_loss,
                     i, "Validation")
-        training_loss.append(avg_loss)
-        training_metrics.append(avg_metric)
 
     end_training_time = datetime.datetime.now()
 
@@ -281,30 +278,30 @@ def fit(schema_madlib, source_table, model,model_arch_table,
             $MAD${dependent_varname_in_source_table}$MAD$::TEXT AS dependent_varname,
             $MAD${independent_varname_in_source_table}$MAD$::TEXT AS independent_varname,
             $MAD${model_arch_table}$MAD$::TEXT AS model_arch_table,
-            {model_arch_id} AS model_arch_id,
+            {model_arch_id}::INTEGER AS model_arch_id,
             $1 AS compile_params,
             $2 AS fit_params,
-            {num_iterations} AS num_iterations,
+            {num_iterations}::INTEGER AS num_iterations,
             {validation_table}::TEXT AS validation_table,
-            {metrics_compute_frequency} AS metrics_compute_frequency,
+            {metrics_compute_frequency}::INTEGER AS metrics_compute_frequency,
             $3 AS name,
             $4 AS description,
             '{model_type}'::TEXT AS model_type,
-            {model_size} AS model_size,
+            {model_size}::INTEGER AS model_size,
             '{start_training_time}'::TIMESTAMP AS start_training_time,
             '{end_training_time}'::TIMESTAMP AS end_training_time,
             $5 AS time_iter,
             '{version}'::TEXT AS madlib_version,
-            {num_classes} AS num_classes,
+            {num_classes}::INTEGER AS num_classes,
             $6 AS {class_values_colname},
-            '{dep_vartype}' AS {dependent_vartype_colname},
-            {norm_const} AS {normalizing_const_colname},
-            {training_metrics_final} AS training_metrics_final,
-            {training_loss_final} AS training_loss_final,
+            $MAD${dep_vartype}$MAD$::TEXT AS {dependent_vartype_colname},
+            {norm_const}::DOUBLE PRECISION AS {normalizing_const_colname},
+            {training_metrics_final}::DOUBLE PRECISION AS training_metrics_final,
+            {training_loss_final}::DOUBLE PRECISION AS training_loss_final,
             ARRAY{training_metrics}::DOUBLE PRECISION[] AS training_metrics,
             ARRAY{training_loss}::DOUBLE PRECISION[] AS training_loss,
-            {validation_metrics_final} AS validation_metrics_final,
-            {validation_loss_final} AS validation_loss_final,
+            {validation_metrics_final}::DOUBLE PRECISION AS validation_metrics_final,
+            {validation_loss_final}::DOUBLE PRECISION AS validation_loss_final,
             {validation_metrics}::DOUBLE PRECISION[] AS validation_metrics,
             {validation_loss}::DOUBLE PRECISION[] AS validation_loss,
             ARRAY{metrics_iters}::INTEGER[] AS metrics_iters
@@ -347,7 +344,8 @@ def compute_loss_and_metrics(schema_madlib, table, dependent_varname,
                                                    dependent_varname,
                                                    independent_varname,
                                                    compile_params,
-                                                   model_arch, model_state,
+                                                   model_arch,
+                                                   model_state,
                                                    gpus_per_host,
                                                    segments_per_host,
                                                    seg_ids_val,
