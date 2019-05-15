@@ -42,8 +42,7 @@ class MadlibKerasFitTestCase(unittest.TestCase):
     def setUp(self):
         self.plpy_mock = Mock(spec='error')
         patches = {
-            'plpy': plpy,
-            'utilities.minibatch_preprocessing': Mock()
+            'plpy': plpy
         }
 
         self.plpy_mock_execute = MagicMock()
@@ -678,6 +677,40 @@ class MadlibKerasWrapperTestCase(unittest.TestCase):
         opt_name,opt_args,result_params = self.subject.parse_and_validate_compile_params(test_str)
         self.assertDictEqual(result_params, compile_dict)
 
+    def test_validate_metrics_None_pass(self):
+        compile_dict = {'optimizer':'SGD(lr=0.01, decay=1e-6, nesterov=True)',
+                        'metrics':['accuracy'], 'loss':'categorical_crossentropy'}
+        self.subject._validate_metrics(compile_dict)
+
+    def test_validate_metrics_empty_pass(self):
+        compile_dict = {'optimizer':'SGD(lr=0.01, decay=1e-6, nesterov=True)',
+                        'metrics':[], 'loss':'categorical_crossentropy'}
+        self.subject._validate_metrics(compile_dict)
+
+    def test_validate_metrics_two_params_fail(self):
+        compile_dict = {'optimizer':'SGD(lr=0.01, decay=1e-6, nesterov=True)',
+                        'metrics':['accuracy','mae'], 'loss':'categorical_crossentropy'}
+        with self.assertRaises(plpy.PLPYException) as error:
+            self.subject._validate_metrics(compile_dict)
+
+    def test_validate_metrics_one_unsupported_fail(self):
+        compile_dict = {'optimizer':'SGD(lr=0.01, decay=1e-6, nesterov=True)',
+                        'metrics':['sparse_categorical_accuracy'], 'loss':'categorical_crossentropy'}
+        with self.assertRaises(plpy.PLPYException) as error:
+            self.subject._validate_metrics(compile_dict)
+
+    def test_validate_metrics_two_unsupported_fail(self):
+        compile_dict = {'optimizer':'SGD(lr=0.01, decay=1e-6, nesterov=True)',
+                        'metrics':['sparse_categorical_accuracy', 'sparse_categorical_crossentropy'], 'loss':'categorical_crossentropy'}
+        with self.assertRaises(plpy.PLPYException) as error:
+            self.subject._validate_metrics(compile_dict)
+
+    def test_validate_metrics_one_supported_one_unsupported_fail(self):
+        compile_dict = {'optimizer':'SGD(lr=0.01, decay=1e-6, nesterov=True)',
+                        'metrics':['accuracy', 'sparse_categorical_crossentropy'], 'loss':'categorical_crossentropy'}
+        with self.assertRaises(plpy.PLPYException) as error:
+            self.subject._validate_metrics(compile_dict)
+
     def test_parse_and_validate_compile_params_default_optimizer_pass(self):
         test_str = "optimizer='SGD', loss='categorical_crossentropy'"
         _,_,result_dict = self.subject.parse_and_validate_compile_params(test_str)
@@ -1070,8 +1103,7 @@ class MadlibKerasEvaluationTestCase(unittest.TestCase):
     def setUp(self):
         self.plpy_mock = Mock(spec='error')
         patches = {
-            'plpy': plpy,
-            'utilities.minibatch_preprocessing': Mock()
+            'plpy': plpy
         }
 
         self.plpy_mock_execute = MagicMock()
@@ -1283,9 +1315,7 @@ class MadlibKerasEvaluationTestCase(unittest.TestCase):
         output_state = self.subject.internal_keras_eval_final(input_state)
         agg_loss = output_state[0]
         agg_accuracy = output_state[1]
-        image_count_output = output_state[2]
 
-        self.assertEqual(image_count, image_count_output)
         self.assertAlmostEqual(self.loss, agg_loss,2)
         self.assertAlmostEqual(self.accuracy, agg_accuracy,2)
 

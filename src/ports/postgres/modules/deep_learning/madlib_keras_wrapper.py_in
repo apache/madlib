@@ -169,13 +169,28 @@ def parse_and_validate_compile_params(str_of_args):
     compile_dict = validate_and_literal_eval_keys(compile_dict,
                                                   literal_eval_compile_params,
                                                   accepted_compile_params)
-
     _assert('optimizer' in compile_dict, "optimizer is a required parameter for compile")
     opt_name, opt_args = parse_optimizer(compile_dict)
 
     _assert('loss' in compile_dict, "loss is a required parameter for compile")
     validate_compile_param_types(compile_dict)
-    return (opt_name,opt_args,compile_dict)
+    _validate_metrics(compile_dict)
+    return (opt_name, opt_args, compile_dict)
+
+def _validate_metrics(compile_dict):
+    _assert('metrics' not in compile_dict.keys() or
+        compile_dict['metrics'] is None or
+        type(compile_dict['metrics']) is list,
+        "wrong input type for compile parameter metrics: multi-output model"
+        "and user defined metrics are not supported yet, please pass a list")
+    if 'metrics' in compile_dict and compile_dict['metrics']:
+        unsupported_metrics_list = ['sparse_categorical_accuracy',
+            'sparse_categorical_crossentropy', 'top_k_categorical_accuracy',
+            'sparse_top_k_categorical_accuracy']
+        _assert(len(compile_dict['metrics']) == 1,
+            "Only at most one metric is supported.")
+        _assert(compile_dict['metrics'][0] not in unsupported_metrics_list,
+            "Metric {0} is not supported.".format(compile_dict['metrics'][0]))
 
 # Parse the optimizer name and params.
 def parse_optimizer(compile_dict):
@@ -241,7 +256,6 @@ def parse_and_validate_fit_params(fit_param_str):
 # Validate the keys of the given dictionary and run literal_eval on the
 # user-defined subset
 def validate_and_literal_eval_keys(keys_dict, literal_eval_list, accepted_list):
-
     for ckey in keys_dict.keys():
         _assert(ckey in accepted_list,
             "{0} is not accepted as a parameter yet. "
@@ -277,13 +291,6 @@ def compile_model(model, compile_params):
     model.compile(**compile_dict)
 
 def validate_compile_param_types(compile_dict):
-
-    _assert('metrics' not in compile_dict.keys() or
-            compile_dict['metrics'] is None or
-            type(compile_dict['metrics']) is list,
-            "wrong input type for compile parameter metrics: multi-output model"
-            "and user defined metrics are not supported yet, please pass a list")
-
     _assert('loss_weights' not in compile_dict.keys() or
             compile_dict['loss_weights'] is None or
             type(compile_dict['loss_weights']) is list or
