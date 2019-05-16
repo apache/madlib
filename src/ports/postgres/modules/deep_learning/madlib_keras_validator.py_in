@@ -23,10 +23,14 @@ from madlib_keras_helper import CLASS_VALUES_COLNAME
 from madlib_keras_helper import COMPILE_PARAMS_COLNAME
 from madlib_keras_helper import DEPENDENT_VARNAME_COLNAME
 from madlib_keras_helper import DEPENDENT_VARTYPE_COLNAME
+from madlib_keras_helper import INDEPENDENT_VARNAME_COLNAME
 from madlib_keras_helper import MODEL_ARCH_ID_COLNAME
 from madlib_keras_helper import MODEL_ARCH_TABLE_COLNAME
 from madlib_keras_helper import MODEL_DATA_COLNAME
 from madlib_keras_helper import NORMALIZING_CONST_COLNAME
+from madlib_keras_helper import MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL
+from madlib_keras_helper import MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL
+from madlib_keras_helper import METRIC_TYPE_COLNAME
 
 from utilities.minibatch_validation import validate_dependent_var_for_minibatch
 from utilities.utilities import _assert
@@ -82,15 +86,13 @@ def _validate_input_shapes(table, independent_varname, input_shape, offset):
                     input_shape, input_shape_from_table,
                     independent_varname, table))
 
-class PredictInputValidator:
-    def __init__(self, test_table, model_table, id_col, independent_varname,
-                 output_table, pred_type, module_name):
+class InputValidator:
+    def __init__(self, test_table, model_table, independent_varname,
+                 output_table, module_name):
         self.test_table = test_table
         self.model_table = model_table
-        self.id_col = id_col
         self.independent_varname = independent_varname
         self.output_table = output_table
-        self.pred_type = pred_type
         if self.model_table:
             self.model_summary_table = add_postfix(
                 self.model_table, "_summary")
@@ -99,14 +101,15 @@ class PredictInputValidator:
 
     def _validate_input_args(self):
         input_tbl_valid(self.model_table, self.module_name)
-        self._validate_model_data_col()
+        self._validate_model_data_cols()
         input_tbl_valid(self.model_summary_table, self.module_name)
-        self._validate_summary_tbl_cols()
+        self._validate_model_summary_tbl_cols()
         input_tbl_valid(self.test_table, self.module_name)
         self._validate_test_tbl_cols()
         output_tbl_valid(self.output_table, self.module_name)
 
-    def _validate_model_data_col(self):
+
+    def _validate_model_data_cols(self):
         _assert(is_var_valid(self.model_table, MODEL_DATA_COLNAME),
                 "{module_name} error: column '{model_data}' "
                 "does not exist in model table '{table}'.".format(
@@ -129,14 +132,7 @@ class PredictInputValidator:
                     independent_varname=self.independent_varname,
                     table=self.test_table))
 
-        _assert(is_var_valid(self.test_table, self.id_col),
-                "{module_name} error: invalid id column "
-                "('{id_col}') for test table ({table}).".format(
-                    module_name=self.module_name,
-                    id_col=self.id_col,
-                    table=self.test_table))
-
-    def _validate_summary_tbl_cols(self):
+    def _validate_model_summary_tbl_cols(self):
         cols_to_check_for = [CLASS_VALUES_COLNAME,
                              DEPENDENT_VARNAME_COLNAME,
                              DEPENDENT_VARTYPE_COLNAME,
@@ -148,6 +144,49 @@ class PredictInputValidator:
             "{0} error: One or more expected columns missing in model "
             "summary table ('{1}'). The expected columns are {2}.".format(
                 self.module_name, self.model_summary_table, cols_to_check_for))
+
+class EvaluateInputValidator(InputValidator):
+    def __init__(self, test_table, model_table, output_table, module_name):
+        self.test_summary_table = None
+        if test_table:
+            self.test_summary_table = add_postfix(test_table, "_summary")
+
+        self.independent_varname = MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL
+        InputValidator.__init__(self, test_table, model_table,
+                                self.independent_varname,
+                                output_table, module_name)
+
+    def _validate_input_args(self):
+        input_tbl_valid(self.test_summary_table, self.module_name)
+        self._validate_test_summary_tbl_cols()
+        InputValidator._validate_input_args(self)
+        validate_dependent_var_for_minibatch(self.test_table,
+                                             MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL)
+
+    def _validate_model_summary_tbl_cols(self):
+        cols_to_check_for = [COMPILE_PARAMS_COLNAME, METRIC_TYPE_COLNAME]
+        _assert(columns_exist_in_table(
+            self.model_summary_table, cols_to_check_for),
+            "{0} error: One or more expected columns missing in model "
+            "summary table ('{1}'). The expected columns are {2}.".format(
+                self.module_name, self.model_summary_table, cols_to_check_for))
+
+    def _validate_test_summary_tbl_cols(self):
+        cols_in_tbl_valid(self.test_summary_table, [CLASS_VALUES_COLNAME,
+            NORMALIZING_CONST_COLNAME, DEPENDENT_VARTYPE_COLNAME,
+            DEPENDENT_VARNAME_COLNAME, INDEPENDENT_VARNAME_COLNAME], self.module_name)
+
+    def validate_input_shape(self, input_shape_from_arch):
+        _validate_input_shapes(self.test_table, self.independent_varname,
+                               input_shape_from_arch, 2)
+
+class PredictInputValidator(InputValidator):
+    def __init__(self, test_table, model_table, id_col, independent_varname,
+                 output_table, pred_type, module_name):
+        self.id_col = id_col
+        self.pred_type = pred_type
+        InputValidator.__init__(self, test_table, model_table, independent_varname,
+                               output_table, module_name)
 
     def validate_pred_type(self, class_values):
         if not self.pred_type in ['prob', 'response']:
@@ -161,6 +200,15 @@ class PredictInputValidator:
     def validate_input_shape(self, input_shape_from_arch):
         _validate_input_shapes(self.test_table, self.independent_varname,
                                input_shape_from_arch, 1)
+
+    def _validate_test_tbl_cols(self):
+        InputValidator._validate_test_tbl_cols(self)
+        _assert(is_var_valid(self.test_table, self.id_col),
+                "{module_name} error: invalid id column "
+                "('{id_col}') for test table ({table}).".format(
+                    module_name=self.module_name,
+                    id_col=self.id_col,
+                    table=self.test_table))
 
 class FitInputValidator:
     def __init__(self, source_table, validation_table, output_model_table,

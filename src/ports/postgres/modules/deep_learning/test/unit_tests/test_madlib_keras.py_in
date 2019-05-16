@@ -258,7 +258,7 @@ class MadlibKerasFitTestCase(unittest.TestCase):
                 None, self.dependent_var, self.independent_var , self.model.to_json(),
                 self.compile_params, self.fit_params, 0, self.all_seg_ids,
                 total_images_per_seg, 0, 4, previous_state.tostring(), **k)
-        self.assertIn('0 rows', str(error.exception))
+        self.assertIn('Total images is 0', str(error.exception))
 
     def test_fit_transition_too_many_images(self):
         self.subject.K.set_session = Mock()
@@ -819,7 +819,7 @@ class MadlibKerasWrapperTestCase(unittest.TestCase):
         self.assertIn('invalid optimizer', str(error.exception))
 
 
-class MadlibKerasValidatorTestCase(unittest.TestCase):
+class MadlibKerasFitInputValidatorTestCase(unittest.TestCase):
     def setUp(self):
         self.plpy_mock = Mock(spec='error')
         patches = {
@@ -887,6 +887,49 @@ class MadlibKerasValidatorTestCase(unittest.TestCase):
             'test_table', 'val_table', 'model_table', 'model_arch_table',
             'dep_varname', 'independent_varname', 5, 6)
         self.assertEqual(False, obj._is_valid_metrics_compute_frequency())
+
+class PredictInputValidatorTestCases(unittest.TestCase):
+    def setUp(self):
+        self.plpy_mock = Mock(spec='error')
+        patches = {
+            'plpy': plpy
+        }
+
+        self.plpy_mock_execute = MagicMock()
+        plpy.execute = self.plpy_mock_execute
+
+        self.module_patcher = patch.dict('sys.modules', patches)
+        self.module_patcher.start()
+        import madlib_keras_validator
+        self.module = madlib_keras_validator
+        self.module.PredictInputValidator._validate_input_args = Mock()
+        self.subject = self.module.PredictInputValidator(
+            'test_table', 'model_table', 'id_col', 'independent_varname',
+            'output_table', 'pred_type', 'module_name')
+        self.classes = ['train', 'boat', 'car', 'airplane']
+
+    def tearDown(self):
+        self.module_patcher.stop()
+
+    def test_validate_pred_type_invalid_pred_type(self):
+        self.subject.pred_type = 'invalid'
+        with self.assertRaises(plpy.PLPYException):
+            self.subject.validate_pred_type(['cat', 'dog'])
+
+    def test_validate_pred_type_valid_pred_type_invalid_num_class_values(self):
+        self.subject.pred_type = 'prob'
+        with self.assertRaises(plpy.PLPYException):
+            self.subject.validate_pred_type(range(1599))
+
+    def test_validate_pred_type_valid_pred_type_valid_class_values_prob(self):
+        self.subject.pred_type = 'prob'
+        self.subject.validate_pred_type(range(1598))
+        self.subject.validate_pred_type(None)
+
+    def test_validate_pred_type_valid_pred_type_valid_class_values_response(self):
+        self.subject.pred_type = 'response'
+        self.subject.validate_pred_type(range(1598))
+        self.subject.validate_pred_type(None)
 
 class MadlibSerializerTestCase(unittest.TestCase):
     def setUp(self):
@@ -966,49 +1009,6 @@ class MadlibSerializerTestCase(unittest.TestCase):
         res = self.subject.serialize_state_with_1d_weights(0, np.array([1, 3, 4, 5]))
         self.assertEqual(np.array([0,1,3,4,5], dtype=np.float32).tostring(),
                          res)
-
-class PredictInputPredTypeValidationTestCase(unittest.TestCase):
-    def setUp(self):
-        self.plpy_mock = Mock(spec='error')
-        patches = {
-            'plpy': plpy
-        }
-
-        self.plpy_mock_execute = MagicMock()
-        plpy.execute = self.plpy_mock_execute
-
-        self.module_patcher = patch.dict('sys.modules', patches)
-        self.module_patcher.start()
-        import madlib_keras_validator
-        self.module = madlib_keras_validator
-        self.module.PredictInputValidator._validate_input_args = Mock()
-        self.subject = self.module.PredictInputValidator(
-            'test_table', 'model_table', 'id_col', 'independent_varname',
-            'output_table', 'pred_type', 'module_name')
-        self.classes = ['train', 'boat', 'car', 'airplane']
-
-    def tearDown(self):
-        self.module_patcher.stop()
-
-    def test_validate_pred_type_invalid_pred_type(self):
-        self.subject.pred_type = 'invalid'
-        with self.assertRaises(plpy.PLPYException):
-            self.subject.validate_pred_type(['cat', 'dog'])
-
-    def test_validate_pred_type_valid_pred_type_invalid_num_class_values(self):
-        self.subject.pred_type = 'prob'
-        with self.assertRaises(plpy.PLPYException):
-            self.subject.validate_pred_type(range(1599))
-
-    def test_validate_pred_type_valid_pred_type_valid_class_values_prob(self):
-        self.subject.pred_type = 'prob'
-        self.subject.validate_pred_type(range(1598))
-        self.subject.validate_pred_type(None)
-
-    def test_validate_pred_type_valid_pred_type_valid_class_values_response(self):
-        self.subject.pred_type = 'response'
-        self.subject.validate_pred_type(range(1598))
-        self.subject.validate_pred_type(None)
 
 class MadlibKerasHelperTestCase(unittest.TestCase):
     def setUp(self):
@@ -1255,6 +1255,7 @@ class MadlibKerasEvaluationTestCase(unittest.TestCase):
         input_state = [image_count*self.loss, image_count*self.accuracy, image_count]
 
         output_state = self.subject.internal_keras_eval_final(input_state)
+        self.assertEqual(len(output_state), 2)
         agg_loss = output_state[0]
         agg_accuracy = output_state[1]
 
