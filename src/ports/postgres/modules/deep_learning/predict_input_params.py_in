@@ -25,8 +25,6 @@ from utilities.validate_args import input_tbl_valid
 from madlib_keras_helper import CLASS_VALUES_COLNAME
 from madlib_keras_helper import DEPENDENT_VARNAME_COLNAME
 from madlib_keras_helper import DEPENDENT_VARTYPE_COLNAME
-from madlib_keras_helper import MODEL_ARCH_ID_COLNAME
-from madlib_keras_helper import MODEL_ARCH_TABLE_COLNAME
 from madlib_keras_helper import MODEL_DATA_COLNAME
 from madlib_keras_helper import NORMALIZING_CONST_COLNAME
 
@@ -36,28 +34,11 @@ class PredictParamsProcessor:
         self.model_table = model_table
         self.model_summary_table = add_postfix(self.model_table, '_summary')
         input_tbl_valid(self.model_summary_table, self.module_name)
-        self.model_summary_dict = self._get_model_summary_dict()
-        self.model_arch_dict = self._get_model_arch_dict()
+        self.model_summary_dict = self._get_dict_for_table(self.model_summary_table)
+        self.model_arch_dict = self._get_dict_for_table(self.model_table)
 
-    def _get_model_summary_dict(self):
-        return plpy.execute("SELECT * FROM {0}".format(
-            self.model_summary_table))[0]
-
-    def _get_model_arch_dict(self):
-        model_arch_table = self.model_summary_dict[MODEL_ARCH_TABLE_COLNAME]
-        model_arch_id = self.model_summary_dict[MODEL_ARCH_ID_COLNAME]
-        input_tbl_valid(model_arch_table, self.module_name)
-        model_arch_query = """
-            SELECT {0}
-            FROM {1}
-            WHERE {2} = {3}
-        """.format(Format.MODEL_ARCH, model_arch_table, Format.MODEL_ID,
-                   model_arch_id)
-        query_result = plpy.execute(model_arch_query)
-        if not query_result or len(query_result) == 0:
-            plpy.error("{0}: No model arch found in table {1} with id {2}".format(
-                self.module_name, model_arch_table, model_arch_id))
-        return query_result[0]
+    def _get_dict_for_table(self, table_name):
+        return plpy.execute("SELECT * FROM {0}".format(table_name), 1)[0]
 
     def get_class_values(self):
         return self.model_summary_dict[CLASS_VALUES_COLNAME]
@@ -72,10 +53,7 @@ class PredictParamsProcessor:
         return self.model_arch_dict[Format.MODEL_ARCH]
 
     def get_model_data(self):
-        return plpy.execute("""
-                SELECT {0} FROM {1}
-            """.format(MODEL_DATA_COLNAME, self.model_table)
-                            )[0][MODEL_DATA_COLNAME]
+        return self.model_arch_dict[MODEL_DATA_COLNAME]
 
     def get_normalizing_const(self):
         return self.model_summary_dict[NORMALIZING_CONST_COLNAME]
