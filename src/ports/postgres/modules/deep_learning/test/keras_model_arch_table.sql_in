@@ -33,8 +33,8 @@ SELECT assert(UPPER(atttypid::regtype::TEXT) = 'INTEGER', 'model_id column shoul
         AND attname = 'model_id';
 SELECT assert(UPPER(atttypid::regtype::TEXT) = 'JSON', 'model_arch column should be JSON type' ) FROM pg_attribute WHERE attrelid = 'test_keras_model_arch_table'::regclass
         AND attname = 'model_arch';
-SELECT assert(UPPER(atttypid::regtype::TEXT) =
-    'DOUBLE PRECISION[]', 'model_weights column should be DOUBLE PRECISION[] type')
+SELECT assert(UPPER(atttypid::regtype::TEXT) = 'BYTEA',
+    'model_weights column should be bytea type')
     FROM pg_attribute WHERE attrelid = 'test_keras_model_arch_table'::regclass
         AND attname = 'model_weights';
 
@@ -84,8 +84,8 @@ SELECT assert(COUNT(model_id) = 0, 'model id 3 should have been deleted!')
        *  It should archrt to the user that the model_id wasn't found but not
        *  raise an exception or change anything. */
 SELECT delete_keras_model('test_keras_model_arch_table', 1);
-SELECT assert(COUNT(relname) = 0, 'Table test_keras_model_arch_table should have been deleted.')
-    FROM pg_class where relname = 'test_keras_model_arch_table';
+SELECT assert(trap_error($$SELECT * from test_keras_model_arch_table$$) = 1,
+              'Table test_keras_model_arch_table should have been deleted.');
 
 SELECT load_keras_model('test_keras_model_arch_table', '{"config" : [1,2,3]}');
 DELETE FROM test_keras_model_arch_table;
@@ -104,6 +104,22 @@ SELECT assert(trap_error($$SELECT delete_keras_model('test_keras_model_arch_tabl
 SELECT assert(trap_error($$SELECT load_keras_model('test_keras_model_arch_table', '{"config" : 1}')$$) = 1, 'Passing an invalid table to load_keras_model() should raise exception.');
 
 /* Test deletion where no table exists */
-DROP TABLE test_keras_model_arch_table;
+DROP TABLE IF EXISTS test_keras_model_arch_table;
 SELECT assert(trap_error($$SELECT delete_keras_model('test_keras_model_arch_table', 3)$$) = 1,
               'Deleting a non-existent table should raise exception.');
+
+DROP TABLE IF EXISTS test_keras_model_arch_table;
+SELECT load_keras_model('test_keras_model_arch_table', '{"config" : [1,2,3]}', 'dummy weights'::bytea);
+SELECT load_keras_model('test_keras_model_arch_table', '{"config" : [1,2,3]}', NULL, 'my name', 'my desc');
+
+/* Test model weights */
+SELECT assert(model_weights = 'dummy weights', 'Incorrect model_weights in the model arch table.')
+FROM test_keras_model_arch_table WHERE model_id = 1;
+SELECT assert(model_weights IS NULL, 'model_weights is not NULL')
+FROM test_keras_model_arch_table WHERE model_id = 2;
+
+/* Test name and description */
+SELECT assert(name IS NULL AND description IS NULL, 'Name or description is not NULL.')
+FROM test_keras_model_arch_table WHERE model_id = 1;
+SELECT assert(name = 'my name' AND description = 'my desc', 'Incorrect name or description in the model arch table.')
+FROM test_keras_model_arch_table WHERE model_id = 2;

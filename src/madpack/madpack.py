@@ -1027,8 +1027,9 @@ def run_install_check(args, testcase, madpack_cmd):
         _internal_run_query("DROP OWNED BY %s CASCADE;" % (test_user), True)
         _internal_run_query("DROP USER IF EXISTS %s;" % (test_user), True)
 
-    _internal_run_query("CREATE USER %s;" % (test_user), True)
+    _internal_run_query("CREATE USER %s WITH SUPERUSER NOINHERIT;" % (test_user), True)
     _internal_run_query("GRANT USAGE ON SCHEMA %s TO %s;" % (schema, test_user), True)
+    _internal_run_query("GRANT ALL PRIVILEGES ON DATABASE %s TO %s;" % (db_name, test_user), True)
 
     # 2) Run test SQLs
     info_(this, "> Running %s scripts for:" % madpack_cmd, verbose)
@@ -1053,6 +1054,8 @@ def run_install_check(args, testcase, madpack_cmd):
             from time import sleep
             sleep(1)
             _internal_run_query("DROP OWNED BY %s CASCADE;" % (test_user), show_error=True)
+
+        _internal_run_query("REVOKE ALL PRIVILEGES ON DATABASE %s FROM %s;" % (db_name, test_user), True)
         _internal_run_query("DROP USER %s;" % (test_user), True)
 
 

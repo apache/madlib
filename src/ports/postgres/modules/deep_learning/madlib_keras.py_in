@@ -140,7 +140,7 @@ def fit(schema_madlib, source_table, model,model_arch_table,
 
     if model_weights_serialized:
         # If warm start from previously trained model, set weights
-        model_weights = madlib_keras_serializer.deserialize_weights_orig(
+        model_weights = madlib_keras_serializer.deserialize_as_nd_weights(
             model_weights_serialized, model_shapes)
         master_model.set_weights(model_weights)
 
@@ -169,23 +169,23 @@ def fit(schema_madlib, source_table, model,model_arch_table,
         """.format(**locals()), ["bytea"])
 
     # Define the state for the model and loss/metric storage lists
-    model_state = madlib_keras_serializer.serialize_weights(0, model_weights)
+    serialized_weights = madlib_keras_serializer.serialize_nd_weights(model_weights)
     training_loss, training_metrics, metrics_elapsed_time = [], [], []
     metrics_iters = []
 
     # get the size of serialized model weights string in KB
-    model_size = sys.getsizeof(model_state)/1024.0
+    model_size = sys.getsizeof(serialized_weights)/1024.0
 
     # Run distributed training for specified number of iterations
     for i in range(1, num_iterations+1):
         start_iteration = time.time()
         iteration_result = plpy.execute(run_training_iteration,
-                                        [model_state])[0]['iteration_result']
+                                        [serialized_weights])[0]['iteration_result']
         end_iteration = time.time()
         plpy.info("Time for training in iteration {0}: {1} sec".
                   format(i, end_iteration - start_iteration))
-        model_state = madlib_keras_serializer.deserialize_iteration_state(
-            iteration_result)
+        serialized_weights = madlib_keras_serializer.\
+            get_serialized_1d_weights_from_state(iteration_result)
 
         if should_compute_metrics_this_iter(i, metrics_compute_frequency,
                                             num_iterations):
@@ -193,7 +193,7 @@ def fit(schema_madlib, source_table, model,model_arch_table,
             compute_loss_and_metrics(
                 schema_madlib, source_table, dependent_varname,
                 independent_varname, compile_params_to_pass, model_arch,
-                model_state, gpus_per_host, segments_per_host, seg_ids_train,
+                serialized_weights, gpus_per_host, segments_per_host, seg_ids_train,
                 images_per_seg_train, gp_segment_id_col,
                 training_metrics, training_loss,
                 i, "Training")
@@ -203,7 +203,7 @@ def fit(schema_madlib, source_table, model,model_arch_table,
                 compute_loss_and_metrics(
                     schema_madlib, validation_table, dependent_varname,
                     independent_varname, compile_params_to_pass, model_arch,
-                    model_state, gpus_per_host, segments_per_host, seg_ids_val,
+                    serialized_weights, gpus_per_host, segments_per_host, seg_ids_val,
                     images_per_seg_val, gp_segment_id_col,
                     validation_metrics, validation_loss,
                     i, "Validation")
@@ -301,7 +301,7 @@ def fit(schema_madlib, source_table, model,model_arch_table,
         CREATE TABLE {0} AS SELECT
         $1 as model_data,
         $2 as {1}""".format(model, Format.MODEL_ARCH), ["bytea", "json"])
-    plpy.execute(create_output_table, [model_state, model_arch])
+    plpy.execute(create_output_table, [serialized_weights, model_arch])
 
     if is_platform_pg():
         clear_keras_session()
@@ -343,12 +343,12 @@ def get_metrics_sql_string(metrics_list, is_metrics_specified):
 
 def compute_loss_and_metrics(schema_madlib, table, dependent_varname,
                              independent_varname, compile_params, model_arch,
-                             model_state, gpus_per_host, segments_per_host,
+                             serialized_weights, gpus_per_host, segments_per_host,
                              seg_ids, rows_per_seg,
                              gp_segment_id_col, metrics_list, loss_list,
                              curr_iter, dataset_name):
     """
-    Compute the loss and metric using a given model (model_state) on the
+    Compute the loss and metric using a given model (serialized_weights) on the
     given dataset (table.)
     """
     start_val = time.time()
@@ -358,7 +358,7 @@ def compute_loss_and_metrics(schema_madlib, table, dependent_varname,
                                                       independent_varname,
                                                       compile_params,
                                                       model_arch,
-                                                      model_state,
+                                                      serialized_weights,
                                                       gpus_per_host,
                                                       segments_per_host,
                                                       seg_ids,
@@ -434,7 +434,7 @@ def get_images_per_seg(source_table, dependent_varname):
 def fit_transition(state, dependent_var, independent_var, model_architecture,
                    compile_params, fit_params, current_seg_id, seg_ids,
                    images_per_seg, gpus_per_host, segments_per_host,
-                   previous_state, **kwargs):
+                   prev_serialized_weights, **kwargs):
     if not independent_var or not dependent_var:
         return state
 
@@ -447,12 +447,10 @@ def fit_transition(state, dependent_var, independent_var, model_architecture,
         if not is_platform_pg():
             set_keras_session(gpus_per_host, segments_per_host)
         segment_model = model_from_json(model_architecture)
-        SD['model_shapes'] = madlib_keras_serializer.get_model_shapes(segment_model)
-        # Configure GPUs/CPUs
         compile_and_set_weights(segment_model, compile_params, device_name,
-                                previous_state, SD['model_shapes'])
+                                prev_serialized_weights)
+
         SD['segment_model'] = segment_model
-        image_count = 0
         agg_image_count = 0
     else:
         segment_model = SD['segment_model']
@@ -500,7 +498,7 @@ def fit_transition(state, dependent_var, independent_var, model_architecture,
         plpy.error('Processed {0} images, but there were supposed to be only {1}!'
             .format(agg_image_count, total_images))
 
-    new_model_state = madlib_keras_serializer.serialize_weights(
+    new_state = madlib_keras_serializer.serialize_state_with_nd_weights(
         agg_image_count, updated_weights)
 
     del x_train
@@ -510,7 +508,7 @@ def fit_transition(state, dependent_var, independent_var, model_architecture,
     plpy.info("Processed {0} images: Fit took {1} sec, Total was {2} sec".format(
         image_count, end_fit - start_fit, end_transition - start_transition))
 
-    return new_model_state
+    return new_state
 
 def fit_merge(state1, state2, **kwargs):
 
@@ -519,8 +517,8 @@ def fit_merge(state1, state2, **kwargs):
         return state1 or state2
 
     # Deserialize states
-    image_count1, weights1 = madlib_keras_serializer.deserialize_weights_merge(state1)
-    image_count2, weights2 = madlib_keras_serializer.deserialize_weights_merge(state2)
+    image_count1, weights1 = madlib_keras_serializer.deserialize_as_image_1d_weights(state1)
+    image_count2, weights2 = madlib_keras_serializer.deserialize_as_image_1d_weights(state2)
 
     # Compute total image counts
     image_count = (image_count1 + image_count2) * 1.0
@@ -529,7 +527,7 @@ def fit_merge(state1, state2, **kwargs):
     total_weights = weights1 + weights2
 
     # Return the merged state
-    return madlib_keras_serializer.serialize_weights_merge(
+    return madlib_keras_serializer.serialize_state_with_1d_weights(
         image_count, total_weights)
 
 def fit_final(state, **kwargs):
@@ -537,13 +535,13 @@ def fit_final(state, **kwargs):
     if not state:
         return state
 
-    image_count, weights = madlib_keras_serializer.deserialize_weights_merge(state)
+    image_count, weights = madlib_keras_serializer.deserialize_as_image_1d_weights(state)
     if image_count == 0:
         plpy.error("fit_final: Total images processed is 0")
 
     # Averaging the weights
     weights /= image_count
-    return madlib_keras_serializer.serialize_weights_merge(
+    return madlib_keras_serializer.serialize_state_with_1d_weights(
         image_count, weights)
 
 def evaluate1(schema_madlib, model_table, test_table, id_col, model_arch_table,
@@ -557,7 +555,7 @@ def evaluate1(schema_madlib, model_table, test_table, id_col, model_arch_table,
     # _validate_input_args(test_table, model_arch_table, output_table)
 
     model_data_query = "SELECT model_data from {0}".format(model_table)
-    model_data = plpy.execute(model_data_query)[0]['model_data']
+    serialized_weights = plpy.execute(model_data_query)[0]['model_data']
 
     model_arch_query = "SELECT model_arch, model_weights FROM {0} " \
                        "WHERE id = {1}".format(model_arch_table, model_arch_id)
@@ -572,7 +570,7 @@ def evaluate1(schema_madlib, model_table, test_table, id_col, model_arch_table,
     loss_metric = get_loss_metric_from_keras_eval(
                     schema_madlib, test_table, dependent_varname,
                     independent_varname, compile_params, model_arch,
-                    model_data, False, None)
+                    serialized_weights, False, None)
 
     #TODO remove these infos after adding create table command
     plpy.info('len of evaluate result is {}'.format(len(loss_metric)))
@@ -581,7 +579,7 @@ def evaluate1(schema_madlib, model_table, test_table, id_col, model_arch_table,
 
 def get_loss_metric_from_keras_eval(schema_madlib, table, dependent_varname,
                                  independent_varname, compile_params,
-                                 model_arch, model_data, gpus_per_host,
+                                 model_arch, serialized_weights, gpus_per_host,
                                  segments_per_host, seg_ids, images_per_seg,
                                  gp_segment_id_col):
     """
@@ -607,12 +605,12 @@ def get_loss_metric_from_keras_eval(schema_madlib, table, dependent_varname,
                 )) AS loss_metric
     FROM {table}
     """.format(**locals()), ["bytea"])
-    res = plpy.execute(evaluate_query, [model_data])
+    res = plpy.execute(evaluate_query, [serialized_weights])
     loss_metric = res[0]['loss_metric']
     return loss_metric
 
 def internal_keras_eval_transition(state, dependent_var, independent_var,
-                                   model_architecture, model_data, compile_params,
+                                   model_architecture, serialized_weights, compile_params,
                                    current_seg_id, seg_ids, images_per_seg,
                                    gpus_per_host, segments_per_host, **kwargs):
     SD = kwargs['SD']
@@ -624,12 +622,9 @@ def internal_keras_eval_transition(state, dependent_var, independent_var,
         if not is_platform_pg():
             set_keras_session(gpus_per_host, segments_per_host)
         model = model_from_json(model_architecture)
-        model_shapes = madlib_keras_serializer.get_model_shapes(model)
-        _, model_weights = madlib_keras_serializer.deserialize_weights(
-            model_data, model_shapes)
-        model.set_weights(model_weights)
-        with K.tf.device(device_name):
-            compile_model(model, compile_params)
+        compile_and_set_weights(model, compile_params, device_name,
+                                serialized_weights)
+
         SD['segment_model'] = model
         # These should already be 0, but just in case make sure
         agg_metric = 0
