@@ -758,3 +758,58 @@ SELECT madlib_keras_predict(
     'cifar10_predict',
     'prob',
     0);
+
+
+-- Test for transfer learning
+CREATE OR REPLACE FUNCTION test_load_keras_model() RETURNS VOID AS $$
+from keras.layers import *
+from keras import Sequential
+import numpy as np
+import plpy
+
+model = Sequential()
+model.add(Conv2D(32, kernel_size=(3, 3), activation='relu', input_shape=(32,32,3,)))
+model.add(MaxPooling2D(pool_size=(2, 2)))
+model.add(Dropout(0.25))
+model.add(Flatten())
+model.add(Dense(2, activation='softmax'))
+
+# we don't really need to get the weights from the model and the flatten them since
+# we are using np.ones_like to replace all the weights with 1.
+# We want to keep the flatten code and the concatenation code just for reference
+weights = model.get_weights()
+weights_flat = [ w.flatten() for w in weights ]
+weights1d = np.array([j for sub in weights_flat for j in sub])
+weights1d = np.ones_like(weights1d)
+weights_bytea = weights1d.tostring()
+
+model_config = model.to_json()
+
+plan1 = plpy.prepare(""" SELECT load_keras_model(
+                        'test_keras_model_arch_table',
+                        $1, $2)
+                    """, ['json','bytea'])
+plpy.execute(plan1, [model_config, weights_bytea])
+
+$$ LANGUAGE plpythonu VOLATILE;
+
+DROP TABLE IF EXISTS test_keras_model_arch_table;
+SELECT test_load_keras_model();
+
+DROP TABLE IF EXISTS keras_saved_out, keras_saved_out_summary;
+SELECT madlib_keras_fit(
+    'cifar_10_sample_batched',
+    'keras_saved_out',
+    'test_keras_model_arch_table',
+    1,
+    $$ optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['accuracy']$$::text,
+    $$ batch_size=2, epochs=1, verbose=0 $$::text,
+    1);
+SELECT training_loss_final FROM keras_saved_out_summary;
+SELECT assert(relative_error(training_loss_final, 8.4056215) < 1e-4,
+           -- TODO use a different metric that does not return 0
+           -- AND relative_error(training_metrics_final, 0.0000001) < 1e-4,
+              'Transfer learning test failed.' )
+FROM keras_saved_out_summary;
+
+DROP FUNCTION test_load_keras_model();
