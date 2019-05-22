@@ -43,7 +43,7 @@ from madlib_keras_helper import DEPENDENT_VARTYPE_COLNAME
 from madlib_keras_helper import NORMALIZING_CONST_COLNAME
 from madlib_keras_validator import FitInputValidator
 from madlib_keras_wrapper import *
-from keras_model_arch_table import Format
+from keras_model_arch_table import ModelArchSchema
 
 from utilities.model_arch_info import get_input_shape
 from utilities.model_arch_info import get_num_classes
@@ -112,19 +112,19 @@ def fit(schema_madlib, source_table, model,model_arch_table,
     # Get the serialized master model
     start_deserialization = time.time()
     model_arch_query = "SELECT {0}, {1} FROM {2} WHERE {3} = {4}".format(
-                                        Format.MODEL_ARCH, Format.MODEL_WEIGHTS,
-                                        model_arch_table, Format.MODEL_ID,
+                                        ModelArchSchema.MODEL_ARCH, ModelArchSchema.MODEL_WEIGHTS,
+                                        model_arch_table, ModelArchSchema.MODEL_ID,
                                         model_arch_id)
-    query_result = plpy.execute(model_arch_query)
-    if not  query_result:
+    model_arch_result = plpy.execute(model_arch_query)
+    if not  model_arch_result:
         plpy.error("no model arch found in table {0} with id {1}".format(
             model_arch_table, model_arch_id))
-    query_result = query_result[0]
-    model_arch = query_result[Format.MODEL_ARCH]
+    model_arch_result = model_arch_result[0]
+    model_arch = model_arch_result[ModelArchSchema.MODEL_ARCH]
     input_shape = get_input_shape(model_arch)
     num_classes = get_num_classes(model_arch)
     fit_validator.validate_input_shapes(input_shape)
-    model_weights_serialized = query_result[Format.MODEL_WEIGHTS]
+    model_weights_serialized = model_arch_result[ModelArchSchema.MODEL_WEIGHTS]
 
     #TODO: Refactor the pg related logic in a future PR when we think
     # about making the fit function easier to read and maintain.
@@ -322,7 +322,7 @@ def fit(schema_madlib, source_table, model,model_arch_table,
     create_output_table = plpy.prepare("""
         CREATE TABLE {0} AS SELECT
         $1 as model_data,
-        $2 as {1}""".format(model, Format.MODEL_ARCH), ["bytea", "json"])
+        $2 as {1}""".format(model, ModelArchSchema.MODEL_ARCH), ["bytea", "json"])
     plpy.execute(create_output_table, [model_state, model_arch])
 
     if is_platform_pg():
@@ -571,7 +571,7 @@ def evaluate1(schema_madlib, model_table, test_table, id_col, model_arch_table,
         plpy.error("no model arch found in table {0} with id {1}".format(
             model_arch_table, model_arch_id))
     query_result = query_result[0]
-    model_arch = query_result[Format.MODEL_ARCH]
+    model_arch = query_result[ModelArchSchema.MODEL_ARCH]
     compile_params = "$madlib$" + compile_params + "$madlib$"
 
     loss_acc = get_loss_acc_from_keras_eval(schema_madlib, test_table, dependent_varname,
