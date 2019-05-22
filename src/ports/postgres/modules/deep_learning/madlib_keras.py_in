@@ -64,7 +64,7 @@ from utilities.control import MinWarning
 def fit(schema_madlib, source_table, model, model_arch_table,
         model_arch_id, compile_params, fit_params, num_iterations,
         gpus_per_host=0, validation_table=None,
-        metrics_compute_frequency=None, name="",
+        metrics_compute_frequency=None, warm_start=False, name="",
         description="", **kwargs):
     source_table = quote_ident(source_table)
     model_arch_table = quote_ident(model_arch_table)
@@ -77,7 +77,7 @@ def fit(schema_madlib, source_table, model, model_arch_table,
     fit_validator = FitInputValidator(
         source_table, validation_table, model, model_arch_table,
         mb_dep_var_col, mb_indep_var_col,
-        num_iterations, metrics_compute_frequency)
+        num_iterations, metrics_compute_frequency, warm_start)
     if metrics_compute_frequency is None:
         metrics_compute_frequency = num_iterations
 
@@ -86,6 +86,7 @@ def fit(schema_madlib, source_table, model, model_arch_table,
     start_training_time = datetime.datetime.now()
 
     segments_per_host, gpus_per_host = get_segments_and_gpus(gpus_per_host)
+    warm_start = bool(warm_start)
 
     #TODO add a unit test for this in a future PR
     # save the original value of the env variable so that we can reset it later.
@@ -96,9 +97,9 @@ def fit(schema_madlib, source_table, model, model_arch_table,
     # Get the serialized master model
     start_deserialization = time.time()
     model_arch_query = "SELECT {0}, {1} FROM {2} WHERE {3} = {4}".format(
-                                        ModelArchSchema.MODEL_ARCH, ModelArchSchema.MODEL_WEIGHTS,
-                                        model_arch_table, ModelArchSchema.MODEL_ID,
-                                        model_arch_id)
+        ModelArchSchema.MODEL_ARCH, ModelArchSchema.MODEL_WEIGHTS,
+        model_arch_table, ModelArchSchema.MODEL_ID,
+        model_arch_id)
     model_arch_result = plpy.execute(model_arch_query)
     if not  model_arch_result:
         plpy.error("no model arch found in table {0} with id {1}".format(
@@ -108,9 +109,11 @@ def fit(schema_madlib, source_table, model, model_arch_table,
     input_shape = get_input_shape(model_arch)
     num_classes = get_num_classes(model_arch)
     fit_validator.validate_input_shapes(input_shape)
-    model_weights_serialized = model_arch_result[ModelArchSchema.MODEL_WEIGHTS]
 
-    #TODO: Refactor the pg related logic in a future PR when we think
+    serialized_weights = get_initial_weights(model, model_arch_result,
+                                             warm_start)
+
+    # TODO: Refactor the pg related logic in a future PR when we think
     # about making the fit function easier to read and maintain.
     if is_platform_pg():
         gp_segment_id_col = '0'
@@ -126,21 +129,6 @@ def fit(schema_madlib, source_table, model, model_arch_table,
 
     if validation_table:
         seg_ids_val, images_per_seg_val = get_images_per_seg(validation_table)
-
-    # Convert model from json and initialize weights
-    master_model = model_from_json(model_arch)
-    model_weights = master_model.get_weights()
-
-    # Get shape of weights in each layer from model arch
-    model_shapes = []
-    for weight_arr in master_model.get_weights():
-        model_shapes.append(weight_arr.shape)
-
-    if model_weights_serialized:
-        # If warm start from previously trained model, set weights
-        model_weights = madlib_keras_serializer.deserialize_as_nd_weights(
-            model_weights_serialized, model_shapes)
-        master_model.set_weights(model_weights)
 
     # Construct validation dataset if provided
     validation_set_provided = bool(validation_table)
@@ -167,7 +155,6 @@ def fit(schema_madlib, source_table, model, model_arch_table,
         """.format(**locals()), ["bytea"])
 
     # Define the state for the model and loss/metric storage lists
-    serialized_weights = madlib_keras_serializer.serialize_nd_weights(model_weights)
     training_loss, training_metrics, metrics_elapsed_time = [], [], []
     metrics_iters = []
 
@@ -244,6 +231,9 @@ def fit(schema_madlib, source_table, model, model_arch_table,
         validation_metrics_final = validation_loss_final = 'NULL'
         validation_table = 'NULL'
 
+    if warm_start:
+        plpy.execute("DROP TABLE {0}, {1}".format
+                     (model, fit_validator.output_summary_model_table))
     create_output_summary_table = plpy.prepare("""
         CREATE TABLE {output_summary_model_table} AS
         SELECT
@@ -301,6 +291,30 @@ def fit(schema_madlib, source_table, model, model_arch_table,
 
     #TODO add a unit test for this in a future PR
     reset_cuda_env(original_cuda_env)
+
+def get_initial_weights(model_table, model_arch_result, warm_start):
+    """
+        If warm_start is True, return back initial weights from model table.
+        If warm_start is False, first try to get the weights from model_arch
+        table, if no weights are defined there, randomly initialize it using
+        keras.
+        @args:
+            @param model_table: Output model table passed in to fit.
+            @param model_arch_result: Dict containing model architecture info.
+            @param warm_start: Boolean flag indicating warm start or not.
+    """
+    if warm_start:
+        serialized_weights = plpy.execute("""
+            SELECT model_data FROM {0}
+        """.format(model_table))[0]['model_data']
+    else:
+        serialized_weights = model_arch_result[ModelArchSchema.MODEL_WEIGHTS]
+        if not serialized_weights:
+            master_model = model_from_json(
+                model_arch_result[ModelArchSchema.MODEL_ARCH])
+            serialized_weights = madlib_keras_serializer.serialize_nd_weights(
+                master_model.get_weights())
+    return serialized_weights
 
 def get_source_summary_table_dict(fit_validator):
     source_summary = plpy.execute("""

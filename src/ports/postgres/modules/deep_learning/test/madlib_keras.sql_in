@@ -265,7 +265,9 @@ SELECT madlib_keras_fit(
     NULL,
     NULL,
     1,
-    'model name', 'model desc');
+    NULL,
+    'model name',
+    'model desc');
 
 SELECT assert(
     source_table = 'cifar_10_sample_batched' AND
@@ -421,7 +423,7 @@ SELECT madlib_keras_fit(
     NULL,
     NULL,
     NULL,
-    'model name', 'model desc');
+    NULL, 'model name', 'model desc');
 
 DROP TABLE IF EXISTS keras_out, keras_out_summary;
 SELECT madlib_keras_fit(
@@ -435,7 +437,7 @@ SELECT madlib_keras_fit(
     NULL,
     NULL,
     NULL,
-    'model name', 'model desc');
+    NULL, 'model name', 'model desc');
 
 DROP TABLE IF EXISTS keras_out, keras_out_summary;
 SELECT madlib_keras_fit(
@@ -449,7 +451,7 @@ SELECT madlib_keras_fit(
     0,
     NULL,
     NULL,
-    'model name', 'model desc');
+    NULL, 'model name', 'model desc');
 
 DROP TABLE IF EXISTS keras_out, keras_out_summary;
 SELECT madlib_keras_fit(
@@ -463,7 +465,7 @@ SELECT madlib_keras_fit(
     NULL,
     NULL,
     NULL,
-    'model name', 'model desc');
+    False, 'model name', 'model desc');
 
 DROP TABLE IF EXISTS keras_out, keras_out_summary;
 SELECT madlib_keras_fit(
@@ -477,7 +479,7 @@ SELECT madlib_keras_fit(
     NULL,
     NULL,
     NULL,
-    'model name', 'model desc');
+    False, 'model name', 'model desc');
 
 -- -- negative test case for passing non numeric y to fit
 -- induce failure by passing a non numeric column
@@ -854,100 +856,325 @@ SELECT madlib_keras_predict(
     'prob',
     0);
 
+-------------------- TRANSFER LEARNING and WARM START -----------------
 
--- Test cases for transfer learning
--- 1. Create a model arch table with weights all set to 0.008. 0.008 is just a
--- random number we chose after a few experiments so that we can deterministically
--- assert the loss and metric values reported by madlib_keras_fit.
--- 2. Run keras fit and then update the model arch table with the output of the keras
--- fit run.
-CREATE OR REPLACE FUNCTION create_model_arch_transfer_learning() RETURNS VOID AS $$
-from keras.layers import *
-from keras import Sequential
-import numpy as np
-import plpy
+DROP TABLE IF EXISTS iris_data;
+CREATE TABLE iris_data(
+    id serial,
+    attributes numeric[],
+    class_text varchar
+);
+INSERT INTO iris_data(id, attributes, class_text) VALUES
+(1,ARRAY[5.1,3.5,1.4,0.2],'Iris-setosa'),
+(2,ARRAY[4.9,3.0,1.4,0.2],'Iris-setosa'),
+(3,ARRAY[4.7,3.2,1.3,0.2],'Iris-setosa'),
+(4,ARRAY[4.6,3.1,1.5,0.2],'Iris-setosa'),
+(5,ARRAY[5.0,3.6,1.4,0.2],'Iris-setosa'),
+(6,ARRAY[5.4,3.9,1.7,0.4],'Iris-setosa'),
+(7,ARRAY[4.6,3.4,1.4,0.3],'Iris-setosa'),
+(8,ARRAY[5.0,3.4,1.5,0.2],'Iris-setosa'),
+(9,ARRAY[4.4,2.9,1.4,0.2],'Iris-setosa'),
+(10,ARRAY[4.9,3.1,1.5,0.1],'Iris-setosa'),
+(11,ARRAY[5.4,3.7,1.5,0.2],'Iris-setosa'),
+(12,ARRAY[4.8,3.4,1.6,0.2],'Iris-setosa'),
+(13,ARRAY[4.8,3.0,1.4,0.1],'Iris-setosa'),
+(14,ARRAY[4.3,3.0,1.1,0.1],'Iris-setosa'),
+(15,ARRAY[5.8,4.0,1.2,0.2],'Iris-setosa'),
+(16,ARRAY[5.7,4.4,1.5,0.4],'Iris-setosa'),
+(17,ARRAY[5.4,3.9,1.3,0.4],'Iris-setosa'),
+(18,ARRAY[5.1,3.5,1.4,0.3],'Iris-setosa'),
+(19,ARRAY[5.7,3.8,1.7,0.3],'Iris-setosa'),
+(20,ARRAY[5.1,3.8,1.5,0.3],'Iris-setosa'),
+(21,ARRAY[5.4,3.4,1.7,0.2],'Iris-setosa'),
+(22,ARRAY[5.1,3.7,1.5,0.4],'Iris-setosa'),
+(23,ARRAY[4.6,3.6,1.0,0.2],'Iris-setosa'),
+(24,ARRAY[5.1,3.3,1.7,0.5],'Iris-setosa'),
+(25,ARRAY[4.8,3.4,1.9,0.2],'Iris-setosa'),
+(26,ARRAY[5.0,3.0,1.6,0.2],'Iris-setosa'),
+(27,ARRAY[5.0,3.4,1.6,0.4],'Iris-setosa'),
+(28,ARRAY[5.2,3.5,1.5,0.2],'Iris-setosa'),
+(29,ARRAY[5.2,3.4,1.4,0.2],'Iris-setosa'),
+(30,ARRAY[4.7,3.2,1.6,0.2],'Iris-setosa'),
+(31,ARRAY[4.8,3.1,1.6,0.2],'Iris-setosa'),
+(32,ARRAY[5.4,3.4,1.5,0.4],'Iris-setosa'),
+(33,ARRAY[5.2,4.1,1.5,0.1],'Iris-setosa'),
+(34,ARRAY[5.5,4.2,1.4,0.2],'Iris-setosa'),
+(35,ARRAY[4.9,3.1,1.5,0.1],'Iris-setosa'),
+(36,ARRAY[5.0,3.2,1.2,0.2],'Iris-setosa'),
+(37,ARRAY[5.5,3.5,1.3,0.2],'Iris-setosa'),
+(38,ARRAY[4.9,3.1,1.5,0.1],'Iris-setosa'),
+(39,ARRAY[4.4,3.0,1.3,0.2],'Iris-setosa'),
+(40,ARRAY[5.1,3.4,1.5,0.2],'Iris-setosa'),
+(41,ARRAY[5.0,3.5,1.3,0.3],'Iris-setosa'),
+(42,ARRAY[4.5,2.3,1.3,0.3],'Iris-setosa'),
+(43,ARRAY[4.4,3.2,1.3,0.2],'Iris-setosa'),
+(44,ARRAY[5.0,3.5,1.6,0.6],'Iris-setosa'),
+(45,ARRAY[5.1,3.8,1.9,0.4],'Iris-setosa'),
+(46,ARRAY[4.8,3.0,1.4,0.3],'Iris-setosa'),
+(47,ARRAY[5.1,3.8,1.6,0.2],'Iris-setosa'),
+(48,ARRAY[4.6,3.2,1.4,0.2],'Iris-setosa'),
+(49,ARRAY[5.3,3.7,1.5,0.2],'Iris-setosa'),
+(50,ARRAY[5.0,3.3,1.4,0.2],'Iris-setosa'),
+(51,ARRAY[7.0,3.2,4.7,1.4],'Iris-versicolor'),
+(52,ARRAY[6.4,3.2,4.5,1.5],'Iris-versicolor'),
+(53,ARRAY[6.9,3.1,4.9,1.5],'Iris-versicolor'),
+(54,ARRAY[5.5,2.3,4.0,1.3],'Iris-versicolor'),
+(55,ARRAY[6.5,2.8,4.6,1.5],'Iris-versicolor'),
+(56,ARRAY[5.7,2.8,4.5,1.3],'Iris-versicolor'),
+(57,ARRAY[6.3,3.3,4.7,1.6],'Iris-versicolor'),
+(58,ARRAY[4.9,2.4,3.3,1.0],'Iris-versicolor'),
+(59,ARRAY[6.6,2.9,4.6,1.3],'Iris-versicolor'),
+(60,ARRAY[5.2,2.7,3.9,1.4],'Iris-versicolor'),
+(61,ARRAY[5.0,2.0,3.5,1.0],'Iris-versicolor'),
+(62,ARRAY[5.9,3.0,4.2,1.5],'Iris-versicolor'),
+(63,ARRAY[6.0,2.2,4.0,1.0],'Iris-versicolor'),
+(64,ARRAY[6.1,2.9,4.7,1.4],'Iris-versicolor'),
+(65,ARRAY[5.6,2.9,3.6,1.3],'Iris-versicolor'),
+(66,ARRAY[6.7,3.1,4.4,1.4],'Iris-versicolor'),
+(67,ARRAY[5.6,3.0,4.5,1.5],'Iris-versicolor'),
+(68,ARRAY[5.8,2.7,4.1,1.0],'Iris-versicolor'),
+(69,ARRAY[6.2,2.2,4.5,1.5],'Iris-versicolor'),
+(70,ARRAY[5.6,2.5,3.9,1.1],'Iris-versicolor'),
+(71,ARRAY[5.9,3.2,4.8,1.8],'Iris-versicolor'),
+(72,ARRAY[6.1,2.8,4.0,1.3],'Iris-versicolor'),
+(73,ARRAY[6.3,2.5,4.9,1.5],'Iris-versicolor'),
+(74,ARRAY[6.1,2.8,4.7,1.2],'Iris-versicolor'),
+(75,ARRAY[6.4,2.9,4.3,1.3],'Iris-versicolor'),
+(76,ARRAY[6.6,3.0,4.4,1.4],'Iris-versicolor'),
+(77,ARRAY[6.8,2.8,4.8,1.4],'Iris-versicolor'),
+(78,ARRAY[6.7,3.0,5.0,1.7],'Iris-versicolor'),
+(79,ARRAY[6.0,2.9,4.5,1.5],'Iris-versicolor'),
+(80,ARRAY[5.7,2.6,3.5,1.0],'Iris-versicolor'),
+(81,ARRAY[5.5,2.4,3.8,1.1],'Iris-versicolor'),
+(82,ARRAY[5.5,2.4,3.7,1.0],'Iris-versicolor'),
+(83,ARRAY[5.8,2.7,3.9,1.2],'Iris-versicolor'),
+(84,ARRAY[6.0,2.7,5.1,1.6],'Iris-versicolor'),
+(85,ARRAY[5.4,3.0,4.5,1.5],'Iris-versicolor'),
+(86,ARRAY[6.0,3.4,4.5,1.6],'Iris-versicolor'),
+(87,ARRAY[6.7,3.1,4.7,1.5],'Iris-versicolor'),
+(88,ARRAY[6.3,2.3,4.4,1.3],'Iris-versicolor'),
+(89,ARRAY[5.6,3.0,4.1,1.3],'Iris-versicolor'),
+(90,ARRAY[5.5,2.5,4.0,1.3],'Iris-versicolor'),
+(91,ARRAY[5.5,2.6,4.4,1.2],'Iris-versicolor'),
+(92,ARRAY[6.1,3.0,4.6,1.4],'Iris-versicolor'),
+(93,ARRAY[5.8,2.6,4.0,1.2],'Iris-versicolor'),
+(94,ARRAY[5.0,2.3,3.3,1.0],'Iris-versicolor'),
+(95,ARRAY[5.6,2.7,4.2,1.3],'Iris-versicolor'),
+(96,ARRAY[5.7,3.0,4.2,1.2],'Iris-versicolor'),
+(97,ARRAY[5.7,2.9,4.2,1.3],'Iris-versicolor'),
+(98,ARRAY[6.2,2.9,4.3,1.3],'Iris-versicolor'),
+(99,ARRAY[5.1,2.5,3.0,1.1],'Iris-versicolor'),
+(100,ARRAY[5.7,2.8,4.1,1.3],'Iris-versicolor'),
+(101,ARRAY[6.3,3.3,6.0,2.5],'Iris-virginica'),
+(102,ARRAY[5.8,2.7,5.1,1.9],'Iris-virginica'),
+(103,ARRAY[7.1,3.0,5.9,2.1],'Iris-virginica'),
+(104,ARRAY[6.3,2.9,5.6,1.8],'Iris-virginica'),
+(105,ARRAY[6.5,3.0,5.8,2.2],'Iris-virginica'),
+(106,ARRAY[7.6,3.0,6.6,2.1],'Iris-virginica'),
+(107,ARRAY[4.9,2.5,4.5,1.7],'Iris-virginica'),
+(108,ARRAY[7.3,2.9,6.3,1.8],'Iris-virginica'),
+(109,ARRAY[6.7,2.5,5.8,1.8],'Iris-virginica'),
+(110,ARRAY[7.2,3.6,6.1,2.5],'Iris-virginica'),
+(111,ARRAY[6.5,3.2,5.1,2.0],'Iris-virginica'),
+(112,ARRAY[6.4,2.7,5.3,1.9],'Iris-virginica'),
+(113,ARRAY[6.8,3.0,5.5,2.1],'Iris-virginica'),
+(114,ARRAY[5.7,2.5,5.0,2.0],'Iris-virginica'),
+(115,ARRAY[5.8,2.8,5.1,2.4],'Iris-virginica'),
+(116,ARRAY[6.4,3.2,5.3,2.3],'Iris-virginica'),
+(117,ARRAY[6.5,3.0,5.5,1.8],'Iris-virginica'),
+(118,ARRAY[7.7,3.8,6.7,2.2],'Iris-virginica'),
+(119,ARRAY[7.7,2.6,6.9,2.3],'Iris-virginica'),
+(120,ARRAY[6.0,2.2,5.0,1.5],'Iris-virginica'),
+(121,ARRAY[6.9,3.2,5.7,2.3],'Iris-virginica'),
+(122,ARRAY[5.6,2.8,4.9,2.0],'Iris-virginica'),
+(123,ARRAY[7.7,2.8,6.7,2.0],'Iris-virginica'),
+(124,ARRAY[6.3,2.7,4.9,1.8],'Iris-virginica'),
+(125,ARRAY[6.7,3.3,5.7,2.1],'Iris-virginica'),
+(126,ARRAY[7.2,3.2,6.0,1.8],'Iris-virginica'),
+(127,ARRAY[6.2,2.8,4.8,1.8],'Iris-virginica'),
+(128,ARRAY[6.1,3.0,4.9,1.8],'Iris-virginica'),
+(129,ARRAY[6.4,2.8,5.6,2.1],'Iris-virginica'),
+(130,ARRAY[7.2,3.0,5.8,1.6],'Iris-virginica'),
+(131,ARRAY[7.4,2.8,6.1,1.9],'Iris-virginica'),
+(132,ARRAY[7.9,3.8,6.4,2.0],'Iris-virginica'),
+(133,ARRAY[6.4,2.8,5.6,2.2],'Iris-virginica'),
+(134,ARRAY[6.3,2.8,5.1,1.5],'Iris-virginica'),
+(135,ARRAY[6.1,2.6,5.6,1.4],'Iris-virginica'),
+(136,ARRAY[7.7,3.0,6.1,2.3],'Iris-virginica'),
+(137,ARRAY[6.3,3.4,5.6,2.4],'Iris-virginica'),
+(138,ARRAY[6.4,3.1,5.5,1.8],'Iris-virginica'),
+(139,ARRAY[6.0,3.0,4.8,1.8],'Iris-virginica'),
+(140,ARRAY[6.9,3.1,5.4,2.1],'Iris-virginica'),
+(141,ARRAY[6.7,3.1,5.6,2.4],'Iris-virginica'),
+(142,ARRAY[6.9,3.1,5.1,2.3],'Iris-virginica'),
+(143,ARRAY[5.8,2.7,5.1,1.9],'Iris-virginica'),
+(144,ARRAY[6.8,3.2,5.9,2.3],'Iris-virginica'),
+(145,ARRAY[6.7,3.3,5.7,2.5],'Iris-virginica'),
+(146,ARRAY[6.7,3.0,5.2,2.3],'Iris-virginica'),
+(147,ARRAY[6.3,2.5,5.0,1.9],'Iris-virginica'),
+(148,ARRAY[6.5,3.0,5.2,2.0],'Iris-virginica'),
+(149,ARRAY[6.2,3.4,5.4,2.3],'Iris-virginica'),
+(150,ARRAY[5.9,3.0,5.1,1.8],'Iris-virginica');
 
-model = Sequential()
-model.add(Conv2D(32, kernel_size=(3, 3), activation='relu', input_shape=(32,32,3,)))
-model.add(MaxPooling2D(pool_size=(2, 2)))
-model.add(Dropout(0.25))
-model.add(Flatten())
-model.add(Dense(2, activation='softmax'))
+DROP TABLE IF EXISTS iris_data_packed, iris_data_packed_summary;
+SELECT training_preprocessor_dl('iris_data',         -- Source table
+                                'iris_data_packed',  -- Output table
+                                'class_text',        -- Dependent variable
+                                'attributes'         -- Independent variable
+                                );
 
-# we don't really need to get the weights from the model and the flatten them since
-# we are using np.ones_like to replace all the weights with a constant.
-# We want to keep the flatten code and the concatenation code just for reference
-weights = model.get_weights()
-weights_flat = [ w.flatten() for w in weights ]
-weights1d = np.array([j for sub in weights_flat for j in sub])
-# Adjust weights so that the learning for the first iteration can be deterministic
-# 0.008 is just a random number we chose after a few experiments
-weights1d = np.ones_like(weights1d)*0.008
-weights_bytea = weights1d.tostring()
+DROP TABLE IF EXISTS iris_model_arch;
+-- NOTE: The seed is set to 0 for every layer.
+SELECT load_keras_model('iris_model_arch',  -- Output table,
+$$
+{
+"class_name": "Sequential",
+"keras_version": "2.1.6",
+"config":
+    [{"class_name": "Dense", "config": {"kernel_initializer": {"class_name": "VarianceScaling",
+    "config": {"distribution": "uniform", "scale": 1.0, "seed": 0, "mode": "fan_avg"}},
+    "name": "dense_1", "kernel_constraint": null, "bias_regularizer": null,
+    "bias_constraint": null, "dtype": "float32", "activation": "relu", "trainable": true,
+    "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros",
+    "config": {}}, "units": 10, "batch_input_shape": [null, 4], "use_bias": true,
+    "activity_regularizer": null}}, {"class_name": "Dense",
+    "config": {"kernel_initializer": {"class_name": "VarianceScaling",
+    "config": {"distribution": "uniform", "scale": 1.0, "seed": 0, "mode": "fan_avg"}},
+    "name": "dense_2", "kernel_constraint": null, "bias_regularizer": null,
+    "bias_constraint": null, "activation": "relu", "trainable": true, "kernel_regularizer": null,
+    "bias_initializer": {"class_name": "Zeros", "config": {}}, "units": 10, "use_bias": true,
+    "activity_regularizer": null}}, {"class_name": "Dense", "config": {"kernel_initializer":
+    {"class_name": "VarianceScaling", "config": {"distribution": "uniform", "scale": 1.0,
+    "seed": 0, "mode": "fan_avg"}}, "name": "dense_3", "kernel_constraint": null,
+    "bias_regularizer": null, "bias_constraint": null, "activation": "softmax",
+    "trainable": true, "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros",
+    "config": {}}, "units": 3, "use_bias": true, "activity_regularizer": null}}],
+    "backend": "tensorflow"}
+$$
+);
 
-model_config = model.to_json()
+DROP TABLE IF EXISTS iris_model, iris_model_summary;
+SELECT madlib_keras_fit('iris_data_packed',   -- source table
+                        'iris_model',          -- model output table
+                        'iris_model_arch',  -- model arch table
+                         1,                    -- model arch id
+                         $$ loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'] $$,  -- compile_params
+                         $$ batch_size=5, epochs=3 $$,  -- fit_params
+                         5,                    -- num_iterations
+                         NULL, NULL,
+                         1 -- metrics_compute_frequency
+                        );
 
-plan1 = plpy.prepare("""SELECT load_keras_model(
-                        'test_keras_model_arch_table',
-                        $1, $2)
-                    """, ['json','bytea'])
-plpy.execute(plan1, [model_config, weights_bytea])
+-- Test that our code is indeed learning something and not broken. The loss
+-- from the first iteration should be less than the 5th, while the accuracy
+-- must be greater.
+SELECT assert(
+  array_upper(training_loss, 1) = 5 AND
+  array_upper(training_metrics, 1) = 5,
+  'metrics compute frequency must be 1.')
+FROM iris_model_summary;
 
-$$ LANGUAGE plpythonu VOLATILE;
+SELECT assert(
+  training_loss[5]-training_loss[1] < 0 AND
+  training_metrics[5]-training_metrics[1] > 0,
+    'The loss and accuracy should have improved with more iterations.'
+)
+FROM iris_model_summary;
 
-DROP TABLE IF EXISTS test_keras_model_arch_table;
-SELECT create_model_arch_transfer_learning();
+-- Make a copy of the loss and metrics array, to compare it with runs after
+-- warm start and transfer learning.
+DROP TABLE IF EXISTS iris_model_first_run;
+CREATE TABLE iris_model_first_run AS
+SELECT training_loss_final, training_metrics_final
+FROM iris_model_summary;
 
-DROP TABLE IF EXISTS keras_saved_out, keras_saved_out_summary;
-SELECT madlib_keras_fit(
-    'cifar_10_sample_batched',
-    'keras_saved_out',
-    'test_keras_model_arch_table',
-    1,
-    $$ optimizer=SGD(lr=0.001, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['mae']$$::text,
-    $$ batch_size=2, epochs=1, verbose=0 $$::text,
-    1);
-SELECT training_loss_final FROM keras_saved_out_summary;
+-- Duplicate the architecture, but note that trainable is set to FALSE.
+-- This is to ensure we don't learn anything new, that would help us
+-- deterministically assert the accuracy and loss after transfer learning
+-- and warm start.
+SELECT load_keras_model('iris_model_arch',  -- Output table,
+$$
+{
+"class_name": "Sequential",
+"keras_version": "2.1.6",
+"config":
+    [{"class_name": "Dense", "config": {"kernel_initializer": {"class_name": "VarianceScaling",
+    "config": {"distribution": "uniform", "scale": 1.0, "seed": 0, "mode": "fan_avg"}},
+    "name": "dense_1", "kernel_constraint": null, "bias_regularizer": null,
+    "bias_constraint": null, "dtype": "float32", "activation": "relu",
+    "trainable": false,
+    "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros",
+    "config": {}}, "units": 10, "batch_input_shape": [null, 4], "use_bias": true,
+    "activity_regularizer": null}}, {"class_name": "Dense",
+    "config": {"kernel_initializer": {"class_name": "VarianceScaling",
+    "config": {"distribution": "uniform", "scale": 1.0, "seed": 0, "mode": "fan_avg"}},
+    "name": "dense_2", "kernel_constraint": null, "bias_regularizer": null,
+    "bias_constraint": null, "activation": "relu",
+    "trainable": false,
+    "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros",
+    "config": {}}, "units": 10, "use_bias": true, "activity_regularizer": null}},
+    {"class_name": "Dense", "config": {"kernel_initializer":
+    {"class_name": "VarianceScaling", "config": {"distribution": "uniform", "scale": 1.0,
+    "seed": 0, "mode": "fan_avg"}}, "name": "dense_3", "kernel_constraint": null,
+    "bias_regularizer": null, "bias_constraint": null, "activation": "softmax",
+    "trainable": false,
+    "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros",
+    "config": {}}, "units": 3, "use_bias": true, "activity_regularizer": null}}],
+    "backend": "tensorflow"}
+$$
+);
+-- Copy weights that were learnt from the previous run, for transfer
+-- learning. Copy it now, because using warm_start will overwrite it.
+UPDATE iris_model_arch set model_weights = (select model_data from iris_model)  WHERE model_id = 2;
 
--- We want to keep this select in case the assert fails and we need
--- to know the actual values in the table without re running the entire test
-\x
-select * from keras_saved_out_summary;
-\x
+-- Warm start test
+SELECT madlib_keras_fit('iris_data_packed',   -- source table
+                               'iris_model',          -- model output table
+                               'iris_model_arch',  -- model arch table
+                                2,                    -- model arch id
+                                $$ loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'] $$,  -- compile_params
+                                $$ batch_size=5, epochs=3 $$,  -- fit_params
+                                2,                    -- num_iterations,
+                                NULL, NULL, 1,
+                                true -- warm start
+                              );
 
--- This assert is a work in progress (we are hoping that these asserts will not be flaky).
--- We want to be able to assert that the loss/metric for the first iteration is
--- deterministic if we set weights using the load_keras function. Although we
--- have seen that the loss/metric values are different in the 3rd/4th decimal
--- every time we run fit after loading the weights.
+SELECT assert(
+  array_upper(training_loss, 1) = 2 AND
+  array_upper(training_metrics, 1) = 2,
+  'metrics compute frequency must be 1.')
+FROM iris_model_summary;
 
--- TODO https://github.com/apache/madlib/pull/399#discussion_r288336557
--- Might be a cleaner assert if we can assert the weights themselves.
--- For instance, if we use weights1d = np.ones_like(weights1d) instead of
--- weights1d = np.ones_like(weights1d)*0.008, and freeze the first layer,
--- then even after multiple iterations the weights in the first layer should all
--- be 1. Look at How can I "freeze" Keras layers?
--- section in https://keras.io/getting-started/faq/ for how to freeze layers.
-SELECT assert(abs(training_loss_final - 0.6) < 0.1 AND
-              abs(training_metrics_final - 0.4) < 0.1,
-       'Transfer learning test failed.')
-FROM keras_saved_out_summary;
-DROP FUNCTION create_model_arch_transfer_learning();
+SELECT assert(
+  abs(first.training_loss_final-second.training_loss[1]) < 1e-10 AND
+  abs(first.training_loss_final-second.training_loss[2]) < 1e-10 AND
+  abs(first.training_metrics_final-second.training_metrics[1]) < 1e-10 AND
+  abs(first.training_metrics_final-second.training_metrics[2]) < 1e-10,
+  'warm start test failed because training loss and metrics don''t match the expected value from the previous run of keras fit.')
+FROM iris_model_first_run AS first, iris_model_summary AS second;
 
-UPDATE test_keras_model_arch_table SET model_weights = model_data FROM keras_saved_out WHERE model_id = 1;
-DROP TABLE IF EXISTS keras_saved_out, keras_saved_out_summary;
-SELECT madlib_keras_fit(
-    'cifar_10_sample_batched',
-    'keras_saved_out',
-    'test_keras_model_arch_table',
-    1,
-    $$ optimizer=SGD(lr=0.001, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['mae']$$::text,
-    $$ batch_size=2, epochs=1, verbose=0 $$::text,
-    3);
-SELECT training_loss_final, training_metrics_final FROM keras_saved_out_summary;
+-- Transfer learning test
+DROP TABLE IF EXISTS iris_model_transfer, iris_model_transfer_summary;
+SELECT madlib_keras_fit('iris_data_packed',   -- source table
+                               'iris_model_transfer',          -- model output table
+                               'iris_model_arch',  -- model arch table
+                                2,                    -- model arch id
+                                $$ loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'] $$,  -- compile_params
+                                $$ batch_size=5, epochs=3 $$,  -- fit_params
+                                2,
+                                NULL, NULL, 1
+                              );
 
---assert training loss and metric deterministic
-SELECT assert(abs(training_loss_final - 0.64) < 0.01 AND
-              abs(training_metrics_final - 0.47) < 0.01,
-       'Transfer learning test failed.')
-FROM keras_saved_out_summary;
+SELECT assert(
+  array_upper(training_loss, 1) = 2 AND
+  array_upper(training_metrics, 1) = 2,
+  'metrics compute frequency must be 1.')
+FROM iris_model_transfer_summary;
+
+SELECT assert(
+  abs(first.training_loss_final-second.training_loss[1]) < 1e-10 AND
+  abs(first.training_loss_final-second.training_loss[2]) < 1e-10 AND
+  abs(first.training_metrics_final-second.training_metrics[1]) < 1e-10 AND
+  abs(first.training_metrics_final-second.training_metrics[2]) < 1e-10,
+  'Transfer learning test failed because training loss and metrics don''t match the expected value.')
+FROM iris_model_first_run AS first, iris_model_transfer_summary AS second;
