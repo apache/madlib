@@ -139,6 +139,7 @@ SELECT assert(
         metrics_compute_frequency = 3 AND
         num_classes = 2 AND
         class_values = '{0,1}' AND
+        metrics_type = '{mae}' AND
         training_metrics_final >= 0  AND
         training_loss_final  >= 0  AND
         array_upper(training_metrics, 1) = 1 AND
@@ -175,6 +176,7 @@ SELECT assert(
         metrics_compute_frequency = 4 AND
         training_metrics_final >= 0  AND
         training_loss_final  >= 0  AND
+        metrics_type = '{accuracy}' AND
         array_upper(training_metrics, 1) = 2 AND
         array_upper(training_loss, 1) = 2 AND
         array_upper(time_iter, 1) = 2 AND
@@ -259,6 +261,7 @@ SELECT assert(
     madlib_version is NOT NULL AND
     num_classes = 2 AND
     class_values = '{0,1}' AND
+    metrics_type = '{accuracy}' AND
     normalizing_const = 255.0 AND
     training_metrics_final is not NULL AND
     training_loss_final is not NULL AND
@@ -284,6 +287,18 @@ $$ optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossent
 $$ batch_size=2, epochs=1, verbose=0 $$::text,
 1);
 
+SELECT assert(
+        metrics_type is NULL AND
+        training_metrics IS NULL AND
+        array_upper(training_loss, 1) = 1 AND
+        array_upper(time_iter, 1) = 1 AND
+        validation_metrics_final IS NULL AND
+        validation_loss_final  >= 0  AND
+        validation_metrics IS NULL AND
+        array_upper(validation_loss, 1) = 1,
+        'Keras model output Summary Validation failed. Actual:' || __to_char(summary))
+FROM (SELECT * FROM keras_saved_out_summary) summary;
+
 -- Validate metrics=[] works fine
 DROP TABLE IF EXISTS keras_saved_out, keras_saved_out_summary;
 SELECT madlib_keras_fit(
@@ -294,6 +309,18 @@ SELECT madlib_keras_fit(
 $$ optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=[]$$::text,
 $$ batch_size=2, epochs=1, verbose=0 $$::text,
 1);
+
+SELECT assert(
+        metrics_type IS NULL AND
+        training_metrics IS NULL AND
+        array_upper(training_loss, 1) = 1 AND
+        array_upper(time_iter, 1) = 1 AND
+        validation_metrics_final IS NULL AND
+        validation_loss_final  >= 0  AND
+        validation_metrics IS NULL AND
+        array_upper(validation_loss, 1) = 1,
+        'Keras model output Summary Validation failed. Actual:' || __to_char(summary))
+FROM (SELECT * FROM keras_saved_out_summary) summary;
 
 DROP TABLE IF EXISTS cifar10_predict;
 SELECT madlib_keras_predict(

@@ -45,8 +45,10 @@ from madlib_keras_validator import FitInputValidator
 from madlib_keras_wrapper import *
 from keras_model_arch_table import Format
 
+from utilities.control import MinWarning
 from utilities.model_arch_info import get_input_shape
 from utilities.model_arch_info import get_num_classes
+from utilities.utilities import _assert
 from utilities.utilities import is_platform_pg
 from utilities.utilities import get_segments_per_host
 from utilities.utilities import madlib_version
@@ -54,27 +56,7 @@ from utilities.validate_args import get_col_value_and_type
 from utilities.validate_args import get_expr_type
 from utilities.validate_args import quote_ident
 
-def get_source_summary_table_dict(fit_validator):
-    source_summary = plpy.execute("""
-            SELECT
-                {class_values} AS class_values,
-                {norm_const} AS norm_const,
-                {dep_vartype} AS dep_vartype,
-                {dep_varname} AS dependent_varname_in_source_table,
-                {indep_varname} AS independent_varname_in_source_table
-            FROM {tbl}
-        """.format(class_values=CLASS_VALUES_COLNAME,
-                   norm_const=NORMALIZING_CONST_COLNAME,
-                   dep_vartype=DEPENDENT_VARTYPE_COLNAME,
-                   dep_varname='dependent_varname',
-                   indep_varname='independent_varname',
-                   tbl=fit_validator.source_summary_table))[0]
-    source_summary['class_values_type'] = get_expr_type(
-        CLASS_VALUES_COLNAME, fit_validator.source_summary_table)
-    source_summary['norm_const_type'] = get_expr_type(
-        NORMALIZING_CONST_COLNAME, fit_validator.source_summary_table)
-    return source_summary
-
+@MinWarning("warning")
 def fit(schema_madlib, source_table, model,model_arch_table,
         model_arch_id, compile_params, fit_params, num_iterations,
         gpus_per_host = 0, validation_table=None,
@@ -85,11 +67,12 @@ def fit(schema_madlib, source_table, model,model_arch_table,
     independent_varname = MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL
     model_arch_table = quote_ident(model_arch_table)
     fit_params = "" if not fit_params else fit_params
+    _assert(compile_params, "Compile parameters cannot be empty or NULL.")
 
     fit_validator = FitInputValidator(
         source_table, validation_table, model, model_arch_table,
-        dependent_varname, independent_varname, num_iterations,
-        metrics_compute_frequency)
+        dependent_varname, independent_varname,
+        num_iterations, metrics_compute_frequency)
     if metrics_compute_frequency is None:
         metrics_compute_frequency = num_iterations
 
@@ -188,9 +171,8 @@ def fit(schema_madlib, source_table, model,model_arch_table,
     training_loss, training_metrics, aggregate_runtime = [], [], []
     metrics_iters = []
 
-    plpy.info("Model architecture size: {}KB".format(len(model_arch)/1024))
-    plpy.info("Model state (serialized) size: {}MB".format(
-        len(model_state)/1024/1024))
+    # get the size of serialized model weights string in KB
+    model_size = sys.getsizeof(model_state)/1024.0
 
     # Run distributed training for specified number of iterations
     for i in range(1, num_iterations+1):
@@ -198,7 +180,7 @@ def fit(schema_madlib, source_table, model,model_arch_table,
         iteration_result = plpy.execute(run_training_iteration,
                                         [model_state])[0]['iteration_result']
         end_iteration = time.time()
-        plpy.info("Time for iteration {0}: {1} sec".
+        plpy.info("Time for training in iteration {0}: {1} sec".
                   format(i, end_iteration - start_iteration))
         model_state = madlib_keras_serializer.deserialize_iteration_state(
             iteration_result)
@@ -238,19 +220,22 @@ def fit(schema_madlib, source_table, model,model_arch_table,
     independent_varname_in_source_table = src_summary_dict['independent_varname_in_source_table']
     # Define some constants to be inserted into the summary table.
     model_type = "madlib_keras"
-    model_size = sys.getsizeof(model)
+    compile_params_dict = convert_string_of_args_to_dict(compile_params)
+    metrics_list = get_metrics_from_compile_param(compile_params)
+    is_metrics_specified = True if metrics_list else False
+    metrics_type = 'ARRAY{0}'.format(metrics_list) if is_metrics_specified else 'NULL'
     metrics_iters = metrics_iters if metrics_iters else 'NULL'
     # We always compute the training loss and metrics, at least once.
-    training_metrics_final = training_metrics[-1]
     training_loss_final = training_loss[-1]
-    training_metrics = training_metrics if training_metrics else 'NULL'
-    training_loss = training_loss if training_loss else 'NULL'
+    training_loss = 'ARRAY{0}'.format(training_loss) if training_loss else 'NULL'
+    training_metrics_final, training_metrics = get_metrics_sql_string(
+        training_metrics, is_metrics_specified)
     # Validation loss and metrics are computed only if validation_table
     # is provided.
     if validation_set_provided:
-        validation_metrics_final = validation_metrics[-1]
+        validation_metrics_final, validation_metrics = get_metrics_sql_string(
+            validation_metrics, is_metrics_specified)
         validation_loss_final = validation_loss[-1]
-        validation_metrics = 'ARRAY{0}'.format(validation_metrics)
         validation_loss = 'ARRAY{0}'.format(validation_loss)
         # Must quote the string before inserting to table. Explicitly
         # quoting it here since this can also take a NULL value, done
@@ -278,7 +263,7 @@ def fit(schema_madlib, source_table, model,model_arch_table,
             $3 AS name,
             $4 AS description,
             '{model_type}'::TEXT AS model_type,
-            {model_size}::INTEGER AS model_size,
+            {model_size}::DOUBLE PRECISION AS model_size,
             '{start_training_time}'::TIMESTAMP AS start_training_time,
             '{end_training_time}'::TIMESTAMP AS end_training_time,
             $5 AS time_iter,
@@ -287,10 +272,11 @@ def fit(schema_madlib, source_table, model,model_arch_table,
             $6 AS {class_values_colname},
             $MAD${dep_vartype}$MAD$::TEXT AS {dependent_vartype_colname},
             {norm_const}::DOUBLE PRECISION AS {normalizing_const_colname},
+            {metrics_type}::TEXT[] AS metrics_type,
             {training_metrics_final}::DOUBLE PRECISION AS training_metrics_final,
             {training_loss_final}::DOUBLE PRECISION AS training_loss_final,
-            ARRAY{training_metrics}::DOUBLE PRECISION[] AS training_metrics,
-            ARRAY{training_loss}::DOUBLE PRECISION[] AS training_loss,
+            {training_metrics}::DOUBLE PRECISION[] AS training_metrics,
+            {training_loss}::DOUBLE PRECISION[] AS training_loss,
             {validation_metrics_final}::DOUBLE PRECISION AS validation_metrics_final,
             {validation_loss_final}::DOUBLE PRECISION AS validation_loss_final,
             {validation_metrics}::DOUBLE PRECISION[] AS validation_metrics,
@@ -318,6 +304,38 @@ def fit(schema_madlib, source_table, model,model_arch_table,
 
     #TODO add a unit test for this in a future PR
     reset_cuda_env(original_cuda_env)
+
+def get_source_summary_table_dict(fit_validator):
+    source_summary = plpy.execute("""
+            SELECT
+                {class_values} AS class_values,
+                {norm_const} AS norm_const,
+                {dep_vartype} AS dep_vartype,
+                {dep_varname} AS dependent_varname_in_source_table,
+                {indep_varname} AS independent_varname_in_source_table
+            FROM {tbl}
+        """.format(class_values=CLASS_VALUES_COLNAME,
+                   norm_const=NORMALIZING_CONST_COLNAME,
+                   dep_vartype=DEPENDENT_VARTYPE_COLNAME,
+                   dep_varname='dependent_varname',
+                   indep_varname='independent_varname',
+                   tbl=fit_validator.source_summary_table))[0]
+    source_summary['class_values_type'] = get_expr_type(
+        CLASS_VALUES_COLNAME, fit_validator.source_summary_table)
+    source_summary['norm_const_type'] = get_expr_type(
+        NORMALIZING_CONST_COLNAME, fit_validator.source_summary_table)
+    return source_summary
+
+def get_metrics_sql_string(metrics_list, is_metrics_specified):
+    """
+        Return the SQL string to use for creating metrics SQL values.
+    """
+    if is_metrics_specified:
+        metrics_final = metrics_list[-1]
+        metrics_all = 'ARRAY{0}'.format(metrics_list)
+    else:
+        metrics_final = metrics_all = 'NULL'
+    return metrics_final, metrics_all
 
 def compute_loss_and_metrics(schema_madlib, table, dependent_varname,
                              independent_varname, compile_params, model_arch,
