@@ -34,7 +34,7 @@ from utilities.validate_args import input_tbl_valid
 from utilities.validate_args import quote_ident
 from utilities.validate_args import table_exists
 
-class Format:
+class ModelArchSchema:
     """Expected format of keras_model_arch_table.
        Example uses:
 
@@ -63,8 +63,8 @@ def load_keras_model(keras_model_arch_table, model_arch, model_weights,
                      name, description, **kwargs):
     model_arch_table = quote_ident(keras_model_arch_table)
     if not table_exists(model_arch_table):
-        col_defs = get_col_name_type_sql_string(Format.col_names,
-                                                Format.col_types)
+        col_defs = get_col_name_type_sql_string(ModelArchSchema.col_names,
+                                                ModelArchSchema.col_types)
 
         sql = "CREATE TABLE {model_arch_table} ({col_defs})" \
               .format(**locals())
@@ -74,7 +74,7 @@ def load_keras_model(keras_model_arch_table, model_arch, model_weights,
             .format(model_arch_table))
     else:
         missing_cols = columns_missing_from_table(model_arch_table,
-                                                  Format.col_names)
+                                                  ModelArchSchema.col_names)
         if len(missing_cols) > 0:
             plpy.error("Keras Model Arch: Invalid keras model arch table {0},"
                        " missing columns: {1}".format(model_arch_table,
@@ -83,34 +83,34 @@ def load_keras_model(keras_model_arch_table, model_arch, model_weights,
     unique_str = unique_string(prefix_has_temp=False)
     insert_query = plpy.prepare("INSERT INTO {model_arch_table} "
                                 "VALUES(DEFAULT, $1, $2, $3, $4, $5);".format(**locals()),
-                                Format.col_types[1:])
+                                ModelArchSchema.col_types[1:])
     insert_res = plpy.execute(insert_query,[model_arch, model_weights, name, description,
                                unique_str], 0)
 
     select_query = """SELECT {model_id_col}, {model_arch_col} FROM {model_arch_table}
                    WHERE {internal_id_col} = '{unique_str}'""".format(
-                    model_id_col=Format.MODEL_ID,
-                    model_arch_col=Format.MODEL_ARCH,
+                    model_id_col=ModelArchSchema.MODEL_ID,
+                    model_arch_col=ModelArchSchema.MODEL_ARCH,
                     model_arch_table=model_arch_table,
-                    internal_id_col=Format.__INTERNAL_MADLIB_ID__,
+                    internal_id_col=ModelArchSchema.__INTERNAL_MADLIB_ID__,
                     unique_str=unique_str)
     select_res = plpy.execute(select_query,1)
 
     plpy.info("Keras Model Arch: Added model id {0} to {1} table".
-        format(select_res[0][Format.MODEL_ID], model_arch_table))
+              format(select_res[0][ModelArchSchema.MODEL_ID], model_arch_table))
 
 def delete_keras_model(keras_model_arch_table, model_id, **kwargs):
     model_arch_table = quote_ident(keras_model_arch_table)
     input_tbl_valid(model_arch_table, "Keras Model Arch")
 
-    missing_cols = columns_missing_from_table(model_arch_table, Format.col_names)
+    missing_cols = columns_missing_from_table(model_arch_table, ModelArchSchema.col_names)
     if len(missing_cols) > 0:
         plpy.error("Keras Model Arch: Invalid keras model arch table {0},"
                    " missing columns: {1}".format(model_arch_table, missing_cols))
 
     sql = """
            DELETE FROM {model_arch_table} WHERE {model_id_col}={model_id}
-          """.format(model_arch_table=model_arch_table, model_id_col=Format.MODEL_ID,
+          """.format(model_arch_table=model_arch_table, model_id_col=ModelArchSchema.MODEL_ID,
                      model_id=model_id)
     res = plpy.execute(sql, 0)
 
@@ -120,7 +120,7 @@ def delete_keras_model(keras_model_arch_table, model_id, **kwargs):
     else:
         plpy.error("Keras Model Arch: Model id {0} not found".format(model_id))
 
-    sql = "SELECT {0} FROM {1}".format(Format.MODEL_ID, model_arch_table)
+    sql = "SELECT {0} FROM {1}".format(ModelArchSchema.MODEL_ID, model_arch_table)
     res = plpy.execute(sql, 0)
     if not res:
         plpy.info("Keras Model Arch: Dropping empty keras model arch "\
