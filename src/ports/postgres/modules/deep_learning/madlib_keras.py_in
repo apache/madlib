@@ -76,6 +76,8 @@ def fit(schema_madlib, source_table, model,model_arch_table,
     if metrics_compute_frequency is None:
         metrics_compute_frequency = num_iterations
 
+    # The following two times must be recorded together.
+    metrics_elapsed_start_time = time.time()
     start_training_time = datetime.datetime.now()
 
     gpus_per_host = 0 if gpus_per_host is None else gpus_per_host
@@ -168,7 +170,7 @@ def fit(schema_madlib, source_table, model,model_arch_table,
 
     # Define the state for the model and loss/metric storage lists
     model_state = madlib_keras_serializer.serialize_weights(0, model_weights)
-    training_loss, training_metrics, aggregate_runtime = [], [], []
+    training_loss, training_metrics, metrics_elapsed_time = [], [], []
     metrics_iters = []
 
     # get the size of serialized model weights string in KB
@@ -188,7 +190,6 @@ def fit(schema_madlib, source_table, model,model_arch_table,
         if should_compute_metrics_this_iter(i, metrics_compute_frequency,
                                             num_iterations):
             # Compute loss/accuracy for training data.
-            aggregate_runtime.append(datetime.datetime.now())
             compute_loss_and_metrics(
                 schema_madlib, source_table, dependent_varname,
                 independent_varname, compile_params_to_pass, model_arch,
@@ -206,6 +207,9 @@ def fit(schema_madlib, source_table, model,model_arch_table,
                     images_per_seg_val, gp_segment_id_col,
                     validation_metrics, validation_loss,
                     i, "Validation")
+            metrics_elapsed_end_time = time.time()
+            metrics_elapsed_time.append(
+                metrics_elapsed_end_time-metrics_elapsed_start_time)
 
     end_training_time = datetime.datetime.now()
 
@@ -266,7 +270,7 @@ def fit(schema_madlib, source_table, model,model_arch_table,
             {model_size}::DOUBLE PRECISION AS model_size,
             '{start_training_time}'::TIMESTAMP AS start_training_time,
             '{end_training_time}'::TIMESTAMP AS end_training_time,
-            $5 AS time_iter,
+            $5 AS metrics_elapsed_time,
             '{version}'::TEXT AS madlib_version,
             {num_classes}::INTEGER AS num_classes,
             $6 AS {class_values_colname},
@@ -287,11 +291,11 @@ def fit(schema_madlib, source_table, model,model_arch_table,
                    dependent_vartype_colname=DEPENDENT_VARTYPE_COLNAME,
                    normalizing_const_colname=NORMALIZING_CONST_COLNAME,
                    **locals()),
-                   ["TEXT", "TEXT", "TEXT","TEXT", "TIMESTAMP[]",
+                   ["TEXT", "TEXT", "TEXT","TEXT", "DOUBLE PRECISION[]",
                     class_values_type])
     plpy.execute(create_output_summary_table,
                  [compile_params, fit_params, name,
-                  description, aggregate_runtime, class_values])
+                  description, metrics_elapsed_time, class_values])
 
     create_output_table = plpy.prepare("""
         CREATE TABLE {0} AS SELECT
