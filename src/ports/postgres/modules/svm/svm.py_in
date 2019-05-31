@@ -8,19 +8,19 @@ from kernel_approximation import create_kernel, load_kernel
 
 from utilities.control import MinWarning
 from utilities.in_mem_group_control import GroupIterationController
-from utilities.utilities import extract_keyvalue_params
-from utilities.utilities import preprocess_keyvalue_params
-from utilities.utilities import add_postfix
-from utilities.utilities import _string_to_array_with_quotes
-from utilities.utilities import _string_to_array
 from utilities.utilities import _assert
-from utilities.utilities import unique_string
+from utilities.utilities import _string_to_array
+from utilities.utilities import _string_to_array_with_quotes
+from utilities.utilities import add_postfix
+from utilities.utilities import extract_keyvalue_params
+from utilities.utilities import get_grouping_col_str
 from utilities.utilities import num_features, num_samples
+from utilities.utilities import preprocess_keyvalue_params
+from utilities.utilities import unique_string
 
 from utilities.validate_args import cols_in_tbl_valid
 from utilities.validate_args import explicit_bool_to_text
 from utilities.validate_args import get_expr_type
-from utilities.utilities import get_grouping_col_str
 from utilities.validate_args import input_tbl_valid
 from utilities.validate_args import is_var_valid
 from utilities.validate_args import output_tbl_valid
@@ -945,6 +945,7 @@ def _compute_class_weight_sql(source_table, dependent_varname,
         return "1"
 
     dep_to_weight = defaultdict(float)
+    class_weight_str = class_weight_str.strip()
     if class_weight_str == "balanced":
         # use half of n_samples since only doing binary classification
         # Change the '2' to n_classes for multinomial
@@ -956,20 +957,54 @@ def _compute_class_weight_sql(source_table, dependent_varname,
                                             src=source_table))
         for each_count in bin_count:
             dep_to_weight[each_count['k']] = n_samples_per_class / each_count['v']
-    else:
-        class_weight_splits = preprocess_keyvalue_params(class_weight_str,
-                                                         split_char=':')
+    elif _is_class_weights_str_a_mapping(class_weight_str):
+        # preprocess_keyvalue_params() does not seem to handle special
+        # chars as expected. TODO: Fix it in MADLIB-1354.
+        class_weight_splits = preprocess_keyvalue_params(
+            class_weight_str, split_char=':')
+
+        _assert(class_weight_splits and len(class_weight_splits)<=2,
+                "SVM: Only binary classification is supported. The "
+                "class_weight param should have at least one and at most "
+                "two labels in it.")
+        # Cast the distinct class values' array to a text array since a
+        # numeric class will show up with suffix 'L' sometimes, and that
+        # may cause issues when we try to check if a class level specified
+        # in class_weight (a string) exists in the distinct class levels
+        # or not.
+        distinct_class_levels = plpy.execute("""
+                SELECT array_agg(DISTINCT({0}))::TEXT[] AS labels
+                FROM {1}
+            """.format(dependent_varname, source_table))[0]['labels']
         for each_pair in class_weight_splits:
             k, v = each_pair.split(":")
-            dep_to_weight[k.strip()] = float(v.strip())
+            _assert(k in distinct_class_levels,
+                    "SVM: Key '{0}' in '{1}' is not a valid class label.".
+                        format(k, class_weight_str))
+            try:
+                dep_to_weight[k.strip()] = float(v.strip())
+            except ValueError:
+                plpy.error("SVM: Weights for a class label must be numeric."
+                    " Invalid class_weights param ({0})".format(
+                        class_weight_str))
+    else:
+        plpy.error("SVM: Invalid class_weight param ({0})".format(
+            class_weight_str))
 
     class_weight_sql = "CASE "
     for k, v in dep_to_weight.items():
-        class_weight_sql += ("WHEN {dep} = {k} THEN {v}::FLOAT8 \n".
-                             format(dep=dependent_varname, k=k, v=v))
+        class_weight_sql += ("WHEN {dep}=$madlib${k}$madlib$ THEN {v}::FLOAT8 \n".
+                format(dep=dependent_varname, k=k, v=v))
     class_weight_sql += "ELSE 1.0 END"
     return class_weight_sql
 # -------------------------------------------------------------------------
+
+def _is_class_weights_str_a_mapping(class_weight_str):
+    """
+        Check if the class_weight_str begins with a '{' and ends with a '}'
+    """
+    return len(class_weight_str)>2 and class_weight_str[0]=='{' and \
+        class_weight_str[-1]=='}'
 
 
 def _svm_parsed_params(schema_madlib, source_table, model_table,
