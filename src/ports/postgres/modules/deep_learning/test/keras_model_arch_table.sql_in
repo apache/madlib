@@ -123,3 +123,32 @@ SELECT assert(name IS NULL AND description IS NULL, 'Name or description is not 
 FROM test_keras_model_arch_table WHERE model_id = 1;
 SELECT assert(name = 'my name' AND description = 'my desc', 'Incorrect name or description in the model arch table.')
 FROM test_keras_model_arch_table WHERE model_id = 2;
+
+
+--------------------------- Test calling the UDF from python ---------------------------------
+CREATE OR REPLACE FUNCTION create_model_arch_transfer_learning() RETURNS VOID AS $$
+from keras.layers import *
+from keras import Sequential
+import numpy as np
+import plpy
+
+model = Sequential()
+model.add(Conv2D(1, kernel_size=(1, 1), activation='relu', input_shape=(1,1,1,)))
+weights = model.get_weights()
+weights_flat = [ w.flatten() for w in weights ]
+weights1d = np.array([j for sub in weights_flat for j in sub])
+weights1d = np.ones_like(weights1d)
+weights_bytea = weights1d.tostring()
+
+load_query = plpy.prepare("""SELECT load_keras_model(
+                        'test_keras_model_arch_table',
+                        $1, $2)
+                    """, ['json','bytea'])
+plpy.execute(load_query, [model.to_json(), weights_bytea])
+$$ LANGUAGE plpythonu VOLATILE;
+
+DROP TABLE IF EXISTS test_keras_model_arch_table;
+SELECT create_model_arch_transfer_learning();
+
+select assert(model_weights = '\000\000\200?\000\000\200?', 'loading weights from udf failed')
+from test_keras_model_arch_table;
