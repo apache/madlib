@@ -81,13 +81,6 @@ def predict(schema_madlib, model_table, test_table, id_col,
     images_per_seg_test = get_images_per_seg_for_non_minibatched_data(test_table)
     segments_per_host = get_segments_per_host()
 
-    if is_platform_pg():
-        set_keras_session(gpus_per_host, segments_per_host)
-    else:
-        # we want to disable gpu on gpdb's master node because GPUs will only be used
-        # for segment nodes.
-        set_cuda_env('-1')
-
     predict_query = plpy.prepare("""
         CREATE TABLE {output_table} AS
         SELECT {id_col}, {prediction_select_clause}
@@ -110,8 +103,6 @@ def predict(schema_madlib, model_table, test_table, id_col,
         """.format(**locals()), ["text", "bytea"])
     plpy.execute(predict_query, [model_arch, model_data])
 
-    if is_platform_pg():
-        clear_keras_session()
 
 def get_images_per_seg_for_non_minibatched_data(table_name):
     """
@@ -156,8 +147,7 @@ def internal_keras_predict(independent_var, model_architecture, model_data,
         device_name = get_device_name_and_set_cuda_env(gpus_per_host,
                                                        current_seg_id)
         if model_key not in SD:
-            if not is_platform_pg():
-                set_keras_session(gpus_per_host, segments_per_host)
+            set_keras_session(device_name, gpus_per_host, segments_per_host)
             model = model_from_json(model_architecture)
             model_shapes = get_model_shapes(model)
             set_model_weights(model, device_name, model_data, model_shapes)
@@ -199,12 +189,10 @@ def internal_keras_predict(independent_var, model_architecture, model_data,
         if SD[row_count_key] == total_images:
             SD.pop(model_key, None)
             SD.pop(row_count_key, None)
-            if not is_platform_pg():
-                clear_keras_session()
+            clear_keras_session()
         return result
     except Exception as ex:
         SD.pop(model_key, None)
         SD.pop(row_count_key, None)
-        if not is_platform_pg():
-            clear_keras_session()
+        clear_keras_session()
         plpy.error(ex)

@@ -110,20 +110,10 @@ def fit(schema_madlib, source_table, model, model_arch_table,
     num_classes = get_num_classes(model_arch)
     fit_validator.validate_input_shapes(input_shape)
 
+    gp_segment_id_col = '0' if is_platform_pg() else 'gp_segment_id'
+
     serialized_weights = get_initial_weights(model, model_arch_result,
-                                             warm_start)
-
-    # TODO: Refactor the pg related logic in a future PR when we think
-    # about making the fit function easier to read and maintain.
-    if is_platform_pg():
-        gp_segment_id_col = '0'
-        set_keras_session(gpus_per_host, segments_per_host)
-    else:
-        # we want to disable gpu on gpdb's master node because GPUs will only be used
-        # for segment nodes.
-        set_cuda_env('-1')
-        gp_segment_id_col = 'gp_segment_id'
-
+                                             warm_start, gpus_per_host)
     # Compute total images on each segment
     seg_ids_train, images_per_seg_train = get_images_per_seg(source_table)
 
@@ -286,23 +276,32 @@ def fit(schema_madlib, source_table, model, model_arch_table,
         $2 as {1}""".format(model, ModelArchSchema.MODEL_ARCH), ["bytea", "json"])
     plpy.execute(create_output_table, [serialized_weights, model_arch])
 
-    if is_platform_pg():
-        clear_keras_session()
-
     #TODO add a unit test for this in a future PR
     reset_cuda_env(original_cuda_env)
 
-def get_initial_weights(model_table, model_arch_result, warm_start):
+def get_initial_weights(model_table, model_arch_result, warm_start, gpus_per_host):
     """
         If warm_start is True, return back initial weights from model table.
         If warm_start is False, first try to get the weights from model_arch
         table, if no weights are defined there, randomly initialize it using
         keras.
+        We also need to set the cuda environment variable based on the platform.
+        1. For postgres, if user specifies gpus_per_host=0 which means they want
+        to use CPU, then we have to set CUDA_VISIBLE_DEVICES to -1 to disable gpu.
+        Otherwise model.get_weights() will use gpu if available.
+
+        2. For gpdb, we want to disable gpu on gpdb's master node because GPUs
+        will only be used for segment nodes.
         @args:
             @param model_table: Output model table passed in to fit.
             @param model_arch_result: Dict containing model architecture info.
             @param warm_start: Boolean flag indicating warm start or not.
     """
+    if is_platform_pg():
+        _ = get_device_name_and_set_cuda_env(gpus_per_host, None)
+    else:
+        _ = get_device_name_and_set_cuda_env(0, None)
+
     if warm_start:
         serialized_weights = plpy.execute("""
             SELECT model_data FROM {0}
@@ -310,10 +309,10 @@ def get_initial_weights(model_table, model_arch_result, warm_start):
     else:
         serialized_weights = model_arch_result[ModelArchSchema.MODEL_WEIGHTS]
         if not serialized_weights:
-            master_model = model_from_json(
+            model = model_from_json(
                 model_arch_result[ModelArchSchema.MODEL_ARCH])
             serialized_weights = madlib_keras_serializer.serialize_nd_weights(
-                master_model.get_weights())
+                model.get_weights())
     return serialized_weights
 
 def get_source_summary_table_dict(fit_validator):
@@ -443,8 +442,7 @@ def fit_transition(state, dependent_var, independent_var, model_architecture,
                                                    current_seg_id)
     # Set up system if this is the first buffer on segment'
     if not state:
-        if not is_platform_pg():
-            set_keras_session(gpus_per_host, segments_per_host)
+        set_keras_session(device_name, gpus_per_host, segments_per_host)
         segment_model = model_from_json(model_architecture)
         compile_and_set_weights(segment_model, compile_params, device_name,
                                 prev_serialized_weights)
@@ -492,10 +490,9 @@ def fit_transition(state, dependent_var, independent_var, model_architecture,
         # with the total number of images here instead of the merge function.
         # The merge function only deals with aggregating them.
         updated_weights = [ total_images * w for w in updated_weights ]
-        if not is_platform_pg():
             # In GPDB, each segment would have a keras session, so clear
             # them after the last buffer is processed.
-            clear_keras_session()
+        clear_keras_session()
     elif agg_image_count > total_images:
         plpy.error('Processed {0} images, but there were supposed to be only {1}!'
                    .format(agg_image_count, total_images))
@@ -651,8 +648,7 @@ def internal_keras_eval_transition(state, dependent_var, independent_var,
     agg_loss, agg_metric, agg_image_count = state
 
     if not agg_image_count:
-        if not is_platform_pg():
-            set_keras_session(gpus_per_host, segments_per_host)
+        set_keras_session(device_name, gpus_per_host, segments_per_host)
         model = model_from_json(model_architecture)
         compile_and_set_weights(model, compile_params, device_name,
                                 serialized_weights)
@@ -692,8 +688,7 @@ def internal_keras_eval_transition(state, dependent_var, independent_var,
 
     if agg_image_count == total_images:
         SD.pop('segment_model', None)
-        if not is_platform_pg():
-            clear_keras_session()
+        clear_keras_session()
     elif agg_image_count > total_images:
         plpy.error("Evaluated too many images.")
 
