@@ -443,6 +443,19 @@ def create_cols_from_array_sql_string(py_list, sql_array_col, colname,
             Output:
                 (ARRAY['cat','dog'])[sqlcol[1]+1]::TEXT AS estimated_pred
 
+    @NOTE:
+        If py_list is [None, 'cat', 'dog', NULL']:
+        then the SQL query string returned would create the following
+        column names:
+            prob_NULL, prob_cat, 'prob_dog', and 'prob_"NULL'.
+        1. Notice that for None, which represents Postgres' NULL value, the
+        column name will be 'prob_NULL',
+        2. and to differentiate the column name for a string 'NULL', the
+        resulting column name will be 'prob_"NULL'.
+
+        The weird quoting in this column name is due to calling strip after
+        quote_ident in the code below.
+
     @returns:
         @param, str, that can be used in a SQL query.
 
@@ -458,7 +471,21 @@ def create_cols_from_array_sql_string(py_list, sql_array_col, colname,
         _assert(py_list.count(None) <= 1,
                 "{0}: Input list should contain at most 1 None element.".
                     format(module_name))
-        py_list = ['NULL' if ele is None else ele for ele in py_list]
+        def py_list_str(ele):
+            """
+                A python None is converted to a SQL NULL.
+                String 'NULL' is converted to SQL 'NULL' string by quoting
+                it to '"NULL"'. This quoting is necessary for Postgres to
+                differentiate between NULL and 'NULL' in the SQL query
+                string returned by create_cols_from_array_sql_string.
+            """
+            if ele is None:
+                return 'NULL'
+            elif isinstance(ele, str) and ele.lower()=='null':
+                return '"{0}"'.format(ele)
+            return ele
+
+        py_list = list(map(py_list_str, py_list))
         if has_one_ele:
             # Query to choose the value in the first element of
             # sql_array_col which is the index to access in py_list.
@@ -475,7 +502,8 @@ def create_cols_from_array_sql_string(py_list, sql_array_col, colname,
 
             # we cannot call sql quote_ident on the py_list entries because
             # aliasing does not support quote_ident. Hence calling our
-            # python implementation of quote_ident
+            # python implementation of quote_ident. We must call strip()
+            # after quote_ident since the resulting SQL query fails otherwise.
             select_clause = ', '.join(
                 ['CAST({sql_array_col}[{j}] AS {coltype}) AS "{final_colname}"'.
                     format(j=i + 1,
