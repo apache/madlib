@@ -26,8 +26,7 @@ from keras.layers import *
 from keras.models import *
 from keras.optimizers import *
 
-from madlib_keras_helper import expand_input_dims
-from madlib_keras_helper import strip_trailing_nulls_from_class_values
+from madlib_keras_helper import *
 from madlib_keras_validator import PredictInputValidator
 from predict_input_params import PredictParamsProcessor
 from utilities.control import MinWarning
@@ -78,7 +77,7 @@ def predict(schema_madlib, model_table, test_table, id_col,
         pred_col_type, is_response, MODULE_NAME)
 
     gp_segment_id_col, seg_ids_test, \
-    images_per_seg_test = get_images_per_seg_for_non_minibatched_data(test_table)
+    images_per_seg_test = get_image_count_per_seg_for_non_minibatched_data_from_db(test_table)
     segments_per_host = get_segments_per_host()
 
     predict_query = plpy.prepare("""
@@ -103,38 +102,6 @@ def predict(schema_madlib, model_table, test_table, id_col,
         """.format(**locals()), ["text", "bytea"])
     plpy.execute(predict_query, [model_arch, model_data])
 
-
-def get_images_per_seg_for_non_minibatched_data(table_name):
-    """
-    This function queries the given table and returns the total rows per segment.
-    Since we cannot pass a dictionary to the keras fit step function we create arrays
-    out of the segment numbers and the rows per segment values.
-    This function assumes that the table is not empty.
-    :param table_name:
-    :return: gp segment id col name and two arrays
-    1. An array containing all the segment numbers in ascending order
-    2. An array containing the total rows for each of the segments in the
-    segment array
-    """
-    if is_platform_pg():
-        images_per_seg = plpy.execute(
-            """ SELECT count(*) AS images_per_seg
-                FROM {0}
-            """.format(table_name))
-        seg_ids = [0]
-        gp_segment_id_col = '0'
-    else:
-        # Compute total buffers on each segment
-        images_per_seg = plpy.execute(
-            """ SELECT gp_segment_id, count(*) AS images_per_seg
-                FROM {0}
-                GROUP BY gp_segment_id
-            """.format(table_name))
-        seg_ids = [int(image["gp_segment_id"]) for image in images_per_seg]
-        gp_segment_id_col = '{0}.gp_segment_id'.format(table_name)
-
-    images_per_seg = [int(image["images_per_seg"]) for image in images_per_seg]
-    return gp_segment_id_col, seg_ids, images_per_seg
 
 def internal_keras_predict(independent_var, model_architecture, model_data,
                            is_response, normalizing_const, current_seg_id, seg_ids,
@@ -180,11 +147,8 @@ def internal_keras_predict(independent_var, model_architecture, model_data,
             # and not mini-batched, this list contains exactly one list in it,
             # so return back the first list in probs.
             result = probs[0]
-
-        if is_platform_pg():
-            total_images = images_per_seg[0]
-        else:
-            total_images = images_per_seg[seg_ids.index(current_seg_id)]
+        total_images = get_image_count_per_seg_from_array(current_seg_id, seg_ids,
+                                                          images_per_seg)
 
         if SD[row_count_key] == total_images:
             SD.pop(model_key, None)

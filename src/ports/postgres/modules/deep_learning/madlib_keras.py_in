@@ -36,15 +36,8 @@ from keras.models import *
 from keras.optimizers import *
 from keras.regularizers import *
 import madlib_keras_serializer
-from madlib_keras_helper import MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL
-from madlib_keras_helper import MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL
-from madlib_keras_helper import DEPENDENT_VARNAME_COLNAME
-from madlib_keras_helper import INDEPENDENT_VARNAME_COLNAME
-from madlib_keras_helper import CLASS_VALUES_COLNAME
-from madlib_keras_helper import DEPENDENT_VARTYPE_COLNAME
-from madlib_keras_helper import NORMALIZING_CONST_COLNAME
-from madlib_keras_validator import FitInputValidator
-from madlib_keras_validator import EvaluateInputValidator
+from madlib_keras_helper import *
+from madlib_keras_validator import *
 from madlib_keras_wrapper import *
 from keras_model_arch_table import ModelArchSchema
 
@@ -115,10 +108,10 @@ def fit(schema_madlib, source_table, model, model_arch_table,
     serialized_weights = get_initial_weights(model, model_arch_result,
                                              warm_start, gpus_per_host)
     # Compute total images on each segment
-    seg_ids_train, images_per_seg_train = get_images_per_seg(source_table)
+    seg_ids_train, images_per_seg_train = get_image_count_per_seg_for_minibatched_data_from_db(source_table)
 
     if validation_table:
-        seg_ids_val, images_per_seg_val = get_images_per_seg(validation_table)
+        seg_ids_val, images_per_seg_val = get_image_count_per_seg_for_minibatched_data_from_db(validation_table)
 
     # Construct validation dataset if provided
     validation_set_provided = bool(validation_table)
@@ -397,38 +390,6 @@ def should_compute_metrics_this_iter(curr_iter, metrics_compute_frequency,
     return (curr_iter)%metrics_compute_frequency == 0 or \
            curr_iter == num_iterations
 
-def get_images_per_seg(source_table):
-    """
-    Compute total images in each segment, by querying source_table.  For
-    postgres, this is just the total number of images in the db.
-    :param source_table:
-    :return: Returns a string and two arrays
-    1. An array containing all the segment numbers in ascending order
-    1. An array containing the total images on each of the segments in the
-    segment array.
-    """
-
-    mb_dep_var_col = MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL
-
-    if is_platform_pg():
-        res = plpy.execute(
-            """ SELECT SUM(ARRAY_LENGTH({0}, 1)) AS images_per_seg
-                FROM {1}
-            """.format(mb_dep_var_col, source_table))
-        images_per_seg = [int(res[0]['images_per_seg'])]
-        seg_ids = [0]
-    else:
-        images_per_seg = plpy.execute(
-            """ SELECT gp_segment_id, SUM(ARRAY_LENGTH({0}, 1)) AS images_per_seg
-                FROM {1}
-                GROUP BY gp_segment_id
-            """.format(mb_dep_var_col, source_table))
-        seg_ids = [int(each_segment["gp_segment_id"])
-                   for each_segment in images_per_seg]
-        images_per_seg = [int(each_segment["images_per_seg"])
-                          for each_segment in images_per_seg]
-    return seg_ids, images_per_seg
-
 def fit_transition(state, dependent_var, independent_var, model_architecture,
                    compile_params, fit_params, current_seg_id, seg_ids,
                    images_per_seg, gpus_per_host, segments_per_host,
@@ -471,17 +432,9 @@ def fit_transition(state, dependent_var, independent_var, model_architecture,
 
     with K.tf.device(device_name):
         updated_weights = segment_model.get_weights()
-    if is_platform_pg():
-        total_images = images_per_seg[0]
-    else:
-        total_images = images_per_seg[seg_ids.index(current_seg_id)]
 
-    if total_images == 0:
-        if is_platform_pg():
-            plpy.error('Total images is 0 in fit_transition')
-
-        else:
-            plpy.error('Total images is 0 in fit_transition on segment {0}'.format(current_seg_id))
+    total_images = get_image_count_per_seg_from_array(current_seg_id, seg_ids,
+                                                      images_per_seg)
 
     # Re-serialize the weights
     # Update image count, check if we are done
@@ -493,9 +446,6 @@ def fit_transition(state, dependent_var, independent_var, model_architecture,
             # In GPDB, each segment would have a keras session, so clear
             # them after the last buffer is processed.
         clear_keras_session()
-    elif agg_image_count > total_images:
-        plpy.error('Processed {0} images, but there were supposed to be only {1}!'
-                   .format(agg_image_count, total_images))
 
     new_state = madlib_keras_serializer.serialize_state_with_nd_weights(
         agg_image_count, updated_weights)
@@ -576,7 +526,7 @@ def evaluate(schema_madlib, model_table, test_table, output_table, gpus_per_host
     metrics_type = res['metrics_type']
     compile_params = "$madlib$" + res['compile_params'] + "$madlib$"
 
-    seg_ids, images_per_seg = get_images_per_seg(test_table)
+    seg_ids, images_per_seg = get_image_count_per_seg_for_minibatched_data_from_db(test_table)
 
     res = plpy.execute("""
         SELECT {dependent_varname_col}, {independent_varname_col}
@@ -681,16 +631,12 @@ def internal_keras_eval_transition(state, dependent_var, independent_var,
     agg_loss += (image_count * loss)
     agg_metric += (image_count * metric)
 
-    if is_platform_pg():
-        total_images = images_per_seg[0]
-    else:
-        total_images = images_per_seg[seg_ids.index(current_seg_id)]
+    total_images = get_image_count_per_seg_from_array(current_seg_id, seg_ids,
+                                                      images_per_seg)
 
     if agg_image_count == total_images:
         SD.pop('segment_model', None)
         clear_keras_session()
-    elif agg_image_count > total_images:
-        plpy.error("Evaluated too many images.")
 
     state[0] = agg_loss
     state[1] = agg_metric

@@ -18,6 +18,8 @@
 # under the License.
 
 import numpy as np
+from utilities.utilities import is_platform_pg
+import plpy
 
 # Prepend a dimension to np arrays using expand_dims.
 def expand_input_dims(input_data, target_type=None):
@@ -61,6 +63,85 @@ def strip_trailing_nulls_from_class_values(class_values):
         # Pass only the valid class_values for creating columns
         class_values = class_values[:num_of_valid_class_values]
     return class_values
+
+def get_image_count_per_seg_from_array(current_seg_id, seg_ids, images_per_seg):
+    """
+    Get the image count from the array containing all the images
+    per segment. Based on the platform, we find the index of the current segment.
+    This function is only called from inside the transition function. 
+    """
+    if is_platform_pg():
+        total_images = images_per_seg[0]
+    else:
+        total_images = images_per_seg[seg_ids.index(current_seg_id)]
+    return total_images
+
+def get_image_count_per_seg_for_minibatched_data_from_db(table_name):
+    """
+    Query the given minibatch formatted table and return the total rows per segment.
+    Since we cannot pass a dictionary to the keras fit step function we create 
+    arrays out of the segment numbers and the rows per segment values.
+    This function assumes that the table is not empty.
+    :param table_name:
+    :return: Returns two arrays
+    1. An array containing all the segment numbers in ascending order
+    1. An array containing the total images on each of the segments in the
+    segment array.
+    """
+
+    mb_dep_var_col = MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL
+
+    if is_platform_pg():
+        res = plpy.execute(
+            """ SELECT SUM(ARRAY_LENGTH({0}, 1)) AS images_per_seg
+                FROM {1}
+            """.format(mb_dep_var_col, table_name))
+        images_per_seg = [int(res[0]['images_per_seg'])]
+        seg_ids = [0]
+    else:
+        images_per_seg = plpy.execute(
+            """ SELECT gp_segment_id, SUM(ARRAY_LENGTH({0}, 1)) AS images_per_seg
+                FROM {1}
+                GROUP BY gp_segment_id
+            """.format(mb_dep_var_col, table_name))
+        seg_ids = [int(each_segment["gp_segment_id"])
+                   for each_segment in images_per_seg]
+        images_per_seg = [int(each_segment["images_per_seg"])
+                          for each_segment in images_per_seg]
+    return seg_ids, images_per_seg
+
+def get_image_count_per_seg_for_non_minibatched_data_from_db(table_name):
+    """
+    Query the given non minibatch formatted table and return the total rows per segment.
+    Since we cannot pass a dictionary to the keras fit step function we create arrays
+    out of the segment numbers and the rows per segment values.
+    This function assumes that the table is not empty.
+    :param table_name:
+    :return: gp segment id col name and two arrays
+    1. An array containing all the segment numbers in ascending order
+    2. An array containing the total rows for each of the segments in the
+    segment array
+    """
+    if is_platform_pg():
+        images_per_seg = plpy.execute(
+            """ SELECT count(*) AS images_per_seg
+                FROM {0}
+            """.format(table_name))
+        seg_ids = [0]
+        gp_segment_id_col = '0'
+    else:
+        # Compute total buffers on each segment
+        images_per_seg = plpy.execute(
+            """ SELECT gp_segment_id, count(*) AS images_per_seg
+                FROM {0}
+                GROUP BY gp_segment_id
+            """.format(table_name))
+        seg_ids = [int(image["gp_segment_id"]) for image in images_per_seg]
+        gp_segment_id_col = '{0}.gp_segment_id'.format(table_name)
+
+    images_per_seg = [int(image["images_per_seg"]) for image in images_per_seg]
+    return gp_segment_id_col, seg_ids, images_per_seg
+
 
 # Name of columns in model summary table.
 CLASS_VALUES_COLNAME = "class_values"
