@@ -18,7 +18,6 @@
 # under the License.
 
 import datetime
-import numpy as np
 import os
 import plpy
 import sys
@@ -122,8 +121,8 @@ def fit(schema_madlib, source_table, model, model_arch_table,
     fit_params_to_pass = "$madlib$" + fit_params + "$madlib$"
     run_training_iteration = plpy.prepare("""
         SELECT {schema_madlib}.fit_step(
-            {mb_dep_var_col}::SMALLINT[],
-            {mb_indep_var_col}::REAL[],
+            {mb_dep_var_col},
+            {mb_indep_var_col},
             $MAD${model_arch}$MAD$::TEXT,
             {compile_params_to_pass}::TEXT,
             {fit_params_to_pass}::TEXT,
@@ -242,7 +241,7 @@ def fit(schema_madlib, source_table, model, model_arch_table,
             {num_classes}::INTEGER AS num_classes,
             $6 AS {class_values_colname},
             $MAD${dep_vartype}$MAD$::TEXT AS {dependent_vartype_colname},
-            {norm_const}::DOUBLE PRECISION AS {normalizing_const_colname},
+            {norm_const}::{FLOAT32_SQL_TYPE} AS {normalizing_const_colname},
             {metrics_type}::TEXT[] AS metrics_type,
             {training_metrics_final}::DOUBLE PRECISION AS training_metrics_final,
             {training_loss_final}::DOUBLE PRECISION AS training_loss_final,
@@ -257,6 +256,7 @@ def fit(schema_madlib, source_table, model, model_arch_table,
                    class_values_colname=CLASS_VALUES_COLNAME,
                    dependent_vartype_colname=DEPENDENT_VARTYPE_COLNAME,
                    normalizing_const_colname=NORMALIZING_CONST_COLNAME,
+                   FLOAT32_SQL_TYPE = FLOAT32_SQL_TYPE,
                    **locals()),
                    ["TEXT", "TEXT", "TEXT", "TEXT", "DOUBLE PRECISION[]", class_values_type])
     plpy.execute(create_output_summary_table,
@@ -415,8 +415,8 @@ def fit_transition(state, dependent_var, independent_var, model_architecture,
         agg_image_count = madlib_keras_serializer.get_image_count_from_state(state)
 
     # Prepare the data
-    x_train = np.array(independent_var, dtype='float64')
-    y_train = np.array(dependent_var)
+    x_train = np_array_float32(independent_var)
+    y_train = np_array_int16(dependent_var)
 
     # Fit segment model on data
     start_fit = time.time()
@@ -557,13 +557,9 @@ def get_loss_metric_from_keras_eval(schema_madlib, table, compile_params,
     and accuracy of each tuple which then gets averaged to get the final result.
     """
     evaluate_query = plpy.prepare("""
-    -- TODO:  really, we should not be casting integers and big integers to smallint's
-    --  The right solution is either to change the datatype of the agg function from
-    --  SMALLINT to INTEGER, or change the output of minibatch util to produce SMALLINT
-    --  For the first, we should change fit_step also
-    select ({schema_madlib}.internal_keras_evaluate(
-                                            {mb_dep_var_col}::SMALLINT[],
-                                            {mb_indep_var_col}::REAL[],
+        select ({schema_madlib}.internal_keras_evaluate(
+                                            {mb_dep_var_col},
+                                            {mb_indep_var_col},
                                             $MAD${model_arch}$MAD$,
                                             $1,
                                             {compile_params},
@@ -602,8 +598,8 @@ def internal_keras_eval_transition(state, dependent_var, independent_var,
         # Same model every time, no need to re-compile or update weights
         model = SD['segment_model']
 
-    x_val = np.array(independent_var)
-    y_val = np.array(dependent_var)
+    x_val = np_array_float32(independent_var)
+    y_val = np_array_int16(dependent_var)
 
     with K.tf.device(device_name):
         res = model.evaluate(x_val, y_val)
