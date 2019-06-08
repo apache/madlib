@@ -40,12 +40,13 @@ Interface and implementation are subject to change. </em>
 <li class="level1"><a href="#load_keras_model">Load Model</a></li>
 <li class="level1"><a href="#delete_keras_model">Delete Model</a></li>
 <li class="level1"><a href="#example">Examples</a></li>
+<li class="level1"><a href="#related">Related Topics</a></li>
 </ul></div>
 
 This utility function loads model architectures and
 weights into a table for use by deep learning algorithms.
 Model architecture is in JSON form
-and model weights are in the form of double precision arrays.
+and model weights are in the form of PostgreSQL binary data types (bytea).
 If the output table already exists, a new row is inserted
 into the table so it can act as a repository for multiple model
 architectures and weights.
@@ -58,9 +59,12 @@ from the table.
 
 <pre class="syntax">
 load_keras_model(
-    keras_model_arch_table
-    model_arch
-)
+    keras_model_arch_table,
+    model_arch,
+    model_weights,
+    name,
+    description
+    )
 </pre>
 \b Arguments
 <dl class="arglist">
@@ -71,6 +75,22 @@ load_keras_model(
   <dt>model_arch</dt>
   <dd>JSON. JSON of the model architecture to load.
   </dd>
+
+  <dt>model_weights (optional)</dt>
+  <dd>bytea. Model weights to load as a PostgreSQL
+  binary data type.
+  </dd>
+
+  <dt>name (optional)</dt>
+  <dd>TEXT, default: NULL. Free text string to provide
+  a name, if desired.
+  </dd>
+
+  <dt>description (optional)</dt>
+  <dd>TEXT, default: NULL. Free text string to provide
+  a description, if desired.
+  </dd>
+
 </dl>
 
 <b>Output table</b>
@@ -89,7 +109,9 @@ load_keras_model(
       </tr>
       <tr>
         <th>model_weights</th>
-        <td>DOUBLE PRECISION[]. Weights of the model which may be use for warm start.
+        <td>bytea. Weights of the model which may be used for warm start
+        or transfer learning.
+        Weights are stored as a PostgreSQL binary data type.
         </td>
       </tr>
       <tr>
@@ -122,184 +144,186 @@ delete_keras_model(
 
 @anchor example
 @par Examples
--#  Define or obtain model.  Let's say we have a Keras model
-architecture that looks like this:
+-# Define model architecture.  Use Keras to define
+the model architecture:
 <pre class="example">
-model = Sequential()
-model.add(Dense(2, input_dim=3, name='dense_1'))
-model.add(Dense(3, name='dense_2'))
-...
-model.to_json
+import keras
+from keras.models import Sequential
+from keras.layers import Dense
+model_simple = Sequential()
+model_simple.add(Dense(10, activation='relu', input_shape=(4,)))
+model_simple.add(Dense(10, activation='relu'))
+model_simple.add(Dense(3, activation='softmax'))
+model_simple.summary()
+\verbatim
+
+_________________________________________________________________
+Layer (type)                 Output Shape              Param #
+=================================================================
+dense_1 (Dense)              (None, 10)                50
+_________________________________________________________________
+dense_2 (Dense)              (None, 10)                110
+_________________________________________________________________
+dense_3 (Dense)              (None, 3)                 33
+=================================================================
+Total params: 193
+Trainable params: 193
+Non-trainable params: 0
+\endverbatim
 </pre>
-This is represented by the following JSON:
+Export the model to JSON:
+<pre class="example">
+model_simple.to_json()
+</pre>
 <pre class="result">
-'{"class_name": "Sequential", "keras_version": "2.1.6",
-"config": [{"class_name": "Dense", "config": {"kernel_initializer":
-{"class_name": "VarianceScaling", "config": {"distribution": "uniform",
-"scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_1",
-"kernel_constraint": null, "bias_regularizer": null, "bias_constraint":
-null, "dtype": "float32", "activation": "linear", "trainable": true,
-"kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros",
-"config": {}}, "units": 2, "batch_input_shape": [null, 3],
-"use_bias": true, "activity_regularizer": null}}, {"class_name": "Dense",
-"config": {"kernel_initializer": {"class_name": "VarianceScaling",
-"config": {"distribution": "uniform", "scale": 1.0, "seed": null,
-"mode": "fan_avg"}}, "name": "new_dense", "kernel_constraint": null,
-"bias_regularizer": null, "bias_constraint": null, "activation": "linear",
-"trainable": true, "kernel_regularizer": null,
-"bias_initializer": {"class_name": "Zeros", "config": {}},
-"units": 10, "use_bias": true, "activity_regularizer": null}}],
-"backend": "tensorflow"}'
+'{"class_name": "Sequential", "keras_version": "2.1.6", "config": [{"class_name": "Dense", "config": {"kernel_initializer": {"class_name": "VarianceScaling", "config": {"distribution": "uniform", "scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_1", "kernel_constraint": null, "bias_regularizer": null, "bias_constraint": null, "dtype": "float32", "activation": "relu", "trainable": true, "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros", "config": {}}, "units": 10, "batch_input_shape": [null, 4], "use_bias": true, "activity_regularizer": null}}, {"class_name": "Dense", "config": {"kernel_initializer": {"class_name": "VarianceScaling", "config": {"distribution": "uniform", "scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_2", "kernel_constraint": null, "bias_regularizer": null, "bias_constraint": null, "activation": "relu", "trainable": true, "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros", "config": {}}, "units": 10, "use_bias": true, "activity_regularizer": null}}, {"class_name": "Dense", "config": {"kernel_initializer": {"class_name": "VarianceScaling", "config": {"distribution": "uniform", "scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_3", "kernel_constraint": null, "bias_regularizer": null, "bias_constraint": null, "activation": "softmax", "trainable": true, "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros", "config": {}}, "units": 3, "use_bias": true, "activity_regularizer": null}}], "backend": "tensorflow"}'
 </pre>
--#  Load the model into the model table:
+-# Load into model architecture table:
 <pre class="example">
 DROP TABLE IF EXISTS model_arch_library;
-SELECT madlib.load_keras_model('model_arch_library',   -- Output table
+SELECT madlib.load_keras_model('model_arch_library',  -- Output table,
 $$
-{"class_name": "Sequential", "keras_version": "2.1.6",
-"config": [{"class_name": "Dense", "config": {"kernel_initializer":
-{"class_name": "VarianceScaling", "config": {"distribution": "uniform",
-"scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_1",
-"kernel_constraint": null, "bias_regularizer": null, "bias_constraint":
-null, "dtype": "float32", "activation": "linear", "trainable": true,
-"kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros",
-"config": {}}, "units": 2, "batch_input_shape": [null, 3],
-"use_bias": true, "activity_regularizer": null}}, {"class_name": "Dense",
-"config": {"kernel_initializer": {"class_name": "VarianceScaling",
-"config": {"distribution": "uniform", "scale": 1.0, "seed": null,
-"mode": "fan_avg"}}, "name": "new_dense", "kernel_constraint": null,
-"bias_regularizer": null, "bias_constraint": null, "activation": "linear",
-"trainable": true, "kernel_regularizer": null,
-"bias_initializer": {"class_name": "Zeros", "config": {}},
-"units": 10, "use_bias": true, "activity_regularizer": null}}],
-"backend": "tensorflow"}
-$$ ::json   -- JSON blob
+{"class_name": "Sequential", "keras_version": "2.1.6", "config": [{"class_name": "Dense", "config": {"kernel_initializer": {"class_name": "VarianceScaling", "config": {"distribution": "uniform", "scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_1", "kernel_constraint": null, "bias_regularizer": null, "bias_constraint": null, "dtype": "float32", "activation": "relu", "trainable": true, "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros", "config": {}}, "units": 10, "batch_input_shape": [null, 4], "use_bias": true, "activity_regularizer": null}}, {"class_name": "Dense", "config": {"kernel_initializer": {"class_name": "VarianceScaling", "config": {"distribution": "uniform", "scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_2", "kernel_constraint": null, "bias_regularizer": null, "bias_constraint": null, "activation": "relu", "trainable": true, "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros", "config": {}}, "units": 10, "use_bias": true, "activity_regularizer": null}}, {"class_name": "Dense", "config": {"kernel_initializer": {"class_name": "VarianceScaling", "config": {"distribution": "uniform", "scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_3", "kernel_constraint": null, "bias_regularizer": null, "bias_constraint": null, "activation": "softmax", "trainable": true, "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros", "config": {}}, "units": 3, "use_bias": true, "activity_regularizer": null}}], "backend": "tensorflow"}
+$$
+::json,  -- JSON blob
+                               NULL,                  -- Weights
+                               'Sophie',              -- Name
+                               'A simple model'       -- Descr
 );
-SELECT * FROM model_arch_library;
+SELECT COUNT(*) FROM model_arch_library;
 </pre>
 <pre class="result">
- model_id |                                 model_arch                                  | model_weights |            __internal_madlib_id__
-----------+-----------------------------------------------------------------------------+---------------+----------------------------------------------
-        1 |                                                                             |               | __madlib_temp_79462163_1553817233_28408205__
-          : {"class_name": "Sequential", "keras_version": "2.1.6",
-          : "config": [{"class_name": "Dense", "config": {"kernel_initializer":
-          : {"class_name": "VarianceScaling", "config": {"distribution": "uniform",
-          : "scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_1",
-          : "kernel_constraint": null, "bias_regularizer": null, "bias_constraint":
-          : null, "dtype": "float32", "activation": "linear", "trainable": true,
-          : "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros",
-          : "config": {}}, "units": 2, "batch_input_shape": [null, 3],
-          : "use_bias": true, "activity_regularizer": null}}, {"class_name": "Dense",
-          : "config": {"kernel_initializer": {"class_name": "VarianceScaling",
-          : "config": {"distribution": "uniform", "scale": 1.0, "seed": null,
-          : "mode": "fan_avg"}}, "name": "new_dense", "kernel_constraint": null,
-          : "bias_regularizer": null, "bias_constraint": null, "activation": "linear",
-          : "trainable": true, "kernel_regularizer": null,
-          : "bias_initializer": {"class_name": "Zeros", "config": {}},
-          : "units": 10, "use_bias": true, "activity_regularizer": null}}],
-          : "backend": "tensorflow"}
-          :
-(1 row)
+ count
+-------+
+     1
 </pre>
--# Load another model into the same table:
+Load another model architecture:
 <pre class="example">
-SELECT madlib.load_keras_model('model_arch_library',   -- Output table
+SELECT madlib.load_keras_model('model_arch_library',  -- Output table,
 $$
-{"class_name": "Sequential", "keras_version": "2.1.6",
-"config": [{"class_name": "Dense", "config": {"kernel_initializer":
-{"class_name": "VarianceScaling", "config": {"distribution": "uniform",
-"scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_1",
-"kernel_constraint": null, "bias_regularizer": null, "bias_constraint":
-null, "dtype": "float32", "activation": "linear", "trainable": true,
-"kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros",
-"config": {}}, "units": 2, "batch_input_shape": [null, 3],
-"use_bias": true, "activity_regularizer": null}}, {"class_name": "Dense",
-"config": {"kernel_initializer": {"class_name": "VarianceScaling",
-"config": {"distribution": "uniform", "scale": 1.0, "seed": null,
-"mode": "fan_avg"}}, "name": "new_dense", "kernel_constraint": null,
-"bias_regularizer": null, "bias_constraint": null, "activation": "linear",
-"trainable": true, "kernel_regularizer": null,
-"bias_initializer": {"class_name": "Zeros", "config": {}},
-"units": 10, "use_bias": true, "activity_regularizer": null}}],
-"backend": "tensorflow"}
-$$ ::json   -- JSON blob
+{"class_name": "Sequential", "keras_version": "2.1.6", "config": [{"class_name": "Dense", "config": {"kernel_initializer": {"class_name": "VarianceScaling", "config": {"distribution": "uniform", "scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_1", "kernel_constraint": null, "bias_regularizer": null, "bias_constraint": null, "dtype": "float32", "activation": "relu", "trainable": true, "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros", "config": {}}, "units": 10, "batch_input_shape": [null, 4], "use_bias": true, "activity_regularizer": null}}, {"class_name": "Dense", "config": {"kernel_initializer": {"class_name": "VarianceScaling", "config": {"distribution": "uniform", "scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_2", "kernel_constraint": null, "bias_regularizer": null, "bias_constraint": null, "activation": "relu", "trainable": true, "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros", "config": {}}, "units": 10, "use_bias": true, "activity_regularizer": null}}, {"class_name": "Dense", "config": {"kernel_initializer": {"class_name": "VarianceScaling", "config": {"distribution": "uniform", "scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_3", "kernel_constraint": null, "bias_regularizer": null, "bias_constraint": null, "activation": "softmax", "trainable": true, "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros", "config": {}}, "units": 3, "use_bias": true, "activity_regularizer": null}}], "backend": "tensorflow"}
+$$
+::json,  -- JSON blob
+                               NULL,                  -- Weights
+                               'Maria',               -- Name
+                               'Also a simple model'  -- Descr
 );
-SELECT * FROM model_arch_library;
+SELECT COUNT(*) FROM model_arch_library;
 </pre>
 <pre class="result">
- model_id |                                 model_arch                                  | model_weights |            __internal_madlib_id__
-----------+-----------------------------------------------------------------------------+---------------+----------------------------------------------
-        1 |                                                                             |               | __madlib_temp_79462163_1553817233_28408205__
-          : {"class_name": "Sequential", "keras_version": "2.1.6",
-          : "config": [{"class_name": "Dense", "config": {"kernel_initializer":
-          : {"class_name": "VarianceScaling", "config": {"distribution": "uniform",
-          : "scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_1",
-          : "kernel_constraint": null, "bias_regularizer": null, "bias_constraint":
-          : null, "dtype": "float32", "activation": "linear", "trainable": true,
-          : "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros",
-          : "config": {}}, "units": 2, "batch_input_shape": [null, 3],
-          : "use_bias": true, "activity_regularizer": null}}, {"class_name": "Dense",
-          : "config": {"kernel_initializer": {"class_name": "VarianceScaling",
-          : "config": {"distribution": "uniform", "scale": 1.0, "seed": null,
-          : "mode": "fan_avg"}}, "name": "new_dense", "kernel_constraint": null,
-          : "bias_regularizer": null, "bias_constraint": null, "activation": "linear",
-          : "trainable": true, "kernel_regularizer": null,
-          : "bias_initializer": {"class_name": "Zeros", "config": {}},
-          : "units": 10, "use_bias": true, "activity_regularizer": null}}],
-          : "backend": "tensorflow"}
-          :
-        2 |                                                                             |               | __madlib_temp_86851986_1553817356_19026896__
-          : {"class_name": "Sequential", "keras_version": "2.1.6",
-          : "config": [{"class_name": "Dense", "config": {"kernel_initializer":
-          : {"class_name": "VarianceScaling", "config": {"distribution": "uniform",
-          : "scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_1",
-          : "kernel_constraint": null, "bias_regularizer": null, "bias_constraint":
-          : null, "dtype": "float32", "activation": "linear", "trainable": true,
-          : "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros",
-          : "config": {}}, "units": 2, "batch_input_shape": [null, 3],
-          : "use_bias": true, "activity_regularizer": null}}, {"class_name": "Dense",
-          : "config": {"kernel_initializer": {"class_name": "VarianceScaling",
-          : "config": {"distribution": "uniform", "scale": 1.0, "seed": null,
-          : "mode": "fan_avg"}}, "name": "new_dense", "kernel_constraint": null,
-          : "bias_regularizer": null, "bias_constraint": null, "activation": "linear",
-          : "trainable": true, "kernel_regularizer": null,
-          : "bias_initializer": {"class_name": "Zeros", "config": {}},
-          : "units": 10, "use_bias": true, "activity_regularizer": null}}],
-          : "backend": "tensorflow"}
-          :
-(2 rows)
+ count
+-------+
+     2
+</pre>
+-# Load model weights.  To load weights from previous
+MADlib run, use UPDATE to load directly into the table.
+For example, if 'model_data' are the weights in the
+output table 'iris_model' from a previous run
+of 'madlib_keras_fit()' :
+<pre class="example">
+UPDATE model_arch_library SET model_weights = model_data FROM iris_model WHERE model_id = 2;
+</pre>
+To load weights from Keras using a PL/Python function,
+we need to flatten then serialize the weights to store
+as a PostgreSQL binary data type. Byte format is more
+efficient on space and memory compared to a numeric array.
+The model weights will be de-serialized when
+passed to Keras functions.
+<pre class="example">
+CREATE OR REPLACE FUNCTION load_weights() RETURNS VOID AS
+$$
+from keras.layers import *
+from keras import Sequential
+import numpy as np
+import plpy
+\#
+\# create model
+model = Sequential()
+model.add(Dense(10, activation='relu', input_shape=(4,)))
+model.add(Dense(10, activation='relu'))
+model.add(Dense(3, activation='softmax'))
+\#
+\# get weights, flatten and serialize
+weights = model.get_weights()
+weights_flat = [ w.flatten() for w in weights ]
+weights1d = np.array([j for sub in weights_flat for j in sub])
+weights_bytea = weights1d.tostring()
+\#
+\# load query
+load_query = plpy.prepare("""SELECT madlib.load_keras_model(
+                        'model_arch_library',
+                        $1, $2)
+                    """, ['json','bytea'])
+plpy.execute(load_query, [model.to_json(), weights_bytea])
+$$ language plpythonu;
+-- Call load function
+SELECT load_weights();
+-- Check weights loaded OK
+SELECT COUNT(*) FROM model_arch_library WHERE model_weights IS NOT NULL;
+</pre>
+<pre class="result">
+ count
+-------+
+     1
+</pre>
+Load weights from Keras using psycopg2.
+(Psycopg is a PostgreSQL database adapter for the
+Python programming language.) As above we need to
+flatten then serialize the weights to store as a
+PostgreSQL binary data type.
+<pre class="example">
+import psycopg2
+import psycopg2 as p2
+conn = p2.connect('postgresql://gpadmin@35.239.240.26:5432/madlib')
+cur = conn.cursor()
+from keras.layers import *
+from keras import Sequential
+import numpy as np
+\#
+\# create model
+model = Sequential()
+model.add(Dense(10, activation='relu', input_shape=(4,)))
+model.add(Dense(10, activation='relu'))
+model.add(Dense(3, activation='softmax'))
+\#
+\# get weights, flatten and serialize
+weights = model.get_weights()
+weights_flat = [ w.flatten() for w in weights ]
+weights1d = np.array([j for sub in weights_flat for j in sub])
+weights_bytea = psycopg2.Binary(weights1d.tostring())
+\#
+\# load query
+query = "SELECT madlib.load_keras_model('model_arch_library', %s,%s)"
+cur.execute(query,[model.to_json(),weights_bytea])
+conn.commit()
+</pre>
+From SQL check if weights loaded OK:
+<pre class="example">
+SELECT COUNT(*) FROM model_arch_library WHERE model_weights IS NOT NULL;
+</pre>
+<pre class="result">
+ count
+-------+
+     2
 </pre>
 -# Delete one of the models:
 <pre class="example">
 SELECT madlib.delete_keras_model('model_arch_library',   -- Output table
                                   1                      -- Model id
                                 );
-SELECT * FROM model_arch_library;
+SELECT COUNT(*) FROM model_arch_library;
 </pre>
 <pre class="result">
- model_id |                                 model_arch                                 | model_weights |            __internal_madlib_id__
-----------+----------------------------------------------------------------------------+---------------+----------------------------------------------
-        2 |                                                                            |               | __madlib_temp_41851307_1553819507_11044889__
-          : {"class_name": "Sequential", "keras_version": "2.1.6",
-          : "config": [{"class_name": "Dense", "config": {"kernel_initializer":
-          : {"class_name": "VarianceScaling", "config": {"distribution": "uniform",
-          : "scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_1",
-          : "kernel_constraint": null, "bias_regularizer": null, "bias_constraint":
-          : null, "dtype": "float32", "activation": "linear", "trainable": true,
-          : "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros",
-          : "config": {}}, "units": 2, "batch_input_shape": [null, 3],
-          : "use_bias": true, "activity_regularizer": null}}, {"class_name": "Dense",
-          : "config": {"kernel_initializer": {"class_name": "VarianceScaling",
-          : "config": {"distribution": "uniform", "scale": 1.0, "seed": null,
-          : "mode": "fan_avg"}}, "name": "new_dense", "kernel_constraint": null,
-          : "bias_regularizer": null, "bias_constraint": null, "activation": "linear",
-          : "trainable": true, "kernel_regularizer": null,
-          : "bias_initializer": {"class_name": "Zeros", "config": {}},
-          : "units": 10, "use_bias": true, "activity_regularizer": null}}],
-          : "backend": "tensorflow"}
-          :
-(1 row)
+ count
+-------+
+     3
 </pre>
+
+@anchor related
+@par Related Topics
+
+See keras_model_arch_table.sql_in
+
 */
 
 CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.load_keras_model(
