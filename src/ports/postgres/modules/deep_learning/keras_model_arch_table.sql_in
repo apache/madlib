@@ -40,6 +40,7 @@ Interface and implementation are subject to change. </em>
 <li class="level1"><a href="#load_keras_model">Load Model</a></li>
 <li class="level1"><a href="#delete_keras_model">Delete Model</a></li>
 <li class="level1"><a href="#example">Examples</a></li>
+<li class="level1"><a href="#related">Related Topics</a></li>
 </ul></div>
 
 This utility function loads model architectures and
@@ -58,9 +59,12 @@ from the table.
 
 <pre class="syntax">
 load_keras_model(
-    keras_model_arch_table
-    model_arch
-)
+    keras_model_arch_table,
+    model_arch,
+    model_weights,
+    name,
+    description
+    )
 </pre>
 \b Arguments
 <dl class="arglist">
@@ -71,6 +75,22 @@ load_keras_model(
   <dt>model_arch</dt>
   <dd>JSON. JSON of the model architecture to load.
   </dd>
+
+  <dt>model_weights (optional)</dt>
+  <dd>bytea. Model weights to load as a PostgreSQL
+  binary data type.
+  </dd>
+
+  <dt>name (optional)</dt>
+  <dd>TEXT, default: NULL. Free text string to provide
+  a name, if desired.
+  </dd>
+
+  <dt>description (optional)</dt>
+  <dd>TEXT, default: NULL. Free text string to provide
+  a description, if desired.
+  </dd>
+
 </dl>
 
 <b>Output table</b>
@@ -89,7 +109,9 @@ load_keras_model(
       </tr>
       <tr>
         <th>model_weights</th>
-        <td>DOUBLE PRECISION[]. Weights of the model which may be use for warm start.
+        <td>bytea. Weights of the model which may be used for warm start
+        or transfer learning.
+        Weights are stored as a PostgreSQL binary data type.
         </td>
       </tr>
       <tr>
@@ -300,6 +322,42 @@ SELECT * FROM model_arch_library;
           :
 (1 row)
 </pre>
+
+-# Load weights from previous MADlib run.  Fetch the weights
+from a previous MADlib run and UPDATE
+the table directly.
+<pre class="example">
+UPDATE model_arch_library SET model_weights = model_data FROM iris_model WHERE model_id = 2;
+</pre>
+where 'model_data' are the weights in the output table 'iris_model'
+from a previous run of 'madlib_keras_fit()'
+
+-# Load weights from Keras.  Fetch the weights
+using 'model.get_weights' from a Keras model using
+the following Python code:
+<pre class="example">
+from keras.layers import *
+from keras import Sequential
+import numpy as np
+import plpy
+model = Sequential()
+model.add(Conv2D(1, kernel_size=(1, 1), activation='relu', input_shape=(1,1,1,)))
+weights = model.get_weights()
+weights_flat = [ w.flatten() for w in weights ]
+weights1d = np.array([j for sub in weights_flat for j in sub])
+weights_bytea = weights1d.tostring()
+load_query = plpy.prepare("""SELECT load_keras_model(
+                        'test_keras_model_arch_table',
+                        $1, $2)
+                    """, ['json','bytea'])
+plpy.execute(load_query, [model.to_json(), weights_bytea])
+</pre>
+
+@anchor related
+@par Related Topics
+
+See keras_model_arch_table.sql_in
+
 */
 
 CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.load_keras_model(
