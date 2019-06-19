@@ -150,31 +150,48 @@ def fit(schema_madlib, source_table, model, model_arch_table,
         iteration_result = plpy.execute(run_training_iteration,
                                         [serialized_weights])[0]['iteration_result']
         end_iteration = time.time()
-        plpy.info("Time for training in iteration {0}: {1} sec".
-                  format(i, end_iteration - start_iteration))
+        info_str = "\tTime for training in iteration {0}: {1} sec".format(i,
+            end_iteration - start_iteration)
         serialized_weights = madlib_keras_serializer.\
             get_serialized_1d_weights_from_state(iteration_result)
 
         if should_compute_metrics_this_iter(i, metrics_compute_frequency,
                                             num_iterations):
             # Compute loss/accuracy for training data.
-            compute_loss_and_metrics(
+            compute_out = compute_loss_and_metrics(
                 schema_madlib, source_table, compile_params_to_pass, model_arch,
                 serialized_weights, gpus_per_host, segments_per_host, seg_ids_train,
-                images_per_seg_train, training_metrics, training_loss,
-                i, "Training")
+                images_per_seg_train, training_metrics, training_loss, i)
             metrics_iters.append(i)
+            compute_time, compute_metrics, compute_loss = compute_out
+
+            info_str += "\n\tTime for evaluating training dataset in "\
+                        "iteration {0}: {1} sec\n".format(i, compute_time)
+            info_str += "\tTraining set metric after iteration {0}: {1}\n".format(
+                i, compute_metrics)
+            info_str += "\tTraining set loss after iteration {0}: {1}".format(
+                i, compute_loss)
+
             if validation_set_provided:
                 # Compute loss/accuracy for validation data.
-                compute_loss_and_metrics(
+                val_compute_out = compute_loss_and_metrics(
                     schema_madlib, validation_table, compile_params_to_pass,
                     model_arch, serialized_weights, gpus_per_host, segments_per_host,
                     seg_ids_val, images_per_seg_val, validation_metrics,
-                    validation_loss, i, "Validation")
+                    validation_loss, i)
+                val_compute_time, val_compute_metrics, val_compute_loss = val_compute_out
+
+                info_str += "\n\tTime for evaluating validation dataset in "\
+                        "iteration {0}: {1} sec\n".format(i, val_compute_time)
+                info_str += "\tValidation set metric after iteration {0}: {1}\n".format(
+                    i, val_compute_metrics)
+                info_str += "\tValidation set loss after iteration {0}: {1}".format(
+                    i, val_compute_loss)
+
             metrics_elapsed_end_time = time.time()
             metrics_elapsed_time.append(
                 metrics_elapsed_end_time-metrics_elapsed_start_time)
-
+        plpy.info("\n"+info_str)
     end_training_time = datetime.datetime.now()
 
     version = madlib_version(schema_madlib)
@@ -343,7 +360,7 @@ def get_metrics_sql_string(metrics_list, is_metrics_specified):
 def compute_loss_and_metrics(schema_madlib, table, compile_params, model_arch,
                              serialized_weights, gpus_per_host, segments_per_host,
                              seg_ids, images_per_seg_val, metrics_list, loss_list,
-                             curr_iter, dataset_name):
+                             curr_iter):
     """
     Compute the loss and metric using a given model (serialized_weights) on the
     given dataset (table.)
@@ -359,19 +376,15 @@ def compute_loss_and_metrics(schema_madlib, table, compile_params, model_arch,
                                                    seg_ids,
                                                    images_per_seg_val)
     end_val = time.time()
-    plpy.info("Time for evaluation in iteration {0}: {1} sec.". format(
-        curr_iter, end_val - start_val))
+
     if len(evaluate_result) not in [1, 2]:
         plpy.error('Calling evaluate on table {0} returned < 2 '
                    'metrics. Expected both loss and a metric.'.format(table))
     loss = evaluate_result[0]
     metric = evaluate_result[1]
-    plpy.info("{0} set metric after iteration {1}: {2}.".
-              format(dataset_name, curr_iter, metric))
-    plpy.info("{0} set loss after iteration {1}: {2}.".
-              format(dataset_name, curr_iter, loss))
     metrics_list.append(metric)
     loss_list.append(loss)
+    return end_val - start_val, metric, loss
 
 def should_compute_metrics_this_iter(curr_iter, metrics_compute_frequency,
                                      num_iterations):
@@ -454,8 +467,6 @@ def fit_transition(state, dependent_var, independent_var, model_architecture,
     del y_train
 
     end_transition = time.time()
-    plpy.info("Processed {0} images: Fit took {1} sec, Total was {2} sec".format(
-        image_count, end_fit - start_fit, end_transition - start_transition))
 
     return new_state
 
