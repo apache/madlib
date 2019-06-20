@@ -71,8 +71,8 @@ SELECT get_udocs('udoc_madlib_old_version','madlib_old_vers','Full');
 SELECT get_udocs('udoc_madlib_new_version','madlib','Full');
 
 
-SELECT old.opfamily_name, old.index_method
-FROM udoc_madlib_old_version AS old LEFT JOIN udoc_madlib_new_version
+SELECT old1.opfamily_name, old1.index_method
+FROM udoc_madlib_old_version AS old1 LEFT JOIN udoc_madlib_new_version
 	USING (index_method, opfamily_name, operators)
 WHERE udoc_madlib_new_version.opfamily_name is NULL
 ORDER BY 1;

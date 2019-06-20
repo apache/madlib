@@ -73,9 +73,9 @@ SELECT get_udos('udo_madlib_old_version','madlib_old_vers','Full');
 SELECT get_udos('udo_madlib_new_version','madlib','Full');
 
 
-SELECT old.name AS name , old.oprright AS oprright,
-       old.oprleft AS oprleft, old.rettype AS rettype
-FROM udo_madlib_old_version AS old LEFT JOIN udo_madlib_new_version
+SELECT old1.name AS name , old1.oprright AS oprright,
+       old1.oprleft AS oprleft, old1.rettype AS rettype
+FROM udo_madlib_old_version AS old1 LEFT JOIN udo_madlib_new_version
     USING (name, oprcode, oprright, oprleft, rettype)
 WHERE udo_madlib_new_version.name is NULL
-ORDER BY old.name;
+ORDER BY old1.name;
