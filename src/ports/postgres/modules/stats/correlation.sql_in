@@ -53,7 +53,8 @@ correlation( source_table,
              output_table,
              target_cols,
              verbose,
-             grouping_cols
+             grouping_cols,
+             n_groups_per_run
            )
 </pre>
 
@@ -63,7 +64,8 @@ covariance( source_table,
             output_table,
             target_cols,
             verbose,
-            grouping_cols
+            grouping_cols,
+            n_groups_per_run
           )
 </pre>
 
@@ -133,6 +135,13 @@ If NULL or <tt>'*'</tt>, results are produced for all numeric columns.</dd>
 
 <dt>grouping_cols (optional)</dt>
 <dd>TEXT, default: NULL. A comma-separated list of the columns to group by.</dd>
+
+<dt>n_groups_per_run (optional)</dt>
+<dd>INTEGER, default: 10. Number of groups to deconstruct at a time.
+This parameter value is ignored if grouping_cols is not specified.
+Processing large number of groups together may have memory/stack/execution time
+issues. This parameter should be used with caution. The number of groups that
+can be processed together is a function of various database settings.</dd>
 </dl>
 
 
@@ -442,7 +451,8 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.correlation(
     output_table varchar, -- output table name
     target_cols  varchar, -- comma separated list of output cols (default = '*')
     verbose      boolean, -- flag to determine verbosity
-    grouping_cols varchar -- comma separated column names to be used for grouping
+    grouping_cols varchar, -- comma separated column names to be used for grouping
+    n_groups_per_run integer -- number of groups to process at a time
 ) RETURNS TEXT AS $$
     PythonFunction(stats, correlation, correlation)
 $$ LANGUAGE plpythonu VOLATILE
@@ -455,10 +465,22 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.correlation(
     source_table varchar, --  input table name
     output_table varchar, -- output table name
     target_cols  varchar,  -- comma separated list of output cols (default = '*')
+    verbose      boolean,  -- flag to determine verbosity
+    grouping_cols varchar -- comma separated column names to be used for grouping
+)
+RETURNS TEXT AS $$
+    select MADLIB_SCHEMA.correlation($1, $2, $3, $4, $5, 10)
+$$ LANGUAGE sql VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.correlation(
+    source_table varchar, --  input table name
+    output_table varchar, -- output table name
+    target_cols  varchar,  -- comma separated list of output cols (default = '*')
     verbose      boolean  -- flag to determine verbosity
 )
 RETURNS TEXT AS $$
-    select MADLIB_SCHEMA.correlation($1, $2, $3, $4, NULL)
+    select MADLIB_SCHEMA.correlation($1, $2, $3, $4, NULL, 10)
 $$ LANGUAGE sql VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
@@ -468,7 +490,7 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.correlation(
     target_cols  varchar  -- comma separated list of output cols (default = '*')
 )
 RETURNS TEXT AS $$
-    select MADLIB_SCHEMA.correlation($1, $2, $3, FALSE, NULL)
+    select MADLIB_SCHEMA.correlation($1, $2, $3, FALSE, NULL, 10)
 $$ LANGUAGE sql VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
@@ -477,7 +499,7 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.correlation(
     source_table varchar, --  input table name
     output_table varchar  -- output table name
 ) RETURNS TEXT AS $$
-    select MADLIB_SCHEMA.correlation($1, $2, NULL, FALSE, NULL)
+    select MADLIB_SCHEMA.correlation($1, $2, NULL, FALSE, NULL, 10)
 $$ LANGUAGE sql VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
@@ -526,12 +548,14 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.covariance(
     output_table varchar, -- output table name
     target_cols  varchar, -- comma separated list of output cols (default = '*')
     verbose      boolean, -- flag to determine verbosity
-    grouping_cols varchar -- comma separated column names to be used for grouping
+    grouping_cols varchar, -- comma separated column names to be used for grouping
+    n_groups_per_run integer -- number of groups to process at a time
 ) RETURNS TEXT AS $$
 PythonFunctionBodyOnly(`stats', `correlation')
     with AOControl(False):
         return correlation.correlation(schema_madlib, source_table, output_table,
-                                       target_cols, grouping_cols, True, verbose)
+                                       target_cols, grouping_cols, True, verbose,
+                                       n_groups_per_run)
 $$ LANGUAGE plpythonu VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
@@ -542,10 +566,22 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.covariance(
     source_table varchar, --  input table name
     output_table varchar, -- output table name
     target_cols  varchar, -- comma separated list of output cols (default = '*')
+    verbose BOOLEAN,       -- flag to determine verbosity
+    grouping_cols varchar -- comma separated column names to be used for grouping
+
+)
+RETURNS TEXT AS $$
+    select MADLIB_SCHEMA.covariance($1, $2, $3, $4, $5, 10)
+$$ LANGUAGE sql VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.covariance(
+    source_table varchar, --  input table name
+    output_table varchar, -- output table name
+    target_cols  varchar, -- comma separated list of output cols (default = '*')
     verbose BOOLEAN       -- flag to determine verbosity
 )
 RETURNS TEXT AS $$
-    select MADLIB_SCHEMA.covariance($1, $2, $3, $4, NULL)
+    select MADLIB_SCHEMA.covariance($1, $2, $3, $4, NULL, 10)
 $$ LANGUAGE sql VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
@@ -555,7 +591,7 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.covariance(
     target_cols  varchar  -- comma separated list of output cols (default = '*')
 )
 RETURNS TEXT AS $$
-    select MADLIB_SCHEMA.covariance($1, $2, $3, FALSE, NULL)
+    select MADLIB_SCHEMA.covariance($1, $2, $3, FALSE, NULL, 10)
 $$ LANGUAGE sql VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
@@ -564,7 +600,7 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.covariance(
     source_table varchar, --  input table name
     output_table varchar  -- output table name
 ) RETURNS TEXT AS $$
-    select MADLIB_SCHEMA.covariance($1, $2, NULL, NULL)
+    select MADLIB_SCHEMA.covariance($1, $2, NULL, FALSE, NULL, 10)
 $$ LANGUAGE sql VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
