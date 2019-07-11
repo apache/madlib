@@ -179,7 +179,9 @@ assoc_rules( support,
              input_table,
              output_schema,
              verbose,
-             max_itemset_size
+             max_itemset_size,
+             max_LHS_size,
+             max_RHS_size
            );</pre>
 This generates all association rules that satisfy the specified minimum
 <em>support</em> and <em>confidence</em>.
@@ -270,6 +272,22 @@ This generates all association rules that satisfy the specified minimum
   <dt>max_itemset_size (optional)</dt>
   <dd>INTEGER, default: 10. Determines the maximum size of frequent
   itemsets that are used for generating association rules. Must be 2 or more.
+  This parameter can be used to reduce run time for data sets where itemset size is large,
+  which is a common situation. If your query is not returning or is running too long,
+  try using a lower value for this parameter.</dd>
+
+
+  <dt>max_LHS_size (optional)</dt>
+  <dd>INTEGER, default: NULL. Determines the maximum size of the left hand side
+  of the rule. Must be 1 or more.
+  This parameter can be used to reduce run time for data sets where itemset size is large,
+  which is a common situation. If your query is not returning or is running too long,
+  try using a lower value for this parameter.</dd>
+
+
+  <dt>max_RHS_size (optional)</dt>
+  <dd>INTEGER, default: NULL. Determines the maximum size of the right hand side
+  of the rule. Must be 1 or more.
   This parameter can be used to reduce run time for data sets where itemset size is large,
   which is a common situation. If your query is not returning or is running too long,
   try using a lower value for this parameter.</dd>
@@ -397,6 +415,48 @@ Result:
 (2 rows)
 </pre>
 
+
+-# Limit the size of right hand side to 1.  This parameter is a good way to
+reduce long run times.
+<pre class="example">
+SELECT * FROM madlib.assoc_rules( .25,            -- Support
+                                  .5,             -- Confidence
+                                  'trans_id',     -- Transaction id col
+                                  'product',      -- Product col
+                                  'test_data',    -- Input data
+                                  NULL,           -- Output schema
+                                  TRUE,           -- Verbose output
+                                  NULL,           -- Max itemset size
+                                  NULL,           -- Max LHS size
+                                  1               -- Max RHS size
+                                );
+</pre>
+Result (iteration details not shown):
+<pre class="result">
+ output_schema | output_table | total_rules |   total_time
+---------------+--------------+-------------+-----------------
+ public        | assoc_rules  |           6 | 00:00:00.031362
+(1 row)
+</pre>
+The association rules are again stored in the assoc_rules table:
+<pre class="example">
+SELECT * FROM assoc_rules
+ORDER BY support DESC, confidence DESC;
+</pre>
+Result:
+<pre class="result">
+ ruleid |       pre       |   post    | count |      support      |    confidence     |       lift        |    conviction
+--------+-----------------+-----------+-------+-------------------+-------------------+-------------------+-------------------
+      4 | {diapers}       | {beer}    |     5 | 0.714285714285714 |                 1 |                 1 |                 0
+      3 | {beer}          | {diapers} |     5 | 0.714285714285714 | 0.714285714285714 |                 1 |                 1
+      1 | {chips}         | {beer}    |     3 | 0.428571428571429 |                 1 |                 1 |                 0
+      6 | {diapers,chips} | {beer}    |     2 | 0.285714285714286 |                 1 |                 1 |                 0
+      2 | {chips}         | {diapers} |     2 | 0.285714285714286 | 0.666666666666667 | 0.933333333333333 | 0.857142857142857
+      5 | {beer,chips}    | {diapers} |     2 | 0.285714285714286 | 0.666666666666667 | 0.933333333333333 | 0.857142857142857
+(6 rows)
+</pre>
+
+
 @anchor notes
 @par Notes
 
@@ -459,6 +519,8 @@ CREATE TYPE MADLIB_SCHEMA.assoc_rules_results AS
 CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.gen_rules_from_cfp
     (
     TEXT,
+    INT,
+    INT,
     INT
     )
 RETURNS SETOF TEXT[] AS 'MODULE_PATHNAME'
@@ -498,6 +560,76 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.assoc_rules
     input_table TEXT,
     output_schema TEXT,
     verbose BOOLEAN,
+    max_itemset_size INTEGER,
+    max_lhs_size INTEGER,
+    max_rhs_size INTEGER
+   )
+RETURNS MADLIB_SCHEMA.assoc_rules_results
+AS $$
+    PythonFunctionBodyOnly(`assoc_rules', `assoc_rules')
+    with AOControl(False):
+        plpy.execute("SET client_min_messages = error;")
+        # schema_madlib comes from PythonFunctionBodyOnly
+        return assoc_rules.assoc_rules(schema_madlib,
+                                       support,
+                                       confidence,
+                                       tid_col,
+                                       item_col,
+                                       input_table,
+                                       output_schema,
+                                       verbose,
+                                       max_itemset_size,
+                                       max_lhs_size,
+                                       max_rhs_size
+                                       );
+
+$$ LANGUAGE plpythonu
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.assoc_rules
+    (
+    support FLOAT8,
+    confidence FLOAT8,
+    tid_col TEXT,
+    item_col TEXT,
+    input_table TEXT,
+    output_schema TEXT,
+    verbose BOOLEAN,
+    max_itemset_size INTEGER,
+    max_LHS_size INTEGER
+   )
+RETURNS MADLIB_SCHEMA.assoc_rules_results
+AS $$
+    PythonFunctionBodyOnly(`assoc_rules', `assoc_rules')
+    with AOControl(False):
+        plpy.execute("SET client_min_messages = error;")
+        # schema_madlib comes from PythonFunctionBodyOnly
+        return assoc_rules.assoc_rules(schema_madlib,
+                                       support,
+                                       confidence,
+                                       tid_col,
+                                       item_col,
+                                       input_table,
+                                       output_schema,
+                                       verbose,
+                                       max_itemset_size,
+                                       max_lhs_size,
+                                       None
+                                       );
+
+$$ LANGUAGE plpythonu
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.assoc_rules
+    (
+    support FLOAT8,
+    confidence FLOAT8,
+    tid_col TEXT,
+    item_col TEXT,
+    input_table TEXT,
+    output_schema TEXT,
+    verbose BOOLEAN,
     max_itemset_size INTEGER
    )
 RETURNS MADLIB_SCHEMA.assoc_rules_results
@@ -514,7 +646,10 @@ AS $$
                                        input_table,
                                        output_schema,
                                        verbose,
-                                       max_itemset_size);
+                                       max_itemset_size,
+                                       None,
+                                       None
+                                       );
 
 $$ LANGUAGE plpythonu
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
@@ -549,7 +684,9 @@ AS $$
                                        input_table,
                                        output_schema,
                                        False,
-                                       10);
+                                       10,
+                                       None,
+                                       None);
 
 $$ LANGUAGE plpythonu
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
@@ -579,7 +716,9 @@ AS $$
                                        input_table,
                                        output_schema,
                                        verbose,
-                                       10);
+                                       10,
+                                       None,
+                                       None);
 $$ LANGUAGE plpythonu
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
