@@ -11,6 +11,8 @@ import time
 import plpy
 from utilities.validate_args import columns_exist_in_table
 from utilities.validate_args import table_exists
+from utilities.control import MinWarning
+
 
 """
 @brief if the given condition is false, then raise an error with the message
@@ -56,9 +58,14 @@ def __float_le(val1, val2):
 @param verbose         determining if output contains comments
 @param max_itemset_size determines the maximum size of frequent itemsets allowed
                         to generate association rules from
+@param max_lhs_size    determines the maximum size of the lhs of the rule
+@param max_rhs_size    determines the maximum size of the rhs of the rule
 """
+
+@MinWarning("warning")
 def assoc_rules(madlib_schema, support, confidence, tid_col,
-                item_col, input_table, output_schema, verbose, max_itemset_size):
+                item_col, input_table, output_schema, verbose,
+                max_itemset_size, max_lhs_size, max_rhs_size):
 
     begin_func_exec = time.time();
     begin_step_exec = time.time();
@@ -68,6 +75,11 @@ def assoc_rules(madlib_schema, support, confidence, tid_col,
     elif max_itemset_size <= 1:
         plpy.error("ERROR: max_itemset_size has to be greater than 1.")
 
+    #Validate LHS RHS
+    __assert(max_lhs_size is None or max_lhs_size > 0,
+             "max_lhs_size param must be a positive number.")
+    __assert(max_rhs_size is None or max_rhs_size > 0,
+             "max_rhs_size param must be a positive number.")
     #check parameters
     __assert(
             support is not None and
@@ -177,6 +189,10 @@ def assoc_rules(madlib_schema, support, confidence, tid_col,
     num_tranx = rv[0]["c1"];
     num_prod = rv[0]["c2"];
     min_supp_tranx = float(num_tranx) * support;
+    # Set default values to the max possible number that an itemset can
+    # have on its LHS or RHS for a given input dataset.
+    max_lhs_size = num_prod if max_lhs_size is None else max_lhs_size
+    max_rhs_size = num_prod if max_rhs_size is None else max_rhs_size
 
     # get the items whose counts are greater than the given
     # support counts. Each item will be given a continuous number.
@@ -213,10 +229,6 @@ def assoc_rules(madlib_schema, support, confidence, tid_col,
     if verbose :
         plpy.info("finished encoding input table: {0}".format(
                 time.time() - begin_step_exec));
-
-    begin_step_exec = time.time();
-
-    if verbose:
         plpy.info("Beginning iteration #1");
 
     begin_step_exec = time.time();
@@ -247,6 +259,20 @@ def assoc_rules(madlib_schema, support, confidence, tid_col,
         m4_ifdef(`__POSTGRESQL__', `', `DISTRIBUTED BY (id)')
         """.format(madlib_schema, madlib_schema));
 
+    # this table adds a new column to order the table by its setlist
+    plpy.execute("DROP TABLE IF EXISTS assoc_rule_sets_loop_ordered");
+    plpy.execute("""
+        CREATE TEMP TABLE assoc_rule_sets_loop_ordered
+            (
+            id          BIGINT,
+            set_list    {0}.svec,
+            support     FLOAT8,
+            tids        {1}.svec,
+            newrownum   BIGINT
+            )
+        m4_ifdef(`__POSTGRESQL__', `', `DISTRIBUTED BY (newrownum)')
+        """.format(madlib_schema, madlib_schema));
+
     plpy.execute("""
          INSERT INTO assoc_rule_sets_loop (id, set_list, support, tids)
          SELECT
@@ -262,6 +288,13 @@ def assoc_rules(madlib_schema, support, confidence, tid_col,
                     num_tranx)
          );
 
+    plpy.execute("""
+            INSERT INTO assoc_rule_sets_loop_ordered(id, set_list, support,
+                                                     tids, newrownum)
+            SELECT *, row_number() over (order by set_list) as newrownum
+            FROM assoc_rule_sets_loop
+            """
+            );
     rv = plpy.execute("""
         SELECT count(id) as c1, max(id) as c2
         FROM assoc_rule_sets_loop
@@ -274,19 +307,6 @@ def assoc_rules(madlib_schema, support, confidence, tid_col,
             (num_item_loop == 0 and max_item_loop is None),
             "internal error: num_item_loop must be equal to max_item_loop"
         );
-
-    # to avoid the self cross join of the table assoc_rule_sets_loop,
-    # we use the following table to generate the join relationship
-    # so that we can use inner join (hash join)
-    plpy.execute("DROP TABLE IF EXISTS rule_set_rel");
-    plpy.execute("""
-         CREATE TEMP TABLE rule_set_rel
-            (
-            sid     BIGINT,
-            did     BIGINT
-            )
-         m4_ifdef(`__POSTGRESQL__', `', `DISTRIBUTED BY (sid)')
-         """);
 
     # As two different svecs may have the same hash key,
     # we use this table to assign a unique ID for each svec.
@@ -309,20 +329,13 @@ def assoc_rules(madlib_schema, support, confidence, tid_col,
             time.time() - begin_step_exec));
 
     iter = 0;
-
+    num_products_threshold = num_supp_prod
     while num_item_loop > 0 and iter < max_itemset_size:
         begin_step_exec = time.time();
         iter = iter + 1;
 
         if verbose  :
             plpy.info("Beginning iteration # {0}".format(iter + 1));
-
-        plpy.execute("TRUNCATE TABLE rule_set_rel");
-        plpy.execute("""
-             INSERT INTO rule_set_rel(sid, did)
-             SELECT t1.id, generate_series(t1.id + 1, {0})
-             FROM assoc_rule_sets_loop t1
-             """.format(num_item_loop));
 
         plpy.execute("""
              INSERT INTO assoc_rule_sets
@@ -339,36 +352,69 @@ def assoc_rules(madlib_schema, support, confidence, tid_col,
                  time.time() - begin_step_exec));
 
         # generate the patterns for the next iteration
+
+        # The vector operations are used to calculate the boolean OR operation
+        # efficiently.
+        # Example:
+        # a1 = [1,1,0,0,0,1]            a2 = [1,1,0,0,1,1]
+        # svec_a1 = {2,3,1}:{1,0,1}     svec_a2 = {2,2,2}:{1,0,1}
+        # x = svec_a1 + svec_a2 = [2,2,0,0,1,2] -> {2,2,1,1}:{2,0,1,2}
+        # y = svec_a1 * svec_a2 = [1,1,0,0,0,1] -> {2,3,1}:{1,0,1}
+        # x - y = [1,1,0,0,1,1] -> {2,2,2}:{1,0,1}
+
+        # The boolean OR operation is used to combine two itemsets to create a larger one.
+        # (a,b,c) combined with (a,b,d) will give (a,b,c,d)
+        # (a,b,c) combined with (c,d,e) will give (a,b,c,d,e)
+
+        # The assoc_rule_sets_loop_ordered table is ordered by the setlist.
+        # This ensures that the sets (a,b,c) and (a,b,d) are close to each other.
+        # t3.newrownum-t1.newrownum <= {num_products_threshold} check ensures that we are
+        # looking at a subset of pairs of itemsets instead of all pairs.
+
+        # Let's assume we are trying to get to (a,b,c,d)
+        # If the support for (a,b,c,d) is above the threshold; (a,b,c), (a,b,d),
+        # (b,c,d) should all be already in our list.
+        # In this case it doesn't matter if we skip trying (a,b,c) and (b,c,d)
+        # combination because the result is already covered by (a,b,c) + (a,c,d).
+
+        # The iterp1 check ensures that the new itemset is of a certain size.
+        # At every iteration, we increase the target itemset size by one.
+
         plpy.execute("ALTER SEQUENCE assoc_loop_aux_id_seq RESTART WITH 1");
         plpy.execute("TRUNCATE TABLE assoc_loop_aux");
         plpy.execute("""
            INSERT INTO assoc_loop_aux(set_list, support, tids)
-           SELECT DISTINCT ON({0}.svec_to_string(set_list)) set_list,
-                   {1}.svec_l1norm(tids)::FLOAT8 / {2},
+           SELECT DISTINCT ON({madlib_schema}.svec_to_string(set_list)) set_list,
+                   {madlib_schema}.svec_l1norm(tids)::FLOAT8 / {num_tranx},
                    tids
            FROM (
              SELECT
-                {3}.svec_minus(
-                    {4}.svec_plus(t1.set_list, t3.set_list),
-                    {5}.svec_mult(t1.set_list, t3.set_list)
+                {madlib_schema}.svec_minus(
+                    {madlib_schema}.svec_plus(t1.set_list, t3.set_list),
+                    {madlib_schema}.svec_mult(t1.set_list, t3.set_list)
                 ) as set_list,
-                {6}.svec_mult(t1.tids, t3.tids) as tids
-             FROM assoc_rule_sets_loop t1,
-                  rule_set_rel t2,
-                  assoc_rule_sets_loop t3
-             WHERE t1.id = t2.sid and t2.did = t3.id
+                {madlib_schema}.svec_mult(t1.tids, t3.tids) as tids
+             FROM assoc_rule_sets_loop_ordered t1,
+                  assoc_rule_sets_loop_ordered t3
+             WHERE t1.newrownum < t3.newrownum AND
+                   t3.newrownum-t1.newrownum <= {num_products_threshold}
            ) t
-           WHERE {7}.svec_l1norm(set_list)::INT = {8} AND
-                 {9}.svec_l1norm(tids)::FLOAT8 >= {10}
-           """.format(madlib_schema, madlib_schema, num_tranx, madlib_schema,
-                      madlib_schema, madlib_schema, madlib_schema, madlib_schema,
-                      iter + 1, madlib_schema, min_supp_tranx)
+           WHERE {madlib_schema}.svec_l1norm(set_list)::INT = {iterp1} AND
+                 {madlib_schema}.svec_l1norm(tids)::FLOAT8 >= {min_supp_tranx}
+           """.format(iterp1=iter + 1, **locals())
            );
 
         plpy.execute("TRUNCATE TABLE assoc_rule_sets_loop");
         plpy.execute("""
             INSERT INTO assoc_rule_sets_loop(id, set_list, support, tids)
             SELECT * FROM assoc_loop_aux
+            """
+            );
+        plpy.execute("TRUNCATE TABLE assoc_rule_sets_loop_ordered");
+        plpy.execute("""
+            INSERT INTO assoc_rule_sets_loop_ordered(id, set_list, support, tids, newrownum)
+            SELECT *, row_number() over (order by set_list) as newrownum
+            FROM assoc_rule_sets_loop
             """
             );
 
@@ -383,6 +429,27 @@ def assoc_rules(madlib_schema, support, confidence, tid_col,
             (num_item_loop == 0 and max_item_loop is None),
             "internal error: num_item_loop must be equal to max_item_loop"
             );
+        # num_products_threshold should be equal to the number of distinct
+        # products that are present in the previous iteration's frequent
+        # itemsets.
+        # We can ideally do away with the if condition, but it's a trade-off:
+        # The query in the if condition might be a considerable overhead when
+        # the original number of products is very low compared to the number
+        # of rows in assoc_rule_sets_loop in a given iteration. On the other
+        # hand, it can be a considerable improvement if we have a lot of
+        # distinct products and only a small number of them are present in
+        # frequent itemsets. But this is specific to datasets and parameters
+        # (such as support), so the following if statment is a compromise.
+        if num_item_loop < num_supp_prod:
+            # Get number of 1's from all set_lists in assoc_rule_sets_loop
+            num_products_threshold = plpy.execute("""
+                SELECT {madlib_schema}.svec_l1norm(
+                    {madlib_schema}.svec_count_nonzero(a)) AS cnt
+                FROM (
+                    SELECT {madlib_schema}.svec_sum(set_list) AS a
+                    FROM assoc_rule_sets_loop
+                    ) t
+                """.format(**locals()))[0]['cnt']
 
         if verbose :
             plpy.info("{0} Frequent itemsets found in this iteration".format(
@@ -419,15 +486,18 @@ def assoc_rules(madlib_schema, support, confidence, tid_col,
                 END
             FROM (
                 SELECT
-                    {0}.gen_rules_from_cfp(text_svec, iteration) as item,
+                    {madlib_schema}.gen_rules_from_cfp(text_svec,
+                                                       iteration,
+                                                       {max_lhs_size},
+                                                       {max_rhs_size}) as item,
                     support as support_xy
                 FROM assoc_rule_sets
                 WHERE iteration > 1
             ) t, assoc_rule_sets x, assoc_rule_sets y
             WHERE t.item[1] = x.text_svec AND
                   t.item[2] = y.text_svec AND
-                  (t.support_xy / x.support) >= {1}
-            """.format(madlib_schema, confidence)
+                  (t.support_xy / x.support) >= {confidence}
+            """.format(**locals())
             );
 
         # generate the readable rules
@@ -475,6 +545,7 @@ def assoc_rules(madlib_schema, support, confidence, tid_col,
              """.format(output_schema, num_tranx)
              );
 
+
         # if in verbose mode, we will keep all the intermediate tables
         if not verbose :
             plpy.execute("""
@@ -487,7 +558,7 @@ def assoc_rules(madlib_schema, support, confidence, tid_col,
                 DROP TABLE IF EXISTS assoc_enc_input;
                 DROP TABLE IF EXISTS assoc_rule_sets;
                 DROP TABLE IF EXISTS assoc_rule_sets_loop;
-                DROP TABLE IF EXISTS rule_set_rel;
+                DROP TABLE IF EXISTS assoc_rule_sets_loop_ordered;
                 DROP TABLE IF EXISTS assoc_loop_aux;
                 """);
 
@@ -529,19 +600,33 @@ def assoc_rules_help_message(schema_madlib, message=None, **kwargs):
                                 USAGE
 -----------------------------------------------------------------------
 SELECT {schema_madlib}.assoc_rules(
-    support,            -- FLOAT8, minimum level of support needed for each itemset to be included in result
-    confidence,         -- FLOAT8, minimum level of confidence needed for each rule to be included in result
-    tid_col,            -- TEXT, name of the column storing the transaction ids
-    item_col,           -- TEXT, name of the column storing the products
-    input_table,        -- TEXT, name of the table containing the input data
-    output_schema,      -- TEXT, name of the schema where the final results will be stored.
-                                The schema must be created before calling the function.  Alternatively, use
-                                <tt>NULL</tt> to output to the current schema.
-    verbose,            -- BOOLEAN, (optional, default: False) determines if details are printed for each
-                                iteration as the algorithm progresses
-    max_itemset_size    -- INTEGER, (optional, default: itemsets of all sizes) determines the maximum size of frequent
-                                itemsets allowed that are used for generating association rules. Value less
-                                than 2 throws an error.
+    support,            -- FLOAT8,  minimum level of support needed for each
+                                    itemset to be included in result
+    confidence,         -- FLOAT8,  minimum level of confidence needed for each
+                                    rule to be included in result
+    tid_col,            -- TEXT,    name of the column storing the transaction ids
+    item_col,           -- TEXT,    name of the column storing the products
+    input_table,        -- TEXT,    name of the table containing the input data
+    output_schema,      -- TEXT,    name of the schema where the final results
+                                    will be stored. The schema must be created
+                                    before calling the function.
+                                    Alternatively, use <tt>NULL</tt> to output
+                                    to the current schema.
+    verbose,            -- BOOLEAN, (optional, default: False) determines if
+                                    details are printed for each iteration as
+                                    the algorithm progresses
+    max_itemset_size,   -- INTEGER, (optional, default: itemsets of all sizes)
+                                    determines the maximum size of frequent
+                                    itemsets allowed that are used for generating
+                                    association rules. Value less than 2 throws an error.
+    max_lhs_size,       -- INTEGER, (optional, default: NULL) determines the
+                                    maximum size of the lhs of the rule.
+                                    NULL means there is no restriction on the
+                                    size of the left hand side.
+    max_rhs_size        -- INTEGER  (optional, default: NULL) determines the
+                                    maximum size of the rhs of the rule.
+                                    NULL means there is no restriction on the
+                                    size of the right hand side.
 );
 -------------------------------------------------------------------------
                                 OUTPUT TABLES

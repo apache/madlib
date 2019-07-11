@@ -23,6 +23,8 @@ typedef struct perm_fctx
     char*    positions;
     int32    pos_len;
     int32    num_elems;
+    int32    max_LHS_size;
+    int32    max_RHS_size;
     int32    num_calls;
 
     /* type information for the result type*/
@@ -38,6 +40,8 @@ typedef struct perm_fctx
  * @param args      Two-element array.
  *                  args[0] is the text form of a closed frequent pattern.
  *                  args[1] is the number of items in the pattern.
+                    args[2] is the max number of elements in the lhs of the rule
+                    args[3] is the max number of elements in the rhs of the rule
  * @param max_call  The number of  will be generated.
  *
  * @return  The struct including the variables which will be used
@@ -54,13 +58,15 @@ gen_rules_from_cfp::SRF_init(AnyType &args) {
     myfctx->positions = positions;
     myfctx->pos_len   = static_cast<int32_t>(strlen(positions));
     myfctx->num_elems = args[1].getAs<int32>();
+    myfctx->max_LHS_size = args[2].getAs<int32>();
+    myfctx->max_RHS_size = args[3].getAs<int32>();
     myfctx->num_calls = (1 << myfctx->num_elems) - 2;
     myfctx->flags     = new bool[myfctx->num_elems];
+
     memset(myfctx->flags, 0, sizeof(bool) * myfctx->num_elems);
     // return type id is TEXTOID, get the related information
     madlib_get_typlenbyvalalign
         (TEXTOID, &myfctx->typlen, &myfctx->typbyval, &myfctx->typalign);
-
     return myfctx;
 }
 
@@ -99,13 +105,42 @@ gen_rules_from_cfp::SRF_next(void *user_fctx, bool *is_last_call) {
         return Null();
     }
 
+    *is_last_call = false;
     // find the next permutation of the closed frequent pattern
+
     for (i = 0; i < myfctx->num_elems; ++i) {
         if (!myfctx->flags[i]) {
             myfctx->flags[i] = true;
             break;
         } else {
             myfctx->flags[i] = false;
+        }
+    }
+
+    // If the target max size is greater than the current number of elements to
+    // consider, there is no need to actually check for lhs or rhs sizes.
+
+    if (myfctx->max_LHS_size <= myfctx->num_elems ||
+        myfctx->max_RHS_size <= myfctx->num_elems){
+
+        int countLHS = 0;
+        int countRHS = 0;
+
+        // flags[i]=True means that element is on the lhs (and vice versa)
+        for (i = 0; i < myfctx->num_elems; ++i) {
+            if (!myfctx->flags[i]) {
+                countRHS ++;
+            } else {
+                countLHS ++;
+            }
+        }
+
+        // If this rule is not viable (one side is larger than the limit)
+        // Reduce the num_calls to indicate that it is processed and
+        // return Null to skip the operation
+        if (countLHS > myfctx->max_LHS_size || countRHS > myfctx->max_RHS_size){
+            --myfctx->num_calls;
+            return Null();
         }
     }
 
@@ -160,12 +195,11 @@ gen_rules_from_cfp::SRF_next(void *user_fctx, bool *is_last_call) {
 
     ArrayHandle<text*> arr(construct_array(result, 2, TEXTOID,
             myfctx->typlen, myfctx->typbyval, myfctx->typalign));
-    
+
     delete[] pre_text;
     delete[] post_text;
 
     --myfctx->num_calls;
-    *is_last_call = false;
     return arr;
 }
 
