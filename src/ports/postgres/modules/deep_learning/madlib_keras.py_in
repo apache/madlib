@@ -51,6 +51,7 @@ from utilities.validate_args import get_col_value_and_type
 from utilities.validate_args import get_expr_type
 from utilities.validate_args import quote_ident
 from utilities.control import MinWarning
+import tensorflow as tf
 
 @MinWarning("warning")
 def fit(schema_madlib, source_table, model, model_arch_table,
@@ -80,7 +81,7 @@ def fit(schema_madlib, source_table, model, model_arch_table,
     segments_per_host, gpus_per_host = get_segments_and_gpus(gpus_per_host)
     warm_start = bool(warm_start)
 
-    #TODO add a unit test for this in a future PR
+    # TODO add a unit test for this in a future PR
     # save the original value of the env variable so that we can reset it later.
     original_cuda_env = None
     if CUDA_VISIBLE_DEVICES_KEY in os.environ:
@@ -93,7 +94,7 @@ def fit(schema_madlib, source_table, model, model_arch_table,
         model_arch_table, ModelArchSchema.MODEL_ID,
         model_arch_id)
     model_arch_result = plpy.execute(model_arch_query)
-    if not  model_arch_result:
+    if not model_arch_result:
         plpy.error("no model arch found in table {0} with id {1}".format(
             model_arch_table, model_arch_id))
     model_arch_result = model_arch_result[0]
@@ -131,10 +132,11 @@ def fit(schema_madlib, source_table, model, model_arch_table,
             ARRAY{images_per_seg_train},
             {gpus_per_host},
             {segments_per_host},
-            $1
+            $1,
+            $2
         ) AS iteration_result
         FROM {source_table}
-        """.format(**locals()), ["bytea"])
+        """.format(**locals()), ["bytea", "boolean"])
 
     # Define the state for the model and loss/metric storage lists
     training_loss, training_metrics, metrics_elapsed_time = [], [], []
@@ -146,8 +148,9 @@ def fit(schema_madlib, source_table, model, model_arch_table,
     # Run distributed training for specified number of iterations
     for i in range(1, num_iterations+1):
         start_iteration = time.time()
+        is_final = (i == num_iterations)
         iteration_result = plpy.execute(run_training_iteration,
-                                        [serialized_weights])[0]['iteration_result']
+                                        [serialized_weights, is_final])[0]['iteration_result']
         end_iteration = time.time()
         info_str = "\tTime for training in iteration {0}: {1} sec".format(i,
             end_iteration - start_iteration)
@@ -160,7 +163,7 @@ def fit(schema_madlib, source_table, model, model_arch_table,
             compute_out = compute_loss_and_metrics(
                 schema_madlib, source_table, compile_params_to_pass, model_arch,
                 serialized_weights, gpus_per_host, segments_per_host, seg_ids_train,
-                images_per_seg_train, training_metrics, training_loss, i)
+                images_per_seg_train, training_metrics, training_loss, i, is_final)
             metrics_iters.append(i)
             compute_time, compute_metrics, compute_loss = compute_out
 
@@ -177,7 +180,7 @@ def fit(schema_madlib, source_table, model, model_arch_table,
                     schema_madlib, validation_table, compile_params_to_pass,
                     model_arch, serialized_weights, gpus_per_host, segments_per_host,
                     seg_ids_val, images_per_seg_val, validation_metrics,
-                    validation_loss, i)
+                    validation_loss, i, is_final)
                 val_compute_time, val_compute_metrics, val_compute_loss = val_compute_out
 
                 info_str += "\n\tTime for evaluating validation dataset in "\
@@ -286,8 +289,9 @@ def fit(schema_madlib, source_table, model, model_arch_table,
         $2 as {1}""".format(model, ModelArchSchema.MODEL_ARCH), ["bytea", "json"])
     plpy.execute(create_output_table, [serialized_weights, model_arch])
 
-    #TODO add a unit test for this in a future PR
+    # TODO add a unit test for this in a future PR
     reset_cuda_env(original_cuda_env)
+
 
 def get_initial_weights(model_table, model_arch_result, warm_start, gpus_per_host):
     """
@@ -360,7 +364,7 @@ def get_metrics_sql_string(metrics_list, is_metrics_specified):
 def compute_loss_and_metrics(schema_madlib, table, compile_params, model_arch,
                              serialized_weights, gpus_per_host, segments_per_host,
                              seg_ids, images_per_seg_val, metrics_list, loss_list,
-                             curr_iter):
+                             curr_iter, is_final):
     """
     Compute the loss and metric using a given model (serialized_weights) on the
     given dataset (table.)
@@ -374,7 +378,8 @@ def compute_loss_and_metrics(schema_madlib, table, compile_params, model_arch,
                                                    gpus_per_host,
                                                    segments_per_host,
                                                    seg_ids,
-                                                   images_per_seg_val)
+                                                   images_per_seg_val,
+                                                   is_final)
     end_val = time.time()
 
     if len(evaluate_result) not in [1, 2]:
@@ -403,10 +408,13 @@ def should_compute_metrics_this_iter(curr_iter, metrics_compute_frequency,
     return (curr_iter)%metrics_compute_frequency == 0 or \
            curr_iter == num_iterations
 
+
 def fit_transition(state, dependent_var, independent_var, model_architecture,
                    compile_params, fit_params, current_seg_id, seg_ids,
                    images_per_seg, gpus_per_host, segments_per_host,
-                   prev_serialized_weights, **kwargs):
+                   prev_serialized_weights, is_final=True,
+                   is_cerebro=False, **kwargs):
+
     if not independent_var or not dependent_var:
         return state
 
@@ -414,18 +422,54 @@ def fit_transition(state, dependent_var, independent_var, model_architecture,
     SD = kwargs['SD']
     device_name = get_device_name_and_set_cuda_env(gpus_per_host,
                                                    current_seg_id)
-    # Set up system if this is the first buffer on segment'
-    if not state:
-        set_keras_session(device_name, gpus_per_host, segments_per_host)
-        segment_model = model_from_json(model_architecture)
-        compile_and_set_weights(segment_model, compile_params, device_name,
-                                prev_serialized_weights)
 
-        SD['segment_model'] = segment_model
-        agg_image_count = 0
+    # Cerebro state has the weights passed from the previous segment
+    if is_cerebro:
+        prev_serialized_weights = madlib_keras_serializer.\
+            get_serialized_1d_weights_from_state(prev_serialized_weights)
+
+    # If a live session is present, re-use it. Otherwise, recreate it.
+    if 'sess' in SD:
+        sess = SD['sess']
     else:
-        segment_model = SD['segment_model']
-        agg_image_count = madlib_keras_serializer.get_image_count_from_state(state)
+        sess = get_keras_session(device_name, gpus_per_host, segments_per_host)
+        SD['sess'] = sess
+        K.set_session(sess)
+
+    # Set up system if this is the first buffer on segment.
+
+    # On cerebro, clean the session on the first row.
+    if is_cerebro:
+        if not state:
+            K.clear_session()
+            segment_model = model_from_json(model_architecture)
+            compile_and_set_weights(segment_model, compile_params, device_name,
+                    prev_serialized_weights)
+            SD['segment_model'] = segment_model
+            agg_image_count = 0
+        else:
+            all_ops_len = len([n.name for n in tf.get_default_graph().as_graph_def().node])
+            segment_model = SD['segment_model']
+            agg_image_count = madlib_keras_serializer.get_image_count_from_state(state)
+
+    # On single model fit, reuse the model if it exists
+    else:
+        if not state:
+            agg_image_count = 0
+        else:
+            agg_image_count = madlib_keras_serializer.get_image_count_from_state(state)
+        if 'segment_model' in SD:
+            segment_model = SD['segment_model']
+            if not state:
+                model_shapes = get_model_shapes(segment_model)
+                model_weights = madlib_keras_serializer.deserialize_as_nd_weights(
+                    prev_serialized_weights, model_shapes)
+                segment_model.set_weights(model_weights)
+        else:
+            segment_model = model_from_json(model_architecture)
+            compile_and_set_weights(segment_model, compile_params, device_name,
+                            prev_serialized_weights)
+            SD['segment_model'] = segment_model
 
     # Prepare the data
     x_train = np_array_float32(independent_var)
@@ -433,19 +477,15 @@ def fit_transition(state, dependent_var, independent_var, model_architecture,
 
     # Fit segment model on data
     start_fit = time.time()
-    with K.tf.device(device_name):
-        #TODO consider not doing this every time
-        fit_params = parse_and_validate_fit_params(fit_params)
-        history = segment_model.fit(x_train, y_train, **fit_params)
+    #TODO consider not doing this every time
+    fit_params = parse_and_validate_fit_params(fit_params)
+    history = segment_model.fit(x_train, y_train, **fit_params)
     end_fit = time.time()
-
     image_count = len(x_train)
+
     # Aggregating number of images, loss and accuracy
     agg_image_count += image_count
-
-    with K.tf.device(device_name):
-        updated_weights = segment_model.get_weights()
-
+    updated_weights = segment_model.get_weights()
     total_images = get_image_count_per_seg_from_array(current_seg_id, seg_ids,
                                                       images_per_seg)
 
@@ -455,17 +495,23 @@ def fit_transition(state, dependent_var, independent_var, model_architecture,
         # Once done with all images on a segment, we update weights
         # with the total number of images here instead of the merge function.
         # The merge function only deals with aggregating them.
-        updated_weights = [ total_images * w for w in updated_weights ]
-            # In GPDB, each segment would have a keras session, so clear
-            # them after the last buffer is processed.
-        clear_keras_session()
+        if not is_cerebro:
+            updated_weights = [ total_images * w for w in updated_weights ]
 
+        # In GPDB, each segment would have a keras session, so clear
+        # them at the end of final iteration and also every final buffer for cerebro
+        if is_final or is_cerebro:
+            K.clear_session()
+            sess.close()
+            del SD['segment_model']
+            del SD['sess']
+
+    all_ops_len = len([n.name for n in tf.get_default_graph().as_graph_def().node])
     new_state = madlib_keras_serializer.serialize_state_with_nd_weights(
         agg_image_count, updated_weights)
 
     del x_train
     del y_train
-
     end_transition = time.time()
 
     return new_state
@@ -539,11 +585,11 @@ def evaluate(schema_madlib, model_table, test_table, output_table, gpus_per_host
     compile_params = "$madlib$" + res['compile_params'] + "$madlib$"
 
     seg_ids, images_per_seg = get_image_count_per_seg_for_minibatched_data_from_db(test_table)
-
+    is_final = True
     loss, metric =\
         get_loss_metric_from_keras_eval(schema_madlib, test_table, compile_params, model_arch,
                                         model_data, gpus_per_host, segments_per_host,
-                                        seg_ids, images_per_seg)
+                                        seg_ids, images_per_seg, is_final)
 
     if not metrics_type:
         metrics_type = None
@@ -557,7 +603,8 @@ def evaluate(schema_madlib, model_table, test_table, output_table, gpus_per_host
 
 def get_loss_metric_from_keras_eval(schema_madlib, table, compile_params,
                                     model_arch, serialized_weights, gpus_per_host,
-                                    segments_per_host, seg_ids, images_per_seg):
+                                    segments_per_host, seg_ids, images_per_seg,
+                                    is_final=True):
 
     gp_segment_id_col = '0' if is_platform_pg() else 'gp_segment_id'
 
@@ -578,7 +625,8 @@ def get_loss_metric_from_keras_eval(schema_madlib, table, compile_params,
                                             ARRAY{seg_ids},
                                             ARRAY{images_per_seg},
                                             {gpus_per_host},
-                                            {segments_per_host}
+                                            {segments_per_host},
+                                            {is_final}
                                             )) as loss_metric
         from {table}
     """.format(**locals()), ["bytea"])
@@ -589,31 +637,49 @@ def get_loss_metric_from_keras_eval(schema_madlib, table, compile_params,
 def internal_keras_eval_transition(state, dependent_var, independent_var,
                                    model_architecture, serialized_weights, compile_params,
                                    current_seg_id, seg_ids, images_per_seg,
-                                   gpus_per_host, segments_per_host, **kwargs):
+                                   gpus_per_host, segments_per_host,
+                                   is_final, **kwargs):
     SD = kwargs['SD']
     device_name = get_device_name_and_set_cuda_env(gpus_per_host, current_seg_id)
 
     agg_loss, agg_metric, agg_image_count = state
 
-    if not agg_image_count:
-        set_keras_session(device_name, gpus_per_host, segments_per_host)
-        model = model_from_json(model_architecture)
-        compile_and_set_weights(model, compile_params, device_name,
-                                serialized_weights)
+    # User called evaluate will always set is_final to true.
+    # If is_final is false, that means the fit already created a session and a graph
+    # Otherwise, we may (last iteration of fit) or may not (user evaluate call)
+    # have a session.
+    if is_final and 'sess' not in SD:
+        sess = get_keras_session(device_name, gpus_per_host, segments_per_host)
+        SD['sess'] = sess
+        K.set_session(sess)
+        # Popping the segment model kept in the SD of internal_keras_eval_transition,
+        # which is leftover from the previous iteration. But the session is already
+        # cleared by fit_transition at this time, so the model cannot be re-used.
+        SD.pop('segment_model', None)
 
-        SD['segment_model'] = model
+    if 'segment_model' in SD:
+        segment_model = SD['segment_model']
+        if not agg_image_count:
+            model_shapes = get_model_shapes(segment_model)
+            model_weights = madlib_keras_serializer.deserialize_as_nd_weights(
+                serialized_weights, model_shapes)
+            segment_model.set_weights(model_weights)
+    else:
+        segment_model = model_from_json(model_architecture)
+        compile_and_set_weights(segment_model, compile_params, device_name,
+                        serialized_weights)
+        SD['segment_model'] = segment_model
+
+    if not agg_image_count:
         # These should already be 0, but just in case make sure
         agg_metric = 0
         agg_loss = 0
-    else:
-        # Same model every time, no need to re-compile or update weights
-        model = SD['segment_model']
 
     x_val = np_array_float32(independent_var)
     y_val = np_array_int16(dependent_var)
 
     with K.tf.device(device_name):
-        res = model.evaluate(x_val, y_val)
+        res = segment_model.evaluate(x_val, y_val)
 
     # if metric is None, model.evaluate will only return loss as a scalar
     # Otherwise, it will return a list which has loss and metric
@@ -632,9 +698,12 @@ def internal_keras_eval_transition(state, dependent_var, independent_var,
     total_images = get_image_count_per_seg_from_array(current_seg_id, seg_ids,
                                                       images_per_seg)
 
-    if agg_image_count == total_images:
-        SD.pop('segment_model', None)
-        clear_keras_session()
+    # Clean the session on the last buffer of last iteration
+    if agg_image_count == total_images and is_final:
+        K.clear_session()
+        SD['sess'].close()
+        del SD['segment_model']
+        del SD['sess']
 
     state[0] = agg_loss
     state[1] = agg_metric
@@ -668,7 +737,6 @@ def internal_keras_eval_final(state, **kwargs):
     metric /= image_count
 
     return loss, metric
-
 
 
 def fit_help(schema_madlib, message, **kwargs):

@@ -1493,6 +1493,21 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.madlib_keras_fit(
 $$ LANGUAGE sql VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA');
 
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.madlib_keras_fit_multiple_model(
+    source_table            VARCHAR,
+    model_output_table      VARCHAR,
+    model_arch_table        VARCHAR,
+    model_selection_table   VARCHAR, 
+    num_iterations          INTEGER,
+    gpus_per_host           INTEGER
+) RETURNS VOID AS $$
+    PythonFunctionBodyOnly(`deep_learning', `madlib_keras_fit_multiple_model')
+    with AOControl(False):
+        fit_obj = madlib_keras_fit_multiple_model.FitMultipleModel(**globals())
+        fit_obj.fit_multiple_model()       
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
 CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.fit_transition(
     state                      BYTEA,
     dependent_var              SMALLINT[],
@@ -1505,12 +1520,34 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.fit_transition(
     images_per_seg             INTEGER[],
     gpus_per_host              INTEGER,
     segments_per_host          INTEGER,
-    prev_serialized_weights    BYTEA
+    prev_serialized_weights    BYTEA,
+    is_final                   BOOLEAN
 ) RETURNS BYTEA AS $$
 PythonFunctionBodyOnlyNoSchema(`deep_learning', `madlib_keras')
     return madlib_keras.fit_transition(**globals())
 $$ LANGUAGE plpythonu
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.fit_transition_multiple_model(
+    state                      BYTEA,
+    dependent_var              SMALLINT[],
+    independent_var            REAL[],
+    model_architecture         TEXT,
+    compile_params             TEXT,
+    fit_params                 TEXT,
+    current_seg_id             INTEGER,
+    seg_ids                    INTEGER[],
+    images_per_seg             INTEGER[],
+    gpus_per_host              INTEGER,
+    segments_per_host          INTEGER,
+    prev_serialized_weights    BYTEA,
+    is_final                   BOOLEAN
+) RETURNS BYTEA AS $$
+PythonFunctionBodyOnlyNoSchema(`deep_learning', `madlib_keras')
+    return madlib_keras.fit_transition(is_cerebro = True, **globals())
+$$ LANGUAGE plpythonu
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
 
 CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.fit_merge(
     state1          BYTEA,
@@ -1540,7 +1577,8 @@ DROP AGGREGATE IF EXISTS MADLIB_SCHEMA.fit_step(
     INTEGER[],
     INTEGER,
     INTEGER,
-    BYTEA);
+    BYTEA,
+    BOOLEAN);
 CREATE AGGREGATE MADLIB_SCHEMA.fit_step(
     /* dep_var */                SMALLINT[],
     /* ind_var */                REAL[],
@@ -1552,12 +1590,31 @@ CREATE AGGREGATE MADLIB_SCHEMA.fit_step(
     /* images_per_seg*/          INTEGER[],
     /* gpus_per_host  */         INTEGER,
     /* segments_per_host  */     INTEGER,
-    /* serialized_weights */     BYTEA
+    /* serialized_weights */     BYTEA,
+    /* is_final */               BOOLEAN
 )(
     STYPE=BYTEA,
     SFUNC=MADLIB_SCHEMA.fit_transition,
     m4_ifdef(`__POSTGRESQL__', `', `prefunc=MADLIB_SCHEMA.fit_merge,')
     FINALFUNC=MADLIB_SCHEMA.fit_final
+);
+
+CREATE AGGREGATE MADLIB_SCHEMA.fit_step_multiple_model(
+    /* dep_var */                SMALLINT[],
+    /* ind_var */                REAL[],
+    /* model_architecture */     TEXT,
+    /* compile_params */         TEXT,
+    /* fit_params */             TEXT,
+    /* current_seg_id */         INTEGER,
+    /* seg_ids*/                 INTEGER[],
+    /* images_per_seg*/          INTEGER[],
+    /* gpus_per_host  */         INTEGER,
+    /* segments_per_host  */     INTEGER,
+    /* serialized_weights */     BYTEA,
+    /* is_final */               BOOLEAN
+)(  
+    STYPE=BYTEA,
+    SFUNC=MADLIB_SCHEMA.fit_transition_multiple_model
 );
 
 CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.madlib_keras_predict(
@@ -1652,7 +1709,8 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.internal_keras_eval_transition(
     seg_ids                            INTEGER[],
     images_per_seg                     INTEGER[],
     gpus_per_host                      INTEGER,
-    segments_per_host                  INTEGER
+    segments_per_host                  INTEGER,
+    is_final                           BOOLEAN
 ) RETURNS REAL[3] AS $$
 PythonFunctionBodyOnlyNoSchema(`deep_learning', `madlib_keras')
     return madlib_keras.internal_keras_eval_transition(**globals())
@@ -1686,7 +1744,8 @@ DROP AGGREGATE IF EXISTS MADLIB_SCHEMA.internal_keras_evaluate(
                                        INTEGER[],
                                        INTEGER[],
                                        INTEGER,
-                                       INTEGER);
+                                       INTEGER,
+                                       BOOLEAN);
 
 CREATE AGGREGATE MADLIB_SCHEMA.internal_keras_evaluate(
     /* dependent_var */                SMALLINT[],
@@ -1698,7 +1757,8 @@ CREATE AGGREGATE MADLIB_SCHEMA.internal_keras_evaluate(
     /* seg_ids */                      INTEGER[],
     /* images_per_seg*/                INTEGER[],
     /* gpus_per_host */                INTEGER,
-    /* segments_per_host */            INTEGER
+    /* segments_per_host */            INTEGER,
+    /* is_final */                     BOOLEAN
 )(
     STYPE=REAL[3],
     INITCOND='{0,0,0}',
