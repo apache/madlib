@@ -79,6 +79,21 @@ def set_keras_session(device_name, gpus_per_host, segments_per_host):
         session = K.tf.Session(config=config)
         K.set_session(session)
 
+def get_keras_session(device_name, gpus_per_host, segments_per_host):
+    config = K.tf.ConfigProto()
+    if gpus_per_host > 0:
+        memory_fraction = get_gpu_memory_fraction(gpus_per_host, segments_per_host)
+        config.gpu_options.allow_growth = False
+        config.gpu_options.per_process_gpu_memory_fraction = memory_fraction
+    session = tf.Session(config=config)
+    return session
+
+def clear_keras_session():
+    sess = K.get_session()
+    K.clear_session()
+    sess.close()
+
+
 def get_gpu_memory_fraction(gpus_per_host, segments_per_host):
     """
     We cap the gpu memory usage to 90% of the total available gpu memory.
@@ -89,11 +104,6 @@ def get_gpu_memory_fraction(gpus_per_host, segments_per_host):
     """
     return 0.9 / ceil(1.0 * segments_per_host / gpus_per_host)
 
-def clear_keras_session():
-    sess = K.get_session()
-    K.clear_session()
-    sess.close()
-
 def get_model_shapes(model):
     model_shapes = []
     for a in model.get_weights():
@@ -103,20 +113,18 @@ def get_model_shapes(model):
 def compile_and_set_weights(segment_model, compile_params, device_name,
                             serialized_weights):
     model_shapes = get_model_shapes(segment_model)
-    with K.tf.device(device_name):
-        compile_model(segment_model, compile_params)
-        model_weights = madlib_keras_serializer.deserialize_as_nd_weights(
-            serialized_weights, model_shapes)
-        segment_model.set_weights(model_weights)
+    compile_model(segment_model, compile_params)
+    model_weights = madlib_keras_serializer.deserialize_as_nd_weights(
+        serialized_weights, model_shapes)
+    segment_model.set_weights(model_weights)
 
 # TODO: This can be refactored to be part of compile_and_set_weights(),
 # by making compile_params an optional param in that function. Doing that
 # now might create more merge conflicts with other JIRAs, so get to this later.
 def set_model_weights(segment_model, device_name, serialized_weights, model_shapes):
-    with K.tf.device(device_name):
-        model_weights = madlib_keras_serializer.deserialize_as_nd_weights(
-            serialized_weights, model_shapes)
-        segment_model.set_weights(model_weights)
+    model_weights = madlib_keras_serializer.deserialize_as_nd_weights(
+        serialized_weights, model_shapes)
+    segment_model.set_weights(model_weights)
 
 """
 Used to convert compile_params and fit_params to actual argument dictionaries

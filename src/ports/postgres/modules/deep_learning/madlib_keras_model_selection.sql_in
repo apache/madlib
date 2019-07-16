@@ -425,3 +425,84 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.load_model_selection_table(
 $$ LANGUAGE plpythonu VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.madlib_keras_fit_multiple_model(
+    source_table            VARCHAR,
+    model_output_table      VARCHAR,
+    model_selection_table   VARCHAR,
+    num_iterations          INTEGER,
+    gpus_per_host           INTEGER,
+    validation_table        VARCHAR
+) RETURNS VOID AS $$
+    PythonFunctionBodyOnly(`deep_learning', `madlib_keras_fit_multiple_model')
+    with AOControl(False):
+        fit_obj = madlib_keras_fit_multiple_model.FitMultipleModel(**globals())
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.madlib_keras_fit_multiple_model(
+    source_table            VARCHAR,
+    model_output_table      VARCHAR,
+    model_selection_table   VARCHAR,
+    num_iterations          INTEGER,
+    gpus_per_host           INTEGER
+) RETURNS VOID AS $$
+    SELECT MADLIB_SCHEMA.madlib_keras_fit_multiple_model($1, $2, $3, $4, $5, NULL);
+$$ LANGUAGE sql VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.fit_transition_multiple_model(
+    state                      BYTEA,
+    dependent_var              BYTEA,
+    independent_var            BYTEA,
+    dependent_var_shape        INTEGER[],
+    independent_var_shape      INTEGER[],
+    model_architecture         TEXT,
+    compile_params             TEXT,
+    fit_params                 TEXT,
+    current_seg_id             INTEGER,
+    seg_ids                    INTEGER[],
+    images_per_seg             INTEGER[],
+    gpus_per_host              INTEGER,
+    segments_per_host          INTEGER,
+    prev_serialized_weights    BYTEA,
+    is_final_iteration         BOOLEAN
+) RETURNS BYTEA AS $$
+PythonFunctionBodyOnlyNoSchema(`deep_learning', `madlib_keras')
+    return madlib_keras.fit_transition(is_multiple_model = True, **globals())
+$$ LANGUAGE plpythonu
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+DROP AGGREGATE IF EXISTS MADLIB_SCHEMA.fit_step_multiple_model(
+    BYTEA,
+    BYTEA,
+    TEXT,
+    TEXT,
+    TEXT,
+    TEXT,
+    TEXT,
+    INTEGER,
+    INTEGER[],
+    INTEGER[],
+    INTEGER,
+    INTEGER,
+    BYTEA,
+    BOOLEAN);
+CREATE AGGREGATE MADLIB_SCHEMA.fit_step_multiple_model(
+    /* dep_var */                BYTEA,
+    /* ind_var */                BYTEA,
+    /* dep_var_shape */          INTEGER[],
+    /* ind_var_shape */          INTEGER[],
+    /* model_architecture */     TEXT,
+    /* compile_params */         TEXT,
+    /* fit_params */             TEXT,
+    /* current_seg_id */         INTEGER,
+    /* seg_ids*/                 INTEGER[],
+    /* images_per_seg*/          INTEGER[],
+    /* gpus_per_host  */         INTEGER,
+    /* segments_per_host  */     INTEGER,
+    /* serialized_weights */     BYTEA,
+    /* is_final_iteration */     BOOLEAN
+)(
+    STYPE=BYTEA,
+    SFUNC=MADLIB_SCHEMA.fit_transition_multiple_model
+);
