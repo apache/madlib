@@ -299,6 +299,10 @@ def _populate_output_table(schema_madlib, source_table, output_table,
         """
 
         # Create the output table.
+        # If there are no groupin cols, the query list will have a single element.
+        # Therefore, we always execute the 0'th element of the list.
+        # If there are grouping cols, we loop through the rest of the list and
+        # execute them one by one.
         create_output_table_query = """
             CREATE TABLE {output_table} AS
             {select_deconstruct_query}
@@ -306,8 +310,7 @@ def _populate_output_table(schema_madlib, source_table, output_table,
                 deconstruction_query=deconstruction_query_list[0],
                 num_cols=len(col_names), **locals())
         plpy.execute(create_output_table_query)
-        # A bunch of union all queries are inserted together for grouping
-        # queries, insert the remaining ones in a loop.
+
         if grouping_cols:
             for i in range(1, len(deconstruction_query_list)):
                 insert_to_output_table_query = """
@@ -359,7 +362,9 @@ def _create_deconstruction_query(schema_madlib, col_names, grouping_cols,
                                     sub-query
 
     Returns:
-        List of Strings (each string is a SQL sub-query for deconstructing the matrix)
+        List of Strings where each string is a SQL sub-query for deconstructing
+        the matrix. Each sub-query covers `n_groups_per_run` number of union all
+        queries
     """
     # The matrix that holds the PCC computation must be converted to a
     # table capturing all pair wise PCC values. That is done using
