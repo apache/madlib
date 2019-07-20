@@ -19,6 +19,7 @@
 
 import plpy
 from keras_model_arch_table import ModelArchSchema
+from model_arch_info import get_input_shape, get_num_classes
 from madlib_keras_helper import CLASS_VALUES_COLNAME
 from madlib_keras_helper import COMPILE_PARAMS_COLNAME
 from madlib_keras_helper import DEPENDENT_VARNAME_COLNAME
@@ -45,182 +46,177 @@ from utilities.validate_args import get_expr_type
 from utilities.validate_args import input_tbl_valid
 from utilities.validate_args import output_tbl_valid
 
-
-def _validate_input_shapes(table, independent_varname, input_shape, offset):
-    """
-    Validate if the input shape specified in model architecture is the same
-    as the shape of the image specified in the indepedent var of the input
-    table.
-    offset: This offset is the index of the start of the image array. We also
-    need to consider that sql array indexes start from 1
-    For ex if the image is of shape [32,32,3] and is minibatched, the image will
-    look like [10, 32, 32, 3]. The offset in this case is 1 (start the index at 1) +
-    1 (ignore the buffer size 10) = 2.
-    If the image is not batched then it will look like [32, 32 ,3] and the offset in
-    this case is 1 (start the index at 1).
-    """
-    array_upper_query = ", ".join("array_upper({0}, {1}) AS n_{2}".format(
-        independent_varname, i+offset, i) for i in range(len(input_shape)))
-    query = """
-        SELECT {0}
-        FROM {1}
-        LIMIT 1
-    """.format(array_upper_query, table)
-    # This query will fail if an image in independent var does not have the
-    # same number of dimensions as the input_shape.
-    result = plpy.execute(query)[0]
-    _assert(len(result) == len(input_shape),
-        "model_keras error: The number of dimensions ({0}) of each image"
-        " in model architecture and {1} in {2} ({3}) do not match.".format(
-            len(input_shape), independent_varname, table, len(result)))
-    for i in range(len(input_shape)):
-        key_name = "n_{0}".format(i)
-        if result[key_name] != input_shape[i]:
-            # Construct the shape in independent varname to display
-            # meaningful error msg.
-            input_shape_from_table = [result["n_{0}".format(i)]
-                for i in range(len(input_shape))]
-            plpy.error("model_keras error: Input shape {0} in the model"
-                " architecture does not match the input shape {1} of column"
-                " {2} in table {3}.".format(
-                    input_shape, input_shape_from_table,
-                    independent_varname, table))
-
 class InputValidator:
-    def __init__(self, test_table, model_table, independent_varname,
-                 output_table, module_name):
-        self.test_table = test_table
-        self.model_table = model_table
-        self.independent_varname = independent_varname
-        self.output_table = output_table
-        if self.model_table:
-            self.model_summary_table = add_postfix(
-                self.model_table, "_summary")
-        self.module_name = module_name
-        self._validate_input_args()
+    @staticmethod
+    def validate_predict_evaluate_tables(
+        module_name, model_table, model_summary_table, test_table, output_table,
+        independent_varname):
+        InputValidator._validate_model_data_tbl(module_name, model_table)
+        InputValidator._validate_model_summary_tbl(
+            module_name, model_summary_table)
+        InputValidator._validate_test_tbl(
+            module_name, test_table, independent_varname)
+        output_tbl_valid(output_table, module_name)
 
-    def _validate_input_args(self):
-        input_tbl_valid(self.model_table, self.module_name)
-        self._validate_model_data_cols()
-        input_tbl_valid(self.model_summary_table, self.module_name)
-        self._validate_model_summary_tbl_cols()
-        input_tbl_valid(self.test_table, self.module_name)
-        self._validate_test_tbl_cols()
-        output_tbl_valid(self.output_table, self.module_name)
+    @staticmethod
+    def validate_id_in_test_tbl(module_name, test_table, id_col):
+        _assert(is_var_valid(test_table, id_col),
+                "{module_name} error: invalid id column "
+                "('{id_col}') for test table ({table}).".format(
+                    module_name=module_name,
+                    id_col=id_col,
+                    table=test_table))
+
+    @staticmethod
+    def validate_predict_byom_tables(module_name, model_arch_table, model_arch_id,
+                                     test_table, id_col, output_table,
+                                     independent_varname):
+        InputValidator.validate_model_arch_table(
+            module_name, model_arch_table, model_arch_id)
+        InputValidator._validate_test_tbl(
+            module_name, test_table, independent_varname)
+        InputValidator.validate_id_in_test_tbl(module_name, test_table, id_col)
+
+        output_tbl_valid(output_table, module_name)
 
 
-    def _validate_model_data_cols(self):
-        _assert(is_var_valid(self.model_table, MODEL_DATA_COLNAME),
+    @staticmethod
+    def validate_pred_type(module_name, pred_type, class_values):
+        if not pred_type in ['prob', 'response']:
+            plpy.error("{0}: Invalid value for pred_type param ({1}). Must be "\
+                "either response or prob.".format(module_name, pred_type))
+
+
+    @staticmethod
+    def validate_input_shape(table, independent_varname, input_shape, offset):
+        """
+        Validate if the input shape specified in model architecture is the same
+        as the shape of the image specified in the indepedent var of the input
+        table.
+        offset: This offset is the index of the start of the image array. We also
+        need to consider that sql array indexes start from 1
+        For ex if the image is of shape [32,32,3] and is minibatched, the image will
+        look like [10, 32, 32, 3]. The offset in this case is 1 (start the index at 1) +
+        1 (ignore the buffer size 10) = 2.
+        If the image is not batched then it will look like [32, 32 ,3] and the offset in
+        this case is 1 (start the index at 1).
+        """
+        array_upper_query = ", ".join("array_upper({0}, {1}) AS n_{2}".format(
+            independent_varname, i+offset, i) for i in range(len(input_shape)))
+        query = """
+            SELECT {0}
+            FROM {1}
+            LIMIT 1
+        """.format(array_upper_query, table)
+        # This query will fail if an image in independent var does not have the
+        # same number of dimensions as the input_shape.
+        result = plpy.execute(query)[0]
+        _assert(len(result) == len(input_shape),
+            "model_keras error: The number of dimensions ({0}) of each image"
+            " in model architecture and {1} in {2} ({3}) do not match.".format(
+                len(input_shape), independent_varname, table, len(result)))
+        for i in range(len(input_shape)):
+            key_name = "n_{0}".format(i)
+            if result[key_name] != input_shape[i]:
+                # Construct the shape in independent varname to display
+                # meaningful error msg.
+                input_shape_from_table = [result["n_{0}".format(i)]
+                    for i in range(len(input_shape))]
+                plpy.error("model_keras error: Input shape {0} in the model"
+                    " architecture does not match the input shape {1} of column"
+                    " {2} in table {3}.".format(
+                        input_shape, input_shape_from_table,
+                        independent_varname, table))
+
+    @staticmethod
+    def validate_model_arch_table(module_name, model_arch_table, model_arch_id):
+        input_tbl_valid(model_arch_table, module_name)
+        _assert(model_arch_id is not None,
+            "{0}: Invalid model architecture ID.".format(module_name))
+
+
+    @staticmethod
+    def validate_normalizing_const(module_name, normalizing_const):
+        _assert(normalizing_const > 0,
+                "{0} error: Normalizing constant has to be greater than 0.".
+                format(module_name))
+
+    @staticmethod
+    def validate_class_values(module_name, class_values, pred_type, model_arch):
+        if not class_values:
+            return
+        num_classes = len(class_values)
+        _assert(num_classes == get_num_classes(model_arch),
+                "{0}: The number of class values do not match the " \
+                "provided architecture.".format(module_name))
+        if pred_type == 'prob' and num_classes+1 >= 1600:
+            plpy.error({"{0}: The output will have {1} columns, exceeding the "\
+                " max number of columns that can be created (1600)".format(
+                    module_name, num_classes+1)})
+
+    @staticmethod
+    def validate_model_weights(module_name, model_arch, model_weights):
+        _assert(model_weights and model_arch,
+                "{0}: Model weights and architecture must be valid.".format(
+                    module_name))
+
+    @staticmethod
+    def _validate_model_data_tbl(module_name, model_table):
+        input_tbl_valid(model_table, module_name)
+        _assert(is_var_valid(model_table, MODEL_DATA_COLNAME),
                 "{module_name} error: column '{model_data}' "
                 "does not exist in model table '{table}'.".format(
-                    module_name=self.module_name,
+                    module_name=module_name,
                     model_data=MODEL_DATA_COLNAME,
-                    table=self.model_table))
-        _assert(is_var_valid(self.model_table, ModelArchSchema.MODEL_ARCH),
+                    table=model_table))
+        _assert(is_var_valid(model_table, ModelArchSchema.MODEL_ARCH),
                 "{module_name} error: column '{model_arch}' "
                 "does not exist in model table '{table}'.".format(
-                    module_name=self.module_name,
+                    module_name=module_name,
                     model_arch=ModelArchSchema.MODEL_ARCH,
-                    table=self.model_table))
+                    table=model_table))
 
-    def _validate_test_tbl_cols(self):
-        _assert(is_var_valid(self.test_table, self.independent_varname),
+    @staticmethod
+    def _validate_test_tbl(module_name, test_table, independent_varname):
+        input_tbl_valid(test_table, module_name)
+        _assert(is_var_valid(test_table, independent_varname),
                 "{module_name} error: invalid independent_varname "
                 "('{independent_varname}') for test table "
                 "({table}).".format(
-                    module_name=self.module_name,
-                    independent_varname=self.independent_varname,
-                    table=self.test_table))
+                    module_name=module_name,
+                    independent_varname=independent_varname,
+                    table=test_table))
 
-    def _validate_model_summary_tbl_cols(self):
+    @staticmethod
+    def _validate_model_summary_tbl(module_name, model_summary_table):
+        input_tbl_valid(model_summary_table, module_name)
         cols_to_check_for = [CLASS_VALUES_COLNAME,
                              DEPENDENT_VARNAME_COLNAME,
                              DEPENDENT_VARTYPE_COLNAME,
                              MODEL_ARCH_ID_COLNAME,
                              MODEL_ARCH_TABLE_COLNAME,
-                             NORMALIZING_CONST_COLNAME]
+                             NORMALIZING_CONST_COLNAME,
+                             COMPILE_PARAMS_COLNAME,
+                             METRIC_TYPE_COLNAME]
         _assert(columns_exist_in_table(
-            self.model_summary_table, cols_to_check_for),
+            model_summary_table, cols_to_check_for),
             "{0} error: One or more expected columns missing in model "
             "summary table ('{1}'). The expected columns are {2}.".format(
-                self.module_name, self.model_summary_table, cols_to_check_for))
+                module_name, model_summary_table, cols_to_check_for))
 
-class EvaluateInputValidator(InputValidator):
-    def __init__(self, test_table, model_table, output_table, module_name):
-        self.test_summary_table = None
-        if test_table:
-            self.test_summary_table = add_postfix(test_table, "_summary")
 
-        self.independent_varname = MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL
-        InputValidator.__init__(self, test_table, model_table,
-                                self.independent_varname,
-                                output_table, module_name)
 
-    def _validate_input_args(self):
-        input_tbl_valid(self.test_summary_table, self.module_name,
-                        error_suffix_str="Please ensure that the test table ({0}) "
-                                         "has been preprocessed by "
-                                         "the image preprocessor.".format(self.test_table))
-        self._validate_test_summary_tbl_cols()
-        InputValidator._validate_input_args(self)
-        validate_dependent_var_for_minibatch(self.test_table,
-                                             MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL)
-
-    def _validate_model_summary_tbl_cols(self):
-        cols_to_check_for = [COMPILE_PARAMS_COLNAME, METRIC_TYPE_COLNAME]
-        _assert(columns_exist_in_table(
-            self.model_summary_table, cols_to_check_for),
-            "{0} error: One or more expected columns missing in model "
-            "summary table ('{1}'). The expected columns are {2}.".format(
-                self.module_name, self.model_summary_table, cols_to_check_for))
-
-    def _validate_test_summary_tbl_cols(self):
-        cols_in_tbl_valid(self.test_summary_table, [CLASS_VALUES_COLNAME,
-            NORMALIZING_CONST_COLNAME, DEPENDENT_VARTYPE_COLNAME,
-            DEPENDENT_VARNAME_COLNAME, INDEPENDENT_VARNAME_COLNAME], self.module_name)
-
-    def validate_input_shape(self, input_shape_from_arch):
-        _validate_input_shapes(self.test_table, self.independent_varname,
-                               input_shape_from_arch, 2)
-
-class PredictInputValidator(InputValidator):
-    def __init__(self, test_table, model_table, id_col, independent_varname,
-                 output_table, pred_type, module_name):
-        self.id_col = id_col
-        self.pred_type = pred_type
-        InputValidator.__init__(self, test_table, model_table, independent_varname,
-                               output_table, module_name)
-
-    def validate_pred_type(self, class_values):
-        if not self.pred_type in ['prob', 'response']:
-            plpy.error("{0}: Invalid value for pred_type param ({1}). Must be "\
-                "either response or prob.".format(self.module_name, self.pred_type))
-        if self.pred_type == 'prob' and class_values and len(class_values)+1 >= 1600:
-            plpy.error({"{0}: The output will have {1} columns, exceeding the "\
-                " max number of columns that can be created (1600)".format(
-                    self.module_name, len(class_values)+1)})
-
-    def validate_input_shape(self, input_shape_from_arch):
-        _validate_input_shapes(self.test_table, self.independent_varname,
-                               input_shape_from_arch, 1)
-
-    def _validate_test_tbl_cols(self):
-        InputValidator._validate_test_tbl_cols(self)
-        _assert(is_var_valid(self.test_table, self.id_col),
-                "{module_name} error: invalid id column "
-                "('{id_col}') for test table ({table}).".format(
-                    module_name=self.module_name,
-                    id_col=self.id_col,
-                    table=self.test_table))
 
 class FitInputValidator:
     def __init__(self, source_table, validation_table, output_model_table,
-                 model_arch_table, dependent_varname, independent_varname,
-                 num_iterations, metrics_compute_frequency, warm_start):
+                 model_arch_table, model_arch_id, dependent_varname,
+                 independent_varname, num_iterations,
+                 metrics_compute_frequency, warm_start):
         self.source_table = source_table
         self.validation_table = validation_table
         self.output_model_table = output_model_table
         self.model_arch_table = model_arch_table
+        self.model_arch_id = model_arch_id
         self.dependent_varname = dependent_varname
         self.independent_varname = independent_varname
         self.metrics_compute_frequency = metrics_compute_frequency
@@ -235,6 +231,36 @@ class FitInputValidator:
                 self.output_model_table, "_summary")
         self.module_name = 'madlib_keras_fit'
         self._validate_input_args()
+
+    def _validate_input_args(self):
+        _assert(self.num_iterations > 0,
+            "{0}: Number of iterations cannot be < 1.".format(self.module_name))
+        _assert(self._is_valid_metrics_compute_frequency(),
+            "{0}: metrics_compute_frequency must be in the range (1 - {1}).".format(
+                self.module_name, self.num_iterations))
+        input_tbl_valid(self.source_table, self.module_name)
+        input_tbl_valid(self.source_summary_table, self.module_name,
+                        error_suffix_str="Please ensure that the source table ({0}) "
+                                         "has been preprocessed by "
+                                         "the image preprocessor.".format(self.source_table))
+        cols_in_tbl_valid(self.source_summary_table, [CLASS_VALUES_COLNAME,
+            NORMALIZING_CONST_COLNAME, DEPENDENT_VARTYPE_COLNAME,
+            'dependent_varname', 'independent_varname'], self.module_name)
+
+        # Source table and validation tables must have the same schema
+        self._validate_input_table(self.source_table)
+        validate_dependent_var_for_minibatch(self.source_table,
+                                             self.dependent_varname)
+
+        self._validate_validation_table()
+        InputValidator.validate_model_arch_table(self.module_name, self.model_arch_table,
+            self.model_arch_id)
+        if self.warm_start:
+            input_tbl_valid(self.output_model_table, self.module_name)
+            input_tbl_valid(self.output_summary_model_table, self.module_name)
+        else:
+            output_tbl_valid(self.output_model_table, self.module_name)
+            output_tbl_valid(self.output_summary_model_table, self.module_name)
 
     def _validate_input_table(self, table):
         _assert(is_var_valid(table, self.independent_varname),
@@ -260,35 +286,6 @@ class FitInputValidator:
                (self.metrics_compute_frequency >= 1 and \
                self.metrics_compute_frequency <= self.num_iterations)
 
-    def _validate_input_args(self):
-        _assert(self.num_iterations > 0,
-            "{0}: Number of iterations cannot be < 1.".format(self.module_name))
-        _assert(self._is_valid_metrics_compute_frequency(),
-            "{0}: metrics_compute_frequency must be in the range (1 - {1}).".format(
-                self.module_name, self.num_iterations))
-        input_tbl_valid(self.source_table, self.module_name)
-        input_tbl_valid(self.source_summary_table, self.module_name,
-                        error_suffix_str="Please ensure that the source table ({0}) "
-                                         "has been preprocessed by "
-                                         "the image preprocessor.".format(self.source_table))
-        cols_in_tbl_valid(self.source_summary_table, [CLASS_VALUES_COLNAME,
-            NORMALIZING_CONST_COLNAME, DEPENDENT_VARTYPE_COLNAME,
-            'dependent_varname', 'independent_varname'], self.module_name)
-
-        # Source table and validation tables must have the same schema
-        self._validate_input_table(self.source_table)
-        validate_dependent_var_for_minibatch(self.source_table,
-                                             self.dependent_varname)
-
-        self._validate_validation_table()
-
-        input_tbl_valid(self.model_arch_table, self.module_name)
-        if self.warm_start:
-            input_tbl_valid(self.output_model_table, self.module_name)
-            input_tbl_valid(self.output_summary_model_table, self.module_name)
-        else:
-            output_tbl_valid(self.output_model_table, self.module_name)
-            output_tbl_valid(self.output_summary_model_table, self.module_name)
 
 
     def _validate_validation_table(self):
@@ -305,9 +302,10 @@ class FitInputValidator:
 
 
     def validate_input_shapes(self, input_shape):
-        _validate_input_shapes(self.source_table, self.independent_varname,
+        InputValidator.validate_input_shape(self.source_table, self.independent_varname,
                                input_shape, 2)
         if self.validation_table:
-            _validate_input_shapes(
+            InputValidator.validate_input_shape(
                 self.validation_table, self.independent_varname,
                 input_shape, 2)
+

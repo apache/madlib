@@ -18,7 +18,6 @@
 # under the License.
 
 import plpy
-import os
 
 import keras
 from keras import backend as K
@@ -26,82 +25,190 @@ from keras.layers import *
 from keras.models import *
 from keras.optimizers import *
 
+from model_arch_info import *
 from madlib_keras_helper import *
-from madlib_keras_validator import PredictInputValidator
+from madlib_keras_validator import *
 from predict_input_params import PredictParamsProcessor
 from utilities.control import MinWarning
-from utilities.model_arch_info import get_input_shape
+from utilities.utilities import _assert
 from utilities.utilities import add_postfix
 from utilities.utilities import create_cols_from_array_sql_string
 from utilities.utilities import get_segments_per_host
-from utilities.utilities import is_platform_pg
 from utilities.utilities import unique_string
+from utilities.validate_args import input_tbl_valid
+from utilities.validate_args import quote_ident
 
 from madlib_keras_wrapper import *
 
-MODULE_NAME = 'madlib_keras_predict'
+class BasePredict():
+    def __init__(self, schema_madlib, table_to_validate, test_table, id_col,
+                 independent_varname, output_table, pred_type, gpus_per_host):
+        self.schema_madlib = schema_madlib
+        self.table_to_validate = table_to_validate
+        self.test_table = test_table
+        self.id_col = id_col
+        self.independent_varname = independent_varname
+        self.output_table = output_table
+        self.pred_type = pred_type
+        self.gpus_per_host = gpus_per_host
+        self._set_default_gpus_pred_type()
+
+    def _set_default_gpus_pred_type(self):
+        self.pred_type =  'response' if not self.pred_type else self.pred_type
+        self.is_response = True if self.pred_type == 'response' else False
+        self.gpus_per_host = 0 if self.gpus_per_host is None else self.gpus_per_host
+
+
+    def call_internal_keras(self):
+        if self.is_response:
+            pred_col_name = add_postfix("estimated_", self.dependent_varname)
+            pred_col_type = self.dependent_vartype
+        else:
+            pred_col_name = "prob"
+            pred_col_type = 'double precision'
+
+        intermediate_col = unique_string()
+        class_values = strip_trailing_nulls_from_class_values(self.class_values)
+
+        prediction_select_clause = create_cols_from_array_sql_string(
+            class_values, intermediate_col, pred_col_name,
+            pred_col_type, self.is_response, self.module_name)
+        gp_segment_id_col, seg_ids_test, \
+        images_per_seg_test = get_image_count_per_seg_for_non_minibatched_data_from_db(
+            self.test_table)
+        segments_per_host = get_segments_per_host()
+
+        predict_query = plpy.prepare("""
+            CREATE TABLE {self.output_table} AS
+            SELECT {self.id_col}, {prediction_select_clause}
+            FROM (
+                SELECT {self.test_table}.{self.id_col},
+                       ({self.schema_madlib}.internal_keras_predict
+                           ({self.independent_varname},
+                            $1,
+                            $2,
+                            {self.is_response},
+                            {self.normalizing_const},
+                            {gp_segment_id_col},
+                            ARRAY{seg_ids_test},
+                            ARRAY{images_per_seg_test},
+                            {self.gpus_per_host},
+                            {segments_per_host})
+                       ) AS {intermediate_col}
+            FROM {self.test_table}
+            ) q
+            """.format(self=self, prediction_select_clause=prediction_select_clause,
+                       seg_ids_test=seg_ids_test,
+                       images_per_seg_test=images_per_seg_test,
+                       gp_segment_id_col=gp_segment_id_col,
+                       segments_per_host=segments_per_host,
+                       intermediate_col=intermediate_col),
+                                     ["text", "bytea"])
+        plpy.execute(predict_query, [self.model_arch, self.model_weights])
+
+    def set_default_class_values(self, class_values):
+        self.class_values = class_values
+        if self.pred_type == 'prob':
+            return
+        if self.class_values is None:
+            num_classes = get_num_classes(self.model_arch)
+            self.class_values = range(0, num_classes)
 
 @MinWarning("warning")
-def predict(schema_madlib, model_table, test_table, id_col,
-            independent_varname, output_table, pred_type, gpus_per_host, **kwargs):
-    if not pred_type:
-        pred_type = 'response'
-    input_validator = PredictInputValidator(
-        test_table, model_table, id_col, independent_varname,
-        output_table, pred_type, MODULE_NAME)
+class Predict(BasePredict):
+    def __init__(self, schema_madlib, model_table,
+                 test_table, id_col, independent_varname,
+                 output_table, pred_type, gpus_per_host,
+                 **kwargs):
 
-    param_proc = PredictParamsProcessor(model_table, MODULE_NAME)
-    class_values = param_proc.get_class_values()
-    input_validator.validate_pred_type(class_values)
-    dependent_varname = param_proc.get_dependent_varname()
-    dependent_vartype = param_proc.get_dependent_vartype()
-    model_data = param_proc.get_model_data()
-    model_arch = param_proc.get_model_arch()
-    normalizing_const = param_proc.get_normalizing_const()
-    input_shape = get_input_shape(model_arch)
-    input_validator.validate_input_shape(input_shape)
+        self.module_name = 'madlib_keras_predict'
+        self.model_table = model_table
+        if self.model_table:
+            self.model_summary_table = add_postfix(self.model_table, "_summary")
 
-    is_response = True if pred_type == 'response' else False
-    intermediate_col = unique_string()
-    if is_response:
-        pred_col_name = add_postfix("estimated_", dependent_varname)
-        pred_col_type = dependent_vartype
-    else:
-        pred_col_name = "prob"
-        pred_col_type = 'double precision'
+        BasePredict.__init__(self, schema_madlib, model_table, test_table,
+                              id_col, independent_varname,
+                              output_table, pred_type,
+                              gpus_per_host)
+        param_proc = PredictParamsProcessor(model_table, self.module_name)
+        self.dependent_vartype = param_proc.get_dependent_vartype()
+        self.model_weights = param_proc.get_model_data()
+        self.model_arch = param_proc.get_model_arch()
+        class_values = param_proc.get_class_values()
+        self.set_default_class_values(class_values)
+        self.normalizing_const = param_proc.get_normalizing_const()
+        self.dependent_varname = param_proc.get_dependent_varname()
 
-    class_values = strip_trailing_nulls_from_class_values(class_values)
+        self.validate()
+        BasePredict.call_internal_keras(self)
 
-    prediction_select_clause = create_cols_from_array_sql_string(
-        class_values, intermediate_col, pred_col_name,
-        pred_col_type, is_response, MODULE_NAME)
+    def validate(self):
+        InputValidator.validate_predict_evaluate_tables(
+            self.module_name, self.model_table, self.model_summary_table,
+            self.test_table, self.output_table, self.independent_varname)
 
-    gp_segment_id_col, seg_ids_test, \
-    images_per_seg_test = get_image_count_per_seg_for_non_minibatched_data_from_db(test_table)
-    segments_per_host = get_segments_per_host()
+        InputValidator.validate_id_in_test_tbl(
+            self.module_name, self.test_table, self.id_col)
 
-    predict_query = plpy.prepare("""
-        CREATE TABLE {output_table} AS
-        SELECT {id_col}, {prediction_select_clause}
-        FROM (
-            SELECT {test_table}.{id_col},
-                   ({schema_madlib}.internal_keras_predict
-                       ({independent_varname},
-                        $1,
-                        $2,
-                        {is_response},
-                        {normalizing_const},
-                        {gp_segment_id_col},
-                        ARRAY{seg_ids_test},
-                        ARRAY{images_per_seg_test},
-                        {gpus_per_host},
-                        {segments_per_host})
-                   ) AS {intermediate_col}
-        FROM {test_table}
-        ) q
-        """.format(**locals()), ["text", "bytea"])
-    plpy.execute(predict_query, [model_arch, model_data])
+        InputValidator.validate_class_values(
+            self.module_name, self.class_values, self.pred_type, self.model_arch)
+        input_shape = get_input_shape(self.model_arch)
+        InputValidator.validate_pred_type(
+            self.module_name, self.pred_type, self.class_values)
+        InputValidator.validate_input_shape(
+            self.test_table, self.independent_varname, input_shape, 1)
 
+@MinWarning("warning")
+class PredictBYOM(BasePredict):
+    def __init__(self, schema_madlib, model_arch_table, model_arch_id,
+                 test_table, id_col, independent_varname, output_table,
+                 pred_type, gpus_per_host, class_values, normalizing_const,
+                 **kwargs):
+
+        self.module_name='madlib_keras_predict_byom'
+        self.model_arch_table = model_arch_table
+        self.model_arch_id = model_arch_id
+        self.class_values = class_values
+        self.normalizing_const = normalizing_const
+        self.dependent_varname = 'dependent_var'
+        BasePredict.__init__(self, schema_madlib, model_arch_table,
+                             test_table, id_col, independent_varname,
+                             output_table, pred_type, gpus_per_host)
+        if self.is_response:
+            self.dependent_vartype = 'text'
+        else:
+            self.dependent_vartype = 'double precision'
+        ## Set default values for norm const and class_values
+        # gpus_per_host and pred_type are defaulted in base_predict's init
+        self.normalizing_const = normalizing_const
+        if self.normalizing_const is None:
+            self.normalizing_const = DEFAULT_NORMALIZING_CONST
+        InputValidator.validate_predict_byom_tables(
+            self.module_name, self.model_arch_table, self.model_arch_id,
+            self.test_table, self.id_col, self.output_table,
+            self.independent_varname)
+        self.validate_and_set_defaults()
+        BasePredict.call_internal_keras(self)
+
+    def validate_and_set_defaults(self):
+        # Set some defaults first and then validate and then set some more defaults
+        self.model_arch, self.model_weights = get_model_arch_weights(
+            quote_ident(self.model_arch_table), self.model_arch_id)
+        # Assert model_weights and model_arch are not empty.
+        _assert(self.model_weights and self.model_arch,
+                "{0}: Model weights and architecture should not be NULL.".format(
+                    self.module_name))
+        self.set_default_class_values(self.class_values)
+
+        InputValidator.validate_pred_type(
+            self.module_name, self.pred_type, self.class_values)
+        InputValidator.validate_normalizing_const(
+            self.module_name, self.normalizing_const)
+        InputValidator.validate_class_values(
+            self.module_name, self.class_values, self.pred_type, self.model_arch)
+        InputValidator.validate_input_shape(
+            self.test_table, self.independent_varname,
+            get_input_shape(self.model_arch), 1)
 
 def internal_keras_predict(independent_var, model_architecture, model_data,
                            is_response, normalizing_const, current_seg_id, seg_ids,
@@ -216,9 +323,86 @@ estimated_COL_NAME: (For pred_type='response') The estimated class for
 prob_CLASS:         (For pred_type='prob' for classification) The
                     probability of a given class. There will be one
                     column for each class in the training data.
+                    TODO change this
 """
     else:
         help_string = "No such option. Use {schema_madlib}.madlib_keras_predict()"
+
+    return help_string.format(schema_madlib=schema_madlib)
+
+def predict_byom_help(schema_madlib, message, **kwargs):
+    """
+    Help function for keras predict
+
+    Args:
+        @param schema_madlib
+        @param message: string, Help message string
+        @param kwargs
+
+    Returns:
+        String. Help/usage information
+    """
+    if not message:
+        help_string = """
+-----------------------------------------------------------------------
+                            SUMMARY
+-----------------------------------------------------------------------
+This function allows the user to predict with their own pre trained model (note
+that this model doesn't have to be trained using MADlib.)
+
+For more details on function usage:
+    SELECT {schema_madlib}.madlib_keras_predict_byom('usage')
+            """
+    elif message in ['usage', 'help', '?']:
+        help_string = """
+-----------------------------------------------------------------------
+                            USAGE
+-----------------------------------------------------------------------
+ SELECT {schema_madlib}.madlib_keras_predict_byom(
+    model_arch_table, -- Name of the table containing the model architecture
+                            and the pre trained model weights
+    model_arch_id,    -- This is the id in 'model_arch_table' containing the
+                         model architecture
+    test_table,     --  Name of the table containing the evaluation dataset
+    id_col,         --  Name of the id column in the test data table
+    independent_varname,    --  Name of the column with independent
+                                variables in the test table
+    output_table,   --  Name of the output table
+    pred_type,      --  The type of the desired output
+    gpus_per_host,   --  Number of GPUs per segment host to
+                        be used for training
+    class_values,     -- List of class labels that were used while training the 
+                         model. If class_values is passed in as NULL, the output
+                         table will have a column named 'prob' which is an array
+                         of probabilities of all the classes.
+                         Otherwise if class_values is not NULL, then the output
+                         table will contain a column for each class/label from
+                         the training data
+    normalizing_const -- Normalizing constant used for standardizing arrays in 
+                         independent_varname
+    )
+ );
+
+-----------------------------------------------------------------------
+                            OUTPUT
+-----------------------------------------------------------------------
+The output table ('output_table' above) contains the following columns:
+
+id:                 Gives the 'id' for each prediction, corresponding
+                    to each row from the test_table.
+estimated_dependent_var: (For pred_type='response') The estimated class for
+                    classification. If class_values is passed in as NULL, then we
+                    assume that the class labels are [0,1,2...,n] where n in the
+                    num of classes in the model architecture.
+prob_CLASS:         (For pred_type='prob' for classification) The
+                    probability of a given class.
+                    If class_values is passed in as NULL, we create just one column
+                    called 'prob' which is an array of probabilites of all the classes
+                    Otherwise if class_values is not NULL, then there will be one
+                    column for each class in the training data.
+"""
+    else:
+        help_string = "No such option. Use {schema_madlib}.madlib_keras_predict_byom()"
 
     return help_string.format(schema_madlib=schema_madlib)
 # ---------------------------------------------------------------------

@@ -22,6 +22,7 @@ m4_changequote(`<!', `!>')
 import sys
 import json
 import plpy
+from keras_model_arch_table import ModelArchSchema
 
 def _get_layers(model_arch):
     d = json.loads(model_arch)
@@ -41,6 +42,22 @@ def get_input_shape(model_arch):
     plpy.error('Unable to get input shape from model architecture.')
 
 def get_num_classes(model_arch):
+    """
+     We assume that the last dense layer in the model architecture contains the num_classes (units)
+     An example can be:
+     ```
+     ...
+     model.add(Flatten())
+     model.add(Dense(512))
+     model.add(Activation('relu'))
+     model.add(Dropout(0.5))
+     model.add(Dense(num_classes))
+     model.add(Activation('softmax'))
+     ```
+     where activation can be after the dense layer.
+    :param model_arch:
+    :return:
+    """
     arch_layers = _get_layers(model_arch)
     i = len(arch_layers) - 1
     while i >= 0:
@@ -66,3 +83,22 @@ def get_model_arch_layers_str(model_arch):
         else:
             layers += "{1}\n".format(class_name)
     return layers
+
+def get_model_arch_weights(model_arch_table, model_arch_id):
+
+    #assume validation is already called
+    model_arch_query = "SELECT {0}, {1} FROM {2} WHERE {3} = {4}".format(
+        ModelArchSchema.MODEL_ARCH, ModelArchSchema.MODEL_WEIGHTS,
+        model_arch_table, ModelArchSchema.MODEL_ID,
+        model_arch_id)
+    model_arch_result = plpy.execute(model_arch_query)
+    if not model_arch_result:
+        plpy.error("no model arch found in table {0} with id {1}".format(
+            model_arch_table, model_arch_id))
+
+    model_arch_result = model_arch_result[0]
+
+    model_arch = model_arch_result[ModelArchSchema.MODEL_ARCH]
+    model_weights = model_arch_result[ModelArchSchema.MODEL_WEIGHTS]
+
+    return model_arch, model_weights

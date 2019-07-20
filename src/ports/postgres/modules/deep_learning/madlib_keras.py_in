@@ -29,25 +29,19 @@ import time
 import keras
 
 from keras import backend as K
-from keras import utils as keras_utils
 from keras.layers import *
 from keras.models import *
 from keras.optimizers import *
 from keras.regularizers import *
-import madlib_keras_serializer
 from madlib_keras_helper import *
 from madlib_keras_validator import *
 from madlib_keras_wrapper import *
-from keras_model_arch_table import ModelArchSchema
+from model_arch_info import *
 
-from utilities.control import MinWarning
-from utilities.model_arch_info import get_input_shape
-from utilities.model_arch_info import get_num_classes
 from utilities.utilities import _assert
 from utilities.utilities import is_platform_pg
 from utilities.utilities import get_segments_per_host
 from utilities.utilities import madlib_version
-from utilities.validate_args import get_col_value_and_type
 from utilities.validate_args import get_expr_type
 from utilities.validate_args import quote_ident
 from utilities.control import MinWarning
@@ -68,7 +62,7 @@ def fit(schema_madlib, source_table, model, model_arch_table,
 
     fit_validator = FitInputValidator(
         source_table, validation_table, model, model_arch_table,
-        mb_dep_var_col, mb_indep_var_col,
+        model_arch_id, mb_dep_var_col, mb_indep_var_col,
         num_iterations, metrics_compute_frequency, warm_start)
     if metrics_compute_frequency is None:
         metrics_compute_frequency = num_iterations
@@ -88,23 +82,13 @@ def fit(schema_madlib, source_table, model, model_arch_table,
 
     # Get the serialized master model
     start_deserialization = time.time()
-    model_arch_query = "SELECT {0}, {1} FROM {2} WHERE {3} = {4}".format(
-        ModelArchSchema.MODEL_ARCH, ModelArchSchema.MODEL_WEIGHTS,
-        model_arch_table, ModelArchSchema.MODEL_ID,
-        model_arch_id)
-    model_arch_result = plpy.execute(model_arch_query)
-    if not  model_arch_result:
-        plpy.error("no model arch found in table {0} with id {1}".format(
-            model_arch_table, model_arch_id))
-    model_arch_result = model_arch_result[0]
-    model_arch = model_arch_result[ModelArchSchema.MODEL_ARCH]
-    input_shape = get_input_shape(model_arch)
+    model_arch, model_weights = get_model_arch_weights(model_arch_table, model_arch_id)
     num_classes = get_num_classes(model_arch)
+    input_shape = get_input_shape(model_arch)
     fit_validator.validate_input_shapes(input_shape)
-
     gp_segment_id_col = '0' if is_platform_pg() else 'gp_segment_id'
 
-    serialized_weights = get_initial_weights(model, model_arch_result,
+    serialized_weights = get_initial_weights(model, model_arch, model_weights,
                                              warm_start, gpus_per_host)
     # Compute total images on each segment
     seg_ids_train, images_per_seg_train = get_image_count_per_seg_for_minibatched_data_from_db(source_table)
@@ -289,7 +273,7 @@ def fit(schema_madlib, source_table, model, model_arch_table,
     #TODO add a unit test for this in a future PR
     reset_cuda_env(original_cuda_env)
 
-def get_initial_weights(model_table, model_arch_result, warm_start, gpus_per_host):
+def get_initial_weights(model_table, model_arch, serialized_weights, warm_start, gpus_per_host):
     """
         If warm_start is True, return back initial weights from model table.
         If warm_start is False, first try to get the weights from model_arch
@@ -317,10 +301,8 @@ def get_initial_weights(model_table, model_arch_result, warm_start, gpus_per_hos
             SELECT model_data FROM {0}
         """.format(model_table))[0]['model_data']
     else:
-        serialized_weights = model_arch_result[ModelArchSchema.MODEL_WEIGHTS]
         if not serialized_weights:
-            model = model_from_json(
-                model_arch_result[ModelArchSchema.MODEL_ARCH])
+            model = model_from_json(model_arch)
             serialized_weights = madlib_keras_serializer.serialize_nd_weights(
                 model.get_weights())
     return serialized_weights
@@ -518,10 +500,12 @@ def get_segments_and_gpus(gpus_per_host):
 
 def evaluate(schema_madlib, model_table, test_table, output_table, gpus_per_host, **kwargs):
     module_name = 'madlib_keras_evaluate'
-    input_validator = EvaluateInputValidator(test_table, model_table, output_table, module_name)
-
-    model_summary_table = input_validator.model_summary_table
-    test_summary_table = input_validator.test_summary_table
+    if test_table:
+        test_summary_table = add_postfix(test_table, "_summary")
+    model_summary_table = None
+    if model_table:
+        model_summary_table = add_postfix(model_table, "_summary")
+    validate_evaluate(module_name, model_table, model_summary_table, test_table, test_summary_table, output_table)
 
     segments_per_host, gpus_per_host = get_segments_and_gpus(gpus_per_host)
 
@@ -531,7 +515,8 @@ def evaluate(schema_madlib, model_table, test_table, output_table, gpus_per_host
     model_arch = res['model_arch']
 
     input_shape = get_input_shape(model_arch)
-    input_validator.validate_input_shape(input_shape)
+    InputValidator.validate_input_shape(
+        test_table, MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL, input_shape, 2)
 
     compile_params_query = "SELECT compile_params, metrics_type FROM {0}".format(model_summary_table)
     res = plpy.execute(compile_params_query)[0]
@@ -540,10 +525,11 @@ def evaluate(schema_madlib, model_table, test_table, output_table, gpus_per_host
 
     seg_ids, images_per_seg = get_image_count_per_seg_for_minibatched_data_from_db(test_table)
 
-    loss, metric =\
-        get_loss_metric_from_keras_eval(schema_madlib, test_table, compile_params, model_arch,
-                                        model_data, gpus_per_host, segments_per_host,
-                                        seg_ids, images_per_seg)
+    loss, metric = \
+        get_loss_metric_from_keras_eval(
+            schema_madlib, test_table, compile_params, model_arch,
+            model_data, gpus_per_host, segments_per_host,
+            seg_ids, images_per_seg)
 
     if not metrics_type:
         metrics_type = None
@@ -554,6 +540,23 @@ def evaluate(schema_madlib, model_table, test_table, output_table, gpus_per_host
             CREATE TABLE {0} AS
             SELECT $1 as loss, $2 as metric, $3 as metrics_type""".format(output_table), ["FLOAT", "FLOAT", "TEXT[]"])
         plpy.execute(create_output_table, [loss, metric, metrics_type])
+
+def validate_evaluate(module_name, model_table, model_summary_table, test_table, test_summary_table, output_table):
+    def _validate_test_summary_tbl():
+        input_tbl_valid(test_summary_table, module_name,
+                error_suffix_str="Please ensure that the test table ({0}) "
+                                 "has been preprocessed by "
+                                 "the image preprocessor.".format(test_table))
+        cols_in_tbl_valid(test_summary_table, [CLASS_VALUES_COLNAME,
+            NORMALIZING_CONST_COLNAME, DEPENDENT_VARTYPE_COLNAME,
+            DEPENDENT_VARNAME_COLNAME, INDEPENDENT_VARNAME_COLNAME], module_name)
+
+    InputValidator.validate_predict_evaluate_tables(
+        module_name, model_table, model_summary_table,
+        test_table, output_table, MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL)
+    _validate_test_summary_tbl()
+    validate_dependent_var_for_minibatch(test_table,
+                                         MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL)
 
 def get_loss_metric_from_keras_eval(schema_madlib, table, compile_params,
                                     model_arch, serialized_weights, gpus_per_host,
