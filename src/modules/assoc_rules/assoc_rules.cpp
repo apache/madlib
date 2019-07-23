@@ -134,6 +134,10 @@ gen_rules_from_cfp::SRF_next(void *user_fctx, bool *is_last_call) {
                 countLHS ++;
             }
         }
+
+        // If this rule is not viable (one side is larger than the limit)
+        // Reduce the num_calls to indicate that it is processed and
+        // return Null to skip the operation
         if (countLHS > myfctx->max_LHS_size || countRHS > myfctx->max_RHS_size){
             --myfctx->num_calls;
             return Null();
