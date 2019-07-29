@@ -1,0 +1,116 @@
+/* ---------------------------------------------------------------------*//**
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ *
+ *//* ---------------------------------------------------------------------*/
+
+\i m4_regexp(MODULE_PATHNAME,
+             `\(.*\)libmadlib\.so',
+             `\1../../modules/deep_learning/test/madlib_keras_iris.setup.sql_in'
+)
+
+DROP TABLE IF EXISTS iris_model, iris_model_summary;
+SELECT madlib_keras_fit('iris_data_packed',   -- source table
+                        'iris_model',          -- model output table
+                        'iris_model_arch',  -- model arch table
+                         1,                    -- model arch id
+                         $$ loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'] $$,  -- compile_params
+                         $$ batch_size=5, epochs=3 $$,  -- fit_params
+                         5,                    -- num_iterations
+                         NULL, NULL,
+                         1 -- metrics_compute_frequency
+                        );
+
+-- Test that our code is indeed learning something and not broken. The loss
+-- from the first iteration should be less than the 5th, while the accuracy
+-- must be greater.
+SELECT assert(
+  array_upper(training_loss, 1) = 5 AND
+  array_upper(training_metrics, 1) = 5,
+  'metrics compute frequency must be 1.')
+FROM iris_model_summary;
+
+SELECT assert(
+  training_loss[5]-training_loss[1] < 0 AND
+  training_metrics[5]-training_metrics[1] > 0,
+    'The loss and accuracy should have improved with more iterations.'
+)
+FROM iris_model_summary;
+
+-- Make a copy of the loss and metrics array, to compare it with runs after
+-- warm start and transfer learning.
+DROP TABLE IF EXISTS iris_model_first_run;
+CREATE TABLE iris_model_first_run AS
+SELECT training_loss_final, training_metrics_final
+FROM iris_model_summary;
+
+-- Copy weights that were learnt from the previous run, for transfer
+-- learning. Copy it now, because using warm_start will overwrite it.
+UPDATE iris_model_arch set model_weights = (select model_data from iris_model)  WHERE model_id = 2;
+
+-- Warm start test
+SELECT madlib_keras_fit('iris_data_packed',   -- source table
+                       'iris_model',          -- model output table
+                       'iris_model_arch',  -- model arch table
+                        2,                    -- model arch id
+                        $$ loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'] $$,  -- compile_params
+                        $$ batch_size=5, epochs=3 $$,  -- fit_params
+                        2,                    -- num_iterations,
+                        NULL, NULL, 1,
+                        true -- warm start
+                      );
+
+SELECT assert(
+  array_upper(training_loss, 1) = 2 AND
+  array_upper(training_metrics, 1) = 2,
+  'metrics compute frequency must be 1.')
+FROM iris_model_summary;
+
+SELECT assert(
+  abs(first.training_loss_final-second.training_loss[1]) < 1e-6 AND
+  abs(first.training_loss_final-second.training_loss[2]) < 1e-6 AND
+  abs(first.training_metrics_final-second.training_metrics[1]) < 1e-10 AND
+  abs(first.training_metrics_final-second.training_metrics[2]) < 1e-10,
+  'warm start test failed because training loss and metrics don''t match the expected value from the previous run of keras fit.')
+FROM iris_model_first_run AS first, iris_model_summary AS second;
+
+-- Transfer learning test
+DROP TABLE IF EXISTS iris_model_transfer, iris_model_transfer_summary;
+SELECT madlib_keras_fit('iris_data_packed',   -- source table
+                       'iris_model_transfer',          -- model output table
+                       'iris_model_arch',  -- model arch table
+                        2,                    -- model arch id
+                        $$ loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'] $$,  -- compile_params
+                        $$ batch_size=5, epochs=3 $$,  -- fit_params
+                        2,
+                        NULL, NULL, 1
+                      );
+
+SELECT assert(
+  array_upper(training_loss, 1) = 2 AND
+  array_upper(training_metrics, 1) = 2,
+  'metrics compute frequency must be 1.')
+FROM iris_model_transfer_summary;
+
+SELECT assert(
+  abs(first.training_loss_final-second.training_loss[1]) < 1e-6 AND
+  abs(first.training_loss_final-second.training_loss[2]) < 1e-6 AND
+  abs(first.training_metrics_final-second.training_metrics[1]) < 1e-10 AND
+  abs(first.training_metrics_final-second.training_metrics[2]) < 1e-10,
+  'Transfer learning test failed because training loss and metrics don''t match the expected value.')
+FROM iris_model_first_run AS first, iris_model_transfer_summary AS second;

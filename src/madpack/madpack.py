@@ -674,6 +674,7 @@ def _process_py_sql_files_in_modules(modset, args_dict):
 
         # Loop through all SQL files for this module
         source_files = glob.glob(mask)
+        source_files = [s for s in source_files if '.setup' not in s]
         if calling_operation == INSTALL_DEV_CHECK and madpack_cmd != 'install-check':
             source_files = [s for s in source_files if '.ic' not in s]
 
