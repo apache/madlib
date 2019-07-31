@@ -51,7 +51,7 @@ from utilities.validate_args import is_col_array
 from utilities.validate_args import is_var_valid
 from utilities.validate_args import quote_ident
 
-WEIGHT_FOR_ZERO_DIST = 1e6
+WEIGHT_FOR_ZERO_DIST = 1e107
 BRUTE_FORCE = 'brute_force'
 KD_TREE = 'kd_tree'
 
@@ -121,11 +121,6 @@ def knn_validate_src(schema_madlib, point_source, point_column_name, point_id,
 
     if fn_dist:
         fn_dist = fn_dist.lower().strip()
-        dist_functions = set(["{0}.{1}".format(schema_madlib, dist) for dist in
-                              ('dist_norm1', 'dist_norm2',
-                               'squared_dist_norm2', 'dist_angle',
-                               'dist_tanimoto')])
-
         profunc = ("proisagg = TRUE"
                    if is_pg_major_version_less_than(schema_madlib, 11)
                    else "prokind = 'a'")
@@ -136,9 +131,12 @@ def knn_validate_src(schema_madlib, point_source, point_column_name, point_id,
             WHERE oid='{fn_dist}(DOUBLE PRECISION[], DOUBLE PRECISION[])'::regprocedure;
             """.format(fn_dist=fn_dist, profunc=profunc))[0]['output']
 
-        if is_invalid_func or (fn_dist not in dist_functions):
-            plpy.error("KNN error: Distance function ({0}) has invalid signature "
-                       "or is not a simple function.".format(fn_dist))
+        if is_invalid_func:
+            plpy.error("KNN error: Distance function ({0}). Either the distance"\
+                " function does not exist or the signature is wrong or it is"\
+                " not a PostgreSQL type UDF. Also note that to use a MADlib"\
+                " built-in distance function you must prepend with 'madlib',"\
+                " schema name e.g., 'madlib.dist_norm2'".format(fn_dist))
     if not is_brute_force:
         if depth <= 0:
             plpy.error("kNN Error: depth={0} is an invalid value, must be "
@@ -313,7 +311,7 @@ def knn_kd_tree(schema_madlib, kd_out, test_source, test_column_name, test_id,
 def _create_interim_tbl(schema_madlib, point_source, point_column_name, point_id,
     label_name, test_source, test_column_name, test_id, interim_table, k,
     fn_dist, test_id_temp, train_id, dist_inverse, comma_label_out_alias,
-    label_out, r_id, kd_out, train, t_col_name, **kwargs):
+    label_out, r_id, kd_out, train, t_col_name, dist, **kwargs):
     """
         KNN function to create the interim table
         Args:
@@ -357,6 +355,7 @@ def _create_interim_tbl(schema_madlib, point_source, point_column_name, point_id
             @param kd_out
             @param train
             @param t_col_name
+            @param dist
     """
     with MinWarning("error"):
         # If r_id is None, we are using the brute force algorithm.
@@ -368,7 +367,6 @@ def _create_interim_tbl(schema_madlib, point_source, point_column_name, point_id
         y_temp_table = unique_string(desp='y_temp_table')
         test = unique_string(desp='test')
         r = unique_string(desp='r')
-        dist = unique_string(desp='dist')
 
         if not is_brute_force:
             point_source = kd_out
@@ -389,6 +387,7 @@ def _create_interim_tbl(schema_madlib, point_source, point_column_name, point_id
                                 (PARTITION BY {test_id_temp} ORDER BY {dist}) AS {r},
                            {test_id_temp},
                            {train_id},
+                           {dist},
                            CASE WHEN {dist} = 0.0 THEN {weight_for_zero_dist}
                                 ELSE 1.0 / {dist}
                            END AS {dist_inverse}
@@ -523,6 +522,7 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
         dist_inverse = unique_string(desp='dist_inverse')
         dim = unique_string(desp='dim')
         t_col_name = unique_string(desp='t_col_name')
+        dist = unique_string(desp='dist')
 
         if not fn_dist:
             fn_dist = '{0}.squared_dist_norm2'.format(schema_madlib)
@@ -611,7 +611,9 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
 
         if output_neighbors:
             knn_neighbors = (", array_agg(knn_temp.{train_id} ORDER BY "
-                             "knn_temp.{dist_inverse} DESC) AS k_nearest_neighbours ").format(**locals())
+                             "knn_temp.{dist_inverse} DESC) AS k_nearest_neighbours "
+                             ", array_agg(knn_temp.{dist} ORDER BY "
+                             "knn_temp.{dist_inverse} DESC) AS distance").format(**locals())
         else:
             knn_neighbors = ''
 
@@ -635,7 +637,8 @@ def knn(schema_madlib, point_source, point_column_name, point_id,
                             point_id, label_name, test_data, test_column_name,
                             test_id, interim_table, k, fn_dist, test_id_temp,
                             train_id, dist_inverse, comma_label_out_alias,
-                            label_out, r_id, kd_output_table, train, t_col_name)
+                            label_out, r_id, kd_output_table, train, t_col_name,
+                            dist)
         output_sql = """
             CREATE TABLE {output_table} AS
                 {view_def}
@@ -711,6 +714,7 @@ id                  The ids of test data points.
 test_column_name    The test data points.
 prediction          The output of KNN- label in case of classification, average value in case of regression.
 k_nearest_neighbours The list of k-nearest neighbors that were used in the voting/averaging.
+distance The list of nearest distances, sorted closest to furthest from the corresponding test point.
 """
     else:
         help_string = """
