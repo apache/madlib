@@ -60,6 +60,9 @@ of task. For classification, the output is the majority vote of the classes of
 the \f$k\f$ nearest data points. For regression, the output is the average of the
 values of \f$k\f$ nearest neighbors of the given test point.
 
+For unsupervised nearest neighbors, set the training set to match the test set so the
+nearest neighbor of each point is the point itself, with zero distance.
+
 Both exact and approximate methods are supported. The approximate methods can be
 used in the case that run-time is too long using the exact method.
 
@@ -131,8 +134,8 @@ otherwise the result may depend on ordering of the input data.</dd>
 
 <dt>output_neighbors (optional) </dt>
 <dd>BOOLEAN default: TRUE. Outputs the list of k-nearest
-neighbors that were used in the voting/averaging, sorted
-from closest to furthest.</dd>
+neighbors (and their respective distances to the target point) that were used
+in the voting/averaging, sorted from closest to furthest.</dd>
 
 <dt>fn_dist (optional)</dt>
 <dd>TEXT, default: 'squared_dist_norm2'. The name of the function
@@ -145,7 +148,11 @@ The following distance functions can be used:
 <li><b>\ref squared_dist_norm2</b>: squared Euclidean distance</li>
 <li><b>\ref dist_angle</b>: angle</li>
 <li><b>\ref dist_tanimoto</b>: tanimoto</li>
-<li><b>user defined function</b> with signature <tt>DOUBLE PRECISION[] x, DOUBLE PRECISION[] y -> DOUBLE PRECISION</tt></li></ul></dd>
+<li><b>user defined function</b> with signature <tt>DOUBLE PRECISION[] x, DOUBLE PRECISION[] y -> DOUBLE PRECISION.</tt>
+Must return a value greater than or equal to zero.</li></ul></dd>
+@note
+Always qualify the distance function with the schema name.  For example, if you install MADlib in a
+schema called 'madlib' then the 'fn_dist' parameter would be 'madlib.dist_norm2', etc.
 
 <dt>weighted_avg (optional)</dt>
 <dd>BOOLEAN, default: FALSE. Calculates classification or
@@ -205,9 +212,14 @@ The output of the KNN module is a table with the following columns:
         <th>prediction</th>
         <td>INTEGER. Label in case of classification, average value in case of regression.</td>
     </tr>
-        <tr>
+    <tr>
         <th>k_nearest_neighbours</th>
         <td>INTEGER[]. List of nearest neighbors, sorted closest to furthest
+        from the corresponding test point.</td>
+    </tr>
+    <tr>
+        <th>distance</th>
+        <td>DOUBLE PRECISION[]. List of distance to nearest neighbors, sorted closest to furthest
         from the corresponding test point.</td>
     </tr>
 </table>
@@ -272,7 +284,8 @@ INSERT INTO knn_test_data VALUES
 (6, '{50,45}');
 </pre>
 
--#  Run KNN for classification:
+-#  Run KNN for classification.  Prepend the distance function parameter with the schema
+where MADlib is installed (in this example 'madlib.squared_dist_norm2'):
 <pre class="example">
 DROP TABLE IF EXISTS knn_result_classification;
 SELECT * FROM madlib.knn(
@@ -286,20 +299,20 @@ SELECT * FROM madlib.knn(
                 'knn_result_classification',  -- Output table
                  3,                    -- Number of nearest neighbors
                  True,                 -- True to list nearest-neighbors by id
-                 'madlib.squared_dist_norm2' -- Distance function
+                'madlib.squared_dist_norm2' -- Distance function
                 );
 SELECT * from knn_result_classification ORDER BY id;
 </pre>
 Result:
 <pre class="result">
-  id |  data   | prediction | k_nearest_neighbours
-----+---------+------------+----------------------
-  1 | {2,1}   |          1 | {2,1,3}
-  2 | {2,6}   |          1 | {5,4,3}
-  3 | {15,40} |          0 | {7,6,5}
-  4 | {12,1}  |          1 | {4,5,3}
-  5 | {2,90}  |          0 | {9,6,7}
-  6 | {50,45} |          0 | {6,7,8}
+ id |  data   | prediction | k_nearest_neighbours | distance
+----+---------+------------+----------------------+---------------------
+  1 | {2,1}   |          1 | {1,2,3}              | {1,1,5}
+  2 | {2,6}   |          1 | {5,4,3}              | {5,8,10}
+  3 | {15,40} |          0 | {7,6,5}              | {106,125,1346}
+  4 | {12,1}  |          1 | {4,5,3}              | {73,80,85}
+  5 | {2,90}  |          0 | {9,6,7}              | {442,1924,3545}
+  6 | {50,45} |          0 | {6,7,8}              | {925,1796,1985}
 (6 rows)
 </pre>
 Note that the nearest neighbors are sorted from closest
@@ -318,21 +331,21 @@ SELECT * FROM madlib.knn(
                 'id',                  -- Col name of id in test data
                 'knn_result_regression',  -- Output table
                  3,                    -- Number of nearest neighbors
-                True,                  -- True to list nearest-neighbors by id
+                 True,                 -- True to list nearest-neighbors by id
                 'madlib.dist_norm2'    -- Distance function
                 );
 SELECT * FROM knn_result_regression ORDER BY id;
 </pre>
 Result:
 <pre class="result">
- id |  data   |    prediction     | k_nearest_neighbours
-----+---------+-------------------+----------------------
-  1 | {2,1}   |                 1 | {2,1,3}
-  2 | {2,6}   |                 1 | {5,4,3}
-  3 | {15,40} | 0.333333333333333 | {7,6,5}
-  4 | {12,1}  |                 1 | {4,5,3}
-  5 | {2,90}  |                 0 | {9,6,7}
-  6 | {50,45} |                 0 | {6,7,8}
+ id |  data   |    prediction     | k_nearest_neighbours |                 distance
+----+---------+-------------------+----------------------+------------------------------------------------------
+  1 | {2,1}   |                 1 | {1,2,3}              | {1,1,2.23606797749979}
+  2 | {2,6}   |                 1 | {5,4,3}              | {2.23606797749979,2.82842712474619,3.16227766016838}
+  3 | {15,40} | 0.333333333333333 | {7,6,5}              | {10.295630140987,11.1803398874989,36.6878726556883}
+  4 | {12,1}  |                 1 | {4,5,3}              | {8.54400374531753,8.94427190999916,9.21954445729289}
+  5 | {2,90}  |                 0 | {9,6,7}              | {21.0237960416286,43.8634243989226,59.5399025864168}
+  6 | {50,45} |                 0 | {6,7,8}              | {30.4138126514911,42.3792402008342,44.5533388198909}
 (6 rows)
 </pre>
 
@@ -344,25 +357,25 @@ SELECT * FROM madlib.knn(
                 'knn_train_data_reg',  -- Table of training data
                 'data',                -- Col name of training data
                 'id',                  -- Col Name of id in train data
-                NULL,                  -- NULL training labels means just list neighbors
+                 NULL,                 -- NULL training labels means just list neighbors
                 'knn_test_data',       -- Table of test data
                 'data',                -- Col name of test data
                 'id',                  -- Col name of id in test data
                 'knn_result_list_neighbors', -- Output table
-                3                      -- Number of nearest neighbors
+                 3                     -- Number of nearest neighbors
                 );
 SELECT * FROM knn_result_list_neighbors ORDER BY id;
 </pre>
 Result, with neighbors sorted from closest to furthest:
 <pre class="result">
- id |  data   | k_nearest_neighbours
-----+---------+----------------------
-  1 | {2,1}   | {2,1,3}
-  2 | {2,6}   | {5,4,3}
-  3 | {15,40} | {7,6,5}
-  4 | {12,1}  | {4,5,3}
-  5 | {2,90}  | {9,6,7}
-  6 | {50,45} | {6,7,8}
+ id |  data   | k_nearest_neighbours | distance
+----+---------+----------------------+---------------------
+  1 | {2,1}   | {1,2,3}              | {1,1,5}
+  2 | {2,6}   | {5,4,3}              | {5,8,10}
+  3 | {15,40} | {7,6,5}              | {106,125,1346}
+  4 | {12,1}  | {4,5,3}              | {73,80,85}
+  5 | {2,90}  | {9,6,7}              | {442,1924,3545}
+  6 | {50,45} | {6,7,8}              | {925,1796,1985}
 (6 rows)
 </pre>
 
@@ -382,20 +395,20 @@ SELECT * FROM madlib.knn(
                 'knn_result_classification',  -- Output table
                  3,                    -- Number of nearest neighbors
                  True,                 -- True to list nearest-neighbors by id
-                 'madlib.squared_dist_norm2', -- Distance function
+                'madlib.squared_dist_norm2', -- Distance function
                  True                 -- For weighted average
                 );
 SELECT * FROM knn_result_classification ORDER BY id;
 </pre>
 <pre class="result">
- id |  data   |     prediction      | k_nearest_neighbours
-----+---------+---------------------+----------------------
-  1 | {2,1}   |                 1   | {2,1,3}
-  2 | {2,6}   |                 1   | {5,4,3}
-  3 | {15,40} |                 0   | {7,6,5}
-  4 | {12,1}  |                 1   | {4,5,3}
-  5 | {2,90}  |                 0   | {9,6,7}
-  6 | {50,45} |                 0   | {6,7,8}
+ id |  data   | prediction | k_nearest_neighbours | distance
+----+---------+------------+----------------------+---------------------
+  1 | {2,1}   |          1 | {1,2,3}              | {1,1,5}
+  2 | {2,6}   |          1 | {5,4,3}              | {5,8,10}
+  3 | {15,40} |          0 | {7,6,5}              | {106,125,1346}
+  4 | {12,1}  |          1 | {4,5,3}              | {73,80,85}
+  5 | {2,90}  |          0 | {9,6,7}              | {442,1924,3545}
+  6 | {50,45} |          0 | {6,7,8}              | {925,1796,1985}
 (6 rows)
 </pre>
 
@@ -407,29 +420,29 @@ SELECT madlib.knn(
                 'knn_train_data',        -- Table of training data
                 'data',                  -- Col name of training data
                 'id',                    -- Col name of id in train data
-                NULL,                    -- Training labels
+                 NULL,                   -- Training labels
                 'knn_test_data',         -- Table of test data
                 'data',                  -- Col name of test data
                 'id',                    -- Col name of id in test data
                 'knn_result_classification_kd',  -- Output table
                  3,                      -- Number of nearest neighbors
                  True,                   -- True to list nearest-neighbors by id
-                 'madlib.squared_dist_norm2', -- Distance function
+                'madlib.squared_dist_norm2', -- Distance function
                  False,                  -- For weighted average
-                 'kd_tree',              -- Use kd-tree
-                 'depth=4, leaf_nodes=8' -- Kd-tree options
+                'kd_tree',               -- Use kd-tree
+                'depth=4, leaf_nodes=8'  -- Kd-tree options
                  );
 SELECT * FROM knn_result_classification_kd ORDER BY id;
 </pre>
 <pre class="result">
- id |  data   | k_nearest_neighbours
-----+---------+----------------------
-  1 | {2,1}   | {1,2,3}
-  2 | {2,6}   | {5,4,3}
-  3 | {15,40} | {7,6,5}
-  4 | {12,1}  | {4,5,3}
-  5 | {2,90}  | {9,6,7}
-  6 | {50,45} | {6,7,8}
+ id |  data   | k_nearest_neighbours | distance
+----+---------+----------------------+---------------------
+  1 | {2,1}   | {1,2,3}              | {1,1,5}
+  2 | {2,6}   | {5,4,3}              | {5,8,10}
+  3 | {15,40} | {7,6,5}              | {106,125,1346}
+  4 | {12,1}  | {4,5,3}              | {73,80,85}
+  5 | {2,90}  | {9,6,7}              | {442,1924,3545}
+  6 | {50,45} | {6,7,8}              | {925,1796,1985}
 (6 rows)
 </pre>
 The result above is the same as brute force. If we search just 1 leaf node,
@@ -441,29 +454,106 @@ SELECT madlib.knn(
                 'knn_train_data',        -- Table of training data
                 'data',                  -- Col name of training data
                 'id',                    -- Col name of id in train data
-                NULL,                    -- Training labels
+                 NULL,                   -- Training labels
                 'knn_test_data',         -- Table of test data
                 'data',                  -- Col name of test data
                 'id',                    -- Col name of id in test data
                 'knn_result_classification_kd',  -- Output table
                  3,                      -- Number of nearest neighbors
                  True,                   -- True to list nearest-neighbors by id
-                 'madlib.squared_dist_norm2', -- Distance function
+                'madlib.squared_dist_norm2', -- Distance function
                  False,                  -- For weighted average
-                 'kd_tree',              -- Use kd-tree
-                 'depth=4, leaf_nodes=1' -- Kd-tree options
+                'kd_tree',               -- Use kd-tree
+                'depth=4, leaf_nodes=1'  -- Kd-tree options
                  );
 SELECT * FROM knn_result_classification_kd ORDER BY id;
 </pre>
 <pre class="result">
- id |  data   | k_nearest_neighbours
-----+---------+----------------------
-  1 | {2,1}   | {1}
-  2 | {2,6}   | {3,2}
-  3 | {15,40} | {7}
-  5 | {2,90}  | {3,2}
-  6 | {50,45} | {6,8}
+ id |  data   | k_nearest_neighbours | distance
+----+---------+----------------------+---------------------
+  1 | {2,1}   | {1}                  | {1}
+  2 | {2,6}   | {3,2}                | {10,16}
+  3 | {15,40} | {7}                  | {106}
+  5 | {2,90}  | {3,2}                | {7570,7744}
+  6 | {50,45} | {6,8}                | {925,1985}
 (5 rows)
+</pre>
+
+-#  Unsupervised nearest neighbors.  Here the training set matches the
+test set so the nearest neighbor of each point is the point itself, with a zero distance:
+<pre class="example">
+DROP TABLE IF EXISTS knn_result_classification_unsup;
+SELECT * FROM madlib.knn(
+                'knn_train_data',      -- Table of training data
+                'data',                -- Col name of training data
+                'id',                  -- Col name of id in train data
+                 NULL,                 -- NULL training labels means just list neighbors
+                'knn_train_data',      -- Table of test data (same as training data)
+                'data',                -- Col name of test data
+                'id',                  -- Col name of id in test data
+                'knn_result_classification_unsup',  -- Output table
+                 3,                    -- Number of nearest neighbors
+                 True,                 -- True to list nearest-neighbors by id
+                'madlib.squared_dist_norm2' -- Distance function
+                );
+SELECT * from knn_result_classification_unsup ORDER BY id;
+</pre>
+Result, with point and neighbors sorted from closest to furthest:
+<pre class="result">
+ id |  data   | k_nearest_neighbours |   distance
+----+---------+----------------------+---------------
+  1 | {1,1}   | {1,2,3}              | {0,2,8}
+  2 | {2,2}   | {2,3,1}              | {0,2,2}
+  3 | {3,3}   | {3,2,4}              | {0,2,2}
+  4 | {4,4}   | {4,5,3}              | {0,1,2}
+  5 | {4,5}   | {5,4,3}              | {0,1,5}
+  6 | {20,50} | {6,7,5}              | {0,461,2281}
+  7 | {10,31} | {7,6,5}              | {0,461,712}
+  8 | {81,13} | {8,6,7}              | {0,5090,5365}
+  9 | {1,111} | {9,6,7}              | {0,4082,6481}
+(9 rows)
+</pre>
+
+-#  User defined distance function.  There are several built-in distance
+functions, but you can create your own using a UDF if desired.
+For example, to create a Chebyshev distance function [6], first create the function:
+<pre class="example">
+CREATE OR REPLACE FUNCTION chebychev_distance (x double precision[], y double precision[])
+  RETURNS double precision
+AS $$
+    from scipy.spatial import distance
+    return distance.chebyshev(x, y)
+$$ LANGUAGE plpythonu;
+</pre>
+Then pass the function as an argument:
+<pre class="example">
+DROP TABLE IF EXISTS knn_result_classification_udf;
+SELECT * FROM madlib.knn(
+                'knn_train_data',      -- Table of training data
+                'data',                -- Col name of training data
+                'id',                  -- Col name of id in train data
+                'label',               -- Training labels
+                'knn_test_data',       -- Table of test data
+                'data',                -- Col name of test data
+                'id',                  -- Col name of id in test data
+                'knn_result_classification_udf',  -- Output table
+                 3,                    -- Number of nearest neighbors
+                 True,                 -- True to list nearest-neighbors by id
+                'chebychev_distance'   -- Distance function
+                );
+SELECT * from knn_result_classification_udf ORDER BY id;
+</pre>
+Result, with point and neighbors sorted from closest to furthest:
+<pre class="result">
+ id |  data   | prediction | k_nearest_neighbours |  distance
+----+---------+------------+----------------------+------------
+  1 | {2,1}   |          1 | {1,2,3}              | {1,1,2}
+  2 | {2,6}   |          1 | {5,4,3}              | {2,2,3}
+  3 | {15,40} |          0 | {7,6,5}              | {9,10,35}
+  4 | {12,1}  |          1 | {5,4,3}              | {8,8,9}
+  5 | {2,90}  |          0 | {9,6,7}              | {21,40,59}
+  6 | {50,45} |          0 | {6,8,7}              | {30,32,40}
+(6 rows)
 </pre>
 
 @anchor background
@@ -528,12 +618,14 @@ irregularly-spaced data". Proceedings of the 1968 ACM National Conference. pp. 5
 [5] Bentley, J. L. (1975). "Multidimensional binary search trees used for
 associative searching". Communications of the ACM. 18 (9): 509. doi:10.1145/361002.361007.
 
+@anchor knn-lit-6
+[6] https://en.wikipedia.org/wiki/Chebyshev_distance
+
 
 @internal
 @sa namespace knn (documenting the implementation in Python)
 @endinternal
 */
-
 
 CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.__knn_validate_src(
     point_source VARCHAR,
