@@ -16,7 +16,8 @@
  */
 
 /* The %code directive needs bison >= 2.4 */
-%require "2.4"
+/* api.parser.class requires bison >= 3.3 */
+%require "3.3"
 
 %code requires {
     #include <map>
@@ -151,7 +152,7 @@
 };
 
 /* The name of the parser class. */
-%define "parser_class_name" "SQLParser"
+%define api.parser.class {SQLParser}
 
 /* Declare that an argument declared by the braced-code `argument-declaration'
  * is an additional yyparse argument. The `argument-declaration' is used when
@@ -164,7 +165,7 @@
 %lex-param   { SQLDriver *driver }
 
 /* namespace to enclose parser in */
-%name-prefix="bison"
+%define api.prefix {bison}
 
 %union
 {
