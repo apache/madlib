@@ -151,7 +151,7 @@
 };
 
 /* The name of the parser class. */
-%define "parser_class_name" "SQLParser"
+%define parser_class_name "SQLParser"
 
 /* Declare that an argument declared by the braced-code `argument-declaration'
  * is an additional yyparse argument. The `argument-declaration' is used when
