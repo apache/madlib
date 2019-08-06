@@ -43,11 +43,12 @@ from madlib_keras_wrapper import *
 from keras_model_arch_table import ModelArchSchema
 
 from utilities.control import MinWarning
+from utilities.control import OptimizerControl
+from utilities.utilities import unique_string
 from utilities.utilities import add_postfix
 from utilities.utilities import rotate
 from utilities.utilities import madlib_version
 from utilities.utilities import is_platform_pg
-
 import json
 from collections import defaultdict
 import random
@@ -106,20 +107,21 @@ class FitMultipleModel():
         self.train_mst_metric_eval_time = defaultdict(list)
         self.train_mst_loss = defaultdict(list)
         self.train_mst_metric = defaultdict(list)
+        self.mst_weights = 'mst_weights'+unique_string()
+        self.fit_multiple_model()
 
     def fit_multiple_model(self):
         begin_time = time.time()
         # WARNING: set orca off to prevent unwanted redistribution
-        plpy.execute('SET optimizer TO off')
-        original_cuda_env = None
-        if CUDA_VISIBLE_DEVICES_KEY in os.environ:
-            original_cuda_env = os.environ[CUDA_VISIBLE_DEVICES_KEY]
-        self.start_training_time = datetime.datetime.now()
-        self.train_multiple_model()
-        self.end_training_time = datetime.datetime.now()
-        self.insert_info_table()
-        self.create_model_summary_table()
-        plpy.execute('RESET optimizer')
+        with OptimizerControl(False):
+            original_cuda_env = None
+            if CUDA_VISIBLE_DEVICES_KEY in os.environ:
+                original_cuda_env = os.environ[CUDA_VISIBLE_DEVICES_KEY]
+            self.start_training_time = datetime.datetime.now()
+            self.train_multiple_model()
+            self.end_training_time = datetime.datetime.now()
+            self.insert_info_table()
+            self.create_model_summary_table()
         plpy.info(
             "End to end execution time: {}".format(time.time() - begin_time))
         reset_cuda_env(original_cuda_env)
@@ -128,17 +130,12 @@ class FitMultipleModel():
         self.weights_map = {}
         for e in range(self.num_iterations):
             plpy.info("Iteration: {}".format(e))
-            is_final = (e == self.num_iterations - 1)
             for i in range(len(self.msts)):
                 mst_row = [self.grand_schedule[dist_key][i]
                            for dist_key in self.dist_keys]
                 self.create_mst_schedule_table(mst_row)
-                self.run_training(is_final=True)
+                self.run_training()
             self.evaluate_train_output(e)
-        plpy.info(self.train_mst_metric_eval_time)
-        plpy.info(self.train_mst_loss)
-        plpy.info(self.train_mst_metric)
-        plpy.info(self.weights_map)
 
     def evaluate_train_output(self, epoch):
         res = self.query_weights()
@@ -165,15 +162,6 @@ class FitMultipleModel():
         self.weights_map[epoch] = weights_map_one_epoch
 
     def generate_schedule(self):
-        """Summary
-
-        Returns:
-            TYPE: Description
-
-        Args:
-            dist_keys (TYPE): Description
-            msts (TYPE): Description
-        """
         grand_schedule = {}
         for index, dist_key in enumerate(self.dist_keys):
             grand_schedule[dist_key] = rotate(self.msts, index)
@@ -372,48 +360,50 @@ class FitMultipleModel():
                                       )
             plpy.execute(update_query)
 
-    def run_training(self, is_final):
-        mst_wgh = "mst_wgh"
+    def run_training(self):
         # TODO: fix distributed by
-        mst_wgh_query = """DROP TABLE IF EXISTS mst_wgh;
-                           CREATE TEMP TABLE mst_wgh AS
-                           SELECT mst.*, wgh.weights, model_arch.model_arch
-                           FROM mst_current_schedule mst JOIN {} wgh ON mst.mst_key = wgh.mst_key
-                                JOIN {} model_arch ON mst.model_arch_id = model_arch.model_id
-                           DISTRIBUTED BY (dist_key)
-                           """.format(self.model_output_table, self.model_arch_table)
-        plpy.execute(mst_wgh_query)
+        mst_weights_query = """
+            DROP TABLE IF EXISTS {self.mst_weights};
+            CREATE TEMP TABLE {self.mst_weights} AS
+                SELECT mst.*, wgh.weights, model_arch.model_arch
+                FROM
+                    mst_current_schedule mst JOIN {self.model_output_table} wgh
+                    ON mst.mst_key = wgh.mst_key
+                        JOIN {self.model_arch_table} model_arch
+                        ON mst.model_arch_id = model_arch.model_id
+                DISTRIBUTED BY (dist_key)
+        """.format(**locals())
+        plpy.execute(mst_weights_query)
         # WARNING weights_one_schedule.weights is the state returned by
         # the step function, which is img_count and weights concatnated
         mlp_uda_query = """
             UPDATE {self.model_output_table} SET weights = weights_one_schedule.weights
             FROM (SELECT {self.schema_madlib}.fit_step_multiple_model({mb_dep_var_col},
                                                       {mb_indep_var_col},
-                                                      mst_wgh.model_arch::TEXT,
-                                                      mst_wgh.compile_params::TEXT,
-                                                      mst_wgh.fit_params::TEXT,
+                                                      {self.mst_weights}.model_arch::TEXT,
+                                                      {self.mst_weights}.compile_params::TEXT,
+                                                      {self.mst_weights}.fit_params::TEXT,
                                                       iris.gp_segment_id,
                                                       ARRAY{self.seg_ids_train},
                                                       ARRAY{self.images_per_seg_train},
                                                       {self.gpus_per_host},
                                                       {self.segments_per_host},
-                                                      mst_wgh.weights::BYTEA,
-                                                      {is_final}::BOOLEAN
+                                                      {self.mst_weights}.weights::BYTEA,
+                                                      {is_final_iteration}::BOOLEAN
                                                       )::BYTEA AS weights,
-                mst_wgh.mst_key AS mst_key
-                FROM {self.source_table} iris JOIN mst_wgh
+                {self.mst_weights}.mst_key AS mst_key
+                FROM {self.source_table} iris JOIN {self.mst_weights}
                 USING (dist_key)
-                GROUP BY iris.dist_key, mst_wgh.mst_key
+                GROUP BY iris.dist_key, {self.mst_weights}.mst_key
                 ) weights_one_schedule
             WHERE {self.model_output_table}.mst_key = weights_one_schedule.mst_key
             """.format(mb_dep_var_col=mb_dep_var_col,
                         mb_indep_var_col=mb_indep_var_col,
-                        is_final=is_final,
+                        is_final_iteration=True,
                         self=self
                        )
         plpy.execute(mlp_uda_query)
-        plpy.execute("DROP TABLE IF EXISTS {0}".format(mst_wgh))
-        return 0
+        plpy.execute("DROP TABLE IF EXISTS {0}".format(self.mst_weights))
 
     def query_weights(self):
         mlp_weights_query = """

@@ -1217,7 +1217,7 @@ PERFORM madlib_keras_fit_multiple_model(
 	'iris_multiple_model',
 	'iris_model_arch',
 	'mst_table',
-	2,
+	5,
 	0
 );
 
@@ -1229,12 +1229,15 @@ PERFORM assert(
         dependent_varname = 'class_text' AND
         independent_varname = 'attributes' AND
         madlib_version is NOT NULL AND
-        num_iterations = 2 AND
+        num_iterations = 5 AND
         num_classes = 3 AND
         class_values = '{Iris-setosa,Iris-versicolor,Iris-virginica}' AND
         normalizing_const = 1,
         'Keras Fit Multiple Output Summary Validation failed. Actual:' || __to_char(summary))
 FROM (SELECT * FROM iris_multiple_model_summary) summary;
+
+PERFORM assert(COUNT(*)=3, 'Info table must have exactly same rows as the number of msts.')
+FROM iris_multiple_model_info;
 
 PERFORM assert(
         model_arch_id = 1 AND
@@ -1244,9 +1247,9 @@ PERFORM assert(
         metrics_type = '{accuracy}' AND
         training_metrics_final >= 0  AND
         training_loss_final  >= 0  AND
-        array_upper(training_metrics, 1) = 2 AND
-        array_upper(training_loss, 1) = 2 AND
-        array_upper(metrics_elapsed_time, 1) = 2,
+        array_upper(training_metrics, 1) = 5 AND
+        array_upper(training_loss, 1) = 5 AND
+        array_upper(metrics_elapsed_time, 1) = 5,
         'Keras Fit Multiple Output Info Validation failed. Actual:' || __to_char(info))
 FROM (SELECT * FROM iris_multiple_model_info) info;
 
@@ -1264,6 +1267,14 @@ PERFORM assert(
 	compile_params = $MAD$loss='categorical_crossentropy', optimizer='Adam(lr=0.0001)', metrics=['accuracy']$MAD$::text,
 	'Keras Fit Multiple Output Info compile params validation failed for model 3. Actual:' || __to_char(info))
 FROM (SELECT * FROM iris_multiple_model_info WHERE mst_key=3) info;
+
+PERFORM assert(
+  training_loss[5]-training_loss[1] < 0 AND
+  training_metrics[5]-training_metrics[1] > 0,
+    'The loss and accuracy should have improved with more iterations.'
+)
+FROM iris_model_summary;
+
 
 end
 $$ LANGUAGE plpgsql VOLATILE;
