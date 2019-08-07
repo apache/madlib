@@ -1,0 +1,152 @@
+# coding=utf-8
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+
+import plpy
+from collections import OrderedDict
+from madlib_keras_validator import MstLoaderInputValidator
+from utilities.control import MinWarning
+from madlib_keras_wrapper import convert_string_of_args_to_dict
+
+@MinWarning("warning")
+class MstLoader():
+    """The utility class for loading a model selection table with model parameters.
+
+    Currently just takes all combinations of input parameters passed. This
+    utility validates the inputs.
+
+    Attributes:
+        compile_params_list (list): The input list of compile params choices.
+        fit_params_list (list): The input list of fit params choices.
+        model_arch_id_list (list): The input list of model id choices.
+        model_arch_table (str): The name of model architechure table.
+        model_selection_table (str): The name of the output mst table.
+        msts (list): The list of generated msts.
+
+    """
+
+    def __init__(self,
+                 model_arch_table,
+                 model_selection_table,
+                 model_arch_id_list,
+                 compile_params_list,
+                 fit_params_list,
+                 **kwargs):
+
+        self.model_arch_table = model_arch_table
+        self.model_selection_table = model_selection_table
+        self.model_arch_id_list = sorted(list(set(model_arch_id_list)))
+        MstLoaderInputValidator(
+            model_arch_table=self.model_arch_table,
+            model_selection_table=self.model_selection_table,
+            model_arch_id_list=self.model_arch_id_list,
+            compile_params_list=compile_params_list,
+            fit_params_list=fit_params_list
+        )
+        self.compile_params_list = self.params_preprocessed(
+            compile_params_list)
+        self.fit_params_list = self.params_preprocessed(fit_params_list)
+
+	self.msts = []
+
+        self.find_combinations()
+
+    def load(self):
+        """The entry point for loading the model selection table.
+        """
+        # All of the side effects happen in this function.
+        self.create_mst_table()
+        self.insert_into_mst_table()
+
+    def params_preprocessed(self, list_strs):
+        """Preprocess the input lists. Eliminate white spaces and sort them.
+
+        Args:
+            list_strs (list): A list of strings.
+
+        Returns:
+            list: The preprocessed list of strings.
+        """
+
+	dict_dedup = {}
+	for string in list_strs:
+	    d = convert_string_of_args_to_dict(string)
+	    hash_tuple = tuple( '{0} = {1}'\
+		.format(x, d[x]) for x in sorted(d.keys()))
+	    dict_dedup[hash_tuple] = string
+
+	return dict_dedup.values()
+
+    def find_combinations(self):
+        """Backtracking helper for generating the combinations.
+        """
+        param_grid = OrderedDict([
+            ('model_arch_id', self.model_arch_id_list),
+            ('compile_params', self.compile_params_list),
+            ('fit_params', self.fit_params_list)
+        ])
+
+        def find_combinations_helper(msts, p, i):
+            param_names = param_grid.keys()
+            if i < len(param_names):
+                for x in param_grid[param_names[i]]:
+                    p[param_names[i]] = x
+                    find_combinations_helper(msts, p, i + 1)
+            else:
+                msts.append(p.copy())
+        find_combinations_helper(self.msts, {}, 0)
+
+    def create_mst_table(self):
+        """Initialize the output mst table.
+        """
+        create_query = """
+                        CREATE TABLE {self.model_selection_table} (
+                            mst_key SERIAL,
+                            model_arch_table VARCHAR,
+                            model_arch_id INTEGER,
+                            compile_params VARCHAR,
+                            fit_params VARCHAR,
+                            unique (model_arch_id, compile_params, fit_params)
+                        );
+                       """.format(self=self)
+        with MinWarning('warning'):
+            plpy.execute(create_query)
+
+    def insert_into_mst_table(self):
+        """Insert every thing in self.msts into the mst table.
+        """
+        for mst in self.msts:
+            model_arch_id = mst['model_arch_id']
+            compile_params = mst['compile_params']
+            fit_params = mst['fit_params']
+            insert_query = """
+                            INSERT INTO
+                                {self.model_selection_table}(
+                                    model_arch_table,
+                                    model_arch_id,
+                                    compile_params,
+                                    fit_params
+                                )
+                            VALUES (
+                                $${self.model_arch_table}$$,
+                                {model_arch_id},
+                                $${compile_params}$$,
+                                $${fit_params}$$
+                            )
+                           """.format(**locals())
+            plpy.execute(insert_query)
+
