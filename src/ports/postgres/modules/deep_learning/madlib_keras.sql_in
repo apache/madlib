@@ -74,6 +74,9 @@ can perform better than stochastic gradient descent
 because it uses more than one training example at a time,
 typically resulting faster and smoother convergence [3].
 
+You can also do inference on models that have not been trained with MADlib,
+but rather imported from an external source.
+
 @brief Solves image classification problems by calling
 the Keras API
 
@@ -620,8 +623,10 @@ madlib_keras_predict(
 
 
 @anchor keras_predict_byom
-@par Predict BYOM (Bring your own model)
-The predict byom function has the following format:
+@par Predict BYOM (bring your own model)
+The predict BYOM function allows you to do inference on models that
+have not been trained on MADlib, but rather imported from elsewhere.
+It has the following format:
 <pre class="syntax">
 madlib_keras_predict_byom(
     model_arch_table,
@@ -645,11 +650,11 @@ madlib_keras_predict_byom(
   <DD>TEXT. Name of the architecture table containing the model
   to use for prediction. The model weights and architecture can be loaded to
   this table by using the
-  <a href="group__grp__keras__model__arch.html">load_keras_model</a> function
+  <a href="group__grp__keras__model__arch.html">load_keras_model</a> function.
   </DD>
 
   <DT>model_arch_id</DT>
-  <DD>INTEGER. This is the id in 'model_arch_table'containing the model
+  <DD>INTEGER. This is the id in 'model_arch_table' containing the model
   architecture and model weights to use for prediction.
   </DD>
 
@@ -657,9 +662,7 @@ madlib_keras_predict_byom(
   <DD>TEXT. Name of the table containing the dataset to
   predict on.  Note that test data is not preprocessed (unlike
   fit and evaluate) so put one test image per row for prediction.
-  Also see the comment below for the 'independent_varname' parameter
-  regarding normalization.
-
+  Set the 'normalizing_const' below for the independent variable if necessary.
   </DD>
 
   <DT>id_col</DT>
@@ -668,9 +671,7 @@ madlib_keras_predict_byom(
 
   <DT>independent_varname</DT>
   <DD>TEXT. Column with independent variables in the test table.
-  If a 'normalizing_const' is specified when preprocessing the
-  training dataset, this same normalization will be applied to
-  the independent variables used in predict.
+  Set the 'normalizing_const' below if necessary.
   </DD>
 
   <DT>output_table</DT>
@@ -679,14 +680,14 @@ madlib_keras_predict_byom(
     <table class="output">
       <tr>
         <th>id</th>
-        <td>Gives the 'id' for each prediction, corresponding to each row from the test_table.</td>
+        <td>Gives the 'id' for each prediction, corresponding to each row from the 'test_table'.</td>
       </tr>
       <tr>
         <th>estimated_dependent_var</th>
         <td>
-        (For pred_type='response') The estimated class for classification. If
-        class_values is passed in as NULL, then we assume that the class
-        labels are [0,1,2...,n] where n in the num of classes in the model
+        (For pred_type='response') Estimated class for classification. If
+        the 'class_values' parameter is passed in as NULL, then we assume that the class
+        labels are [0,1,2...,n-1] where n-1 is the number of classes in the model
         architecture.
         </td>
       </tr>
@@ -694,11 +695,11 @@ madlib_keras_predict_byom(
         <th>prob_CLASS</th>
         <td>
          (For pred_type='prob' for classification)
-         The probability of a given class.
-         If class_values is passed in as NULL, we create just one column called
-         'prob' which is an array of probabilities of all the classes.
-         Otherwise if class_values is not NULL, then there will be one
-         column for each class in the training data.
+         Probability of a given class.
+         If 'class_values' is passed in as NULL, we create one column called
+         'prob' which is an array of probabilities for each class.
+         If 'class_values' is not NULL, then there will be one
+         column for each class.
         </td>
       </tr>
 
@@ -725,8 +726,8 @@ madlib_keras_predict_byom(
 
   <DT>class_values (optional)</DT>
   <DD>TEXT[], default: NULL.
-    List of class labels that were used while training the model. See the
-    output_table column for more details.
+    List of class labels that were used while training the model. See the 'output_table'
+    column for more details.
   </DD>
 
   <DT>normalizing_const (optional)</DT>
@@ -1170,84 +1171,67 @@ WHERE q.actual=q.estimated;
 (1 row)
 </pre>
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 -# Predict BYOM.
 We will use the validation dataset for prediction
 as well, which is not usual but serves to show the
 syntax. See <a href="group__grp__keras__model__arch.html">load_keras_model</a>
 for details on how to load the model architecture and weights.
-
-
-The prediction is in the 'estimated_dependent_var'
-column:
+In this example we will use weights we already have:
 <pre class="example">
-UPDATE model_arch_library set model_weights = (select model_data from iris_model) WHERE model_id = 1;
-
+UPDATE model_arch_library SET model_weights = model_data FROM iris_model WHERE model_id = 1;
+</pre>
+Now train using a model from the model architecture table directly
+without referencing the model table from the MADlib training:
+<pre class="example">
 DROP TABLE IF EXISTS iris_predict_byom;
-SELECT madlib.madlib_keras_predict_byom('model_arch_library', -- model arch table
-                                   1, -- model arch id
-                                   'iris_test',  -- test_table
-                                   'id',  -- id column
-                                   'attributes', -- independent var
-                                   'iris_predict_byom',  -- output table
-                                   'response', -- pred_type
-                                   0, -- gpus_per_host
-                                   ARRAY['Iris-setosa', 'Iris-versicolor',
-                                   'Iris-virginica'], -- class_values
-                                   1.0 -- normalizing_const
+SELECT madlib.madlib_keras_predict_byom('model_arch_library',  -- model arch table
+                                         1,                    -- model arch id
+                                        'iris_test',           -- test_table
+                                        'id',                  -- id column
+                                        'attributes',          -- independent var
+                                        'iris_predict_byom',   -- output table
+                                        'response',            -- prediction type
+                                         0,                    -- gpus per host
+                                         ARRAY['Iris-setosa', 'Iris-versicolor', 'Iris-virginica'], -- class values
+                                         1.0                   -- normalizing const
                                    );
 SELECT * FROM iris_predict_byom ORDER BY id;
 </pre>
+The prediction is in the 'estimated_dependent_var' column:
 <pre class="result">
  id  | estimated_dependent_var
------+-------------------------
-   1 | Iris-setosa
+-----+----------------------
    4 | Iris-setosa
-   9 | Iris-setosa
-  27 | Iris-setosa
-  32 | Iris-setosa
-  35 | Iris-setosa
-  40 | Iris-setosa
-  41 | Iris-setosa
-  44 | Iris-setosa
-  46 | Iris-setosa
-  55 | Iris-versicolor
-  56 | Iris-versicolor
-  66 | Iris-versicolor
+   6 | Iris-setosa
+   8 | Iris-setosa
+  12 | Iris-setosa
+  13 | Iris-setosa
+  15 | Iris-setosa
+  24 | Iris-setosa
+  30 | Iris-setosa
+  38 | Iris-setosa
+  49 | Iris-setosa
+  60 | Iris-virginica
+  68 | Iris-versicolor
   69 | Iris-versicolor
-  75 | Iris-versicolor
   76 | Iris-versicolor
- 102 | Iris-virginica
- 105 | Iris-virginica
- 108 | Iris-virginica
- 113 | Iris-virginica
- 115 | Iris-virginica
- 116 | Iris-virginica
- 118 | Iris-virginica
- 119 | Iris-virginica
- 122 | Iris-virginica
- 125 | Iris-virginica
- 133 | Iris-virginica
- 134 | Iris-virginica
- 135 | Iris-virginica
- 138 | Iris-virginica
+  78 | Iris-versicolor
+  81 | Iris-versicolor
+  85 | Iris-virginica
+  90 | Iris-versicolor
+  91 | Iris-versicolor
+  94 | Iris-virginica
+ 104 | Iris-virginica
+ 106 | Iris-versicolor
+ 107 | Iris-virginica
+ 110 | Iris-virginica
+ 119 | Iris-versicolor
+ 127 | Iris-virginica
+ 129 | Iris-virginica
+ 134 | Iris-versicolor
+ 139 | Iris-virginica
+ 144 | Iris-virginica
+(30 rows)
  </pre>
 Count missclassifications:
 <pre class="example">
@@ -1274,36 +1258,6 @@ WHERE q.actual=q.estimated;
                  80.00
 (1 row)
 </pre>
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 <h4>Classification with Other Parameters</h4>
