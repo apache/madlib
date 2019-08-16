@@ -1,0 +1,87 @@
+# coding=utf-8
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+import sys
+import numpy as np
+from os import path
+
+# Add modules to the pythonpath.
+sys.path.append(path.dirname(path.dirname(path.dirname(path.dirname(path.abspath(__file__))))))
+sys.path.append(path.dirname(path.dirname(path.dirname(path.abspath(__file__)))))
+
+import unittest
+from mock import *
+import plpy_mock as plpy
+
+m4_changequote(`<!', `!>')
+
+class KmeansAutoTestCase(unittest.TestCase):
+    def setUp(self):
+        self.plpy_mock = Mock(spec='error')
+        patches = {
+            'plpy': plpy,
+            'utilities.mean_std_dev_calculator': Mock(),
+        }
+        # we need to use MagicMock() instead of Mock() for the plpy.execute mock
+        # to be able to iterate on the return value
+        self.plpy_mock_execute = MagicMock()
+        plpy.execute = self.plpy_mock_execute
+
+        self.module_patcher = patch.dict('sys.modules', patches)
+        self.module_patcher.start()
+
+        self.default_schema_madlib = "madlib"
+        self.default_source_table = "source"
+        self.default_output_table = "output"
+
+        import kmeans_auto
+        self.module = kmeans_auto
+
+
+    def tearDown(self):
+        self.module_patcher.stop()
+
+    def test_calculate_elbow_evenly_spaced(self):
+
+        self.plpy_mock_execute.return_value = [
+            {'k':2, 'objective_fn':100 },
+            {'k':3, 'objective_fn':50 },
+            {'k':4, 'objective_fn':25 },
+            {'k':5, 'objective_fn':20 },
+            {'k':6, 'objective_fn':10 }
+        ]
+        elbow,_ = self.module._calculate_elbow('foo')
+        self.assertEqual(3, elbow)
+
+    def test_calculate_elbow_unevenly_spaced(self):
+
+        self.plpy_mock_execute.return_value = [
+            {'k':2, 'objective_fn':100 },
+            {'k':4, 'objective_fn':80 },
+            {'k':6, 'objective_fn':25 },
+            {'k':7, 'objective_fn':20 },
+            {'k':8, 'objective_fn':10 }
+        ]
+        elbow,_ = self.module._calculate_elbow('foo')
+        self.assertEqual(6, elbow)
+
+if __name__ == '__main__':
+    unittest.main()
+
+# ---------------------------------------------------------------------

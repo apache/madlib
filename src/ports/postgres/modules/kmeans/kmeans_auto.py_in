@@ -1,0 +1,223 @@
+# coding=utf-8
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+"""
+@file kmeans_auto.py_in
+
+@brief
+
+"""
+
+import numpy as np
+import plpy
+from utilities.control import MinWarning
+from utilities.utilities import _assert
+from utilities.utilities import unique_string
+from utilities.validate_args import output_tbl_valid
+from utilities.validate_args import get_algorithm_name
+
+ELBOW = 'elbow'
+SILHOUETTE = 'silhouette'
+BOTH = 'both'
+
+RANDOM = 'random'
+PP = 'pp'
+
+def _validate(output_table, k):
+
+    output_tbl_valid(output_table, "kmeans_auto")
+    output_tbl_valid('{0}_summary'.format(output_table), "kmeans_auto")
+
+    _assert(k, "kmeans_auto: k cannot be NULL.")
+    _assert(len(k)>1, "kmeans_auto: Length of k array should be more than 1.")
+    _assert(min(k)>1, "kmeans_auto: the minimum k value has to be > 1.")
+    _assert(len(set(k)) == len(k), "kmeans_auto: Duplicate values are not allowed in k.")
+
+
+def set_defaults(schema_madlib, fn_dist, agg_centroid, max_num_iterations, min_frac_reassigned, k_selection_algorithm, seeding, seeding_sample_ratio):
+
+    fn_dist = (fn_dist if fn_dist else '{0}.squared_dist_norm2'.format(schema_madlib))
+    agg_centroid = agg_centroid if agg_centroid \
+                    else '{0}.avg'.format(schema_madlib)
+    max_num_iterations = max_num_iterations if max_num_iterations \
+                          else 20
+    min_frac_reassigned = min_frac_reassigned if min_frac_reassigned \
+                           else 0.001
+
+    k_selection_algorithm = get_algorithm_name(k_selection_algorithm, SILHOUETTE,
+        [ELBOW, SILHOUETTE, BOTH], 'kmeans_auto')
+
+    if seeding is PP:
+        seeding_sample_ratio = (seeding_sample_ratio
+                                if seeding_sample_ratio is not None else 1.0)
+    return (fn_dist, agg_centroid, max_num_iterations, min_frac_reassigned,
+            k_selection_algorithm, seeding_sample_ratio)
+
+def kmeans_auto(schema_madlib, rel_source, output_table, expr_point, k,
+    fn_dist=None, agg_centroid=None, max_num_iterations=None,
+    min_frac_reassigned=None, k_selection_algorithm=None, seeding=None,
+    seeding_sample_ratio=None, **kwargs):
+
+    with MinWarning("error"):
+        _validate(output_table, k)
+
+        (fn_dist, agg_centroid, max_num_iterations, min_frac_reassigned,
+         k_selection_algorithm, seeding_sample_ratio) = set_defaults(
+            schema_madlib, fn_dist, agg_centroid, max_num_iterations,
+            min_frac_reassigned, k_selection_algorithm, seeding,
+            seeding_sample_ratio)
+
+        silhouette_col = ""
+        elbow_col = ""
+
+        # If the selection is elbow or both, calculate elbow
+        use_silhouette = k_selection_algorithm in [SILHOUETTE, BOTH]
+        # If the selection is silhouette or both, calculate silhouette
+        use_elbow = k_selection_algorithm in [ELBOW, BOTH]
+
+        if use_silhouette:
+            silhouette_col = ", {0} DOUBLE PRECISION".format(SILHOUETTE)
+        if use_elbow:
+            elbow_col = ", {0} DOUBLE PRECISION".format(ELBOW)
+
+        plpy.execute("""
+            CREATE TABLE {output_table} (
+                k INTEGER,
+                centroids   DOUBLE PRECISION[][],
+                cluster_variance    DOUBLE PRECISION[],
+                objective_fn    DOUBLE PRECISION,
+                frac_reassigned DOUBLE PRECISION,
+                num_iterations  INTEGER
+                {silhouette_col}
+                {elbow_col})
+            """.format(**locals()))
+
+        silhouette_vals = []
+
+        for current_k in k:
+            if seeding is 'random':
+                plpy.execute("""
+                    INSERT INTO {output_table}
+                    (k, centroids, cluster_variance, objective_fn, frac_reassigned,
+                    num_iterations)
+                    SELECT {current_k} as k, *
+                    FROM {schema_madlib}.kmeans_random('{rel_source}',
+                                         '{expr_point}',
+                                         {current_k},
+                                         '{fn_dist}',
+                                         '{agg_centroid}',
+                                         {max_num_iterations},
+                                         {min_frac_reassigned});
+                    """.format(**locals()))
+            else:
+                plpy.execute("""
+                    INSERT INTO {output_table}
+                    (k, centroids, cluster_variance, objective_fn, frac_reassigned,
+                    num_iterations)
+                    SELECT {current_k} as k, *
+                    FROM {schema_madlib}.kmeanspp('{rel_source}',
+                                         '{expr_point}',
+                                         {current_k},
+                                         '{fn_dist}',
+                                         '{agg_centroid}',
+                                         {max_num_iterations},
+                                         {min_frac_reassigned},
+                                         {seeding_sample_ratio});
+                    """.format(**locals()))
+
+            if use_silhouette:
+                silhouette_query= """
+                    SELECT * FROM {schema_madlib}.simple_silhouette(
+                        '{rel_source}',
+                        '{expr_point}',
+                        (SELECT centroids
+                         FROM {output_table}
+                         WHERE k = {current_k}),
+                        '{fn_dist}')
+                    """.format(**locals())
+                silhouette_vals.append(
+                    plpy.execute(silhouette_query)[0]['simple_silhouette'])
+
+        update_query = """
+            UPDATE {output_table} SET {{column}} = __value__ FROM
+            (SELECT unnest(ARRAY[{k_arr}]) AS __k__,
+                    unnest(ARRAY[{{calc_arr}}]) AS __value__
+            )sub_q
+            WHERE __k__ = k
+            """.format(output_table = output_table,
+                       k_arr = str(k)[1:-1])
+        if use_silhouette:
+            optimal_sil =  k[np.argmax(np.array(silhouette_vals))]
+            plpy.execute(update_query.format(column = SILHOUETTE,
+                calc_arr = str(silhouette_vals)[1:-1]))
+
+        if use_elbow:
+            optimal_elbow, second_order = _calculate_elbow(output_table)
+            plpy.execute(update_query.format(column = ELBOW,
+                calc_arr = str(second_order)[1:-1]))
+
+        optimal_k = optimal_sil if use_silhouette else optimal_elbow
+
+        plpy.execute("""
+            CREATE TABLE {output_table}_summary AS
+            SELECT {output_table}.*,
+                   '{algorithm}'::VARCHAR AS selection_algorithm
+            FROM {output_table}
+            WHERE k = {optimal_k}
+            """.format(algorithm = SILHOUETTE if use_silhouette else ELBOW,
+                       **locals()))
+
+    return
+
+def _calculate_elbow(output_table):
+
+    # We have to get the values in ordered fashion because the elbow is only defined for ordered values.
+    inertia_result = plpy.execute("""
+                 SELECT k, objective_fn FROM {output_table} ORDER BY k ASC
+                 """.format(**locals()))
+    k = [ i['k'] for i in inertia_result ]
+    inertia_list = [ i['objective_fn'] for i in inertia_result ]
+    inertia_list = np.array(inertia_list)
+
+    first_order=np.gradient(inertia_list, k)
+    second_order=np.gradient(first_order, k)
+    index_with_elbow=k[np.argmax(second_order)]
+
+    return index_with_elbow, second_order.tolist()
+
+def kmeans_random_auto(schema_madlib, rel_source, output_table, expr_point, k,
+    fn_dist=None, agg_centroid=None, max_num_iterations=None,
+    min_frac_reassigned=None, k_selection_algorithm=None, **kwargs):
+
+    kmeans_auto(schema_madlib, rel_source, output_table, expr_point, k,
+    fn_dist, agg_centroid, max_num_iterations, min_frac_reassigned,
+    k_selection_algorithm, RANDOM)
+
+    return
+
+def kmeanspp_auto(schema_madlib, rel_source, output_table, expr_point, k,
+    fn_dist=None, agg_centroid=None, max_num_iterations=None,
+    min_frac_reassigned=None, seeding_sample_ratio=None,
+    k_selection_algorithm=None, **kwargs):
+
+    kmeans_auto(schema_madlib, rel_source, output_table, expr_point, k,
+    fn_dist, agg_centroid, max_num_iterations, min_frac_reassigned,
+    k_selection_algorithm, PP, seeding_sample_ratio)
+
+    return
