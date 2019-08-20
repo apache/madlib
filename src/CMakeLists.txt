@@ -7,6 +7,10 @@
 
 set(MADLIB_REDIRECT_PREFIX "")
 
+if(NOT GPPKG_VER)
+    set(GPPKG_VER '')
+endif (NOT GPPKG_VER)
+
 # For in-house testing, we might want to change the base URLs of code-hosting
 # sites to something local
 # "-DSOURCEFORGE_BASE_URL=http://test.local/projects"
