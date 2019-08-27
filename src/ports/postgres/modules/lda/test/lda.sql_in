@@ -288,3 +288,280 @@ CREATE OR REPLACE FUNCTION validate_lda_output() RETURNS integer AS $$
 $$ LANGUAGE plpgsql;
 
 select validate_lda_output();
+
+
+---------- TEST CASES FOR PERPLEXITY ----------
+
+drop table if exists lda_model, lda_output_data;
+SELECT lda_train(
+    'lda_training',             -- data_table
+    'lda_model',                -- model_table
+    'lda_output_data',          -- output_data_table
+    20,                         -- voc_size
+    5,                          -- topic_num
+    2,                          -- iter_num
+    10,                         -- alpha
+    0.01,                       -- beta
+    2,                          -- evaluate_every
+    .2);                        -- perplexity_tol
+
+SELECT assert(perplexity_iters = '{2}', 'Number of Perplexity iterations are wrong') FROM lda_model;
+SELECT assert(perplexity[1] > 0 , 'Perplexity value should be greate than 0') FROM lda_model ;
+-- Commenting the below flaky test to re-visit later.
+-- select assert(array_upper(ARRAY(Select distinct unnest(perplexity)),1)= array_upper(perplexity,1) , 'Perplexity values should be unique') from lda_model ;
+
+
+drop table if exists lda_model, lda_output_data;
+SELECT lda_train(
+    'lda_training',          -- data_table
+    'lda_model',             -- model_table
+    'lda_output_data',       -- output_data_table
+    20,                      -- voc_size
+    5,                       -- topic_num
+    3,                       -- iter_num
+    10,                      -- alpha
+    0.01,                    -- beta
+    1,                       -- evaluate_every
+    .1                       -- perplexity_tol
+    );
+
+SELECT assert(array_upper(perplexity,1) = 3, 'Perplexity calculation is wrong') FROM lda_model;
+SELECT assert(perplexity[1] > 0 , 'Perplexity value should be greate than 0') FROM lda_model ;
+-- Commenting the below flaky test to re-visit later.
+-- select assert(array_upper(ARRAY(Select distinct unnest(perplexity)),1)= array_upper(perplexity,1) , 'Perplexity values should be unique') from lda_model ;
+
+
+-- Function to check if the perplexity value returned from the function 
+-- and calculated by the train funcion are same. 
+CREATE OR REPLACE FUNCTION validate_perplexity() RETURNS boolean AS $$
+
+    DECLARE
+        perplexity_from_func Double precision[];
+        perplexity_lda_train Double precision[];
+
+    BEGIN
+        drop table if exists lda_model, lda_output_data;
+        PERFORM lda_train(
+        'lda_training',
+        'lda_model',
+        'lda_output_data',
+        20, 5, 2, 10, 0.01, 2, .2);
+
+         SELECT array_agg(round(lda_get_perplexity::numeric,10))  INTO perplexity_from_func from lda_get_perplexity('lda_model','lda_output_data');
+
+          select perplexity INTO perplexity_lda_train from lda_model ;
+
+
+        if perplexity_lda_train != perplexity_from_func  THEN
+            return FALSE;
+        ELSE
+            return TRUE;
+        END IF;    
+
+    END;
+
+$$ LANGUAGE plpgsql;
+
+SELECT assert(validate_perplexity() = TRUE, 'Perplexity calculation is wrong');
+SELECT assert(perplexity[1] > 0 , 'Perplexity value should be greate than 0') FROM lda_model ;
+-- Commenting the below flaky test to re-visit later.
+-- select assert(array_upper(ARRAY(Select distinct unnest(perplexity)),1)= array_upper(perplexity,1) , 'Perplexity values should be unique') from lda_model ;
+
+-- Test for evaluate_every = Number of iterations = 1. It should give exactly one perplexity value --
+
+
+drop table if exists lda_model, lda_output_data;
+SELECT lda_train(
+    'lda_training',          -- data_table
+    'lda_model',             -- model_table
+    'lda_output_data',       -- output_data_table
+    20,                      -- voc_size
+    5,                       -- topic_num
+    1,                       -- iter_num
+    10,                      -- alpha
+    0.01,                    -- beta
+    1,                       -- evaluate_every
+    .1                       -- perplexity_tol
+    );
+
+select assert(perplexity != '{}', 'Perplexity should be calculated') from lda_model;
+select assert(array_upper(perplexity,1) = 1, 'Perplexity should not have more than 1 value') from lda_model;
+
+
+-- Test for evaluate_every = 0  and -1 : In this do not calculate perplexity--
+
+
+
+drop table if exists lda_model, lda_output_data;
+SELECT lda_train(
+    'lda_training',          -- data_table
+    'lda_model',             -- model_table
+    'lda_output_data',       -- output_data_table
+    20,                      -- voc_size
+    5,                       -- topic_num
+    1,                       -- iter_num
+    10,                      -- alpha
+    0.01,                    -- beta   
+    0,                       -- evaluate_every
+    .1                       -- perplexity_tol
+    );
+
+select assert(perplexity = '{}', 'Perplexity should not be calculated') from lda_model;
+select assert(perplexity_iters = '{}', 'Perplexity iterations should be null') from lda_model ;
+
+-- Test for evaluate_every = 0  and -1 : In this do not calculate perplexity--
+
+
+
+drop table if exists lda_model, lda_output_data;
+SELECT lda_train(
+    'lda_training',          -- data_table
+    'lda_model',             -- model_table
+    'lda_output_data',       -- output_data_table
+    20,                      -- voc_size
+    5,                       -- topic_num
+    1,                       -- iter_num
+    10,                      -- alpha
+    0.01,                    -- beta   
+    -1,                      -- evaluate_every
+    .1                       -- perplexity_tol
+    );
+
+select assert(perplexity = '{}', 'Perplexity should not be calculated') from lda_model ;
+select assert(perplexity_iters = '{}', 'Perplexity iterations should be null') from lda_model ;
+
+
+-- Test to check if the perplexity_iters are matching the expected value --
+
+drop table if exists lda_model, lda_output_data;
+SELECT lda_train(
+    'lda_training',          -- data_table
+    'lda_model',             -- model_table
+    'lda_output_data',       -- output_data_table
+    20,                      -- voc_size
+    5,                       -- topic_num
+    10,                      -- iter_num
+    10,                      -- alpha
+    0.01,                    -- beta
+    2,                       -- evaluate_every
+    .1                       -- perplexity_tol
+    );
+
+SELECT assert(array_upper(perplexity_iters,1) <= 5, 'Perplexity iterations are different from expected') FROM lda_model ;
+SELECT assert(perplexity[1] > 0 , 'Perplexity value should be greate than 0') FROM lda_model ;
+-- Commenting the below flaky test to re-visit later.
+-- select assert(array_upper(ARRAY(Select distinct unnest(perplexity)),1)= array_upper(perplexity,1) , 'Perplexity values should be unique') from lda_model ;
+
+
+-- Test: If the difference between any two iterations is less than the perplexity_tol, we will stop the training. --
+-- In this case, it will iterate to two iterations only as the perplexity_tol is very large and the difference between the 2 and 4th iteration -- 
+-- will be less than 10, so Only 2 iterations will be recorded --
+
+
+drop table if exists lda_model, lda_output_data;
+SELECT lda_train(
+    'lda_training',          -- data_table
+    'lda_model',             -- model_table
+    'lda_output_data',       -- output_data_table
+    20,                      -- voc_size
+    5,                       -- topic_num
+    10,                      -- iter_num
+    10,                      -- alpha
+    0.01,                    -- beta
+    2,                       -- evaluate_every
+    100                      -- perplexity_tol
+    );
+
+
+SELECT assert(abs(perplexity[2] - perplexity[1]) <100, 'Perplexity tol is less than the perplexity difference') FROM lda_model ;
+SELECT assert(array_upper(perplexity_iters,1)  = 2, 'Perplexity iterations are different from expected') FROM lda_model ;
+SELECT assert(perplexity[1] > 0 , 'Perplexity value should be greate than 0') FROM lda_model ;
+-- Commenting the below flaky test to re-visit later.
+-- select assert(array_upper(ARRAY(Select distinct unnest(perplexity)),1)= array_upper(perplexity,1) , 'Perplexity values should be unique') from lda_model ;
+
+
+-- Test for evaluate_every = 1  and 0 : In this case the iterations should not stop early --
+
+
+
+drop table if exists lda_model, lda_output_data;
+SELECT lda_train(
+    'lda_training',          -- data_table
+    'lda_model',             -- model_table
+    'lda_output_data',       -- output_data_table
+    20,                      -- voc_size
+    5,                       -- topic_num
+    10,                      -- iter_num
+    10,                      -- alpha
+    0.01,                    -- beta   
+    1,                       -- evaluate_every
+    0                        -- perplexity_tol
+    );
+
+select assert(num_iterations = 10, 'Perplexity should run for all the iterations') from lda_model ;
+
+
+-- Test for evaluate_every = NULL and perplexity_tol = NULL.  In this case it should not calculate perplexity -- 
+
+
+drop table if exists lda_model, lda_output_data;
+SELECT lda_train(
+    'lda_training',          -- data_table
+    'lda_model',             -- model_table
+    'lda_output_data',       -- output_data_table
+    20,                      -- voc_size
+    5,                       -- topic_num
+    10,                      -- iter_num
+    10,                      -- alpha
+    0.01,                    -- beta   
+    NULL,                    -- evaluate_every
+    NULL                     -- perplexity_tol
+    );
+
+select assert(perplexity = '{}', 'Perplexity should not be calculated') from lda_model ;
+select assert(perplexity_iters = '{}', 'Perplexity iterations should be null') from lda_model ;
+
+
+-- Test for evaluate_every = 1 and perplexity_tol = NULL. --
+-- In this case it should calculate perplexity with perplexity_tol = 0.1 as default value -- 
+
+
+drop table if exists lda_model, lda_output_data;
+SELECT lda_train(
+    'lda_training',          -- data_table
+    'lda_model',             -- model_table
+    'lda_output_data',       -- output_data_table
+    20,                      -- voc_size
+    5,                       -- topic_num
+    10,                      -- iter_num
+    10,                      -- alpha
+    0.01,                    -- beta   
+    1,                       -- evaluate_every
+    NULL                     -- perplexity_tol
+    );
+
+select assert(array_upper(perplexity_iters,1) >= 1, 'Perplexity iterations are different from expected') from lda_model ;
+select assert(perplexity != '{}', 'Perplexity should be calculated') from lda_model;
+
+
+-- Test for evaluate_every = NULL and perplexity_tol != NULL --
+-- In this case it should not calculate perplexity -- 
+
+
+drop table if exists lda_model, lda_output_data;
+SELECT lda_train(
+    'lda_training',          -- data_table
+    'lda_model',             -- model_table
+    'lda_output_data',       -- output_data_table
+    20,                      -- voc_size
+    5,                       -- topic_num
+    10,                      -- iter_num
+    10,                      -- alpha
+    0.01,                    -- beta   
+    NULL,                    -- evaluate_every
+    1                        -- perplexity_tol
+    );
+
+select assert(perplexity = '{}', 'Perplexity should not be calculated') from lda_model ;
+select assert(perplexity_iters = '{}', 'Perplexity iterations should be null') from lda_model ;
+
