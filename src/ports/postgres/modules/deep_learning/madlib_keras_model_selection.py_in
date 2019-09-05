@@ -20,7 +20,9 @@ import plpy
 from collections import OrderedDict
 from madlib_keras_validator import MstLoaderInputValidator
 from utilities.control import MinWarning
+from utilities.utilities import add_postfix
 from madlib_keras_wrapper import convert_string_of_args_to_dict
+
 
 @MinWarning("warning")
 class MstLoader():
@@ -49,10 +51,13 @@ class MstLoader():
 
         self.model_arch_table = model_arch_table
         self.model_selection_table = model_selection_table
+        self.model_selection_summary_table = add_postfix(
+            model_selection_table, "_summary")
         self.model_arch_id_list = sorted(list(set(model_arch_id_list)))
         MstLoaderInputValidator(
             model_arch_table=self.model_arch_table,
             model_selection_table=self.model_selection_table,
+            model_selection_summary_table=self.model_selection_summary_table,
             model_arch_id_list=self.model_arch_id_list,
             compile_params_list=compile_params_list,
             fit_params_list=fit_params_list
@@ -70,6 +75,7 @@ class MstLoader():
         """
         # All of the side effects happen in this function.
         self.create_mst_table()
+        self.create_mst_summary_table()
         self.insert_into_mst_table()
 
     def params_preprocessed(self, list_strs):
@@ -116,11 +122,21 @@ class MstLoader():
         create_query = """
                         CREATE TABLE {self.model_selection_table} (
                             mst_key SERIAL,
-                            model_arch_table VARCHAR,
                             model_arch_id INTEGER,
                             compile_params VARCHAR,
                             fit_params VARCHAR,
                             unique (model_arch_id, compile_params, fit_params)
+                        );
+                       """.format(self=self)
+        with MinWarning('warning'):
+            plpy.execute(create_query)
+
+    def create_mst_summary_table(self):
+        """Initialize the output mst table.
+        """
+        create_query = """
+                        CREATE TABLE {self.model_selection_summary_table} (
+                            model_arch_table VARCHAR
                         );
                        """.format(self=self)
         with MinWarning('warning'):
@@ -136,17 +152,24 @@ class MstLoader():
             insert_query = """
                             INSERT INTO
                                 {self.model_selection_table}(
-                                    model_arch_table,
                                     model_arch_id,
                                     compile_params,
                                     fit_params
                                 )
                             VALUES (
-                                $${self.model_arch_table}$$,
                                 {model_arch_id},
                                 $${compile_params}$$,
                                 $${fit_params}$$
                             )
                            """.format(**locals())
             plpy.execute(insert_query)
-
+        insert_summary_query = """
+                        INSERT INTO
+                            {self.model_selection_summary_table}(
+                                model_arch_table
+                        )
+                        VALUES (
+                            $${self.model_arch_table}$$
+                        )
+                       """.format(**locals())
+        plpy.execute(insert_summary_query)
