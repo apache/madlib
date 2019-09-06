@@ -18,6 +18,7 @@
  * under the License.
  *
  *//* ----------------------------------------------------------------------- */
+m4_include(`SQLCommon.m4')
 
 DROP TABLE IF EXISTS data_preprocessor_input;
 CREATE TABLE data_preprocessor_input(id serial, x double precision[], label TEXT);
@@ -87,6 +88,25 @@ SELECT training_preprocessor_dl(
   'data_preprocessor_input_batch',
   'label',
   'x');
+
+-- Test data is evenly distributed across all segments (GPDB only)
+m4_changequote(`<!', `!>')
+m4_ifdef(<!__POSTGRESQL__!>, <!!>, <!
+DROP TABLE IF EXISTS data_preprocessor_input_batch, data_preprocessor_input_batch_summary;
+SELECT training_preprocessor_dl(
+  'data_preprocessor_input',
+  'data_preprocessor_input_batch',
+  'id',
+  'x',
+  1);
+
+-- This test expects that total number of images(17 for input table data_preprocessor_input)
+-- are equally distributed across all segments.
+-- Therefore, after preprocessing seg0 will have 17/(# of segs) buffers.
+SELECT assert(count(*)=(SELECT ceil(17.0/count(*)) from gp_segment_configuration WHERE role = 'p' and content != -1), 'Even distribution of buffers failed.')
+FROM data_preprocessor_input_batch
+WHERE gp_segment_id = 0;
+!>)
 
 DROP TABLE IF EXISTS data_preprocessor_input;
 CREATE TABLE data_preprocessor_input(id serial, x double precision[], y INTEGER, y1 BOOLEAN, y2 TEXT, y3 DOUBLE PRECISION, y4 DOUBLE PRECISION[], y5 INTEGER[]);
