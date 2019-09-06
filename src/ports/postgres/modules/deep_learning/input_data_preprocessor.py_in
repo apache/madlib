@@ -40,7 +40,7 @@ from utilities.utilities import split_quoted_delimited_str
 from utilities.utilities import strip_end_quotes
 from utilities.utilities import unique_string
 from utilities.utilities import validate_module_input_params
-
+from utilities.utilities import get_seg_number
 from utilities.validate_args import input_tbl_valid
 from utilities.validate_args import get_expr_type
 
@@ -171,14 +171,45 @@ class InputDataPreprocessorDL(object):
             FROM {self.source_table} {order_by_clause}
             """.format(FLOAT32_SQL_TYPE=FLOAT32_SQL_TYPE, **locals())
         plpy.execute(scalar_mult_sql)
+
+        series_tbl = unique_string(desp='series')
+        dist_key_tbl = unique_string(desp='dist_key')
         # Create the mini-batched output table
         if is_platform_pg():
             distributed_by_clause = ''
+            dist_key_clause = ''
+            join_clause = ''
+            select_clause = 'b.*'
+
         else:
-            distributed_by_clause= ' DISTRIBUTED BY (buffer_id) '
+            dist_key = DISTRIBUTION_KEY_COLNAME
+            # Create large temp table such that there is atleast 1 row on each segment
+            # Using 999999 would distribute data(atleast 1 row on each segment) for
+            # a cluster as large as 20000
+            query = """
+                CREATE TEMP TABLE {series_tbl}
+                AS
+                SELECT generate_series(0, 999999) {dist_key}
+                DISTRIBUTED BY ({dist_key})
+            """.format(**locals())
+            plpy.execute(query)
+
+            # Create temp table to get unique distribution key values for each segment
+            query = """
+                    CREATE TEMP TABLE {dist_key_tbl} AS
+                    SELECT gp_segment_id AS id, min({dist_key}) AS {dist_key}
+                    FROM {series_tbl}
+                    GROUP BY gp_segment_id
+            """.format(**locals())
+            plpy.execute(query)
+
+            num_segments = get_seg_number()
+            join_clause = 'JOIN {dist_key_tbl} ON (b.buffer_id%{num_segments})= {dist_key_tbl}.id'.format(**locals())
+            distributed_by_clause= ' DISTRIBUTED BY ({dist_key}) '.format(**locals())
+            select_clause = '{dist_key}, b.*'.format(**locals())
         sql = """
             CREATE TABLE {self.output_table} AS
-            SELECT * FROM
+            SELECT  {select_clause}  FROM
             (
                 SELECT {self.schema_madlib}.agg_array_concat(
                             ARRAY[{norm_tbl}.x_norm::{FLOAT32_SQL_TYPE}[]]) AS {x},
@@ -188,13 +219,14 @@ class InputDataPreprocessorDL(object):
                 FROM {norm_tbl}
                 GROUP BY buffer_id
             ) b
+            {join_clause}
             {distributed_by_clause}
             """.format(x=MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL,
                        y=MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL,
                        FLOAT32_SQL_TYPE=FLOAT32_SQL_TYPE,
                        **locals())
         plpy.execute(sql)
-        plpy.execute("DROP TABLE IF EXISTS {0}".format(norm_tbl))
+        plpy.execute("DROP TABLE IF EXISTS {0}, {1}, {2}".format(norm_tbl, series_tbl, dist_key_tbl))
         # Create summary table
         self._create_output_summary_table()
 
