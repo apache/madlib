@@ -365,31 +365,40 @@ closest_column::run(AnyType& args) {
  * This function calls a user-supplied function, for which it does not do
  * garbage collection. It is therefore meant to be called only constantly many
  * times before control is returned to the backend.
- */
+  */
 AnyType
 closest_columns::run(AnyType& args) {
-    MappedMatrix M = args[0].getAs<MappedMatrix>();
-    MappedColumnVector x = args[1].getAs<MappedColumnVector>();
-    uint32_t num = args[2].getAs<uint32_t>();
-    FunctionHandle dist = args[3].getAs<FunctionHandle>()
-        .unsetFunctionCallOptions(FunctionHandle::GarbageCollectionAfterCall);
-    string dist_fname = args[4].getAs<char *>();
 
-    std::string fname = dist_fn_name(dist_fname);
+    /* If the input has a null value, we want to return nothing for that
+    *  particular data point (because we cannot calculate the distance)
+    *  instead of failing.
+    */
+    try{
+        MappedMatrix M = args[0].getAs<MappedMatrix>();
+        MappedColumnVector x = args[1].getAs<MappedColumnVector>();
+        uint32_t num = args[2].getAs<uint32_t>();
+        FunctionHandle dist = args[3].getAs<FunctionHandle>()
+            .unsetFunctionCallOptions(FunctionHandle::GarbageCollectionAfterCall);
+        string dist_fname = args[4].getAs<char *>();
 
-    std::vector<std::tuple<Index, double> > result(num);
-    closestColumnsAndDistancesShortcut(M, x, dist, fname, result.begin(),
-        result.end());
+        std::string fname = dist_fn_name(dist_fname);
 
-    MutableArrayHandle<int32_t> indices = allocateArray<int32_t,
-        dbal::FunctionContext, dbal::DoNotZero, dbal::ThrowBadAlloc>(num);
-    MutableArrayHandle<double> distances = allocateArray<double,
-        dbal::FunctionContext, dbal::DoNotZero, dbal::ThrowBadAlloc>(num);
-    for (uint32_t i = 0; i < num; ++i)
-        std::tie(indices[i], distances[i]) = result[i];
+        std::vector<std::tuple<Index, double> > result(num);
+        closestColumnsAndDistancesShortcut(M, x, dist, fname, result.begin(),
+            result.end());
 
-    AnyType tuple;
-    return tuple << indices << distances;
+        MutableArrayHandle<int32_t> indices = allocateArray<int32_t,
+            dbal::FunctionContext, dbal::DoNotZero, dbal::ThrowBadAlloc>(num);
+        MutableArrayHandle<double> distances = allocateArray<double,
+            dbal::FunctionContext, dbal::DoNotZero, dbal::ThrowBadAlloc>(num);
+        for (uint32_t i = 0; i < num; ++i)
+            std::tie(indices[i], distances[i]) = result[i];
+
+        AnyType tuple;
+        return tuple << indices << distances;
+    }catch (const ArrayWithNullException &e) {
+        return Null();
+    }
 }
 
 AnyType

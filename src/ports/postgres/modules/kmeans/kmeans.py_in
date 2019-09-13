@@ -15,11 +15,15 @@ import plpy
 import re
 
 from utilities.control import IterationController2D
+from utilities.control import MinWarning
 from utilities.control_composite import IterationControllerComposite
 from utilities.validate_args import table_exists
 from utilities.validate_args import columns_exist_in_table
 from utilities.validate_args import table_is_empty
 from utilities.validate_args import get_expr_type
+from utilities.validate_args import input_tbl_valid
+from utilities.validate_args import output_tbl_valid
+from utilities.utilities import _assert
 from utilities.utilities import unique_string
 
 HAS_FUNCTION_PROPERTIES = m4_ifdef(<!__HAS_FUNCTION_PROPERTIES__!>, <!True!>, <!False!>)
@@ -224,7 +228,21 @@ def compute_kmeans_random_seeding(schema_madlib, rel_args, rel_state,
             m = it.evaluate("_args.k - coalesce(array_upper({0}, 1), 0)".format(state_str))
     return iterationCtrl.iteration
 # ------------------------------------------------------------------------------
+def _create_temp_view_for_expr(schema_madlib, rel_source, expr_point):
+    """
+    Create a temporary view to evaluate the expr_point.
+    """
 
+    if kmeans_validate_expr(schema_madlib, rel_source, expr_point):
+        view_name = unique_string('km_view')
+
+        plpy.execute(""" CREATE TEMP VIEW {view_name} AS
+            SELECT {expr_point} AS expr FROM {rel_source}
+            """.format(**locals()))
+        rel_source = view_name
+        expr_point = 'expr'
+
+    return rel_source,expr_point
 
 def compute_kmeans(schema_madlib, rel_args, rel_state, rel_source,
                    expr_point, agg_centroid, **kwargs):
@@ -246,14 +264,9 @@ def compute_kmeans(schema_madlib, rel_args, rel_state, rel_source,
         result in \c rel_state
     """
 
-    if kmeans_validate_expr(schema_madlib, rel_source, expr_point):
-        view_name = unique_string('km_view')
-
-        plpy.execute(""" CREATE TEMP VIEW {view_name} AS
-            SELECT {expr_point} AS expr FROM {rel_source}
-            """.format(**locals()))
-        rel_source = view_name
-        expr_point = 'expr'
+    rel_source, expr_point = _create_temp_view_for_expr(schema_madlib,
+                                                        rel_source,
+                                                        expr_point)
 
     fn_dist_name = plpy.execute("SELECT fn_dist_name FROM " +
                                 rel_args)[0]['fn_dist_name']
@@ -387,5 +400,66 @@ def compute_kmeans(schema_madlib, rel_args, rel_state, rel_source,
                             'old_centroid': old_centroid_str}))
     return iterationCtrl.iteration
 
+def simple_silhouette_points(schema_madlib, rel_source, output_table, pid,
+    expr_point, centroids, fn_dist, **kwargs):
+
+    """
+    Calculate the simple silhouette score for every data point.
+    """
+
+    with MinWarning("error"):
+        kmeans_validate_src(schema_madlib, rel_source)
+        output_tbl_valid(output_table, 'kmeans')
+
+        _assert(type(centroids) == list and
+                type(centroids[0]) == list and
+                len(centroids) > 1,
+                'kmeans: Invalid centroids shape. Centroids have to be a 2D numeric array.')
+
+        rel_source, expr_point = _create_temp_view_for_expr(schema_madlib,
+                                                            rel_source,
+                                                            expr_point)
+
+        plpy.execute("""
+            CREATE TABLE {output_table} AS
+                SELECT {pid}, centroids[1] AS centroid_id,
+                centroids[2] AS neighbor_centroid_id,
+                (CASE
+                    WHEN distances[2] = 0 THEN 0
+                    ELSE (distances[2] - distances[1]) / distances[2]
+                END) AS silh
+                FROM
+                (SELECT {pid},
+                       (cc_out).column_ids::integer[] AS centroids,
+                       (cc_out).distances::double precision[] AS distances
+                FROM (
+                    SELECT {pid},
+                           {schema_madlib}._closest_columns(
+                            array{centroids},
+                            {expr_point},
+                            2,
+                            '{fn_dist}'::REGPROC, '{fn_dist}') AS cc_out
+                    FROM {rel_source})q1
+                )q2
+            """.format(**locals()))
+
+def simple_silhouette_points_dbl_wrapper(schema_madlib, rel_source, output_table, pid,
+    expr_point, centroids, fn_dist, **kwargs):
+
+    simple_silhouette_points(schema_madlib, rel_source, output_table, pid,
+        expr_point, centroids, fn_dist)
+
+
+def simple_silhouette_points_str_wrapper(schema_madlib, rel_source, output_table, pid,
+    expr_point, centroids_table, centroids_col, fn_dist, **kwargs):
+
+    input_tbl_valid(centroids_table, 'kmeans')
+    columns_exist_in_table(centroids_table, centroids_col)
+    centroids = plpy.execute("""
+        SELECT {centroids_col} AS centroids FROM {centroids_table}
+        """.format(**locals()))[0]['centroids']
+
+    simple_silhouette_points(schema_madlib, rel_source, output_table, pid,
+        expr_point, centroids, fn_dist, **kwargs)
 
 m4_changequote(<!`!>, <!'!>)

@@ -64,6 +64,10 @@ SELECT * FROM kmeans('kmeans_2d', 'position', ARRAY[
 SELECT * FROM kmeans('kmeans_2d', 'position', 'centroids', 'position', 'MADLIB_SCHEMA.dist_norm1');
 SELECT * FROM kmeans('kmeans_2d', 'position', 'centroids', 'position', 'MADLIB_SCHEMA.dist_norm2');
 
+SELECT * FROM kmeans('kmeans_2d', 'array[x,y]', 'centroids', 'array[x,y]');
+SELECT * FROM kmeanspp('kmeans_2d', 'array[x,y]', 10);
+SELECT * FROM kmeans_random('kmeans_2d', 'arRAy [ x,y]', 10);
+
 DROP TABLE IF EXISTS km_sample;
 
 CREATE TABLE km_sample(pid int, points double precision[]);
@@ -80,16 +84,6 @@ COPY km_sample (pid, points) FROM stdin DELIMITER '|';
 9 | {14.83, 1.64, 2.17, 14, 97, 2.8, 2.98, 0.29, 1.98, 5.2, 1.08, 2.85, 1045}
 10 | {13.86, 1.35, 2.27, 16, 98, 2.98, 3.15, 0.22, 1.8500, 7.2199, 1.01, NULL, 1045}
 \.
-
-
-SELECT * FROM kmeanspp('km_sample', 'points', 2,
-                       'MADLIB_SCHEMA.squared_dist_norm2',
-                       'MADLIB_SCHEMA.avg', 20, 0.001);
-
-
-SELECT * FROM kmeans('kmeans_2d', 'array[x,y]', 'centroids', 'array[x,y]');
-SELECT * FROM kmeanspp('kmeans_2d', 'array[x,y]', 10);
-SELECT * FROM kmeans_random('kmeans_2d', 'arRAy [ x,y]', 10);
 
 -- Test kmeanspp_auto
 DROP TABLE IF EXISTS autokm_out,autokm_out_summary;
@@ -163,6 +157,43 @@ DROP TABLE IF EXISTS autokm_out,autokm_out_summary;
 SELECT * FROM kmeans_random_auto('kmeans_2d', 'autokm_out', 'array[x,y]', ARRAY[12,3,5,6,8], 'MADLIB_SCHEMA.squared_dist_norm2',
                        'MADLIB_SCHEMA.avg', 20, 0.001, 'silhouette');
 
+-- Silhouette Tests
+DROP TABLE IF EXISTS km_sample_out, silh_out;
+
+CREATE TABLE km_sample_out AS
+SELECT * FROM kmeanspp('km_sample', 'points', 2,
+                       'MADLIB_SCHEMA.squared_dist_norm2',
+                       'MADLIB_SCHEMA.avg', 20, 0.001);
+
+-- Test simple_silhouette_points full interface
+SELECT * FROM simple_silhouette_points('km_sample', 'silh_out', 'pid', 'points',
+                                'km_sample_out', 'centroids',
+                                'MADLIB_SCHEMA.squared_dist_norm2');
+
+SELECT assert(silh > 0, 'Incorrect silhouette value')
+FROM silh_out
+WHERE silh IS NOT NULL;
+
+DROP TABLE IF EXISTS silh_out;
+-- Test simple_silhouette_points default distance func
+SELECT * FROM simple_silhouette_points(
+    'km_sample', 'silh_out', 'pid', 'points',
+    'km_sample_out', 'centroids');
+
+SELECT assert(count(*) = 9, 'Incorrect silhouette count')
+FROM silh_out
+WHERE silh IS NOT NULL;
+
+DROP TABLE IF EXISTS silh_out;
+-- Test simple_silhouette_points double precision array centroids
+SELECT * FROM simple_silhouette_points(
+    'km_sample', 'silh_out', 'pid', 'points',
+    (SELECT centroids FROM km_sample_out));
+
+SELECT assert(silh > 0, 'Incorrect silhouette value')
+FROM silh_out
+WHERE silh IS NOT NULL;
+
 SELECT assert(
         silhouette > 0 AND objective_fn > 0,
         'Kmeans: Auto Kmeans_random failed for silhouette on unordered k vals')
@@ -206,6 +237,55 @@ SELECT assert(
         'Kmeans: Auto Kmeans_random failed for both.')
 FROM autokm_out_summary;
 
+DROP TABLE IF EXISTS silh_out;
+-- Test simple_silhouette_points actual values
+SELECT * FROM simple_silhouette_points(
+    'km_sample', 'silh_out', 'pid', 'points',
+    ARRAY[[1,1,1,1,1,1,1,1,1,1,1,1,1],
+    [14.23, 1.71, 2.43, 15.6, 127, 2.8, 3.0600, 0.2800, 2.29, 5.64, 1.04, 3.92, 1065]]::DOUBLE PRECISION[][]);
+
+SELECT assert(relative_error(1, silh) < 1e-3,
+    'Incorrect silhouette value')
+FROM silh_out
+WHERE pid = 1;
+SELECT assert(relative_error(0.8789, silh) < 1e-3,
+    'Incorrect silhouette value')
+FROM silh_out
+WHERE pid = 2;
+SELECT assert(relative_error(0.8966, silh) < 1e-3,
+    'Incorrect silhouette value')
+FROM silh_out
+WHERE pid = 3;
+SELECT assert(relative_error(0.7200, silh) < 1e-3,
+    'Incorrect silhouette value')
+FROM silh_out
+WHERE pid = 4;
+SELECT assert(relative_error(0.5560, silh) < 1e-3,
+    'Incorrect silhouette value')
+FROM silh_out
+WHERE pid = 5;
+SELECT assert(relative_error(0.7348, silh) < 1e-3,
+    'Incorrect silhouette value')
+FROM silh_out
+WHERE pid = 6;
+SELECT assert(relative_error(0.8242, silh) < 1e-3,
+    'Incorrect silhouette value')
+FROM silh_out
+WHERE pid = 7;
+SELECT assert(relative_error(0.8229, silh) < 1e-3,
+    'Incorrect silhouette value')
+FROM silh_out
+WHERE pid = 8;
+SELECT assert(relative_error(0.9655, silh) < 1e-3,
+    'Incorrect silhouette value')
+FROM silh_out
+WHERE pid = 9;
+
+SELECT assert(centroid_id = 1 AND neighbor_centroid_id = 0,
+    'Incorrect centroid ids')
+FROM silh_out;
+
+DROP TABLE IF EXISTS km_sample_out, silh_out;
 DROP TABLE IF EXISTS km_sample CASCADE;
 DROP TABLE IF EXISTS centroids CASCADE;
 DROP TABLE IF EXISTS kmeans_2d CASCADE;
