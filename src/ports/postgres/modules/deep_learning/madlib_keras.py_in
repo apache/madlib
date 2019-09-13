@@ -23,11 +23,6 @@ import plpy
 import sys
 import time
 
-# Do not remove `import keras` although it's not directly used in this file.
-# For ex if the user passes in the optimizer as keras.optimizers.SGD instead of just
-# SGD, then without this import this python file won't find the SGD module
-import keras
-
 from keras import backend as K
 from keras.layers import *
 from keras.models import *
@@ -59,6 +54,11 @@ def fit(schema_madlib, source_table, model, model_arch_table,
 
     mb_dep_var_col = MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL
     mb_indep_var_col = MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL
+
+    dep_shape_col = add_postfix(
+        MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL, "_shape")
+    ind_shape_col = add_postfix(
+        MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL, "_shape")
 
     fit_validator = FitInputValidator(
         source_table, validation_table, model, model_arch_table,
@@ -107,6 +107,8 @@ def fit(schema_madlib, source_table, model, model_arch_table,
         SELECT {schema_madlib}.fit_step(
             {mb_dep_var_col},
             {mb_indep_var_col},
+            {dep_shape_col},
+            {ind_shape_col},
             $MAD${model_arch}$MAD$::TEXT,
             {compile_params_to_pass}::TEXT,
             {fit_params_to_pass}::TEXT,
@@ -385,7 +387,8 @@ def should_compute_metrics_this_iter(curr_iter, metrics_compute_frequency,
     return (curr_iter)%metrics_compute_frequency == 0 or \
            curr_iter == num_iterations
 
-def fit_transition(state, dependent_var, independent_var, model_architecture,
+def fit_transition(state, dependent_var, independent_var, dependent_var_shape,
+                   independent_var_shape, model_architecture,
                    compile_params, fit_params, current_seg_id, seg_ids,
                    images_per_seg, gpus_per_host, segments_per_host,
                    prev_serialized_weights, **kwargs):
@@ -410,8 +413,8 @@ def fit_transition(state, dependent_var, independent_var, model_architecture,
         agg_image_count = madlib_keras_serializer.get_image_count_from_state(state)
 
     # Prepare the data
-    x_train = np_array_float32(independent_var)
-    y_train = np_array_int16(dependent_var)
+    x_train = np_array_float32(independent_var, independent_var_shape)
+    y_train = np_array_int16(dependent_var, dependent_var_shape)
 
     # Fit segment model on data
     start_fit = time.time()
@@ -555,8 +558,8 @@ def validate_evaluate(module_name, model_table, model_summary_table, test_table,
         module_name, model_table, model_summary_table,
         test_table, output_table, MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL)
     _validate_test_summary_tbl()
-    validate_dependent_var_for_minibatch(test_table,
-                                         MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL)
+    validate_bytea_var_for_minibatch(test_table,
+                                     MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL)
 
 def get_loss_metric_from_keras_eval(schema_madlib, table, compile_params,
                                     model_arch, serialized_weights, gpus_per_host,
@@ -566,6 +569,11 @@ def get_loss_metric_from_keras_eval(schema_madlib, table, compile_params,
 
     mb_dep_var_col = MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL
     mb_indep_var_col = MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL
+
+    dep_shape_col = add_postfix(
+        MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL, "_shape")
+    ind_shape_col = add_postfix(
+        MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL, "_shape")
     """
     This function will call the internal keras evaluate function to get the loss
     and accuracy of each tuple which then gets averaged to get the final result.
@@ -574,6 +582,8 @@ def get_loss_metric_from_keras_eval(schema_madlib, table, compile_params,
         select ({schema_madlib}.internal_keras_evaluate(
                                             {mb_dep_var_col},
                                             {mb_indep_var_col},
+                                            {dep_shape_col},
+                                            {ind_shape_col},
                                             $MAD${model_arch}$MAD$,
                                             $1,
                                             {compile_params},
@@ -590,6 +600,7 @@ def get_loss_metric_from_keras_eval(schema_madlib, table, compile_params,
     return loss_metric
 
 def internal_keras_eval_transition(state, dependent_var, independent_var,
+                                   dependent_var_shape, independent_var_shape,
                                    model_architecture, serialized_weights, compile_params,
                                    current_seg_id, seg_ids, images_per_seg,
                                    gpus_per_host, segments_per_host, **kwargs):
@@ -612,8 +623,8 @@ def internal_keras_eval_transition(state, dependent_var, independent_var,
         # Same model every time, no need to re-compile or update weights
         model = SD['segment_model']
 
-    x_val = np_array_float32(independent_var)
-    y_val = np_array_int16(dependent_var)
+    x_val = np_array_float32(independent_var, independent_var_shape)
+    y_val = np_array_int16(dependent_var, dependent_var_shape)
 
     with K.tf.device(device_name):
         res = model.evaluate(x_val, y_val)
@@ -626,7 +637,7 @@ def internal_keras_eval_transition(state, dependent_var, independent_var,
         loss = res
         metric = 0
 
-    image_count = len(dependent_var)
+    image_count = len(y_val)
 
     agg_image_count += image_count
     agg_loss += (image_count * loss)

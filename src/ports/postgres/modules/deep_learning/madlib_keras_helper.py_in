@@ -18,6 +18,7 @@
 # under the License.
 
 import numpy as np
+from utilities.utilities import add_postfix
 from utilities.utilities import is_platform_pg
 import plpy
 
@@ -51,15 +52,19 @@ DEFAULT_NORMALIZING_CONST = 1.0
 
 # Prepend a dimension to np arrays using expand_dims.
 def expand_input_dims(input_data):
-    input_data = np_array_float32(input_data)
+    input_data = np.array(input_data, dtype=np.float32)
     input_data = np.expand_dims(input_data, axis=0)
     return input_data
 
-def np_array_float32(var):
-    return np.array(var, dtype=np.float32)
+def np_array_float32(var, var_shape):
+    arr = np.frombuffer(var, dtype=np.float32)
+    arr.shape = var_shape
+    return arr
 
-def np_array_int16(var):
-    return np.array(var, dtype=np.int16)
+def np_array_int16(var, var_shape):
+    arr = np.frombuffer(var, dtype=np.int16)
+    arr.shape = var_shape
+    return arr
 
 def strip_trailing_nulls_from_class_values(class_values):
     """
@@ -123,23 +128,31 @@ def get_image_count_per_seg_for_minibatched_data_from_db(table_name):
 
     mb_dep_var_col = MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL
 
+    shape_col = add_postfix(mb_dep_var_col, "_shape")
+    plpy.info(table_name)
+    plpy.info(shape_col)
+
     if is_platform_pg():
         res = plpy.execute(
-            """ SELECT SUM(ARRAY_LENGTH({0}, 1)) AS images_per_seg
+            """ SELECT {0}::SMALLINT[] AS shape
                 FROM {1}
-            """.format(mb_dep_var_col, table_name))
-        images_per_seg = [int(res[0]['images_per_seg'])]
+            """.format(shape_col, table_name))
+        plpy.info(res)
+
+        images_per_seg = [sum(r['shape'][0] for r in res)]
         seg_ids = [0]
     else:
+        # The number of images in the buffer is the first dimension in the shape.
         images_per_seg = plpy.execute(
-            """ SELECT gp_segment_id, SUM(ARRAY_LENGTH({0}, 1)) AS images_per_seg
+            """ SELECT gp_segment_id, sum({0}[1]) AS images_per_seg
                 FROM {1}
                 GROUP BY gp_segment_id
-            """.format(mb_dep_var_col, table_name))
+            """.format(shape_col, table_name))
         seg_ids = [int(each_segment["gp_segment_id"])
                    for each_segment in images_per_seg]
         images_per_seg = [int(each_segment["images_per_seg"])
                           for each_segment in images_per_seg]
+
     return seg_ids, images_per_seg
 
 def get_image_count_per_seg_for_non_minibatched_data_from_db(table_name):
@@ -174,4 +187,9 @@ def get_image_count_per_seg_for_non_minibatched_data_from_db(table_name):
     images_per_seg = [int(image["images_per_seg"]) for image in images_per_seg]
     return gp_segment_id_col, seg_ids, images_per_seg
 
-
+def parse_shape(shape):
+    # Parse the shape format given by the sql into an int array
+    # [1:10][1:32][1:3] -> [10, 32, 3]
+    # Split on :, discard the first one [1:],
+    # split each piece on ], take the first piece [0], convert to int
+    return [int(a.split(']')[0]) for a in shape.split(':')[1:]]

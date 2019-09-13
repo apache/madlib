@@ -32,8 +32,9 @@ from madlib_keras_helper import NORMALIZING_CONST_COLNAME
 from madlib_keras_helper import MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL
 from madlib_keras_helper import MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL
 from madlib_keras_helper import METRIC_TYPE_COLNAME
+from madlib_keras_helper import parse_shape
 
-from utilities.minibatch_validation import validate_dependent_var_for_minibatch
+from utilities.minibatch_validation import validate_bytea_var_for_minibatch
 from utilities.utilities import _assert
 from utilities.utilities import add_postfix
 from utilities.utilities import is_var_valid
@@ -88,7 +89,6 @@ class InputValidator:
             plpy.error("{0}: Invalid value for pred_type param ({1}). Must be "\
                 "either response or prob.".format(module_name, pred_type))
 
-
     @staticmethod
     def validate_input_shape(table, independent_varname, input_shape, offset):
         """
@@ -103,27 +103,51 @@ class InputValidator:
         If the image is not batched then it will look like [32, 32 ,3] and the offset in
         this case is 1 (start the index at 1).
         """
-        array_upper_query = ", ".join("array_upper({0}, {1}) AS n_{2}".format(
-            independent_varname, i+offset, i) for i in range(len(input_shape)))
-        query = """
-            SELECT {0}
-            FROM {1}
-            LIMIT 1
-        """.format(array_upper_query, table)
-        # This query will fail if an image in independent var does not have the
-        # same number of dimensions as the input_shape.
-        result = plpy.execute(query)[0]
+
+        ind_shape_col = add_postfix(independent_varname, "_shape")
+        minibatched = is_var_valid(table, ind_shape_col)
+        if minibatched:
+            query = """
+                SELECT {ind_shape_col} AS shape
+                FROM {table}
+                LIMIT 1
+            """.format(**locals())
+            # This query will fail if an image in independent var does not have the
+            # same number of dimensions as the input_shape.
+            result = plpy.execute(query)[0]['shape']
+            result = result[1:]
+        else:
+            array_upper_query = ", ".join("array_upper({0}, {1}) AS n_{2}".format(
+                independent_varname, i+offset, i) for i in range(len(input_shape)))
+            query = """
+                SELECT {0}
+                FROM {1}
+                LIMIT 1
+            """.format(array_upper_query, table)
+
+            # This query will fail if an image in independent var does not have the
+            # same number of dimensions as the input_shape.
+            result = plpy.execute(query)[0]
+
         _assert(len(result) == len(input_shape),
             "model_keras error: The number of dimensions ({0}) of each image"
             " in model architecture and {1} in {2} ({3}) do not match.".format(
                 len(input_shape), independent_varname, table, len(result)))
+
         for i in range(len(input_shape)):
-            key_name = "n_{0}".format(i)
+            if minibatched:
+                key_name = i
+                input_shape_from_table = [result[j]
+                    for j in range(len(input_shape))]
+            else:
+                key_format = "n_{0}"
+                key_name = key_format.format(i)
+                input_shape_from_table = [result[key_format.format(j)]
+                    for j in range(len(input_shape))]
+
             if result[key_name] != input_shape[i]:
                 # Construct the shape in independent varname to display
                 # meaningful error msg.
-                input_shape_from_table = [result["n_{0}".format(i)]
-                    for i in range(len(input_shape))]
                 plpy.error("model_keras error: Input shape {0} in the model"
                     " architecture does not match the input shape {1} of column"
                     " {2} in table {3}.".format(
@@ -221,6 +245,8 @@ class FitInputValidator:
         self.model_arch_id = model_arch_id
         self.dependent_varname = dependent_varname
         self.independent_varname = independent_varname
+        self.dep_shape_col = add_postfix(dependent_varname, "_shape")
+        self.ind_shape_col = add_postfix(independent_varname, "_shape")
         self.metrics_compute_frequency = metrics_compute_frequency
         self.warm_start = warm_start
         self.num_iterations = num_iterations
@@ -251,8 +277,8 @@ class FitInputValidator:
 
         # Source table and validation tables must have the same schema
         self._validate_input_table(self.source_table)
-        validate_dependent_var_for_minibatch(self.source_table,
-                                             self.dependent_varname)
+        validate_bytea_var_for_minibatch(self.source_table,
+                                         self.dependent_varname)
 
         self._validate_validation_table()
         InputValidator.validate_model_arch_table(self.module_name, self.model_arch_table,
@@ -283,12 +309,28 @@ class FitInputValidator:
                     dependent_varname=self.dependent_varname,
                     table=table))
 
+        _assert(is_var_valid(table, self.ind_shape_col),
+                "{module_name}: invalid independent_var_shape "
+                "('{ind_shape_col}') for table ({table}). "
+                "Please ensure that the input table ({table}) "
+                "has been preprocessed by the image preprocessor.".format(
+                    module_name=self.module_name,
+                    ind_shape_col=self.ind_shape_col,
+                    table=table))
+
+        _assert(is_var_valid(table, self.dep_shape_col),
+                "{module_name}: invalid dependent_var_shape "
+                "('{dep_shape_col}') for table ({table}). "
+                "Please ensure that the input table ({table}) "
+                "has been preprocessed by the image preprocessor.".format(
+                    module_name=self.module_name,
+                    dep_shape_col=self.dep_shape_col,
+                    table=table))
+
     def _is_valid_metrics_compute_frequency(self):
         return self.metrics_compute_frequency is None or \
                (self.metrics_compute_frequency >= 1 and \
                self.metrics_compute_frequency <= self.num_iterations)
-
-
 
     def _validate_validation_table(self):
         if self.validation_table and self.validation_table.strip() != '':
@@ -296,10 +338,9 @@ class FitInputValidator:
             self._validate_input_table(self.validation_table)
             dependent_vartype = get_expr_type(self.dependent_varname,
                                               self.validation_table)
-            _assert(is_valid_psql_type(dependent_vartype,
-                                       NUMERIC | ONLY_ARRAY),
+            _assert(dependent_vartype == 'bytea',
                     "Dependent variable column {0} in validation table {1} should be "
-                    "a numeric array and also one hot encoded.".format(
+                    "a bytea and also one hot encoded.".format(
                         self.dependent_varname, self.validation_table))
 
 

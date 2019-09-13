@@ -139,6 +139,26 @@ class InputDataPreprocessorDL(object):
         return 'ARRAY[{0}]::INTEGER[]::{1}[]'.format(
             ', '.join(one_hot_encoded_expr), SMALLINT_SQL_TYPE)
 
+    def _get_independent_var_shape(self):
+
+        shape = plpy.execute(
+            "SELECT array_dims({0}) AS shape FROM {1} LIMIT 1".format(
+            self.independent_varname, self.source_table))[0]['shape']
+        return parse_shape(shape)
+
+    def _get_dependent_var_shape(self):
+
+        if self.num_classes:
+            shape = [self.num_classes]
+        elif self.dependent_levels:
+            shape = [len(self.dependent_levels)]
+        else:
+            shape = plpy.execute(
+                "SELECT array_dims({0}) AS shape FROM {1} LIMIT 1".format(
+                self.dependent_varname, self.source_table))[0]['shape']
+            shape = parse_shape(shape)
+        return shape
+
     def input_preprocessor_dl(self, order_by_random=True):
         """
             Creates the output and summary table that does the following
@@ -174,14 +194,26 @@ class InputDataPreprocessorDL(object):
 
         series_tbl = unique_string(desp='series')
         dist_key_tbl = unique_string(desp='dist_key')
+        dep_shape_col = add_postfix(
+            MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL, "_shape")
+        ind_shape_col = add_postfix(
+            MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL, "_shape")
+
+        ind_shape = self._get_independent_var_shape()
+        ind_shape = ','.join([str(i) for i in ind_shape])
+        dep_shape = self._get_dependent_var_shape()
+        dep_shape = ','.join([str(i) for i in dep_shape])
+
         # Create the mini-batched output table
         if is_platform_pg():
             distributed_by_clause = ''
             dist_key_clause = ''
             join_clause = ''
             select_clause = 'b.*'
+            dist_key_comma = ''
 
         else:
+
             dist_key = DISTRIBUTION_KEY_COLNAME
             # Create large temp table such that there is atleast 1 row on each segment
             # Using 999999 would distribute data(atleast 1 row on each segment) for
@@ -206,16 +238,25 @@ class InputDataPreprocessorDL(object):
             num_segments = get_seg_number()
             join_clause = 'JOIN {dist_key_tbl} ON (b.buffer_id%{num_segments})= {dist_key_tbl}.id'.format(**locals())
             distributed_by_clause= ' DISTRIBUTED BY ({dist_key}) '.format(**locals())
-            select_clause = '{dist_key}, b.*'.format(**locals())
+            dist_key_comma = dist_key + ' ,'
+
         sql = """
             CREATE TABLE {self.output_table} AS
-            SELECT  {select_clause}  FROM
+            SELECT {dist_key_comma}
+                   {self.schema_madlib}.convert_array_to_bytea({x}) AS {x},
+                   {self.schema_madlib}.convert_array_to_bytea({y}) AS {y},
+                   ARRAY[count,{ind_shape}]::SMALLINT[] AS {ind_shape_col},
+                   ARRAY[count,{dep_shape}]::SMALLINT[] AS {dep_shape_col},
+                   buffer_id
+            FROM
             (
-                SELECT {self.schema_madlib}.agg_array_concat(
-                            ARRAY[{norm_tbl}.x_norm::{FLOAT32_SQL_TYPE}[]]) AS {x},
-                       {self.schema_madlib}.agg_array_concat(
-                            ARRAY[{norm_tbl}.y]) AS {y},
-                       ({norm_tbl}.row_id%{self.num_of_buffers})::smallint AS buffer_id
+                SELECT
+                    {self.schema_madlib}.agg_array_concat(
+                        ARRAY[{norm_tbl}.x_norm::{FLOAT32_SQL_TYPE}[]]) AS {x},
+                    {self.schema_madlib}.agg_array_concat(
+                        ARRAY[{norm_tbl}.y]) AS {y},
+                    ({norm_tbl}.row_id%{self.num_of_buffers})::smallint AS buffer_id,
+                    count(*) AS count
                 FROM {norm_tbl}
                 GROUP BY buffer_id
             ) b
@@ -518,9 +559,11 @@ class InputDataPreprocessorDocumentation:
         following columns:
 
         buffer_id               -- INTEGER.  Unique id for packed table.
-        dependent_varname       -- ANYARRAY[]. Packed array of dependent variables.
-        independent_varname     -- REAL[]. Packed array of independent
+        dependent_varname       -- BYTEA. Packed array of dependent variables.
+        independent_varname     -- BYTEA. Packed array of independent
                                    variables.
+        dependent_varname       -- TEXT. Shape of the dependent variable buffer.
+        independent_varname     -- TEXT. Shape of the independent variable buffer.
 
         ---------------------------------------------------------------------------
         The algorithm also creates a summary table named <output_table>_summary
@@ -613,9 +656,11 @@ class InputDataPreprocessorDocumentation:
         following columns:
 
         buffer_id               -- INTEGER.  Unique id for packed table.
-        dependent_varname       -- ANYARRAY[]. Packed array of dependent variables.
-        independent_varname     -- REAL[]. Packed array of independent
+        dependent_varname       -- BYTEA. Packed array of dependent variables.
+        independent_varname     -- BYTEA. Packed array of independent
                                    variables.
+        dependent_varname       -- TEXT. Shape of the dependent variable buffer.
+        independent_varname     -- TEXT. Shape of the independent variable buffer.
 
         ---------------------------------------------------------------------------
         The algorithm also creates a summary table named <output_table>_summary

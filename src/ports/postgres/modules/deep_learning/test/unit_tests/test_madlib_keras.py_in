@@ -68,11 +68,18 @@ class MadlibKerasFitTestCase(unittest.TestCase):
 
         self.all_seg_ids = [0,1,2]
 
-        self.independent_var = [[[[0.5]]]] * 10
-        self.dependent_var = [[0,1]] * 10
+        self.independent_var_real = [[[[0.5]]]] * 10
+        self.dependent_var_int = [[0,1]] * 10
+
+        # Params as bytea
+        self.independent_var = np.array(self.independent_var_real, dtype=np.float32).tobytes()
+        self.dependent_var = np.array(self.dependent_var_int, dtype=np.int16).tobytes()
+
+        self.independent_var_shape = [10,1,1,1]
+        self.dependent_var_shape = [10,2]
         # We test on segment 0, which has 3 buffers filled with 10 identical
         #  images each, or 30 images total
-        self.total_images_per_seg = [3*len(self.dependent_var),20,40]
+        self.total_images_per_seg = [3*len(self.dependent_var_int),20,40]
 
     def tearDown(self):
         self.module_patcher.stop()
@@ -84,15 +91,17 @@ class MadlibKerasFitTestCase(unittest.TestCase):
         self.subject.clear_keras_session = Mock()
         self.subject.is_platform_pg = Mock(return_value = is_platform_pg)
         starting_image_count = 0
-        ending_image_count = len(self.dependent_var)
+        ending_image_count = len(self.dependent_var_int)
         previous_state = np.array(self.model_weights, dtype=np.float32)
 
         k = {'SD' : {}}
 
         new_state = self.subject.fit_transition(
-            None, self.dependent_var, self.independent_var , self.model.to_json(),
-            self.compile_params, self.fit_params, 0, self.all_seg_ids,
-            self.total_images_per_seg, 0, 4, previous_state.tostring(), **k)
+            None, self.dependent_var, self.independent_var,
+            self.dependent_var_shape, self.independent_var_shape,
+            self.model.to_json(), self.compile_params, self.fit_params, 0,
+            self.all_seg_ids, self.total_images_per_seg, 0, 4,
+            previous_state.tostring(), **k)
         state = np.fromstring(new_state, dtype=np.float32)
         image_count = state[0]
         weights = np.rint(state[1:]).astype(np.int)
@@ -112,8 +121,8 @@ class MadlibKerasFitTestCase(unittest.TestCase):
         self.subject.clear_keras_session = Mock()
         self.subject.is_platform_pg = Mock(return_value = is_platform_pg)
 
-        starting_image_count = len(self.dependent_var)
-        ending_image_count = starting_image_count + len(self.dependent_var)
+        starting_image_count = len(self.dependent_var_int)
+        ending_image_count = starting_image_count + len(self.dependent_var_int)
 
         state = [starting_image_count]
         state.extend(self.model_weights)
@@ -125,6 +134,7 @@ class MadlibKerasFitTestCase(unittest.TestCase):
 
         new_state = self.subject.fit_transition(
             state.tostring(), self.dependent_var, self.independent_var,
+            self.dependent_var_shape, self.independent_var_shape,
             self.model.to_json(), None, self.fit_params, 0, self.all_seg_ids,
             self.total_images_per_seg, 0, 4, 'dummy_previous_state', **k)
 
@@ -146,8 +156,8 @@ class MadlibKerasFitTestCase(unittest.TestCase):
         self.subject.clear_keras_session = Mock()
         self.subject.is_platform_pg = Mock(return_value = is_platform_pg)
 
-        starting_image_count = 2*len(self.dependent_var)
-        ending_image_count = starting_image_count + len(self.dependent_var)
+        starting_image_count = 2*len(self.dependent_var_int)
+        ending_image_count = starting_image_count + len(self.dependent_var_int)
 
         state = [starting_image_count]
         state.extend(self.model_weights)
@@ -159,9 +169,10 @@ class MadlibKerasFitTestCase(unittest.TestCase):
                                              '/cpu:0', self.serialized_weights)
         k = {'SD': {'segment_model' :self.model}}
         new_state = self.subject.fit_transition(
-            state.tostring(), self.dependent_var, self.independent_var , self.model.to_json(),
-            None, self.fit_params, 0, self.all_seg_ids, self.total_images_per_seg,
-            0, 4, 'dummy_previous_state', **k)
+            state.tostring(), self.dependent_var, self.independent_var,
+            self.dependent_var_shape, self.independent_var_shape,
+            self.model.to_json(), None, self.fit_params, 0, self.all_seg_ids,
+            self.total_images_per_seg, 0, 4, 'dummy_previous_state', **k)
 
         state = np.fromstring(new_state, dtype=np.float32)
         image_count = state[0]
@@ -197,16 +208,19 @@ class MadlibKerasFitTestCase(unittest.TestCase):
         k = {}
         self.assertEqual('dummy_state',
                          self.subject.fit_transition('dummy_state', [0], None,
+                                                     'noshape', 'noshape',
                                                      'dummy_model_json', "foo", "bar",
                                                      1, [0,1,2], [3,3,3], 0, 4,
                                                      'dummy_prev_state', **k))
         self.assertEqual('dummy_state',
                          self.subject.fit_transition('dummy_state', None, [[0.5]],
+                                                     'noshape', 'noshape',
                                                      'dummy_model_json', "foo", "bar",
                                                      1, [0,1,2], [3,3,3], 0, 4,
                                                      'dummy_prev_state', **k))
         self.assertEqual('dummy_state',
                          self.subject.fit_transition('dummy_state', None, None,
+                                                     'noshape', 'noshape',
                                                      'dummy_model_json', "foo", "bar",
                                                      1, [0,1,2], [3,3,3], 0, 4,
                                                      'dummy_prev_state', **k))
@@ -923,23 +937,24 @@ class InputValidatorTestCase(unittest.TestCase):
             self.module_name, None, 'response', self.model.to_json())
 
     def test_validate_input_shape_shapes_do_not_match(self):
-        self.plpy_mock_execute.return_value = [{'n_0': 32, 'n_1': 32}]
+        self.plpy_mock_execute.return_value = [{'shape':[1,32,32]}]
         with self.assertRaises(plpy.PLPYException):
             self.subject.validate_input_shape(
                 self.test_table, self.ind_var, [32,32,3], 2)
 
-        self.plpy_mock_execute.return_value = [{'n_0': 3, 'n_1': 32, 'n_2': 32}]
+        self.plpy_mock_execute.return_value = [{'shape': [1,3,32,32]}]
         with self.assertRaises(plpy.PLPYException):
             self.subject.validate_input_shape(
                 self.test_table, self.ind_var, [32,32,3], 2)
 
-        self.plpy_mock_execute.return_value = [{'n_0': 3, 'n_1': None, 'n_2': None}]
+        self.plpy_mock_execute.return_value = [{'shape': [1,3]}]
         with self.assertRaises(plpy.PLPYException):
             self.subject.validate_input_shape(
                 self.test_table, self.ind_var, [3,32], 2)
 
     def test_validate_input_shape_shapes_match(self):
-        self.plpy_mock_execute.return_value = [{'n_0': 32, 'n_1': 32, 'n_2': 3}]
+        self.subject.is_var_valid = Mock(return_value = False)
+        self.plpy_mock_execute.return_value = [{'shape': [1,32,32,3]}]
         self.subject.validate_input_shape(
             self.test_table, self.ind_var, [32,32,3], 1)
 
@@ -1108,11 +1123,18 @@ class MadlibKerasEvaluationTestCase(unittest.TestCase):
 
         #self.model.evaluate = Mock(return_value = [self.loss, self.accuracy])
 
-        self.independent_var = [[[[0.5]]]] * 10
-        self.dependent_var = [[0,1]] * 10
+        self.independent_var_real = [[[[0.5]]]] * 10
+        self.dependent_var_int = [[0,1]] * 10
+
+        # Params as bytea
+        self.independent_var = np.array(self.independent_var_real, dtype=np.float32).tobytes()
+        self.dependent_var = np.array(self.dependent_var_int, dtype=np.int16).tobytes()
+
+        self.independent_var_shape = [10,1,1,1]
+        self.dependent_var_shape = [10,2]
         # We test on segment 0, which has 3 buffers filled with 10 identical
         #  images each, or 30 images total
-        self.total_images_per_seg = [3*len(self.dependent_var),20,40]
+        self.total_images_per_seg = [3*len(self.dependent_var_int),20,40]
 
     def tearDown(self):
         self.module_patcher.stop()
@@ -1122,13 +1144,15 @@ class MadlibKerasEvaluationTestCase(unittest.TestCase):
         self.subject.clear_keras_session = Mock()
         self.subject.is_platform_pg = Mock(return_value = is_platform_pg)
         starting_image_count = 0
-        ending_image_count = len(self.dependent_var)
+        ending_image_count = len(self.dependent_var_int)
 
         k = {'SD' : {}}
         state = [0,0,0]
 
         new_state = self.subject.internal_keras_eval_transition(
-            state, self.dependent_var , self.independent_var, self.model.to_json(),
+            state, self.dependent_var , self.independent_var,
+            self.dependent_var_shape, self.independent_var_shape,
+            self.model.to_json(),
             self.serialized_weights, self.compile_params, 0, self.all_seg_ids,
             self.total_images_per_seg, 0, 3, **k)
 
@@ -1151,8 +1175,8 @@ class MadlibKerasEvaluationTestCase(unittest.TestCase):
         self.subject.clear_keras_session = Mock()
         self.subject.is_platform_pg = Mock(return_value = is_platform_pg)
 
-        starting_image_count = len(self.dependent_var)
-        ending_image_count = starting_image_count + len(self.dependent_var)
+        starting_image_count = len(self.dependent_var_int)
+        ending_image_count = starting_image_count + len(self.dependent_var_int)
 
         k = {'SD' : {}}
 
@@ -1163,7 +1187,9 @@ class MadlibKerasEvaluationTestCase(unittest.TestCase):
         k['SD']['segment_model'] = self.model
 
         new_state = self.subject.internal_keras_eval_transition(
-            state, self.dependent_var , self.independent_var, self.model.to_json(),
+            state, self.dependent_var , self.independent_var,
+            self.dependent_var_shape, self.independent_var_shape,
+            self.model.to_json(),
             'dummy_model_data', None, 0,self.all_seg_ids,
             self.total_images_per_seg, 0, 3, **k)
 
@@ -1185,8 +1211,8 @@ class MadlibKerasEvaluationTestCase(unittest.TestCase):
         self.subject.clear_keras_session = Mock()
         self.subject.is_platform_pg = Mock(return_value = is_platform_pg)
 
-        starting_image_count = 2*len(self.dependent_var)
-        ending_image_count = starting_image_count + len(self.dependent_var)
+        starting_image_count = 2*len(self.dependent_var_int)
+        ending_image_count = starting_image_count + len(self.dependent_var_int)
         k = {'SD' : {}}
 
         self.subject.compile_and_set_weights(self.model, self.compile_params,
@@ -1198,7 +1224,9 @@ class MadlibKerasEvaluationTestCase(unittest.TestCase):
 
         k['SD']['segment_model'] = self.model
         new_state = self.subject.internal_keras_eval_transition(
-            state, self.dependent_var , self.independent_var, self.model.to_json(),
+            state, self.dependent_var , self.independent_var,
+            self.dependent_var_shape, self.independent_var_shape,
+            self.model.to_json(),
             'dummy_model_data', None, 0, self.all_seg_ids,
             self.total_images_per_seg, 0, 3, **k)
 
