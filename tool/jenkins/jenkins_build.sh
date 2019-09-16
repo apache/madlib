@@ -81,12 +81,12 @@ EOF
 docker exec madlib bash -c '/build/src/bin/madpack -s mad -p postgres -c postgres/postgres@localhost:5432/postgres install' | tee $workdir/logs/madlib_install.log
 
 cat <<EOF
-docker exec madlib bash -c 'mkdir /tmp'
+docker exec madlib bash -c 'mkdir -p /tmp'
 docker exec madlib bash -c '/build/src/bin/madpack -s mad -p postgres  -c postgres/postgres@localhost:5432/postgres -d /tmp dev-check' | tee $workdir/logs/madlib_dev_check.log
 docker exec madlib bash -c '/build/src/bin/madpack -s mad -p postgres  -c postgres/postgres@localhost:5432/postgres -d /tmp unit-test' | tee -a $workdir/logs/madlib_dev_check.log
 EOF
 
-docker exec madlib bash -c 'mkdir /tmp'
+docker exec madlib bash -c 'mkdir -p /tmp'
 # Run dev check
 docker exec madlib bash -c '/build/src/bin/madpack -s mad -p postgres  -c postgres/postgres@localhost:5432/postgres -d /tmp dev-check' | tee $workdir/logs/madlib_dev_check.log
 # Run unit tests, and append output to dev_check's log file
