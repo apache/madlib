@@ -16,18 +16,19 @@ m4_include(`SQLCommon.m4')
 
 <div class="toc"><b>Contents</b>
 <ul>
-<li class="level1"><a href="#train">Training Function</a></li>
-<li class="level1"><a href="#output">Output Format</a></li>
+<li class="level1"><a href="#cluster">Clustering Function</a></li>
+<li class="level1"><a href="#auto_cluster">Auto Clustering Function</a></li>
 <li class="level1"><a href="#assignment">Cluster Assignment</a></li>
+<li class="level1"><a href="#silh">Simple Silhouette</a></li>
 <li class="level1"><a href="#examples">Examples</a></li>
-<li class="level1"><a href="#notes">Notes</a></li>
 <li class="level1"><a href="#background">Technical Background</a></li>
 <li class="level1"><a href="#literature">Literature</a></li>
 <li class="level1"><a href="#related">Related Topics</a></li>
 </ul>
 </div>
 
-@brief Partitions a set of observations into clusters by finding centroids that minimize the sum of observations' distances from their closest centroid.
+@brief Partitions a set of observations into clusters by finding centroids that
+minimize the sum of observations' distances from their closest centroid.
 
 Clustering refers to the problem of partitioning a set of objects according to
 some problem-dependent measure of <em>similarity</em>. In the k-means variant,
@@ -37,13 +38,19 @@ so that the sum of \em distances between each point and its closest centroid is
 minimized. Each centroid represents a cluster that consists of all points to
 which this centroid is closest.
 
-@anchor train
-@par Training Function
+This module can compute clusters given the number of centroids <em>k</em> as an input,
+using a variety of seeding methods.
+It can also automatically select the best <em>k</em> value from a range
+of suggested <em>k</em> values, using the simplified silhouette method
+or the elbow method.
 
-The k-means algorithm can be invoked in four ways, depending on the
+@anchor cluster
+@par Clustering Function
+
+The k-means algorithm can be invoked in different ways, depending on the
 source of the initial set of centroids:
 
-- Use the random centroid seeding method.
+- Uniform random centroid seeding method.
 <pre class="syntax">
 kmeans_random( rel_source,
                expr_point,
@@ -55,7 +62,10 @@ kmeans_random( rel_source,
              )
 </pre>
 
-- Use the kmeans++ centroid seeding method.
+- k-means++ centroid seeding method <a href="#kmeans-lit-1">[1]</a>.
+This method can speed up convergence
+by seeding centroids spread out over the whole range of the input
+points, while at the same time not being too susceptible to outliers.
 <pre class="syntax">
 kmeanspp( rel_source,
           expr_point,
@@ -68,7 +78,9 @@ kmeanspp( rel_source,
         )
 </pre>
 
-- Supply an initial centroid set in a relation identified by the \e rel_initial_centroids argument.
+- Supply an initial centroid set in a relation identified
+by the \e rel_initial_centroids argument, for the case
+where initial centroids are stored in a table.
 <pre class="syntax">
 kmeans( rel_source,
         expr_point,
@@ -81,7 +93,8 @@ kmeans( rel_source,
       )
 </pre>
 
-- Provide an initial centroid set as an array expression in the \e initial_centroids argument.
+- Provide an initial centroid set as an array expression
+in the \e initial_centroids argument.
 <pre class="syntax">
 kmeans( rel_source,
         expr_point,
@@ -92,12 +105,12 @@ kmeans( rel_source,
         min_frac_reassigned
       )
 </pre>
+
 \b Arguments
 <dl class="arglist">
 <dt>rel_source</dt>
-<dd>TEXT. The name of the table containing the input data points.
-
-Data points and predefined centroids (if used) are expected to be stored row-wise,
+<dd>TEXT. The name of the table containing the input data points. Data points and
+predefined centroids (if used) are expected to be stored row-wise,
 in a column of type <tt>\ref grp_svec "SVEC"</tt> (or any type convertible to
 <tt>\ref grp_svec "SVEC"</tt>, like <tt>FLOAT[]</tt> or <tt>INTEGER[]</tt>).
 Data points with non-finite values (NULL, NaN, infinity) in any component
@@ -111,13 +124,13 @@ are skipped during analysis.
 <dd>INTEGER. The number of centroids to calculate.</dd>
 
 <dt>fn_dist (optional)</dt>
-<dd>TEXT, default: squared_dist_norm2'. The name of the function to use to calculate the distance from a data point to a centroid.
-
+<dd>TEXT, default: 'squared_dist_norm2'. The name of the function
+to use to calculate the distance from a data point vector to a centroid vector.
 The following distance functions can be used (computation of barycenter/mean in parentheses):
 <ul>
-<li><b>\ref dist_norm1</b>:  1-norm/Manhattan (element-wise median
-[Note that MADlib does not provide a median aggregate function for support and
-performance reasons.])</li>
+<li><b>\ref dist_norm1</b>:  1-norm/Manhattan (element-wise median).
+MADlib does not provide a median aggregate function for
+performance reasons.</li>
 <li><b>\ref dist_norm2</b>: 2-norm/Euclidean (element-wise mean)</li>
 <li><b>\ref squared_dist_norm2</b>: squared Euclidean distance (element-wise mean)</li>
 <li><b>\ref dist_angle</b>: angle (element-wise mean of normalized points)</li>
@@ -126,9 +139,8 @@ performance reasons.])</li>
 
 <dt>agg_centroid (optional)</dt>
 <dd>TEXT, default: 'avg'. The name of the aggregate function used to determine centroids.
-
 The following aggregate functions can be used:<ul>
- <li><b>\ref avg</b>: average (Default)</li>
+ <li><b>\ref avg</b>: average (default)</li>
  <li><b>\ref normalized_avg</b>: normalized average</li></ul></dd>
 
 <dt>max_num_iterations (optional)</dt>
@@ -143,26 +155,28 @@ When fewer than this fraction of centroids are reassigned in an iteration, the c
 to use for kmeans++ centroid seeding method. Kmeans++ scans through the data
 sequentially 'k' times and can be too slow for big datasets. When
 'seeding_sample_ratio' is greater than 0 (thresholded to be maximum value of 1.0),
-the seeding is run on an uniform random subsample of the data.
+the seeding is run on a uniform random subsample of the data.
 Note: the final K-means algorithm is run on the complete dataset. This parameter
 only builds a subsample for the seeding and is only available for kmeans++.
 
 <dt>rel_initial_centroids</dt>
-<dd>TEXT. The set of initial centroids.
+<dd>TEXT. Table or view containing the set of initial centroids.
 </dd>
 
 <dt>expr_centroid</dt>
-<dd>TEXT. The name of the column (or the array expression) in the <em>rel_initial_centroids</em> relation that contains the centroid coordinates.</dd>
+<dd>TEXT. The name of the column (or the array expression)
+in the <em>rel_initial_centroids</em> table or view that contains
+the centroid coordinates.</dd>
 
 <dt>initial_centroids</dt>
-<dd>TEXT. A string containing a DOUBLE PRECISION array expression with the initial centroid coordinates.</dd>
+<dd>DOUBLE PRECISION[][]. Array expression
+with the initial centroid coordinates.</dd>
 </dl>
 
-
-@anchor output
-@par Output Format
-
-The output of the k-means module is a composite type with the following columns:
+<b>Output</b>
+<br>
+The output of the k-means module is a composite type with
+the following columns:
 <table class="output">
     <tr>
         <th>centroids</th>
@@ -186,42 +200,289 @@ The output of the k-means module is a composite type with the following columns:
     </tr>
 </table>
 
+@anchor auto_cluster
+@par Auto Clustering Function
+
+The optimal number of centroids can be determined automatically,
+from a set of candidate values that you provide, for
+random seeding or <em>k-means++</em> seeding.  The <a href="#simplified_silhouette">simplified
+silhouette method</a> or the <a href="#elbow">elbow method</a> are used to pick the best <em>k</em> value.
+
+- Uniform random centroid seeding method.
+<pre class="syntax">
+kmeans_random_auto( rel_source,
+                    output_table,
+                    expr_point,
+                    k,
+                    fn_dist,
+                    agg_centroid,
+                    max_num_iterations,
+                    min_frac_reassigned,
+                    k_selection_algorithm
+                  )
+</pre>
+
+- k-means++ centroid seeding method.
+<pre class="syntax">
+kmeanspp_auto( rel_source,
+               output_table,
+               expr_point,
+               k,
+               fn_dist,
+               agg_centroid,
+               max_num_iterations,
+               min_frac_reassigned,
+               seeding_sample_ratio,
+               k_selection_algorithm
+              )
+</pre>
+
+<b>Arguments</b>
+<br>
+The arguments for auto k selection are the same as described above,
+with the following additions:
+<dl class="arglist">
+
+<dt>output_table</dt>
+<dd>TEXT. Name of the output table containing results for each k
+value. Details of the output table are shown below.
+A summary table called 'output_table_summary' will also be
+created for the best k value as per the selection algorithm.</dd>
+
+<dt>k</dt>
+<dd>INTEGER[]. Array of k values to test.  Does not need to be
+contiguous but all elements must be >1 and cannot repeat within the array.
+Parameter 'k_selection_algorithm'
+determines the evaluation method.</dd>
+
+<dt>k_selection_algorithm (optional)</dt>
+<dd>TEXT, default: 'silhouette'. Method to evaluate optimal number of centroids k.
+Current approaches supported: 'silhouette', 'elbow' or 'both'.
+The text can be any subset of the strings; for e.g., 'silh' will
+use the silhouette method.
+Note that for large data sets, the silhouette computation
+can be expensive.</dd>
+
+@note
+Note that the auto k-means algorithms require the NumPy python package to be
+installed on the system since the elbow method uses the NumPy gradient function <a href="#kmeans-lit-2">[2]</a>.
+For Greenplum clusters, installing NumPy only on the
+host machine of the master segment will be sufficient.  The suggested
+installation method is: <em>pip install numpy --user</em>
+</dl>
+
+<b>Output Tables</b>
+<br>
+Two output tables are created for auto k-means.
+The first is called 'output_table' and contains one row
+per k value:
+<table class="output">
+    <tr>
+        <th>k</th>
+        <td>INTEGER.  Number of centroids.</td>
+    </tr>
+    <tr>
+        <th>centroids</th>
+        <td>DOUBLE PRECISION[][]. The final centroid positions.</td>
+    </tr>
+    <tr>
+        <th>cluster_variance</th>
+        <td>DOUBLE PRECISION[]. The value of the objective function per cluster.</td>
+    </tr>
+    <tr>
+        <th>objective_fn</th>
+        <td>DOUBLE PRECISION. The value of the objective function.</td>
+    </tr>
+    <tr>
+        <th>frac_reassigned</th>
+        <td>DOUBLE PRECISION. The fraction of points reassigned in the last iteration.</td>
+    </tr>
+    <tr>
+        <th>num_iterations</th>
+        <td>INTEGER. The total number of iterations executed.</td>
+    </tr>
+    <tr>
+        <th>k</th>
+        <td>INTEGER.  Number of centroids as per the
+        specified 'k_selection_algorithm'.  If 'both' is specified,
+        the best k value will correspond to the silhouette method.</td>
+    </tr>
+    <tr>
+        <th>silhouette</th>
+        <td>DOUBLE PRECISION. The value of the simplified silhouette
+        score for the k value, if computed.</td>
+    </tr>
+    <tr>
+        <th>elbow</th>
+        <td>DOUBLE PRECISION. The value of the elbow
+        score for the k value, if computed.</td>
+    </tr>
+    <tr>
+        <th>selection_algorithm</th>
+        <td>TEXT.  Algorithm used to select the best
+        k (either 'silhouette' or 'elbow')</td>
+    </tr>
+</table>
+</dl>
+
+A summary table named <output_table>_summary is also created, which has the same output as the
+'output_table' above but only contains one row for best k value as per the selection algorithm.
+If 'both' is specified for 'k_selection_algorithm'
+the best k value returned will correspond to the silhouette method.
 
 @anchor assignment
 @par Cluster Assignment
 
-After training, the cluster assignment for each data point can be computed with
-the help of the following function:
+After clustering, the cluster assignment for each data point can be computed with
+the help of the closest_column() utility function:
 
 <pre class="syntax">
-closest_column( m, x )
+closest_column( m,
+                x,
+                dist
+                )
 </pre>
 
-<b>Argument</b>
+<b>Arguments</b>
 <dl class="arglist">
 <dt>m</dt>
-<dd>DOUBLE PRECISION[][]. The learned centroids from the training function.</dd>
+<dd>DOUBLE PRECISION[][]. Learned centroids from the training function.</dd>
+
 <dt>x</dt>
-<dd>DOUBLE PRECISION[]. The data point.</dd>
+<dd>DOUBLE PRECISION[]. Data points.</dd>
+
+<dt>dist (optional)</dt>
+<dd>TEXT, default: 'squared_dist_norm2'. The name of the function
+to use to calculate the distance from a data point vector to a centroid vector.
+See the \e fn_dist argument of the k-means training function for more details on distance functions.</dd>
 </dl>
 
-<b>Output format</b>
+<b>Output</b>
+<br>
+The output is a composite type with
+the following columns:
 <table class="output">
-<tr>
-  <th>column_id</th>
-  <td>INTEGER. The cluster assignment (zero-based).</td>
-<tr>
-  <th>distance</th>
-  <td>DOUBLE PRECISION. The distance to the cluster centroid.</td>
+    <tr>
+      <th>column_id</th>
+      <td>INTEGER. Cluster assignment (zero-based, i.e., 0,1,2...).</td>
+    </tr>
+    <tr>
+      <th>distance</th>
+      <td>DOUBLE PRECISION. Distance to the cluster centroid.</td>
+    </tr>
+</table>
+
+@anchor silh
+@par Simple Silhouette
+
+A common method to assess the quality of the clustering is the <em>silhouette
+coefficient</em>, a simplified version of which is
+implemented in MADlib <a href="#kmeans-lit-3">[3]</a>.
+There are two silhouette functions: average score across all data points,
+and a per-point score.  The average silhouette function has the following syntax:
+<pre class="syntax">
+simple_silhouette( rel_source,
+                   expr_point,
+                   centroids,
+                   fn_dist
+                 )
+</pre>
+
+The per-point silhouette function has two formats.  The first
+takes an array of centroids:
+<pre class="syntax">
+simple_silhouette_points(rel_source,
+                         output_table,
+                         pid,
+                         expr_point,
+                         centroids,
+                         fn_dist
+                        )
+</pre>
+
+The second takes a centroids column from a table:
+<pre class="syntax">
+simple_silhouette_points(rel_source,
+                         output_table,
+                         pid,
+                         expr_point,
+                         centroids_table,
+                         centroids_col,
+                         fn_dist
+                        )
+</pre>
+
+\b Arguments
+<dl class="arglist">
+<dt>rel_source</dt>
+<dd>TEXT. The name of the table containing the input data points.</dd>
+
+<dt>expr_point</dt>
+<dd>TEXT. The name of the column with point coordinates or an array expression.</dd>
+
+<dt>centroids</dt>
+<dd>DOUBLE PRECISION[][]. An expression evaluating to an array of centroids. </dd>
+
+<dt>fn_dist (optional)</dt>
+<dd>TEXT, default: 'squared_dist_norm2'. The name of the function
+to use to calculate the distance from a data point vector to a centroid vector.
+See the \e fn_dist argument of the k-means training function for more details on distance functions.</dd>
+
+<dt>output_table</dt>
+<dd>TEXT. Name of the output table to contain sihouette score
+for each point.</dd>
+
+<dt>pid</dt>
+<dd>TEXT. Column containing point ID in the
+table 'rel_source' containing the data points. </dd>
+
+<dt>centroids_table</dt>
+<dd>TEXT. Name of the table containing the centroids.</dd>
+
+<dt>centroids_col</dt>
+<dd>TEXT. Name of the column in the table 'centroids_table'
+containing the centroids.</dd>
+
+</dl>
+
+<b>Output</b>
+<br>
+For the average function, a single value for simple silhouette score is returned.
+For the per-point function, the output table contains
+the following columns:
+<table class="output">
+    <tr>
+      <th>pid</th>
+      <td>INTEGER. Point ID.</td>
+    </tr>
+
+    <tr>
+      <th>centroid_id</th>
+      <td>INTEGER. The cluster that the point is assigned to.</td>
+    </tr>
+
+    <tr>
+      <th>neighbor_centroid_id</th>
+      <td>INTEGER. The next closest cluster to the one that the point is assigned to.</td>
+    </tr>
+
+    <tr>
+      <th>simple_silhouette</th>
+      <td>DOUBLE PRECISION. Simplified silhouette score for the point.</td>
+    </tr>
 </table>
 
 @anchor examples
 @examp
 
-Note: Your results may not be exactly the same as below due to the nature of the
-k-means algorithm.
+@note
+Your results may not be exactly the same as below due to the nature random
+nature of the  k-means algorithm.  Also, remember to be consistent in the distance
+functions that you use in the k-means, silhouette and helper functions.
 
--#  Prepare some input data:
+<h4>Clustering for Single <em>k</em> Value</h4>
+
+-# Create input data:
 <pre class="example">
 DROP TABLE IF EXISTS km_sample;
 CREATE TABLE km_sample(pid int, points double precision[]);
@@ -237,64 +498,102 @@ INSERT INTO km_sample VALUES
 (9,  '{14.83, 1.64, 2.17, 14, 97, 2.8, 2.98, 0.29, 1.98, 5.2, 1.08, 2.85, 1045}'),
 (10, '{13.86, 1.35, 2.27, 16, 98, 2.98, 3.15, 0.22, 1.8500, 7.2199, 1.01, 3.55, 1045}');
 </pre>
--#  Run k-means clustering using kmeans++ for centroid seeding:
+-#  Run k-means clustering using kmeans++ for centroid seeding. Use squared Euclidean
+distance which is a commonly used distance function.
 <pre class="example">
 DROP TABLE IF EXISTS km_result;
--- Run kmeans algorithm
 CREATE TABLE km_result AS
-SELECT * FROM madlib.kmeanspp('km_sample', 'points', 2,
-                           'madlib.squared_dist_norm2',
-                           'madlib.avg', 20, 0.001);
+SELECT * FROM madlib.kmeanspp( 'km_sample',   -- Table of source data
+                               'points',      -- Column containing point co-ordinates
+                               2,             -- Number of centroids to calculate
+                               'madlib.squared_dist_norm2',   -- Distance function
+                               'madlib.avg',  -- Aggregate function
+                               20,            -- Number of iterations
+                               0.001          -- Fraction of centroids reassigned to keep iterating
+                             );
 \\x on;
 SELECT * FROM km_result;
 </pre>
-Result:
 <pre class="result">
-centroids        | {{14.036,2.018,2.536,16.56,108.6,3.004,3.03,0.298,2.038,6.10598,1.004,3.326,1340},{13.872,1.814,2.376,15.56,88.2,2.806,2.928,0.288,1.844,5.35198,1.044,3.348,988}}
-cluster_variance | {60672.638245208,90512.324426408}
-objective_fn     | 151184.962671616
+-[ RECORD 1 ]----+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+centroids        | {{14.255,1.9325,2.5025,16.05,110.5,3.055,2.9775,0.2975,1.845,6.2125,0.9975,3.365,1378.75},{13.7533333333333,1.905,2.425,16.0666666666667,90.3333333333333,2.805,2.98,0.29,2.005,5.40663333333333,1.04166666666667,3.31833333333333,1020.83333333333}}
+cluster_variance | {30561.74805,122999.110416013}
+objective_fn     | 153560.858466013
 frac_reassigned  | 0
 num_iterations   | 2
 </pre>
--# Calculate the simplified silhouette coefficient:
+-# Simplified silhouette coefficient.  First find average
+for whole data set. Make sure to use the same distance function as k-means above.
 <pre class="example">
-SELECT * FROM madlib.simple_silhouette( 'km_sample',
-                                        'points',
-                                        (SELECT centroids FROM km_result),
-                                        'madlib.dist_norm2'
+SELECT * FROM madlib.simple_silhouette( 'km_sample',          -- Input points table
+                                        'points',             -- Column containing points
+                                        (SELECT centroids FROM km_result),  -- Centroids
+                                        'madlib.squared_dist_norm2'   -- Distance function
                                       );
 </pre>
-Result:
 <pre class="result">
-simple_silhouette | 0.68978804882941
+-[ RECORD 1 ]-----+------------------
+simple_silhouette | 0.868174608939623
 </pre>
-
--#  Find the cluster assignment for each point:
+Now calculate simplified silhouette coefficient for each point in the data set:
 <pre class="example">
-\\x off;
--- Get point assignment
-SELECT data.*,  (madlib.closest_column(centroids, points)).column_id as cluster_id
-FROM km_sample as data, km_result
-ORDER BY data.pid;
+DROP TABLE IF EXISTS km_points_silh;
+SELECT * FROM madlib.simple_silhouette_points( 'km_sample',          -- Input points table
+                                              'km_points_silh',      -- Output table
+                                              'pid',                 -- Point ID column in input table
+                                              'points',              -- Points column in input table
+                                              'km_result',           -- Centroids table
+                                              'centroids',           -- Column in centroids table containing centroids
+                                              'madlib.squared_dist_norm2'   -- Distance function
+                                      );
+SELECT * FROM km_points_silh ORDER BY pid;
 </pre>
-Result:
 <pre class="result">
- pid |                               points                               | cluster_id
------+--------------------------------------------------------------------+------------
-   1 | {14.23,1.71,2.43,15.6,127,2.8,3.06,0.28,2.29,5.64,1.04,3.92,1065}  |          1
-   2 | {13.2,1.78,2.14,11.2,1,2.65,2.76,0.26,1.28,4.38,1.05,3.49,1050}    |          1
-   3 | {13.16,2.36,2.67,18.6,101,2.8,3.24,0.3,2.81,5.6799,1.03,3.17,1185} |          0
-   4 | {14.37,1.95,2.5,16.8,113,3.85,3.49,0.24,2.18,7.8,0.86,3.45,1480}   |          0
-   5 | {13.24,2.59,2.87,21,118,2.8,2.69,0.39,1.82,4.32,1.04,2.93,735}     |          1
-   6 | {14.2,1.76,2.45,15.2,112,3.27,3.39,0.34,1.97,6.75,1.05,2.85,1450}  |          0
-   7 | {14.39,1.87,2.45,14.6,96,2.5,2.52,0.3,1.98,5.25,1.02,3.58,1290}    |          0
-   8 | {14.06,2.15,2.61,17.6,121,2.6,2.51,0.31,1.25,5.05,1.06,3.58,1295}  |          0
-   9 | {14.83,1.64,2.17,14,97,2.8,2.98,0.29,1.98,5.2,1.08,2.85,1045}      |          1
-  10 | {13.86,1.35,2.27,16,98,2.98,3.15,0.22,1.85,7.2199,1.01,3.55,1045}  |          1
+ pid | centroid_id | neighbor_centroid_id |       silh
+-----+-------------+----------------------+-------------------
+   1 |           1 |                    0 | 0.966608819821713
+   2 |           1 |                    0 | 0.926251125077039
+   3 |           1 |                    0 |  0.28073008848306
+   4 |           0 |                    1 | 0.951447083910869
+   5 |           1 |                    0 |  0.80098239014753
+   6 |           0 |                    1 | 0.972487557020722
+   7 |           0 |                    1 |  0.88838568723116
+   8 |           0 |                    1 | 0.906334719972002
+   9 |           1 |                    0 | 0.994315140692314
+  10 |           1 |                    0 |  0.99420347703982
 (10 rows)
 </pre>
 
--#  Unnest the cluster centroids 2-D array to get a set of 1-D centroid arrays:
+-#  Find the cluster assignment for each point.
+Use the closest_column() function to map each point to the cluster that it belongs to.
+<pre class="example">
+\\x off;
+DROP TABLE IF EXISTS point_cluster_map;
+CREATE TABLE point_cluster_map AS
+SELECT data.*, (madlib.closest_column(centroids, points, 'madlib.squared_dist_norm2')).*
+FROM km_sample as data, km_result;
+ALTER TABLE point_cluster_map RENAME column_id to cluster_id; -- change column name
+SELECT * FROM point_cluster_map ORDER BY pid;
+</pre>
+<pre class="result">
+ pid |                               points                               | cluster_id |     distance
+-----+--------------------------------------------------------------------+------------+------------------
+   1 | {14.23,1.71,2.43,15.6,127,2.8,3.06,0.28,2.29,5.64,1.04,3.92,1065}  |          1 | 3296.12614333444
+   2 | {13.2,1.78,2.14,11.2,1,2.65,2.76,0.26,1.28,4.38,1.05,3.49,1050}    |          1 | 8856.90882600111
+   3 | {13.16,2.36,2.67,18.6,101,2.8,3.24,0.3,2.81,5.6799,1.03,3.17,1185} |          1 | 27072.3216580044
+   4 | {14.37,1.95,2.5,16.8,113,3.85,3.49,0.24,2.18,7.8,0.86,3.45,1480}   |          0 |    10261.9450375
+   5 | {13.24,2.59,2.87,21,118,2.8,2.69,0.39,1.82,4.32,1.04,2.93,735}     |          1 | 82492.8673553345
+   6 | {14.2,1.76,2.45,15.2,112,3.27,3.39,0.34,1.97,6.75,1.05,2.85,1450}  |          0 |     5080.3612375
+   7 | {14.39,1.87,2.45,14.6,96,2.5,2.52,0.3,1.98,5.25,1.02,3.58,1290}    |          0 |     8090.4485875
+   8 | {14.06,2.15,2.61,17.6,121,2.6,2.51,0.31,1.25,5.05,1.06,3.58,1295}  |          0 |     7128.9931875
+   9 | {14.83,1.64,2.17,14,97,2.8,2.98,0.29,1.98,5.2,1.08,2.85,1045}      |          1 | 634.301947334443
+  10 | {13.86,1.35,2.27,16,98,2.98,3.15,0.22,1.85,7.2199,1.01,3.55,1045}  |          1 | 646.584486004443
+(10 rows)
+</pre>
+
+-#  Display cluster ID.  There are two steps to get the cluster id associated
+with the centroid coordinates, if you need it.  First unnest the cluster
+centroids 2-D array to get a set of 1-D centroid arrays:
 <pre class="example">
 DROP TABLE IF EXISTS km_centroids_unnest;
 -- Run unnest function
@@ -303,31 +602,24 @@ SELECT (madlib.array_unnest_2d_to_1d(centroids)).*
 FROM km_result;
 SELECT * FROM km_centroids_unnest ORDER BY 1;
 </pre>
-Result:
 <pre class="result">
- unnest_row_id |                                  unnest_result
----------------+----------------------------------------------------------------------------------
-             1 | {14.036,2.018,2.536,16.56,108.6,3.004,3.03,0.298,2.038,6.10598,1.004,3.326,1340}
-             2 | {13.872,1.814,2.376,15.56,88.2,2.806,2.928,0.288,1.844,5.35198,1.044,3.348,988}
+ unnest_row_id |                                                                       unnest_result
+---------------+------------------------------------------------------------------------------------------------------------------------------------------------------------
+             1 | {14.255,1.9325,2.5025,16.05,110.5,3.055,2.9775,0.2975,1.845,6.2125,0.9975,3.365,1378.75}
+             2 | {13.7533333333333,1.905,2.425,16.0666666666667,90.3333333333333,2.805,2.98,0.29,2.005,5.40663333333333,1.04166666666667,3.31833333333333,1020.83333333333}
 (2 rows)
 </pre>
-Note that the ID column returned by array_unnest_2d_to_1d()
-is not guaranteed to be the same as the cluster ID assigned by k-means.
-See below to create the correct cluster IDs.
-
--#  Create cluster IDs for 1-D centroid arrays so that cluster ID for any centroid
-can be matched to the cluster assignment for the data points:
+Note that the ID column returned by array_unnest_2d_to_1d() is just a row ID and not the cluster ID assigned by k-means. The second step to get the cluster_id is:
 <pre class="example">
-SELECT cent.*,  (madlib.closest_column(centroids, unnest_result)).column_id as cluster_id
+SELECT cent.*,  (madlib.closest_column(centroids, unnest_result, 'madlib.squared_dist_norm2')).column_id as cluster_id
 FROM km_centroids_unnest as cent, km_result
 ORDER BY cent.unnest_row_id;
 </pre>
-Result:
 <pre class="result">
- unnest_row_id |                                  unnest_result                                   | cluster_id
----------------+----------------------------------------------------------------------------------+------------
-             1 | {14.036,2.018,2.536,16.56,108.6,3.004,3.03,0.298,2.038,6.10598,1.004,3.326,1340} |          0
-             2 | {13.872,1.814,2.376,15.56,88.2,2.806,2.928,0.288,1.844,5.35198,1.044,3.348,988}  |          1
+ unnest_row_id |                                                                       unnest_result                                                                        | cluster_id
+---------------+------------------------------------------------------------------------------------------------------------------------------------------------------------+------------
+             1 | {14.255,1.9325,2.5025,16.05,110.5,3.055,2.9775,0.2975,1.845,6.2125,0.9975,3.365,1378.75}                                                                   |          0
+             2 | {13.7533333333333,1.905,2.425,16.0666666666667,90.3333333333333,2.805,2.98,0.29,2.005,5.40663333333333,1.04166666666667,3.31833333333333,1020.83333333333} |          1
 (2 rows)
 </pre>
 
@@ -360,24 +652,25 @@ INSERT INTO km_arrayin VALUES
 (9,  14.83, 1.64, 2.17, 14, 97, 2.8, 2.98, 0.29, 1.98, 5.2, 1.08, 2.85, 1045),
 (10, 13.86, 1.35, 2.27, 16, 98, 2.98, 3.15, 0.22, 1.8500, 7.2199, 1.01, 3.55, 1045);
 </pre>
-Now find the cluster assignment for each point:
+Now find the cluster assignment for each point using random seeding:
 <pre class="example">
-DROP TABLE IF EXISTS km_result;
+DROP TABLE IF EXISTS km_result_array;
 -- Run kmeans algorithm
-CREATE TABLE km_result AS
-SELECT * FROM madlib.kmeans_random('km_arrayin',
-                                'ARRAY[p1, p2, p3, p4, p5, p6,
+CREATE TABLE km_result_array AS
+SELECT * FROM madlib.kmeans_random('km_arrayin',                 -- Table of source data
+                                'ARRAY[p1, p2, p3, p4, p5, p6,   -- Points
                                       p7, p8, p9, p10, p11, p12, p13]',
-                                2,
-                                'madlib.squared_dist_norm2',
-                                'madlib.avg',
-                                20,
-                                0.001);
+                                2,                               -- Number of centroids to calculate
+                                'madlib.squared_dist_norm2',     -- Distance function
+                                'madlib.avg',                    -- Aggregate function
+                                20,                              -- Number of iterations
+                                0.001);                          -- Fraction of centroids reassigned to keep iterating
 -- Get point assignment
 SELECT data.*,  (madlib.closest_column(centroids,
                                        ARRAY[p1, p2, p3, p4, p5, p6,
-                                      p7, p8, p9, p10, p11, p12, p13])).column_id as cluster_id
-FROM km_arrayin as data, km_result
+                                      p7, p8, p9, p10, p11, p12, p13],
+                                       'madlib.squared_dist_norm2')).column_id as cluster_id
+FROM km_arrayin as data, km_result_array
 ORDER BY data.pid;
 </pre>
 This produces the result in column format:
@@ -386,7 +679,7 @@ This produces the result in column format:
 -----+-------+------+------+------+-----+------+------+------+------+--------+------+------+------+------------
    1 | 14.23 | 1.71 | 2.43 | 15.6 | 127 |  2.8 | 3.06 | 0.28 | 2.29 |   5.64 | 1.04 | 3.92 | 1065 |          0
    2 |  13.2 | 1.78 | 2.14 | 11.2 |   1 | 2.65 | 2.76 | 0.26 | 1.28 |   4.38 | 1.05 | 3.49 | 1050 |          0
-   3 | 13.16 | 2.36 | 2.67 | 18.6 | 101 |  2.8 | 3.24 |  0.3 | 2.81 | 5.6799 | 1.03 | 3.17 | 1185 |          0
+   3 | 13.16 | 2.36 | 2.67 | 18.6 | 101 |  2.8 | 3.24 |  0.3 | 2.81 | 5.6799 | 1.03 | 3.17 | 1185 |          1
    4 | 14.37 | 1.95 |  2.5 | 16.8 | 113 | 3.85 | 3.49 | 0.24 | 2.18 |    7.8 | 0.86 | 3.45 | 1480 |          1
    5 | 13.24 | 2.59 | 2.87 |   21 | 118 |  2.8 | 2.69 | 0.39 | 1.82 |   4.32 | 1.04 | 2.93 |  735 |          0
    6 |  14.2 | 1.76 | 2.45 | 15.2 | 112 | 3.27 | 3.39 | 0.34 | 1.97 |   6.75 | 1.05 | 2.85 | 1450 |          1
@@ -397,79 +690,202 @@ This produces the result in column format:
 (10 rows)
 </pre>
 
-@anchor notes
-@par Notes
+<h4>Auto Clustering for Range of <em>k</em> Values</h4>
 
-The algorithm stops when one of the following conditions is met:
-- The fraction of updated points is smaller than the convergence threshold
-(<em>min_frac_reassigned</em> argument). (Default: 0.001).
-- The algorithm reaches the maximum number of allowed iterations
-(<em>max_num_iterations</em> argument). (Default: 20).
-
-A popular method to assess the quality of the clustering is the <em>silhouette
-coefficient</em>, a simplified version of which is provided as part of the
-k-means module. Note that for large data sets, this computation is expensive.
-
-The silhouette function has the following syntax:
-<pre class="syntax">
-simple_silhouette( rel_source,
-                   expr_point,
-                   centroids,
-                   fn_dist
-                 )
+-# Auto k selection.  Now let's run k-means random for a variety of k values
+and compare using simple silhouette and elbow methods.
+<pre class="example">
+DROP TABLE IF EXISTS km_result_auto, km_result_auto_summary;
+SELECT madlib.kmeans_random_auto(
+    'km_sample',                   -- points table
+    'km_result_auto',              -- output table
+    'points',                      -- column name in point table
+    ARRAY[2,3,4,5,6],              -- k values to try
+    'madlib.squared_dist_norm2',   -- distance function
+    'madlib.avg',                  -- aggregate function
+    20,                            -- max iterations
+    0.001,                         -- minimum fraction of centroids reassigned to continue iterating
+    'both'                         -- k selection algorithm  (simple silhouette and elbow)
+);
+\\x on
+SELECT * FROM km_result_auto_summary;
 </pre>
-\b Arguments
-<dl class="arglist">
-<dt>rel_source</dt>
-<dd>TEXT. The name of the relation containing the input point.</dd>
-<dt>expr_point</dt>
-<dd>TEXT. An expression evaluating to point coordinates for each row in the relation.</dd>
-<dt>centroids</dt>
-<dd>TEXT. An expression evaluating to an array of centroids. </dd>
-<dt>fn_dist (optional)</dt>
-<dd>TEXT, default 'dist_norm2', The name of a function to calculate the distance of a point from a centroid. See the \e fn_dist argument of the k-means training function.</dd>
-</dl>
-
+<pre class="result">-[ RECORD 1 ]-------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+k                   | 6
+centroids           | {{14.23,1.71,2.43,15.6,127,2.8,3.06,0.28,2.29,5.64,1.04,3.92,1065},{13.24,2.59,2.87,21,118,2.8,2.69,0.39,1.82,4.32,1.04,2.93,735},{14.285,1.855,2.475,16,112.5,3.56,3.44,0.29,2.075,7.275,0.955,3.15,1465},{13.87,2.12666666666667,2.57666666666667,16.9333333333333,106,2.63333333333333,2.75666666666667,0.303333333333333,2.01333333333333,5.32663333333333,1.03666666666667,3.44333333333333,1256.66666666667},{14.345,1.495,2.22,15,97.5,2.89,3.065,0.255,1.915,6.20995,1.045,3.2,1045},{13.2,1.78,2.14,11.2,1,2.65,2.76,0.26,1.28,4.38,1.05,3.49,1050}}
+cluster_variance    | {0,0,452.7633,8078.22646267333,5.346498005,0}
+objective_fn        | 8536.33626067833
+frac_reassigned     | 0
+num_iterations      | 3
+silhouette          | 0.954496117675027
+elbow               | -50296.3677976633
+selection_algorithm | silhouette
+</pre>
+The best selection above is made by the silhouette algorithm by default.
+Note that the elbow method may select a different k value as the best.
+To see results for all k values:
+<pre class="example">
+SELECT * FROM km_result_auto ORDER BY k;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]----+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+k                | 2
+centroids        | {{14.036,2.018,2.536,16.56,108.6,3.004,3.03,0.298,2.038,6.10598,1.004,3.326,1340},{13.872,1.814,2.376,15.56,88.2,2.806,2.928,0.288,1.844,5.35198,1.044,3.348,988}}
+cluster_variance | {60672.638245208,90512.324426408}
+objective_fn     | 151184.962671616
+frac_reassigned  | 0
+num_iterations   | 3
+silhouette       | 0.872087020146542
+elbow            | -1056.25028126836
+-[ RECORD 2 ]----+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+k                | 3
+centroids        | {{13.87,2.12666666666667,2.57666666666667,16.9333333333333,106,2.63333333333333,2.75666666666667,0.303333333333333,2.01333333333333,5.32663333333333,1.03666666666667,3.44333333333333,1256.66666666667},{14.285,1.855,2.475,16,112.5,3.56,3.44,0.29,2.075,7.275,0.955,3.15,1465},{13.872,1.814,2.376,15.56,88.2,2.806,2.928,0.288,1.844,5.35198,1.044,3.348,988}}
+cluster_variance | {8078.22646267333,452.7633,90512.324426408}
+objective_fn     | 99043.3141890814
+frac_reassigned  | 0
+num_iterations   | 2
+silhouette       | 0.895849874221733
+elbow            | 20549.7753189989
+-[ RECORD 3 ]----+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+k                | 4
+centroids        | {{14.02,1.765,2.385,16.05,105.75,2.845,3.1075,0.2725,2.2325,5.93495,1.04,3.3725,1085},{13.24,2.59,2.87,21,118,2.8,2.69,0.39,1.82,4.32,1.04,2.93,735},{14.255,1.9325,2.5025,16.05,110.5,3.055,2.9775,0.2975,1.845,6.2125,0.9975,3.365,1378.75},{13.2,1.78,2.14,11.2,1,2.65,2.76,0.26,1.28,4.38,1.05,3.49,1050}}
+cluster_variance | {14227.41709401,0,30561.74805,0}
+objective_fn     | 44789.16514401
+frac_reassigned  | 0
+num_iterations   | 3
+silhouette       | 0.877839150000438
+elbow            | 17535.7421610686
+-[ RECORD 4 ]----+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+k                | 5
+centroids        | {{14.285,1.855,2.475,16,112.5,3.56,3.44,0.29,2.075,7.275,0.955,3.15,1465},{14.225,2.01,2.53,16.1,108.5,2.55,2.515,0.305,1.615,5.15,1.04,3.58,1292.5},{13.2,1.78,2.14,11.2,1,2.65,2.76,0.26,1.28,4.38,1.05,3.49,1050},{14.04,1.8225,2.435,16.65,110,2.845,2.97,0.295,1.985,5.594975,1.0425,3.3125,972.5},{13.16,2.36,2.67,18.6,101,2.8,3.24,0.3,2.81,5.6799,1.03,3.17,1185}}
+cluster_variance | {452.7633,329.8988,0,76176.4564000075,0}
+objective_fn     | 76959.1185000075
+frac_reassigned  | 0
+num_iterations   | 2
+silhouette       | 0.771207558995578
+elbow            | -28690.3421973961
+-[ RECORD 5 ]----+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+k                | 6
+centroids        | {{14.23,1.71,2.43,15.6,127,2.8,3.06,0.28,2.29,5.64,1.04,3.92,1065},{13.24,2.59,2.87,21,118,2.8,2.69,0.39,1.82,4.32,1.04,2.93,735},{14.285,1.855,2.475,16,112.5,3.56,3.44,0.29,2.075,7.275,0.955,3.15,1465},{13.87,2.12666666666667,2.57666666666667,16.9333333333333,106,2.63333333333333,2.75666666666667,0.303333333333333,2.01333333333333,5.32663333333333,1.03666666666667,3.44333333333333,1256.66666666667},{14.345,1.495,2.22,15,97.5,2.89,3.065,0.255,1.915,6.20995,1.045,3.2,1045},{13.2,1.78,2.14,11.2,1,2.65,2.76,0.26,1.28,4.38,1.05,3.49,1050}}
+cluster_variance | {0,0,452.7633,8078.22646267333,5.346498005,0}
+objective_fn     | 8536.33626067833
+frac_reassigned  | 0
+num_iterations   | 3
+silhouette       | 0.954496117675027
+elbow            | -50296.3677976633
+</pre>
+-# Simplified silhouette per point.  Let's say we want the simplified silhouette
+coefficient for each point in the data set, for the case where <em>k=3</em>:
+<pre class="example">
+DROP TABLE IF EXISTS km_points_silh;
+SELECT * FROM madlib.simple_silhouette_points( 'km_sample',          -- Input points table
+                                              'km_points_silh',     -- Output table
+                                              'pid',                -- Point ID column in input table
+                                              'points',             -- Points column in input table
+                                              (SELECT centroids FROM km_result_auto WHERE k=3), -- centroids array
+                                              'madlib.squared_dist_norm2'   -- Distance function
+                                      );
+SELECT * FROM km_points_silh ORDER BY pid;
+</pre>
+<pre class="result">
+ pid | centroid_id | neighbor_centroid_id |       silh
+-----+-------------+----------------------+-------------------
+   1 |           2 |                    0 | 0.800019825058391
+   2 |           2 |                    0 | 0.786712987562913
+   3 |           0 |                    2 | 0.867496080386644
+   4 |           1 |                    0 | 0.995466498952947
+   5 |           2 |                    0 | 0.761551610381542
+   6 |           1 |                    0 | 0.993950286967157
+   7 |           0 |                    1 | 0.960621637528528
+   8 |           0 |                    1 | 0.941493577405087
+   9 |           2 |                    0 | 0.925822020308802
+  10 |           2 |                    0 |  0.92536421766532
+(10 rows)
+</pre>
 
 @anchor background
 @par Technical Background
 
+<b>k-means Algorithm</b>
+<br>
 Formally, we wish to minimize the following objective function:
 \f[
     (c_1, \dots, c_k) \mapsto \sum_{i=1}^n \min_{j=1}^k \operatorname{dist}(x_i, c_j)
 \f]
 In the most common case, \f$ \operatorname{dist} \f$ is the square of the
-Euclidean distance.
+Euclidean distance, though other distance measures can be used.
 
 This problem is computationally difficult (NP-hard), yet the
-local-search heuristic proposed by Lloyd [4] performs reasonably well in
+local-search heuristic proposed by Lloyd <a href="#kmeans-lit-4">[4]</a> performs reasonably well in
 practice. In fact, it is so ubiquitous today that it is
 often referred to as the <em>standard algorithm</em> or even just the
-<em>k-means algorithm</em> [1]. It works as follows:
+<em>k-means algorithm</em>. It works as follows:
 
--# Seed the \f$ k \f$ centroids (see below)
+-# Seed the \f$ k \f$ centroids, meaning specify their initial positions (see below).
 -# Repeat until convergence:
- -# Assign each point to its closest centroid
+ -# Assign each point to its closest centroid.
  -# Move each centroid to a position that minimizes the sum of distances in this
-    cluster
+    cluster.
 -# Convergence is achieved when no points change their assignments during step
    2a.
 
 Since the objective function decreases in every step, this algorithm is
 guaranteed to converge to a local optimum.
 
+The quality of k-means is highly influenced by the choice of the seeding.
+In MADlib we support uniform-at-random sampling, kmeans++ as well as the
+ability for the user to enter manual seeding based on other methods.
+
+k-means++ seeding <a href="#kmeans-lit-1">[1]</a> starts with a single centroid chosen randomly among the input points. It then
+iteratively chooses new centroids from the input points until there are a total of k centroids. The
+probability for picking a particular point is proportional to its minimum distance to any existing
+centroid. Intuitively, k-means++ favors seedings where centroids are spread out over the whole
+range of the input points, while at the same time not being too susceptible to outliers.
+
+@anchor simplified_silhouette
+<b>Silhouette</b>
+<br>
+
+To evaluate the validity of clustering with different k values,
+the objective function is not ideal because it decreases as
+k value increases, so it has a bias
+toward selecting the largest k as the best result <a href="#kmeans-lit-6">[6]</a>.
+Therefore we use other internal measures to evaluate cluster validity.
+
+One such measure is silhouette score.  The original formulation <a href="#kmeans-lit-7">[7]</a>
+computes the average distance of a data
+point to all the other data points in its own cluster, and to all the data points
+in the neighbouring cluster nearest to the data point.
+This is expensive for a large number of points
+since it requires the full pairwise distance matrix over all data.
+
+In the simplified silhouette <a href="#kmeans-lit-3">[3]</a> which is used in MADlib,
+the distance of a data point to a cluster
+is represented with the distance to the cluster centroid instead of the
+average distance to all (other) data points in the cluster.
+This has the advantage of being much faster to compute, and can be shown
+to be comparable in performance to the full silhouette <a href="#kmeans-lit-8">[8]</a>.
+
+@anchor elbow
+<b>Elbow Method</b>
+<br>
+The elbow method considers the percentage of variance explained as a function of number of clusters.
+The idea is not to add another cluster if it doesn't model the data better.
+Graphically it means identifying the "elbow" in the curve of sum of squared errors
+vs. number of clusters (k).  This was possibly originally suggested in <a href="#kmeans-lit-9">[9]</a>.
+To locate the elbow, we use the 2nd derivative of the
+objective function using the NumPy gradient function <a href="#kmeans-lit-2">[2]</a>.
+
 @anchor literature
 @literature
 
 @anchor kmeans-lit-1
-[1] Wikipedia, K-means Clustering,
-    http://en.wikipedia.org/wiki/K-means_clustering
+[1] David Arthur, Sergei Vassilvitskii: k-means++: the advantages of careful
+    seeding, Proceedings of the 18th Annual ACM-SIAM Symposium on Discrete
+    Algorithms (SODA'07), pp. 1027-1035.
 
 @anchor kmeans-lit-2
-[2] David Arthur, Sergei Vassilvitskii: k-means++: the advantages of careful
-    seeding, Proceedings of the 18th Annual ACM-SIAM Symposium on Discrete
-    Algorithms (SODA'07), pp. 1027-1035,
-    http://www.stanford.edu/~darthur/kMeansPlusPlus.pdf
+[2] NumPy gradient function, https://docs.scipy.org/doc/numpy/reference/generated/numpy.gradient.html
 
 @anchor kmeans-lit-3
 [3] E. R. Hruschka, L. N. C. Silva, R. J. G. B. Campello: Clustering
@@ -486,6 +902,22 @@ guaranteed to converge to a local optimum.
 [5] Leisch, Friedrich: A Toolbox for K-Centroids Cluster Analysis.  In: Computational
     Statistics and Data Analysis, 51(2). pp. 526-544. 2006.
 
+@anchor kmeans-lit-6
+[6] Jain, A.K.: Data clustering: 50 years beyond k-means. Pattern recognition
+letters 31(8), 651–666 (2010)
+
+@anchor kmeans-lit-7
+[7] Peter J. Rousseeuw (1987). “Silhouettes: a Graphical Aid to the Interpretation
+and Validation of Cluster Analysis”. Computational and Applied Mathematics 20: 53-65
+
+@anchor kmeans-lit-8
+[8] Wang F., Franco-Penya HH., Kelleher J.D., Pugh J., Ross R. (2017) An Analysis
+of the Application of Simplified Silhouette to the Evaluation of k-means Clustering
+Validity. In: Perner P. (eds) Machine Learning and Data Mining in Pattern Recognition.
+MLDM 2017. Lecture Notes in Computer Science, vol 10358. Springer, Cham
+
+@anchor kmeans-lit-9
+[9] Robert L. Thorndike (December 1953). "Who Belongs in the Family?". Psychometrika. 18 (4): 267–276. doi:10.1007/BF02289263.
 
 @anchor related
 @par Related Topics
@@ -494,8 +926,9 @@ File kmeans.sql_in documenting the k-Means SQL functions
 
 \ref grp_svec
 
-\ref simple_silhouette()
+closest_column()
 
+array_unnest_2d_to_1d()
 
 @internal
 @sa namespace kmeans (documenting the implementation in Python)
