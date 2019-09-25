@@ -42,9 +42,36 @@ from utilities.validate_args import quote_ident
 from utilities.control import MinWarning
 import tensorflow as tf
 
-class SD_NAMES:
+class SD_STORE:
     SESS = 'sess'
     SEGMENT_MODEL = 'segment_model'
+
+    @staticmethod
+    def init_SD(SD, sess, segment_model):
+        SD[SD_STORE.SESS] = sess
+        SD[SD_STORE.SEGMENT_MODEL] = segment_model
+
+    @staticmethod
+    def clear_SD(SD):
+        del SD[SD_STORE.SEGMENT_MODEL]
+        del SD[SD_STORE.SESS]
+
+def get_init_model_and_sess(SD, device_name, gpus_per_host, segments_per_host,
+                               model_architecture, compile_params):
+    # If a live session is present, re-use it. Otherwise, recreate it.
+    if SD_STORE.SESS in SD :
+        if SD_STORE.SEGMENT_MODEL not in SD:
+            plpy.error("Session and model should exist in SD after the first row"
+                       "of the first iteration")
+        sess = SD[SD_STORE.SESS]
+        segment_model = SD[SD_STORE.SEGMENT_MODEL]
+        K.set_session(sess)
+    else:
+        sess = get_keras_session(device_name, gpus_per_host, segments_per_host)
+        K.set_session(sess)
+        segment_model = init_model(model_architecture, compile_params)
+        SD_STORE.init_SD(SD, sess, segment_model)
+    return segment_model, sess
 
 @MinWarning("warning")
 def fit(schema_madlib, source_table, model, model_arch_table,
@@ -419,43 +446,45 @@ def fit_transition(state, dependent_var, independent_var, dependent_var_shape,
                    images_per_seg, gpus_per_host, segments_per_host,
                    prev_serialized_weights, is_final_iteration=True,
                    is_multiple_model=False, **kwargs):
+    """
+    This transition function is common for madlib_keras_fit() and
+    madlib_keras_fit_multiple_model(). The important difference between
+    these two calls is the way this function handles the input param
+    prev_serialized_weights and clearing keras session.
+    For madlib_keras_fit_multiple_model,
+        a. prev_serialized_weights is always passed in as the state
+        (image count, serialized weights), since it is fetched in the
+        table for each hop of the model between segments.
+        b. keras session is cleared at the end of each iteration, i.e,
+        last row of each iteration.
+    For madlib_keras_fit,
+        a. prev_serialized_weights is passed in as serialized weights
+        b. keras session is cleared at the end of the final iteration,
+        i.e, last row of last iteration.
+    """
     if not independent_var or not dependent_var:
         return state
-    start_transition = time.time()
     SD = kwargs['SD']
     device_name = get_device_name_and_set_cuda_env(gpus_per_host,
                                                    current_seg_id)
     if is_multiple_model:
         prev_serialized_weights = madlib_keras_serializer.\
             get_serialized_1d_weights_from_state(prev_serialized_weights)
-    # If a live session is present, re-use it. Otherwise, recreate it.
-    if SD_NAMES.SESS in SD :
-        if SD_NAMES.SEGMENT_MODEL not in SD:
-            plpy.error("Session and model should exist in SD after the first row"
-                        "of the first iteration")
-        sess = SD[SD_NAMES.SESS]
-        segment_model = SD[SD_NAMES.SEGMENT_MODEL]
-        K.set_session(sess)
-    else:
-        sess = get_keras_session(device_name, gpus_per_host, segments_per_host)
-        SD[SD_NAMES.SESS] = sess
-        K.set_session(sess)
-        segment_model = init_model(model_architecture, compile_params)
-        SD[SD_NAMES.SEGMENT_MODEL] = segment_model
+    segment_model, sess = get_init_model_and_sess(SD, device_name,
+                                                  gpus_per_host, segments_per_host,
+                                                  model_architecture, compile_params)
     agg_image_count = madlib_keras_serializer.get_image_count_from_state(state)
-    if not state: # first row each iteration
-        update_model(segment_model, prev_serialized_weights)
+    if not state:
+        set_model_weights(segment_model, prev_serialized_weights)
 
     # Prepare the data
     x_train = np_array_float32(independent_var, independent_var_shape)
     y_train = np_array_int16(dependent_var, dependent_var_shape)
 
     # Fit segment model on data
-    start_fit = time.time()
     #TODO consider not doing this every time
     fit_params = parse_and_validate_fit_params(fit_params)
     history = segment_model.fit(x_train, y_train, **fit_params)
-    end_fit = time.time()
     image_count = len(x_train)
 
     # Aggregating number of images, loss and accuracy
@@ -466,13 +495,13 @@ def fit_transition(state, dependent_var, independent_var, dependent_var_shape,
 
     # last row of the last iteration
     if agg_image_count == total_images:
+        # For madlib_keras_fit_multiple_model(), we don't need to update weights
+        # with the total no of images as there is no merge function for it.
         if not is_multiple_model:
             updated_weights = [total_images * w for w in updated_weights]
         if is_final_iteration or is_multiple_model:
-            del SD[SD_NAMES.SEGMENT_MODEL]
-            del SD[SD_NAMES.SESS]
-            K.clear_session()
-            sess.close()
+            SD_STORE.clear_SD(SD)
+            clear_keras_session(sess)
             del segment_model
             del sess
 
@@ -481,7 +510,6 @@ def fit_transition(state, dependent_var, independent_var, dependent_var_shape,
 
     del x_train
     del y_train
-    end_transition = time.time()
 
     return new_state
 
@@ -642,29 +670,25 @@ def internal_keras_eval_transition(state, dependent_var, independent_var,
     device_name = get_device_name_and_set_cuda_env(gpus_per_host, current_seg_id)
     agg_loss, agg_metric, agg_image_count = state
 
-    # User called evaluate will always set is_final_iteration to true.
-    # If is_final_iteration is false, that means the fit already created a session and a graph
-    # Otherwise, we may (last iteration of fit) or may not (user evaluate call)
-    # have a session.
+    # This transition function is common to evaluate as well as the fit functions
+    # and is used to determine when to clear the session.
+    # For evaluate,
+    #   is_final_iteration is always set to true, so the session is cleared once
+    #   evaluated the last buffer on each segment.
+    # When called from fit functions,
+    #  if is_final_iteration is false, the fit function has already created a
+    #   session and a graph that can be used between iterations and cleared only
+    #   for the last buffer of last iteration
+    #  if is_final_iteration is false, we can clear the
 
-    if SD_NAMES.SESS in SD:
-        if SD_NAMES.SEGMENT_MODEL not in SD:
-            plpy.error("Session and model should exist in SD after the first row"
-                        "of the first iteration")
-        sess = SD[SD_NAMES.SESS]
-        segment_model = SD[SD_NAMES.SEGMENT_MODEL]
-        K.set_session(sess)
-    else:
-        sess = get_keras_session(device_name, gpus_per_host, segments_per_host)
-        SD[SD_NAMES.SESS] = sess
-        K.set_session(sess)
-        segment_model = init_model(model_architecture, compile_params)
-        SD[SD_NAMES.SEGMENT_MODEL] = segment_model
-    if not agg_image_count: # first row each iteration
+    segment_model, sess = get_init_model_and_sess(SD, device_name, gpus_per_host,
+                                                  segments_per_host, model_architecture,
+                                                  compile_params)
+    if not agg_image_count:
         # These should already be 0, but just in case make sure
         agg_metric = 0
         agg_loss = 0
-        update_model(segment_model, serialized_weights)
+        set_model_weights(segment_model, serialized_weights)
 
     x_val = np_array_float32(independent_var, independent_var_shape)
     y_val = np_array_int16(dependent_var, dependent_var_shape)
@@ -689,12 +713,10 @@ def internal_keras_eval_transition(state, dependent_var, independent_var,
     total_images = get_image_count_per_seg_from_array(current_seg_id, seg_ids,
                                                       images_per_seg)
 
-    # Clean the session on the last buffer of last iteration
     if agg_image_count == total_images and is_final_iteration:
         K.clear_session()
-        SD[SD_NAMES.SESS].close()
-        del SD[SD_NAMES.SEGMENT_MODEL]
-        del SD[SD_NAMES.SESS]
+        sess.close()
+        SD_STORE.clear_SD(SD)
         del segment_model
         del sess
 

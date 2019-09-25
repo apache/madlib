@@ -83,9 +83,6 @@ class FitMultipleModel():
         self.train_mst_loss = defaultdict(list)
         self.train_mst_metric = defaultdict(list)
         self.info_str = ""
-        self.seg_ids_train, self.images_per_seg_train = \
-            get_image_count_per_seg_for_minibatched_data_from_db(
-                self.source_table)
         input_tbl_valid(self.model_selection_table, self.module_name)
         input_tbl_valid(self.model_selection_summary_table, self.module_name,
                         error_suffix_str="Please ensure that the model selection table ({0}) "
@@ -98,6 +95,9 @@ class FitMultipleModel():
             self.source_table, self.validation_table, self.model_output_table,
             self.model_arch_table, mb_dep_var_col, mb_indep_var_col,
             self.num_iterations, 1, False)
+        self.seg_ids_train, self.images_per_seg_train = \
+            get_image_count_per_seg_for_minibatched_data_from_db(
+                self.source_table)
 
         output_tbl_valid(self.model_info_table, self.module_name)
         if self.validation_table:
@@ -139,22 +139,22 @@ class FitMultipleModel():
 
     def train_multiple_model(self):
         total_msts = len(self.msts_for_schedule)
-        for e in range(self.num_iterations):
-            for i in range(total_msts):
-                mst_row = [self.grand_schedule[dist_key][i]
+        for iter in range(self.num_iterations):
+            for mst_idx in range(total_msts):
+                mst_row = [self.grand_schedule[dist_key][mst_idx]
                            for dist_key in self.dist_keys]
                 self.create_mst_schedule_table(mst_row)
-                if i == 0:
+                if mst_idx == 0:
                     start_iteration = time.time()
                 self.run_training()
-                if i == (total_msts - 1):
+                if mst_idx == (total_msts - 1):
                     end_iteration = time.time()
-                    self.info_str = "\tTime for training in iteration {0}: {1} sec\n".format(e,
+                    self.info_str = "\tTime for training in iteration {0}: {1} sec\n".format(iter,
                                                                                       end_iteration - start_iteration)
-            self.info_str += "\tTraining set after iteration {0}:".format(e)
-            self.evaluate_model(e, self.source_table, True)
+            self.info_str += "\tTraining set after iteration {0}:".format(iter)
+            self.evaluate_model(iter, self.source_table, True)
             if self.validation_table:
-                self.evaluate_model(e, self.validation_table, False)
+                self.evaluate_model(iter, self.validation_table, False)
             plpy.info("\n"+self.info_str)
 
     def evaluate_model(self, epoch, table, is_train):
@@ -176,7 +176,7 @@ class FitMultipleModel():
             serialized_weights = \
                 madlib_keras_serializer.get_serialized_1d_weights_from_state(
                     state)
-            loss_metric = compute_loss_and_metrics(
+            metric_eval_time, metric, loss = compute_loss_and_metrics(
                 self.schema_madlib, table, "$madlib${0}$madlib$".format(
                     mst[self.compile_params_col]),
                 model_arch,
@@ -185,7 +185,6 @@ class FitMultipleModel():
                 self.segments_per_host,
                 seg_ids,
                 images_per_seg, [], [], epoch, True)
-            metric_eval_time, metric, loss = loss_metric
             mst_metric_eval_time[mst[self.mst_key_col]] \
                 .append(metric_eval_time)
             mst_loss[mst[self.mst_key_col]].append(loss)
