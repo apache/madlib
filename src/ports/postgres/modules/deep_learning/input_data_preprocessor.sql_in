@@ -18,7 +18,7 @@
  * under the License.
  *
  * @file input_preprocessor_dl.sql_in
- * @brief TODO
+ * @brief Utilities to prepare input image data for use by deep learning modules.
  * @date December 2018
  *
  */
@@ -86,9 +86,10 @@ training_preprocessor_dl(source_table,
   <dd>TEXT.  Name of the output table from the training preprocessor which
   will be used as input to algorithms that support mini-batching.
   Note that the arrays packed into the output table are shuffled
-  and normalized (by dividing each element in the independent variable array
-  by the optional 'normalizing_const' parameter), so they will not match
-  up in an obvious way with the rows in the source table.
+  and normalized, by dividing each element in the independent variable array
+  by the optional 'normalizing_const' parameter. For performance reasons,
+  packed arrays are converted to PostgreSQL bytea format, which is a
+  variable-length binary string.
 
   In the case a validation data set is used (see
   later on this page), this output table is also used
@@ -158,11 +159,15 @@ validation_preprocessor_dl(source_table,
 
   <dt>output_table</dt>
   <dd>TEXT.  Name of the output table from the validation
-  preprocessor which will be used as input to algorithms that support mini-batching.  The arrays packed into the output table are
+  preprocessor which will be used as input to algorithms that support mini-batching.
+  The arrays packed into the output table are
   normalized using the same normalizing constant from the
   training preprocessor as specified in
   the 'training_preprocessor_table' parameter described below.
   Validation data is not shuffled.
+  For performance reasons,
+  packed arrays are converted to PostgreSQL bytea format, which is a
+  variable-length binary string.
   </dd>
 
   <dt>dependent_varname</dt>
@@ -209,25 +214,43 @@ validation_preprocessor_dl(source_table,
     validation_preprocessor_dl() contain the following columns:
     <table class="output">
       <tr>
-        <th>buffer_id</th>
-        <td>INTEGER. Unique id for each row in the packed table.
+        <th>independent_var</th>
+        <td>BYTEA. Packed array of independent variables in PostgreSQL bytea format.
+        Arrays of independent variables packed into the output table are
+        normalized by dividing each element in the independent variable array by the
+        optional 'normalizing_const' parameter.  Training data is shuffled, but
+        validation data is not.
         </td>
       </tr>
       <tr>
         <th>dependent_var</th>
-        <td>ANYARRAY[]. Packed array of dependent variables.
+        <td>BYTEA. Packed array of dependent variables in PostgreSQL bytea format.
         The dependent variable is always one-hot encoded as an
-        INTEGER[] array. For now, we are assuming that
+        integer array. For now, we are assuming that
         input_preprocessor_dl() will be used
         only for classification problems using deep learning. So
         the dependent variable is one-hot encoded, unless it's already a
         numeric array in which case we assume it's already one-hot
-        encoded and just cast it to an INTEGER[] array.
+        encoded and just cast it to an integer array.
         </td>
       </tr>
       <tr>
-        <th>independent_var</th>
-        <td>REAL[]. Packed array of independent variables.
+        <th>independent_var_shape</th>
+        <td>INTEGER[]. Shape of the independent variable array after preprocessing.
+        The first element is the number of images packed per row, and subsequent
+        elements will depend on how the image is described (e.g., channels first or last).
+        </td>
+      </tr>
+      <tr>
+        <th>dependent_var_shape</th>
+        <td>INTEGER[]. Shape of the dependent variable array after preprocessing.
+        The first element is the number of images packed per row, and the second
+        element is the number of class values.
+        </td>
+      </tr>
+      <tr>
+        <th>buffer_id</th>
+        <td>INTEGER. Unique id for each row in the packed table.
         </td>
       </tr>
     </table>
@@ -272,7 +295,7 @@ both validation_preprocessor_dl() and training_preprocessor_dl() ):
         <th>num_classes</th>
         <td>Number of dependent levels the one-hot encoding is created
         for. NULLs are padded at the end if the number of distinct class
-        levels found in the input data is lesser than 'num_classes' parameter
+        levels found in the input data is less than the 'num_classes' parameter
         specified in training_preprocessor_dl().</td>
     </tr>
    </table>
@@ -374,35 +397,22 @@ SELECT madlib.training_preprocessor_dl('image_data',         -- Source table
                                         255                   -- Normalizing constant
                                         );
 </pre>
-For small datasets like in this example, buffer size is mainly
-determined by the number of segments in the database.
-This example is run on a Greenplum database with 3 segments,
-so there are 3 rows with a buffer size of 18 (in this case
-two segments will get 18 rows and one segment will get 16 rows).
-For PostgresSQL, there would be only one row with a buffer
-size of 52 since it is a single node database.
-For larger data sets, other factors go into
-computing buffers size besides number of segments.
-Note that dependent variable is a text type, and it is one-hot encoded
-after preprocessing.
-Here is a sample of the packed output table:
+For small datasets like in this example, buffer size is mainly determined
+by the number of segments in the database. For a Greenplum database with 2 segments,
+there will be 2 rows with a buffer size of 26. For PostgresSQL, there would
+be only one row with a buffer size of 52 since it is a single node database.
+For larger data sets, other factors go into computing buffers size besides
+number of segments.
+Here is the packed output table of training data for our simple example:
 <pre class="example">
-\\x on
-SELECT * FROM image_data_packed ORDER BY buffer_id;
+SELECT independent_var_shape, dependent_var_shape, buffer_id FROM image_data_packed ORDER BY buffer_id;
 </pre>
 <pre class="result">
--[ RECORD 1 ]---+---------------------------------------------------------------------------------------------------------------------
-independent_var | {{{{0.921569,0.207843,0.152941},{0.568627,0.654902,0.819608}},{{0.772549,0.576471,0.870588},{0.215686,0.854902,0.207843}}},...}
-dependent_var   | {{0,0,1},{0,0,1},{1,0,0},{0,1,0},...}
-buffer_id       | 0
--[ RECORD 2 ]---+---------------------------------------------------------------------------------------------------------------------
-independent_var | {{{{0.639216,0.886275,0.631373},{0.219608,0.713726,0.937255}},{{0.505882,0.603922,0.137255},{0.286275,0.454902,0.803922}}},...}
-dependent_var   | {{1,0,0},{0,1,0},{1,0,0},{0,0,1},...}
-buffer_id       | 1
--[ RECORD 3 ]---+---------------------------------------------------------------------------------------------------------------------
-independent_var | {{{{0.635294,0.745098,0.486275},{0.721569,0.258824,0.541176}},{{0.0392157,0.941177,0.313726},{0.631373,0.266667,0.568627}}},...}
-dependent_var   | {{0,0,1},{0,0,1},{0,1,0},{1,0,0},...}
-buffer_id       | 2
+ independent_var_shape | dependent_var_shape | buffer_id
+-----------------------+---------------------+-----------
+ {26,2,2,3}            | {26,3}              |         0
+ {26,2,2,3}            | {26,3}              |         1
+(2 rows)
 </pre>
 Review the output summary table:
 <pre class="example">
@@ -417,8 +427,8 @@ dependent_varname   | species
 independent_varname | rgb
 dependent_vartype   | text
 class_values        | {bird,cat,dog}
-buffer_size         | 18
-normalizing_const   | 255.0
+buffer_size         | 26
+normalizing_const   | 255
 num_classes         | 3
 </pre>
 
@@ -434,32 +444,23 @@ SELECT madlib.validation_preprocessor_dl(
       'species',                -- Dependent variable
       'rgb',                    -- Independent variable
       'image_data_packed',      -- From training preprocessor step
-      2                         -- Buffer size
+      NULL                      -- Buffer size
       );
 </pre>
 We can choose to use a new buffer size compared to the
 training_preprocessor_dl run. Other parameters such as num_classes and
 normalizing_const that were passed to training_preprocessor_dl are
 automatically inferred using the image_data_packed param that is passed.
-Here is a sample of the packed output table:
+Here is the packed output table of validation data for our simple example:
 <pre class="example">
-\\x on
-SELECT * FROM val_image_data_packed ORDER BY buffer_id;
+SELECT independent_var_shape, dependent_var_shape, buffer_id FROM val_image_data_packed ORDER BY buffer_id;
 </pre>
 <pre class="result">
--[ RECORD 1 ]---+---------------------------------------------------------------------------------------------------------------------
-independent_var | {{{{0.270588,0.0666667,0.435294},{0.4,0.133333,0.207843}},{{0.588235,0.933333,0.556863},...}
-dependent_var   | {{1,0,0},{0,1,0}}
-buffer_id       | 0
--[ RECORD 2 ]---+---------------------------------------------------------------------------------------------------------------------
-independent_var | {{{{0.301961,0.337255,0.427451},{0.317647,0.909804,0.835294}},{{0.933333,0.247059,0.886275},...}
-dependent_var   | {{1,0,0},{1,0,0}}
-buffer_id       | 1
--[ RECORD 3 ]---+---------------------------------------------------------------------------------------------------------------------
-independent_var | {{{{0.556863,0.956863,0.117647},{0.764706,0.929412,0.160784}},{{0.0235294,0.886275,0.0196078},...}
-dependent_var   | {{1,0,0},{1,0,0}}
-buffer_id       | 2
-...
+ independent_var_shape | dependent_var_shape | buffer_id
+-----------------------+---------------------+-----------
+ {26,2,2,3}            | {26,3}              |         0
+ {26,2,2,3}            | {26,3}              |         1
+(2 rows)
 </pre>
 Review the output summary table:
 <pre class="example">
@@ -474,8 +475,8 @@ dependent_varname   | species
 independent_varname | rgb
 dependent_vartype   | text
 class_values        | {bird,cat,dog}
-buffer_size         | 2
-normalizing_const   | 255.0
+buffer_size         | 26
+normalizing_const   | 255
 num_classes         | 3
 </pre>
 
@@ -573,22 +574,14 @@ SELECT madlib.training_preprocessor_dl('image_data',         -- Source table
 </pre>
 Here is a sample of the packed output table:
 <pre class="example">
-\\x on
-SELECT * FROM image_data_packed ORDER BY buffer_id;
+SELECT independent_var_shape, dependent_var_shape, buffer_id FROM image_data_packed ORDER BY buffer_id;
 </pre>
 <pre class="result">
--[ RECORD 1 ]---+---------------------------------------------------------------------------------------------------------------------
-independent_var | {{0.203922,0.564706,0.905882,0.0470588,0.298039,0.00392157,0.635294,0.0431373,0.447059,0.552941,0.270588,0.0117647},...}
-dependent_var   | {{0,1,0},{1,0,0},{1,0,0},{1,0,0},{0,0,1},...}
-buffer_id       | 0
--[ RECORD 2 ]---+---------------------------------------------------------------------------------------------------------------------
-independent_var | {{0.25098,0.984314,0.239216,0.6,0.0509804,0.392157,0.568627,0.709804,0.0313726,0.439216,0.462745,0.419608},...}
-dependent_var   | {{0,0,1},{0,0,1},{0,1,0},{0,0,1},{1,0,0},...}
-buffer_id       | 1
--[ RECORD 3 ]---+---------------------------------------------------------------------------------------------------------------------
-independent_var | {{0.796079,0.537255,0.403922,0.0666667,0.235294,0.984314,0.596078,0.25098,0.141176,0.317647,0.658824,0.937255},...}
-dependent_var   | {{0,1,0},{0,1,0},{0,1,0},{0,0,1},{0,0,1},...}
-buffer_id       | 2
+ independent_var_shape | dependent_var_shape | buffer_id
+-----------------------+---------------------+-----------
+ {26,12}               | {26,3}              |         0
+ {26,12}               | {26,3}              |         1
+(2 rows)
 </pre>
 
 -#  Run the preprocessor for the validation dataset.
@@ -608,20 +601,14 @@ SELECT madlib.validation_preprocessor_dl(
 </pre>
 Here is a sample of the packed output summary table:
 <pre class="example">
-\\x on
-SELECT * FROM val_image_data_packed_summary;
+SELECT independent_var_shape, dependent_var_shape, buffer_id FROM val_image_data_packed ORDER BY buffer_id;
 </pre>
 <pre class="result">
--[ RECORD 1 ]-------+----------------------
-source_table        | image_data
-output_table        | val_image_data_packed
-dependent_varname   | species
-independent_varname | rgb
-dependent_vartype   | text
-class_values        | {bird,cat,dog}
-buffer_size         | 18
-normalizing_const   | 255.0
-num_classes         | 3
+ independent_var_shape | dependent_var_shape | buffer_id
+-----------------------+---------------------+-----------
+ {26,12}               | {26,3}              |         0
+ {26,12}               | {26,3}              |         1
+(2 rows)
 </pre>
 
 -# Generally the default buffer size will work well,
@@ -629,18 +616,24 @@ but if you have occasion to change it:
 <pre class="example">
 DROP TABLE IF EXISTS image_data_packed, image_data_packed_summary;
 SELECT madlib.training_preprocessor_dl('image_data',         -- Source table
-                                        'image_data_packed',  -- Output table
-                                        'species',            -- Dependent variable
-                                        'rgb',                -- Independent variable
+                                       'image_data_packed',  -- Output table
+                                       'species',            -- Dependent variable
+                                       'rgb',                -- Independent variable
                                         10,                   -- Buffer size
                                         255                   -- Normalizing constant
                                         );
-SELECT COUNT(*) FROM image_data_packed;
+SELECT independent_var_shape, dependent_var_shape, buffer_id FROM image_data_packed ORDER BY buffer_id;
 </pre>
 <pre class="result">
- count
-+-------
-     6
+ independent_var_shape | dependent_var_shape | buffer_id
+-----------------------+---------------------+-----------
+ {8,12}                | {8,3}               |         0
+ {9,12}                | {9,3}               |         1
+ {9,12}                | {9,3}               |         2
+ {9,12}                | {9,3}               |         3
+ {9,12}                | {9,3}               |         4
+ {8,12}                | {8,3}               |         5
+(6 rows)
 </pre>
 Review the output summary table:
 <pre class="example">
@@ -656,7 +649,7 @@ independent_varname | rgb
 dependent_vartype   | text
 class_values        | {bird,cat,dog}
 buffer_size         | 10
-normalizing_const   | 255.0
+normalizing_const   | 255
 num_classes         | 3
 </pre>
 
@@ -674,22 +667,14 @@ SELECT madlib.training_preprocessor_dl('image_data',         -- Source table
 </pre>
 Here is a sample of the packed output table with the padded 1-hot vector:
 <pre class="example">
-\\x on
-SELECT * FROM image_data_packed ORDER BY buffer_id;
+SELECT independent_var_shape, dependent_var_shape, buffer_id FROM image_data_packed ORDER BY buffer_id;
 </pre>
 <pre class="result">
--[ RECORD 1 ]---+---------------------------------------------------------------------------------------------------------------------
-independent_var | {{0.639216,0.517647,0.87451,0.0862745,0.784314,...},...}
-dependent_var   | {{0,0,1,0,0},{1,0,0,0,0},{1,0,0,0,0},{1,0,0,0,0},...}
-buffer_id       | 0
--[ RECORD 2 ]---+---------------------------------------------------------------------------------------------------------------------
-independent_var | {{0.866667,0.0666667,0.803922,0.239216,0.741176,...},...}
-dependent_var   | {{0,0,1,0,0},{0,0,1,0,0},{0,1,0,0,0},{0,1,0,0,0},...}
-buffer_id       | 1
--[ RECORD 3 ]---+---------------------------------------------------------------------------------------------------------------------
-independent_var | {{0.184314,0.87451,0.227451,0.466667,0.203922,...},...}
-dependent_var   | {{1,0,0,0,0},{0,1,0,0,0},{1,0,0,0,0},{0,0,1,0,0},...}
-buffer_id       | 2
+ independent_var_shape | dependent_var_shape | buffer_id
+-----------------------+---------------------+-----------
+ {26,12}               | {26,5}              |         0
+ {26,12}               | {26,5}              |         1
+(2 rows)
 </pre>
 Review the output summary table:
 <pre class="example">
@@ -704,8 +689,8 @@ dependent_varname   | species
 independent_varname | rgb
 dependent_vartype   | text
 class_values        | {bird,cat,dog,NULL,NULL}
-buffer_size         | 18
-normalizing_const   | 255.0
+buffer_size         | 26
+normalizing_const   | 255
 num_classes         | 5
 </pre>
 
@@ -832,8 +817,9 @@ m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 DROP AGGREGATE IF EXISTS MADLIB_SCHEMA.agg_array_concat(anyarray);
 CREATE AGGREGATE MADLIB_SCHEMA.agg_array_concat(anyarray) (
    SFUNC = array_cat,
-   STYPE = anyarray,
-   PREFUNC = array_cat
+   PREFUNC = array_cat,
+   STYPE = anyarray
+
    );
 
 CREATE FUNCTION MADLIB_SCHEMA.convert_array_to_bytea(var REAL[])
