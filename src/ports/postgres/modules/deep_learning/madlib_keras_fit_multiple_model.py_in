@@ -83,23 +83,20 @@ class FitMultipleModel():
         self.train_mst_loss = defaultdict(list)
         self.train_mst_metric = defaultdict(list)
         self.info_str = ""
-        input_tbl_valid(self.model_selection_table, self.module_name)
-        input_tbl_valid(self.model_selection_summary_table, self.module_name,
-                        error_suffix_str="Please ensure that the model selection table ({0}) "
-                                         "has been created by "
-                                         "load_model_selection_table().".format(self.model_selection_table))
-        self.msts, self.model_arch_table = self.query_model_configs()
         self.dep_shape_col = add_postfix(mb_dep_var_col, "_shape")
         self.ind_shape_col = add_postfix(mb_indep_var_col, "_shape")
         self.fit_validator_train = FitMultipleInputValidator(
             self.source_table, self.validation_table, self.model_output_table,
-            self.model_arch_table, mb_dep_var_col, mb_indep_var_col,
-            self.num_iterations, 1, False)
+            self.model_selection_table, self.model_selection_summary_table,
+            mb_dep_var_col, mb_indep_var_col, self.num_iterations,
+            self.model_info_table, self.mst_key_col, self.model_arch_table_col,
+            1, False)
+        self.msts = self.fit_validator_train.msts
+        self.model_arch_table = self.fit_validator_train.model_arch_table
         self.seg_ids_train, self.images_per_seg_train = \
             get_image_count_per_seg_for_minibatched_data_from_db(
                 self.source_table)
 
-        output_tbl_valid(self.model_info_table, self.module_name)
         if self.validation_table:
             self.valid_mst_metric_eval_time = defaultdict(list)
             self.valid_mst_loss = defaultdict(list)
@@ -110,7 +107,7 @@ class FitMultipleModel():
         self.mst_weights_tbl = unique_string(desp='mst_weights')
         self.mst_current_schedule_tbl = unique_string(desp='mst_current_schedule')
 
-        self.dist_keys = self.query_dist_keys()
+        self.dist_keys = query_dist_keys(self.source_table, dist_key_col)
         if len(self.msts) < len(self.dist_keys):
             self.msts_for_schedule = self.msts + [None] * \
                 (len(self.dist_keys) - len(self.msts))
@@ -171,7 +168,8 @@ class FitMultipleModel():
             seg_ids = self.seg_ids_valid
             images_per_seg = self.images_per_seg_valid
         for mst in self.msts:
-            state = self.query_weights(mst[self.mst_key_col])
+            state = query_weights(self.model_output_table, self.model_weights_col,
+                self.mst_key_col, mst[self.mst_key_col])
             model_arch, _ = get_model_arch_weights(self.model_arch_table, mst[self.model_id_col])
             serialized_weights = \
                 madlib_keras_serializer.get_serialized_1d_weights_from_state(
@@ -192,33 +190,11 @@ class FitMultipleModel():
             self.info_str += "\n\tmst_key={0}: metric={1}, loss={2}".format(mst[self.mst_key_col], metric, loss)
 
     def generate_schedule(self, msts):
+        """ Generate the schedule for models hopping to segments """
         grand_schedule = {}
         for index, dist_key in enumerate(self.dist_keys):
             grand_schedule[dist_key] = rotate(msts, index)
         return grand_schedule
-
-    def query_model_configs(self):
-        msts_query = """
-                     SELECT * FROM {self.model_selection_table}
-                     ORDER BY {self.mst_key_col}
-                     """.format(**locals())
-        model_arch_table_query = """
-                                 SELECT {self.model_arch_table_col}
-                                 FROM {self.model_selection_summary_table}
-                                 """.format(**locals())
-        msts = list(plpy.execute(msts_query))
-        model_arch_table = plpy.execute(model_arch_table_query)[0][self.model_arch_table_col]
-        return msts, model_arch_table
-
-    def query_dist_keys(self):
-        dist_key_query = """
-                         SELECT DISTINCT({dist_key_col}) FROM {source_table}
-                         ORDER BY {dist_key_col}
-                         """.format(dist_key_col=dist_key_col,
-                                    source_table=self.source_table)
-        res = list(plpy.execute(dist_key_query))
-        res = [x[dist_key_col] for x in res]
-        return res
 
     def create_mst_schedule_table(self, mst_row):
         mst_temp_query = """
@@ -476,13 +452,3 @@ class FitMultipleModel():
                                                         self.mst_weights_tbl,
                                                         self.mst_current_schedule_tbl,
                                                         self.weights_to_update_tbl))
-
-    def query_weights(self, mst_key):
-        mlp_weights_query = """
-                            SELECT {self.model_weights_col}, {self.mst_key_col}
-                            FROM {self.model_output_table}
-                            WHERE {self.mst_key_col} = {mst_key}
-                            """.format(**locals())
-
-        res = plpy.execute(mlp_weights_query)
-        return res[0][self.model_weights_col]
