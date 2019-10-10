@@ -25,20 +25,28 @@ from utilities.validate_args import input_tbl_valid
 from madlib_keras_helper import CLASS_VALUES_COLNAME
 from madlib_keras_helper import DEPENDENT_VARNAME_COLNAME
 from madlib_keras_helper import DEPENDENT_VARTYPE_COLNAME
-from madlib_keras_helper import MODEL_DATA_COLNAME
+from madlib_keras_helper import MODEL_WEIGHTS_COLNAME
 from madlib_keras_helper import NORMALIZING_CONST_COLNAME
+from madlib_keras_helper import create_summary_view
 
 class PredictParamsProcessor:
-    def __init__(self, model_table, module_name):
+    def __init__(self, model_table, module_name, mst_key):
         self.module_name = module_name
         self.model_table = model_table
+        self.mst_key = mst_key
         self.model_summary_table = add_postfix(self.model_table, '_summary')
+        self.mult_where_clause = ""
+        if self.mst_key:
+            self.model_summary_table = create_summary_view(self.module_name,
+                                                           self.model_table,
+                                                           self.mst_key)
+            self.mult_where_clause = "WHERE mst_key = {0}".format(self.mst_key)
         input_tbl_valid(self.model_summary_table, self.module_name)
         self.model_summary_dict = self._get_dict_for_table(self.model_summary_table)
         self.model_arch_dict = self._get_dict_for_table(self.model_table)
 
     def _get_dict_for_table(self, table_name):
-        return plpy.execute("SELECT * FROM {0}".format(table_name), 1)[0]
+        return plpy.execute("SELECT * FROM {0} {1}".format(table_name, self.mult_where_clause), 1)[0]
 
     def get_class_values(self):
         return self.model_summary_dict[CLASS_VALUES_COLNAME]
@@ -52,8 +60,8 @@ class PredictParamsProcessor:
     def get_model_arch(self):
         return self.model_arch_dict[ModelArchSchema.MODEL_ARCH]
 
-    def get_model_data(self):
-        return self.model_arch_dict[MODEL_DATA_COLNAME]
+    def get_model_weights(self):
+        return self.model_arch_dict[MODEL_WEIGHTS_COLNAME]
 
     def get_normalizing_const(self):
         return self.model_summary_dict[NORMALIZING_CONST_COLNAME]

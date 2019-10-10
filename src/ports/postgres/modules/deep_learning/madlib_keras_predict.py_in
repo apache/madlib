@@ -107,12 +107,12 @@ class BasePredict():
                             {self.gpus_per_host},
                             {segments_per_host})
                        ) AS {intermediate_col}
-            FROM {self.test_table}
-            LEFT JOIN
-                (SELECT {select_segmentid_comma} MIN({self.test_table}.ctid) AS ctid
-                 FROM {self.test_table}
-                 {group_by_clause}) min_ctid
-            ON {join_cond_on_segmentid} {self.test_table}.ctid=min_ctid.ctid
+                FROM {self.test_table}
+                LEFT JOIN
+                    (SELECT {select_segmentid_comma} MIN({self.test_table}.ctid) AS ctid
+                     FROM {self.test_table}
+                     {group_by_clause}) min_ctid
+                ON {join_cond_on_segmentid} {self.test_table}.ctid=min_ctid.ctid
             ) q
             """.format(self=self, prediction_select_clause=prediction_select_clause,
                        seg_ids_test=seg_ids_test,
@@ -139,10 +139,12 @@ class Predict(BasePredict):
     def __init__(self, schema_madlib, model_table,
                  test_table, id_col, independent_varname,
                  output_table, pred_type, gpus_per_host,
-                 **kwargs):
+                 mst_key, **kwargs):
 
         self.module_name = 'madlib_keras_predict'
         self.model_table = model_table
+        self.mst_key = mst_key
+        self.is_mult_model = mst_key is not None
         if self.model_table:
             self.model_summary_table = add_postfix(self.model_table, "_summary")
 
@@ -150,9 +152,12 @@ class Predict(BasePredict):
                               id_col, independent_varname,
                               output_table, pred_type,
                               gpus_per_host)
-        param_proc = PredictParamsProcessor(model_table, self.module_name)
+        param_proc = PredictParamsProcessor(self.model_table, self.module_name, self.mst_key)
+        if self.is_mult_model:
+            self.temp_summary_view = param_proc.model_summary_table
+            self.model_summary_table = self.temp_summary_view
         self.dependent_vartype = param_proc.get_dependent_vartype()
-        self.model_weights = param_proc.get_model_data()
+        self.model_weights = param_proc.get_model_weights()
         self.model_arch = param_proc.get_model_arch()
         class_values = param_proc.get_class_values()
         self.set_default_class_values(class_values)
@@ -161,6 +166,8 @@ class Predict(BasePredict):
 
         self.validate()
         BasePredict.call_internal_keras(self)
+        if self.is_mult_model:
+            plpy.execute("DROP VIEW IF EXISTS {}".format(self.temp_summary_view))
 
     def validate(self):
         InputValidator.validate_predict_evaluate_tables(
@@ -230,7 +237,7 @@ class PredictBYOM(BasePredict):
             self.test_table, self.independent_varname,
             get_input_shape(self.model_arch), 1)
 
-def internal_keras_predict(independent_var, model_architecture, model_data,
+def internal_keras_predict(independent_var, model_architecture, model_weights,
                            is_response, normalizing_const, current_seg_id, seg_ids,
                            images_per_seg, gpus_per_host, segments_per_host,
                            **kwargs):
@@ -243,8 +250,7 @@ def internal_keras_predict(independent_var, model_architecture, model_data,
         if model_key not in SD:
             set_keras_session(device_name, gpus_per_host, segments_per_host)
             model = model_from_json(model_architecture)
-            set_model_weights(model, model_data)
-
+            set_model_weights(model, model_weights)
             SD[model_key] = model
             SD[row_count_key] = 0
         else:
@@ -324,8 +330,10 @@ For more details on function usage:
                                 variables in the test table
     output_table,   --  Name of the output table
     pred_type,      --  The type of the desired output
-    gpus_per_host   --  Number of GPUs per segment host to
+    gpus_per_host,  --  Number of GPUs per segment host to
                         be used for training
+    mst_key         --  Identifier for the desired model out of multimodel
+                        training output
     )
  );
 
@@ -378,27 +386,27 @@ For more details on function usage:
                             USAGE
 -----------------------------------------------------------------------
  SELECT {schema_madlib}.madlib_keras_predict_byom(
-    model_arch_table, -- Name of the table containing the model architecture
-                            and the pre trained model weights
-    model_arch_id,    -- This is the id in 'model_arch_table' containing the
-                         model architecture
-    test_table,     --  Name of the table containing the evaluation dataset
-    id_col,         --  Name of the id column in the test data table
+    model_arch_table,       --  Name of the table containing the model architecture
+                                and the pre trained model weights
+    model_arch_id,          --  This is the id in 'model_arch_table' containing the
+                                model architecture
+    test_table,             --  Name of the table containing the evaluation dataset
+    id_col,                 --  Name of the id column in the test data table
     independent_varname,    --  Name of the column with independent
                                 variables in the test table
-    output_table,   --  Name of the output table
-    pred_type,      --  The type of the desired output
-    gpus_per_host,   --  Number of GPUs per segment host to
-                        be used for training
-    class_values,     -- List of class labels that were used while training the
-                         model. If class_values is passed in as NULL, the output
-                         table will have a column named 'prob' which is an array
-                         of probabilities of all the classes.
-                         Otherwise if class_values is not NULL, then the output
-                         table will contain a column for each class/label from
-                         the training data
-    normalizing_const -- Normalizing constant used for standardizing arrays in
-                         independent_varname
+    output_table,           --  Name of the output table
+    pred_type,              --  The type of the desired output
+    gpus_per_host,          --  Number of GPUs per segment host to
+                                be used for training
+    class_values,           --  List of class labels that were used while training the
+                                model. If class_values is passed in as NULL, the output
+                                table will have a column named 'prob' which is an array
+                                of probabilities of all the classes.
+                                Otherwise if class_values is not NULL, then the output
+                                table will contain a column for each class/label from
+                                the training data
+    normalizing_const,      --  Normalizing constant used for standardizing arrays in
+                                independent_varname
     )
  );
 

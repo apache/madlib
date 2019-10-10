@@ -37,6 +37,7 @@ from utilities.utilities import _assert
 from utilities.utilities import is_platform_pg
 from utilities.utilities import get_segments_per_host
 from utilities.utilities import madlib_version
+from utilities.utilities import unique_string
 from utilities.validate_args import get_expr_type
 from utilities.control import MinWarning
 import tensorflow as tf
@@ -163,13 +164,11 @@ def fit(schema_madlib, source_table, model, model_arch_table,
     for i in range(1, num_iterations+1):
         start_iteration = time.time()
         is_final_iteration = (i == num_iterations)
-        iteration_result = plpy.execute(run_training_iteration,
+        serialized_weights = plpy.execute(run_training_iteration,
                                         [serialized_weights, is_final_iteration])[0]['iteration_result']
         end_iteration = time.time()
         info_str = "\tTime for training in iteration {0}: {1} sec".format(i,
             end_iteration - start_iteration)
-        serialized_weights = madlib_keras_serializer.\
-            get_serialized_1d_weights_from_state(iteration_result)
 
         if should_compute_metrics_this_iter(i, metrics_compute_frequency,
                                             num_iterations):
@@ -299,7 +298,7 @@ def fit(schema_madlib, source_table, model, model_arch_table,
 
     create_output_table = plpy.prepare("""
         CREATE TABLE {0} AS SELECT
-        $1 as model_data,
+        $1 as model_weights,
         $2 as {1}""".format(model, ModelArchSchema.MODEL_ARCH), ["bytea", "json"])
     plpy.execute(create_output_table, [serialized_weights, model_arch])
 
@@ -331,8 +330,8 @@ def get_initial_weights(model_table, model_arch, serialized_weights, warm_start,
 
     if warm_start:
         serialized_weights = plpy.execute("""
-            SELECT model_data FROM {0}
-        """.format(model_table))[0]['model_data']
+            SELECT model_weights FROM {0}
+        """.format(model_table))[0]['model_weights']
     else:
         if not serialized_weights:
             model = model_from_json(model_arch)
@@ -463,9 +462,7 @@ def fit_transition(state, dependent_var, independent_var, dependent_var_shape,
     SD = kwargs['SD']
     device_name = get_device_name_and_set_cuda_env(gpus_per_host,
                                                    current_seg_id)
-    if is_multiple_model:
-        prev_serialized_weights = madlib_keras_serializer.\
-            get_serialized_1d_weights_from_state(prev_serialized_weights)
+
     segment_model, sess = get_init_model_and_sess(SD, device_name,
                                                   gpus_per_host, segments_per_host,
                                                   model_architecture, compile_params)
@@ -539,8 +536,16 @@ def fit_final(state, **kwargs):
 
     # Averaging the weights
     weights /= image_count
-    return madlib_keras_serializer.serialize_state_with_1d_weights(
-        image_count, weights)
+    return madlib_keras_serializer.serialize_nd_weights(weights)
+
+def fit_final_multiple_model(state, **kwargs):
+    # Return if called early
+    if not state:
+        return state
+
+    _, weights = madlib_keras_serializer.deserialize_as_image_1d_weights(state)
+
+    return madlib_keras_serializer.serialize_nd_weights(weights)
 
 def get_segments_and_gpus(gpus_per_host):
     gpus_per_host = 0 if gpus_per_host is None else gpus_per_host
@@ -554,20 +559,31 @@ def get_segments_and_gpus(gpus_per_host):
 
     return segments_per_host, gpus_per_host
 
-def evaluate(schema_madlib, model_table, test_table, output_table, gpus_per_host, **kwargs):
+def evaluate(schema_madlib, model_table, test_table, output_table,
+             gpus_per_host, mst_key, **kwargs):
+
     module_name = 'madlib_keras_evaluate'
+    is_mult_model = mst_key is not None
     if test_table:
         test_summary_table = add_postfix(test_table, "_summary")
     model_summary_table = None
     if model_table:
         model_summary_table = add_postfix(model_table, "_summary")
-    validate_evaluate(module_name, model_table, model_summary_table, test_table, test_summary_table, output_table)
 
+    mult_where_clause = ""
+    if is_mult_model:
+        mult_where_clause = "WHERE mst_key = {0}".format(mst_key)
+        model_summary_table = create_summary_view(module_name, model_table, mst_key)
+
+    validate_evaluate(module_name, model_table, model_summary_table, test_table, test_summary_table, output_table, is_mult_model)
     segments_per_host, gpus_per_host = get_segments_and_gpus(gpus_per_host)
 
-    model_data_query = "SELECT model_data, model_arch from {0}".format(model_table)
-    res = plpy.execute(model_data_query)[0]
-    model_data = res['model_data']
+    model_weights_query = "SELECT model_weights, model_arch FROM {0} {1}".format(
+        model_table, mult_where_clause)
+
+    res = plpy.execute(model_weights_query)[0]
+    _assert(res, "{0}: The model does not exist.")
+    model_weights = res['model_weights']
     model_arch = res['model_arch']
 
     input_shape = get_input_shape(model_arch)
@@ -584,7 +600,7 @@ def evaluate(schema_madlib, model_table, test_table, output_table, gpus_per_host
     loss, metric = \
         get_loss_metric_from_keras_eval(
             schema_madlib, test_table, compile_params, model_arch,
-            model_data, gpus_per_host, segments_per_host,
+            model_weights, gpus_per_host, segments_per_host,
             seg_ids, images_per_seg)
 
     if not metrics_type:
@@ -597,7 +613,10 @@ def evaluate(schema_madlib, model_table, test_table, output_table, gpus_per_host
             SELECT $1 as loss, $2 as metric, $3 as metrics_type""".format(output_table), ["FLOAT", "FLOAT", "TEXT[]"])
         plpy.execute(create_output_table, [loss, metric, metrics_type])
 
-def validate_evaluate(module_name, model_table, model_summary_table, test_table, test_summary_table, output_table):
+    if is_mult_model:
+        plpy.execute("DROP VIEW IF EXISTS {0}".format(model_summary_table))
+
+def validate_evaluate(module_name, model_table, model_summary_table, test_table, test_summary_table, output_table, is_mult_model):
     def _validate_test_summary_tbl():
         input_tbl_valid(test_summary_table, module_name,
                 error_suffix_str="Please ensure that the test table ({0}) "
@@ -613,6 +632,10 @@ def validate_evaluate(module_name, model_table, model_summary_table, test_table,
     _validate_test_summary_tbl()
     validate_bytea_var_for_minibatch(test_table,
                                      MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL)
+    if is_mult_model and not columns_exist_in_table(model_table, ['mst_key']):
+        plpy.error("{module_name}: Multi-model needs mst_key".format(**locals()))
+    if not is_mult_model and columns_exist_in_table(model_table, ['mst_key']):
+        plpy.error("{module_name}: Single model should not pass mst_key".format(**locals()))
 
 def get_loss_metric_from_keras_eval(schema_madlib, table, compile_params,
                                     model_arch, serialized_weights, gpus_per_host,
@@ -748,7 +771,6 @@ def internal_keras_eval_final(state, **kwargs):
 
     return loss, metric
 
-
 def fit_help(schema_madlib, message, **kwargs):
     """
     Help function for keras fit
@@ -815,7 +837,7 @@ For more details on function usage:
 -----------------------------------------------------------------------
 The output table ('model' above) contains the following columns:
 
-model_data: Byte array containing the weights of the neural net.
+model_weights: Byte array containing the weights of the neural net.
 model_arch: A JSON representation of the model architecture used in
             training.
 
@@ -861,8 +883,10 @@ For more details on function usage:
     model_table,    --  Name of the table containing the model
     test_table,     --  Name of the table containing the evaluation dataset
     output_table,   --  Name of the output table
-    gpus_per_host   --  Number of GPUs per segment host to
+    gpus_per_host,  --  Number of GPUs per segment host to
                         be used for training
+    mst_key         --  Identifier for the desired model out of multimodel
+                        training output
     )
  );
 
@@ -881,3 +905,4 @@ metrics_type:   Type of metric used that was used in the training step.
 
     return help_string.format(schema_madlib=schema_madlib)
 # ---------------------------------------------------------------------
+

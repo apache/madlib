@@ -47,6 +47,27 @@ mb_dep_var_col = MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL
 mb_indep_var_col = MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL
 dist_key_col = DISTRIBUTION_KEY_COLNAME
 
+"""
+FitMultipleModel: This class implements the Model Hopper technique for
+training multiple models in parallel. The goal of this function is to train
+multiple different models on the same data with different parameters.
+The main advantage of this method over running the existing fit function in a
+loop is avoiding inaccuracies caused by the model averaging. The basic idea of
+model hopper is simple. Let's assume that there are n segments and c*n model
+configurations. We begin with distributing these configs to segments. After
+that, each segment trains their c models on the data they have locally for one
+iteration. Once we have these models, we move them to a different segment
+(hopping) as well as receive a different set of models. Once we have the new
+models, we use our segments data to refine them (similar to the warm start
+functionality). Once every model hops through every segment, we consider an
+iteration complete.
+
+This method ensures that we don't have to average any model and the
+loss&accuracy is very close to the ideal case, where all of the data is in one
+segment.
+
+Note that this function is disabled for Postgres.
+"""
 
 @MinWarning("warning")
 class FitMultipleModel():
@@ -168,17 +189,14 @@ class FitMultipleModel():
             seg_ids = self.seg_ids_valid
             images_per_seg = self.images_per_seg_valid
         for mst in self.msts:
-            state = query_weights(self.model_output_table, self.model_weights_col,
+            weights = query_weights(self.model_output_table, self.model_weights_col,
                 self.mst_key_col, mst[self.mst_key_col])
             model_arch, _ = get_model_arch_weights(self.model_arch_table, mst[self.model_id_col])
-            serialized_weights = \
-                madlib_keras_serializer.get_serialized_1d_weights_from_state(
-                    state)
             metric_eval_time, metric, loss = compute_loss_and_metrics(
                 self.schema_madlib, table, "$madlib${0}$madlib$".format(
                     mst[self.compile_params_col]),
                 model_arch,
-                serialized_weights,
+                weights,
                 self.gpus_per_host,
                 self.segments_per_host,
                 seg_ids,
@@ -228,6 +246,7 @@ class FitMultipleModel():
             plpy.execute(mst_insert_query)
 
     def create_model_output_table(self):
+
         output_table_create_query = """
                                     CREATE TABLE {self.model_output_table}
                                     ({self.mst_key_col} INTEGER PRIMARY KEY,
@@ -267,11 +286,7 @@ class FitMultipleModel():
                                                      )
             model = model_from_json(model_arch)
 
-            serialized_state = \
-                madlib_keras_serializer.serialize_state_with_nd_weights(
-                    0, model.get_weights())
-            # serialized_weights = madlib_keras_serializer.serialize_nd_weights(
-            #     model.get_weights())
+            serialized_state = madlib_keras_serializer.serialize_nd_weights(model.get_weights())
             model_size = sys.getsizeof(serialized_weights) / 1024.0
             metrics_list = get_metrics_from_compile_param(
                 mst[self.compile_params_col])
@@ -289,7 +304,7 @@ class FitMultipleModel():
             output_table_insert_query_prepared = plpy.prepare(
                 output_table_insert_query, ["bytea", "json"])
             plpy.execute(output_table_insert_query_prepared, [
-                         serialized_state, json.dumps(model_arch)])
+                         serialized_state, model_arch])
             info_table_insert_query = """
                     INSERT INTO {self.model_info_table}({self.mst_key_col},
                                 {self.model_id_col}, {self.compile_params_col},
@@ -328,8 +343,6 @@ class FitMultipleModel():
                 SELECT
                     $MAD${self.source_table}$MAD$::TEXT AS source_table,
                     $MAD${self.validation_table}$MAD$::TEXT AS validation_table,
-                    $MAD${self.model_output_table}$MAD$::TEXT AS model,
-                    $MAD${self.model_info_table}$MAD$::TEXT AS model_info,
                     $MAD${dependent_varname}$MAD$::TEXT AS dependent_varname,
                     $MAD${independent_varname}$MAD$::TEXT AS independent_varname,
                     $MAD${self.model_arch_table}$MAD$::TEXT AS model_arch_table,

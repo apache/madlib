@@ -19,6 +19,8 @@
  *
  *//* ---------------------------------------------------------------------*/
 
+m4_include(`SQLCommon.m4')
+
 \i m4_regexp(MODULE_PATHNAME,
              `\(.*\)libmadlib\.so',
              `\1../../modules/deep_learning/test/madlib_keras_cifar.setup.sql_in'
@@ -317,3 +319,62 @@ SELECT madlib_keras_predict(
     'cifar10_predict',
     'prob',
     0);
+
+-- Test multi model
+
+\i m4_regexp(MODULE_PATHNAME,
+             `\(.*\)libmadlib\.so',
+             `\1../../modules/deep_learning/test/madlib_keras_iris.setup.sql_in'
+)
+
+m4_changequote(`<!', `!>')
+m4_ifdef(<!__POSTGRESQL__!>, <!!>, <!
+
+DROP TABLE IF EXISTS mst_table, mst_table_summary;
+SELECT load_model_selection_table(
+    'iris_model_arch',
+    'mst_table',
+    ARRAY[1],
+    ARRAY[
+        $$loss='categorical_crossentropy', optimizer='Adam(lr=0.01)', metrics=['accuracy']$$,
+        $$loss='categorical_crossentropy', optimizer='Adam(lr=0.001)', metrics=['accuracy']$$,
+        $$loss='categorical_crossentropy', optimizer='Adam(lr=0.0001)', metrics=['accuracy']$$
+    ],
+    ARRAY[
+        $$batch_size=50, epochs=1$$
+    ]
+);
+
+DROP TABLE IF EXISTS iris_multiple_model, iris_multiple_model_summary, iris_multiple_model_info;
+SELECT setseed(0);
+SELECT madlib_keras_fit_multiple_model(
+    'iris_data_packed',
+    'iris_multiple_model',
+    'mst_table',
+    6,
+    0
+);
+
+DROP TABLE IF EXISTS iris_predict;
+SELECT madlib_keras_predict(
+    'iris_multiple_model', -- model
+    'iris_train',  -- test_table
+    'id',         -- id column
+    'attributes', -- independent var
+    'iris_predict',  -- output table
+    'response',  -- prediction type
+    NULL,        -- use gpus
+    2           -- mst_key to use
+    );
+
+SELECT assert(relative_error(test_accuracy, training_metrics_final) < 0.1,
+    'Predict output validation failed.')
+FROM iris_multiple_model_info i,
+(SELECT count(*)/(150*0.8) AS test_accuracy FROM
+    (SELECT iris_train.class_text AS actual, iris_predict.estimated_class_text AS estimated
+     FROM iris_predict INNER JOIN iris_train
+     ON iris_train.id=iris_predict.id)q
+     WHERE q.actual=q.estimated) q2
+WHERE i.mst_key = 2;
+
+!>)
