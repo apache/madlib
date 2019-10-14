@@ -22,7 +22,15 @@ from madlib_keras_validator import MstLoaderInputValidator
 from utilities.control import MinWarning
 from utilities.utilities import add_postfix
 from madlib_keras_wrapper import convert_string_of_args_to_dict
+from keras_model_arch_table import ModelArchSchema
 
+class ModelSelectionSchema:
+    MST_KEY = 'mst_key'
+    MODEL_ID = ModelArchSchema.MODEL_ID
+    MODEL_ARCH_TABLE = 'model_arch_table'
+    COMPILE_PARAMS = 'compile_params'
+    FIT_PARAMS = 'fit_params'
+    col_types = ('SERIAL', 'INTEGER', 'VARCHAR', 'VARCHAR')
 
 @MinWarning("warning")
 class MstLoader():
@@ -66,7 +74,7 @@ class MstLoader():
             compile_params_list)
         self.fit_params_list = self.params_preprocessed(fit_params_list)
 
-	self.msts = []
+        self.msts = []
 
         self.find_combinations()
 
@@ -88,22 +96,22 @@ class MstLoader():
             list: The preprocessed list of strings.
         """
 
-	dict_dedup = {}
-	for string in list_strs:
-	    d = convert_string_of_args_to_dict(string)
-	    hash_tuple = tuple( '{0} = {1}'\
-		.format(x, d[x]) for x in sorted(d.keys()))
-	    dict_dedup[hash_tuple] = string
+        dict_dedup = {}
+        for string in list_strs:
+            d = convert_string_of_args_to_dict(string)
+            hash_tuple = tuple( '{0} = {1}'\
+            .format(x, d[x]) for x in sorted(d.keys()))
+            dict_dedup[hash_tuple] = string
 
-	return dict_dedup.values()
+        return dict_dedup.values()
 
     def find_combinations(self):
         """Backtracking helper for generating the combinations.
         """
         param_grid = OrderedDict([
-            ('model_arch_id', self.model_arch_id_list),
-            ('compile_params', self.compile_params_list),
-            ('fit_params', self.fit_params_list)
+            (ModelSelectionSchema.MODEL_ID, self.model_arch_id_list),
+            (ModelSelectionSchema.COMPILE_PARAMS, self.compile_params_list),
+            (ModelSelectionSchema.FIT_PARAMS, self.fit_params_list)
         ])
 
         def find_combinations_helper(msts, p, i):
@@ -121,13 +129,17 @@ class MstLoader():
         """
         create_query = """
                         CREATE TABLE {self.model_selection_table} (
-                            mst_key SERIAL,
-                            model_arch_id INTEGER,
-                            compile_params VARCHAR,
-                            fit_params VARCHAR,
-                            unique (model_arch_id, compile_params, fit_params)
+                            {mst_key} SERIAL,
+                            {model_arch_id} INTEGER,
+                            {compile_params} VARCHAR,
+                            {fit_params} VARCHAR,
+                            unique ({model_arch_id}, {compile_params}, {fit_params})
                         );
-                       """.format(self=self)
+                       """.format(self=self,
+                                  mst_key=ModelSelectionSchema.MST_KEY,
+                                  model_arch_id=ModelSelectionSchema.MODEL_ID,
+                                  compile_params=ModelSelectionSchema.COMPILE_PARAMS,
+                                  fit_params=ModelSelectionSchema.FIT_PARAMS)
         with MinWarning('warning'):
             plpy.execute(create_query)
 
@@ -136,9 +148,10 @@ class MstLoader():
         """
         create_query = """
                         CREATE TABLE {self.model_selection_summary_table} (
-                            model_arch_table VARCHAR
+                            {model_arch_table} VARCHAR
                         );
-                       """.format(self=self)
+                       """.format(self=self,
+                                  model_arch_table=ModelSelectionSchema.MODEL_ARCH_TABLE)
         with MinWarning('warning'):
             plpy.execute(create_query)
 
@@ -146,30 +159,34 @@ class MstLoader():
         """Insert every thing in self.msts into the mst table.
         """
         for mst in self.msts:
-            model_arch_id = mst['model_arch_id']
-            compile_params = mst['compile_params']
-            fit_params = mst['fit_params']
+            model_arch_id = mst[ModelSelectionSchema.MODEL_ID]
+            compile_params = mst[ModelSelectionSchema.COMPILE_PARAMS]
+            fit_params = mst[ModelSelectionSchema.FIT_PARAMS]
             insert_query = """
                             INSERT INTO
                                 {self.model_selection_table}(
-                                    model_arch_id,
-                                    compile_params,
-                                    fit_params
+                                    {model_arch_id_col},
+                                    {compile_params_col},
+                                    {fit_params_col}
                                 )
                             VALUES (
                                 {model_arch_id},
                                 $${compile_params}$$,
                                 $${fit_params}$$
                             )
-                           """.format(**locals())
+                           """.format(model_arch_id_col=ModelSelectionSchema.MODEL_ID,
+                                      compile_params_col=ModelSelectionSchema.COMPILE_PARAMS,
+                                      fit_params_col=ModelSelectionSchema.FIT_PARAMS,
+                                      **locals())
             plpy.execute(insert_query)
         insert_summary_query = """
                         INSERT INTO
                             {self.model_selection_summary_table}(
-                                model_arch_table
+                                {model_arch_table_name}
                         )
                         VALUES (
                             $${self.model_arch_table}$$
                         )
-                       """.format(**locals())
+                       """.format(model_arch_table_name=ModelSelectionSchema.MODEL_ARCH_TABLE,
+                                  **locals())
         plpy.execute(insert_summary_query)

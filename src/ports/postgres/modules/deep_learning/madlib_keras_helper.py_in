@@ -129,15 +129,12 @@ def get_image_count_per_seg_for_minibatched_data_from_db(table_name):
     mb_dep_var_col = MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL
 
     shape_col = add_postfix(mb_dep_var_col, "_shape")
-    plpy.info(table_name)
-    plpy.info(shape_col)
 
     if is_platform_pg():
         res = plpy.execute(
             """ SELECT {0}::SMALLINT[] AS shape
                 FROM {1}
             """.format(shape_col, table_name))
-        plpy.info(res)
 
         images_per_seg = [sum(r['shape'][0] for r in res)]
         seg_ids = [0]
@@ -193,3 +190,39 @@ def parse_shape(shape):
     # Split on :, discard the first one [1:],
     # split each piece on ], take the first piece [0], convert to int
     return [int(a.split(']')[0]) for a in shape.split(':')[1:]]
+
+
+def query_model_configs(model_selection_table, model_selection_summary_table,
+    mst_key_col, model_arch_table_col):
+    msts_query = """
+                 SELECT * FROM {model_selection_table}
+                 ORDER BY {mst_key_col}
+                 """.format(**locals())
+    model_arch_table_query = """
+                             SELECT {model_arch_table_col}
+                             FROM {model_selection_summary_table}
+                             """.format(**locals())
+    msts = list(plpy.execute(msts_query))
+    model_arch_table = plpy.execute(model_arch_table_query)[0][model_arch_table_col]
+    return msts, model_arch_table
+
+def query_dist_keys(source_table, dist_key_col):
+    """ Read distinct keys from the source table """
+    dist_key_query = """
+                     SELECT DISTINCT({dist_key_col}) FROM {source_table}
+                     ORDER BY {dist_key_col}
+                     """.format(dist_key_col=dist_key_col,
+                                source_table=source_table)
+    res = list(plpy.execute(dist_key_query))
+    res = [x[dist_key_col] for x in res]
+    return res
+
+def query_weights(model_output_table, model_weights_col, mst_key_col, mst_key):
+    mlp_weights_query = """
+                        SELECT {model_weights_col}, {mst_key_col}
+                        FROM {model_output_table}
+                        WHERE {mst_key_col} = {mst_key}
+                        """.format(**locals())
+
+    res = plpy.execute(mlp_weights_query)
+    return res[0][model_weights_col]

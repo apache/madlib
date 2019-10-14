@@ -19,39 +19,14 @@
  *
  *//* ---------------------------------------------------------------------*/
 
+m4_include(`SQLCommon.m4')
+
+\i m4_regexp(MODULE_PATHNAME,
+             `\(.*\)libmadlib\.so',
+             `\1../../modules/deep_learning/test/madlib_keras_iris.setup.sql_in'
+)
+
 -- MST table generation tests
-
--- First set up model arch table, to use as input
-DROP TABLE IF EXISTS iris_model_arch;
--- NOTE: The seed is set to 0 for every layer.
-SELECT load_keras_model('iris_model_arch',  -- Output table,
-$$
-{
-"class_name": "Sequential",
-"keras_version": "2.1.6",
-"config":
-    [{"class_name": "Dense", "config": {"kernel_initializer": {"class_name": "VarianceScaling",
-    "config": {"distribution": "uniform", "scale": 1.0, "seed": 0, "mode": "fan_avg"}},
-    "name": "dense_1", "kernel_constraint": null, "bias_regularizer": null,
-    "bias_constraint": null, "dtype": "float32", "activation": "relu", "trainable": true,
-    "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros",
-    "config": {}}, "units": 10, "batch_input_shape": [null, 4], "use_bias": true,
-    "activity_regularizer": null}}, {"class_name": "Dense",
-    "config": {"kernel_initializer": {"class_name": "VarianceScaling",
-    "config": {"distribution": "uniform", "scale": 1.0, "seed": 0, "mode": "fan_avg"}},
-    "name": "dense_2", "kernel_constraint": null, "bias_regularizer": null,
-    "bias_constraint": null, "activation": "relu", "trainable": true, "kernel_regularizer": null,
-    "bias_initializer": {"class_name": "Zeros", "config": {}}, "units": 10, "use_bias": true,
-    "activity_regularizer": null}}, {"class_name": "Dense", "config": {"kernel_initializer":
-    {"class_name": "VarianceScaling", "config": {"distribution": "uniform", "scale": 1.0,
-    "seed": 0, "mode": "fan_avg"}}, "name": "dense_3", "kernel_constraint": null,
-    "bias_regularizer": null, "bias_constraint": null, "activation": "softmax",
-    "trainable": true, "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros",
-    "config": {}}, "units": 3, "use_bias": true, "activity_regularizer": null}}],
-    "backend": "tensorflow"}
-$$
-);
-
 -- Valid inputs should pass and yield 6 msts in the table
 DROP TABLE IF EXISTS mst_table, mst_table_summary;
 SELECT load_model_selection_table(
@@ -112,7 +87,7 @@ SELECT assert(trap_error($TRAP$
     );
 $TRAP$)=1, 'Should error out if the provided parameters are not valid');
 
--- Must deduplicate, options with extrac white spaces should not be considered
+-- Must deduplicate, options with extra white spaces should not be considered
 -- as distinct params.
 
 DROP TABLE IF EXISTS mst_table, mst_table_summary;
@@ -158,3 +133,180 @@ SELECT assert(
 )
 FROM mst_table;
 
+m4_changequote(`<!', `!>')
+m4_ifdef(<!__POSTGRESQL__!>, <!!>, <!
+-- Multiple models test
+-- Prepare model selection table with three rows
+DROP TABLE IF EXISTS mst_table, mst_table_summary;
+SELECT load_model_selection_table(
+    'iris_model_arch',
+    'mst_table',
+    ARRAY[1],
+    ARRAY[
+        $$loss='categorical_crossentropy', optimizer='Adam(lr=0.01)', metrics=['accuracy']$$,
+        $$loss='categorical_crossentropy', optimizer='Adam(lr=0.001)', metrics=['accuracy']$$,
+        $$loss='categorical_crossentropy', optimizer='Adam(lr=0.0001)', metrics=['accuracy']$$
+    ],
+    ARRAY[
+        $$batch_size=50, epochs=1$$
+    ]
+);
+-- Prepare model selection table with only one row
+DROP TABLE IF EXISTS mst_table_1row, mst_table_1row_summary;
+SELECT load_model_selection_table(
+    'iris_model_arch',
+    'mst_table_1row',
+    ARRAY[1],
+    ARRAY[
+        $$loss='categorical_crossentropy', optimizer='Adam(lr=0.01)', metrics=['accuracy']$$
+    ],
+    ARRAY[
+        $$batch_size=16, epochs=1$$
+    ]
+);
+-- Prepare model selection table with four rows
+DROP TABLE IF EXISTS mst_table_4row, mst_table_4row_summary;
+SELECT load_model_selection_table(
+    'iris_model_arch',
+    'mst_table_4row',
+    ARRAY[1],
+    ARRAY[
+        $$loss='categorical_crossentropy', optimizer='Adam(lr=0.01)', metrics=['accuracy']$$,
+        $$loss='categorical_crossentropy', optimizer='Adam(lr=0.001)', metrics=['accuracy']$$
+    ],
+    ARRAY[
+        $$batch_size=16, epochs=1$$,
+        $$batch_size=32, epochs=1$$
+    ]
+);
+
+-- Test when number of configs(3) equals number of segments(3)
+DROP TABLE if exists iris_multiple_model, iris_multiple_model_summary, iris_multiple_model_info;
+SELECT setseed(0);
+SELECT madlib_keras_fit_multiple_model(
+	'iris_data_packed',
+	'iris_multiple_model',
+	'mst_table',
+	6,
+	0
+);
+
+SELECT assert(
+        model_arch_table = 'iris_model_arch' AND
+        model_info = 'iris_multiple_model_info' AND
+        source_table = 'iris_data_packed' AND
+        model = 'iris_multiple_model' AND
+        dependent_varname = 'class_text' AND
+        independent_varname = 'attributes' AND
+        madlib_version is NOT NULL AND
+        num_iterations = 6 AND
+        num_classes = 3 AND
+        class_values = '{Iris-setosa,Iris-versicolor,Iris-virginica}' AND
+        normalizing_const = 1,
+        'Keras Fit Multiple Output Summary Validation failed. Actual:' || __to_char(summary))
+FROM (SELECT * FROM iris_multiple_model_summary) summary;
+
+SELECT assert(COUNT(*)=3, 'Info table must have exactly same rows as the number of msts.')
+FROM iris_multiple_model_info;
+
+SELECT assert(
+        model_id = 1 AND
+        model_type = 'madlib_keras' AND
+        model_size > 0 AND
+        fit_params = $MAD$batch_size=50, epochs=1$MAD$::text AND
+        metrics_type = '{accuracy}' AND
+        training_metrics_final >= 0  AND
+        training_loss_final  >= 0  AND
+        array_upper(training_metrics, 1) = 6 AND
+        array_upper(training_loss, 1) = 6 AND
+        array_upper(metrics_elapsed_time, 1) = 6,
+        'Keras Fit Multiple Output Info Validation failed. Actual:' || __to_char(info))
+FROM (SELECT * FROM iris_multiple_model_info) info;
+
+SELECT assert(cnt = 1,
+	'Keras Fit Multiple Output Info compile params validation failed. Actual:' || __to_char(info))
+FROM (SELECT count(*) cnt FROM iris_multiple_model_info
+WHERE compile_params = $MAD$loss='categorical_crossentropy', optimizer='Adam(lr=0.01)', metrics=['accuracy']$MAD$::text) info;
+
+SELECT assert(cnt = 1,
+	'Keras Fit Multiple Output Info compile params validation failed. Actual:' || __to_char(info))
+FROM (SELECT count(*) cnt FROM iris_multiple_model_info
+WHERE compile_params = $MAD$loss='categorical_crossentropy', optimizer='Adam(lr=0.001)', metrics=['accuracy']$MAD$::text) info;
+
+SELECT assert(cnt = 1,
+	'Keras Fit Multiple Output Info compile params validation failed. Actual:' || __to_char(info))
+FROM (SELECT count(*) cnt FROM iris_multiple_model_info
+WHERE compile_params = $MAD$loss='categorical_crossentropy', optimizer='Adam(lr=0.0001)', metrics=['accuracy']$MAD$::text) info;
+
+SELECT assert(
+  training_loss[6]-training_loss[1] < 0 AND
+  training_metrics[6]-training_metrics[1] > 0,
+    'The loss and accuracy should have improved with more iterations.'
+)
+FROM iris_multiple_model_info
+WHERE compile_params like '%lr=0.01%';
+
+-- Test when number of configs(1) is less than number of segments(3)
+DROP TABLE if exists iris_multiple_model, iris_multiple_model_summary, iris_multiple_model_info;
+SELECT madlib_keras_fit_multiple_model(
+	'iris_data_packed',
+	'iris_multiple_model',
+	'mst_table_1row',
+	3,
+	0
+);
+
+SELECT assert(COUNT(*)=1, 'Info table must have exactly same rows as the number of msts.')
+FROM iris_multiple_model_info;
+
+SELECT assert(
+        model_id = 1 AND
+        model_type = 'madlib_keras' AND
+        model_size > 0 AND
+        fit_params = $MAD$batch_size=16, epochs=1$MAD$::text AND
+        metrics_type = '{accuracy}' AND
+        training_metrics_final >= 0  AND
+        training_loss_final  >= 0  AND
+        array_upper(training_metrics, 1) = 3 AND
+        array_upper(training_loss, 1) = 3 AND
+        array_upper(metrics_elapsed_time, 1) = 3,
+        'Keras Fit Multiple Output Info Validation failed. Actual:' || __to_char(info))
+FROM (SELECT * FROM iris_multiple_model_info) info;
+
+SELECT assert(cnt = 1,
+	'Keras Fit Multiple Output Info compile params validation failed. Actual:' || __to_char(info))
+FROM (SELECT count(*) cnt FROM iris_multiple_model_info
+WHERE compile_params = $MAD$loss='categorical_crossentropy', optimizer='Adam(lr=0.01)', metrics=['accuracy']$MAD$::text) info;
+
+-- Test when number of configs(4) larger than number of segments(3)
+DROP TABLE if exists iris_multiple_model, iris_multiple_model_summary, iris_multiple_model_info;
+SELECT madlib_keras_fit_multiple_model(
+	'iris_data_packed',
+	'iris_multiple_model',
+	'mst_table_4row',
+	3,
+	0
+);
+
+SELECT assert(COUNT(*)=4, 'Info table must have exactly same rows as the number of msts.')
+FROM iris_multiple_model_info;
+
+SELECT assert(
+        model_id = 1 AND
+        model_type = 'madlib_keras' AND
+        model_size > 0 AND
+        metrics_type = '{accuracy}' AND
+        training_metrics_final >= 0  AND
+        training_loss_final  >= 0  AND
+        array_upper(training_metrics, 1) = 3 AND
+        array_upper(training_loss, 1) = 3 AND
+        array_upper(metrics_elapsed_time, 1) = 3,
+        'Keras Fit Multiple Output Info Validation failed. Actual:' || __to_char(info))
+FROM (SELECT * FROM iris_multiple_model_info) info;
+
+SELECT assert(cnt = 1,
+	'Keras Fit Multiple Output Info compile params validation failed. Actual:' || __to_char(info))
+FROM (SELECT count(*) cnt FROM iris_multiple_model_info
+WHERE compile_params = $MAD$loss='categorical_crossentropy', optimizer='Adam(lr=0.01)', metrics=['accuracy']$MAD$::text
+AND fit_params = $MAD$batch_size=32, epochs=1$MAD$::text) info;
+!>)
