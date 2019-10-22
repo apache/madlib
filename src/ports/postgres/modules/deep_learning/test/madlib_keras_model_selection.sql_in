@@ -180,6 +180,35 @@ SELECT load_model_selection_table(
     ]
 );
 
+-- Test for one-hot encoded input data
+DROP TABLE if exists iris_multiple_model, iris_multiple_model_summary, iris_multiple_model_info;
+SELECT madlib_keras_fit_multiple_model(
+	'iris_data_one_hot_encoded_packed',
+	'iris_multiple_model',
+	'mst_table_4row',
+	3,
+	0
+);
+
+SELECT assert(
+        model_arch_table = 'iris_model_arch' AND
+        validation_table is NULL AND
+        model_info = 'iris_multiple_model_info' AND
+        source_table = 'iris_data_one_hot_encoded_packed' AND
+        model = 'iris_multiple_model' AND
+        dependent_varname = 'class_one_hot_encoded' AND
+        independent_varname = 'attributes' AND
+        madlib_version is NOT NULL AND
+        num_iterations = 3 AND
+        start_training_time < now() AND
+        end_training_time < now() AND
+        dependent_vartype = 'integer[]' AND
+        num_classes = NULL AND
+        class_values = NULL AND
+        normalizing_const = 1,
+        'Keras Fit Multiple Output Summary Validation failed when user passes in 1-hot encoded label vector. Actual:' || __to_char(summary))
+FROM (SELECT * FROM iris_multiple_model_summary) summary;
+
 -- Test when number of configs(3) equals number of segments(3)
 DROP TABLE IF EXISTS iris_multiple_model, iris_multiple_model_summary, iris_multiple_model_info;
 SELECT setseed(0);
@@ -188,18 +217,25 @@ SELECT madlib_keras_fit_multiple_model(
 	'iris_multiple_model',
 	'mst_table',
 	6,
-	0
+	0,
+	'iris_data_one_hot_encoded_packed'
 );
 
 SELECT assert(
-        model_arch_table = 'iris_model_arch' AND
         source_table = 'iris_data_packed' AND
+        validation_table = 'iris_data_one_hot_encoded_packed' AND
+        model = 'iris_multiple_model' AND
+        model_info = 'iris_multiple_model_info' AND
         dependent_varname = 'class_text' AND
         independent_varname = 'attributes' AND
-        madlib_version is NOT NULL AND
+        model_arch_table = 'iris_model_arch' AND
         num_iterations = 6 AND
+        start_training_time < now() AND
+        end_training_time < now() AND
+        madlib_version is NOT NULL AND
         num_classes = 3 AND
         class_values = '{Iris-setosa,Iris-versicolor,Iris-virginica}' AND
+        dependent_vartype LIKE '%char%' AND
         normalizing_const = 1,
         'Keras Fit Multiple Output Summary Validation failed. Actual:' || __to_char(summary))
 FROM (SELECT * FROM iris_multiple_model_summary) summary;
@@ -217,6 +253,10 @@ SELECT assert(
         training_loss_final  >= 0  AND
         array_upper(training_metrics, 1) = 6 AND
         array_upper(training_loss, 1) = 6 AND
+        validation_metrics_final >= 0  AND
+        validation_loss_final  >= 0  AND
+        array_upper(validation_metrics, 1) = 6 AND
+        array_upper(validation_loss, 1) = 6 AND
         array_upper(metrics_elapsed_time, 1) = 6,
         'Keras Fit Multiple Output Info Validation failed. Actual:' || __to_char(info))
 FROM (SELECT * FROM iris_multiple_model_info) info;
