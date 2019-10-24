@@ -216,7 +216,7 @@ class FitMultipleModel():
 
     def create_mst_schedule_table(self, mst_row):
         mst_temp_query = """
-                         CREATE TEMP TABLE {self.mst_current_schedule_tbl}
+                         CREATE TABLE {self.mst_current_schedule_tbl}
                                 ({self.model_id_col} INTEGER,
                                  {self.compile_params_col} VARCHAR,
                                  {self.fit_params_col} VARCHAR,
@@ -418,8 +418,19 @@ class FitMultipleModel():
                 self.update_info_table(mst, False)
 
     def run_training(self):
+        # NOTE: In the DL module, we want to avoid CREATING TEMP tables
+        # (creates a slice which stays until the session is disconnected)
+        # or minimize writing queries that generate plans with Motions (creating
+        # multiple slices on segments).
+        # This is mainly to avoid any GPU memory allocation failures. Since GPU
+        # memory allocation is tied to the process where it is initialized, failures
+        # may occur when a newly created slice(process) tries allocating GPU memory
+        # which is already allocated by a previously created slice(process).
+        # Therefore we want to have queries that do not add motions and all the
+        # sub-queries running Keras/tensorflow operations reuse the same slice(process)
+        # that was used for initializing GPU memory.
         mst_weights_query = """
-            CREATE TEMP TABLE {self.mst_weights_tbl} AS
+            CREATE TABLE {self.mst_weights_tbl} AS
                 SELECT mst_tbl.*, wgh_tbl.{self.model_weights_col},
                        model_arch_tbl.{self.model_arch_col}
                 FROM
