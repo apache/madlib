@@ -120,7 +120,8 @@ def get_image_count_per_seg_for_minibatched_data_from_db(table_name):
     Query the given minibatch formatted table and return the total rows per segment.
     Since we cannot pass a dictionary to the keras fit step function we create
     arrays out of the segment numbers and the rows per segment values.
-    This function assumes that the table is not empty.
+    This function assumes that the table is not empty and is minibatched which means
+    that it would have been distributed by __dist_key__.
     :param table_name:
     :return: Returns two arrays
     1. An array containing all the segment numbers in ascending order
@@ -141,12 +142,24 @@ def get_image_count_per_seg_for_minibatched_data_from_db(table_name):
         seg_ids = [0]
     else:
         # The number of images in the buffer is the first dimension in the shape.
+        # Using __dist_key__ instead of gp_segment_id: Since gp_segment_id is
+        # not the actual distribution key column, the optimizer/planner
+        # generates a plan with Redistribute Motion, creating multiple slices on
+        # each segment. For DL, since GPU memory allocation is tied to the process
+        # where it is initialized, we want to minimize creating any additional
+        # slices per segment. This is mainly to avoid any GPU memory allocation
+        # failures which can occur when a newly created slice(process) tries
+        # allocating GPU memory which is already allocated by a previously
+        # created slice(process).
+        # Since the minibatch_preprocessor evenly distributes the data with __dist_key__
+        # as the input table's distribution key, using this for calculating
+        # total images on each segment will avoid creating unnecessary slices(processes).
         images_per_seg = plpy.execute(
-            """ SELECT gp_segment_id, sum({0}[1]) AS images_per_seg
-                FROM {1}
-                GROUP BY gp_segment_id
-            """.format(shape_col, table_name))
-        seg_ids = [int(each_segment["gp_segment_id"])
+            """ SELECT {0}, sum({1}[1]) AS images_per_seg
+                FROM {2}
+                GROUP BY {0}
+            """.format(DISTRIBUTION_KEY_COLNAME, shape_col, table_name))
+        seg_ids = [int(each_segment[DISTRIBUTION_KEY_COLNAME])
                    for each_segment in images_per_seg]
         images_per_seg = [int(each_segment["images_per_seg"])
                           for each_segment in images_per_seg]
