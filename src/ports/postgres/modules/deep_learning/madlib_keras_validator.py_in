@@ -86,7 +86,8 @@ class InputValidator:
                 "either response or prob.".format(module_name, pred_type))
 
     @staticmethod
-    def validate_input_shape(table, independent_varname, input_shape, offset):
+    def validate_input_shape(table, independent_varname, input_shape, offset,
+                             is_minibatched=False):
         """
         Validate if the input shape specified in model architecture is the same
         as the shape of the image specified in the indepedent var of the input
@@ -100,9 +101,8 @@ class InputValidator:
         this case is 1 (start the index at 1).
         """
 
-        ind_shape_col = add_postfix(independent_varname, "_shape")
-        minibatched = is_var_valid(table, ind_shape_col)
-        if minibatched:
+        if is_minibatched:
+            ind_shape_col = add_postfix(independent_varname, "_shape")
             query = """
                 SELECT {ind_shape_col} AS shape
                 FROM {table}
@@ -131,7 +131,7 @@ class InputValidator:
                 len(input_shape), independent_varname, table, len(result)))
 
         for i in range(len(input_shape)):
-            if minibatched:
+            if is_minibatched:
                 key_name = i
                 input_shape_from_table = [result[j]
                     for j in range(len(input_shape))]
@@ -321,6 +321,16 @@ class FitCommonValidator(object):
                     dep_shape_col=self.dep_shape_col,
                     table=table))
 
+        if not is_platform_pg():
+            _assert(is_var_valid(table, DISTRIBUTION_KEY_COLNAME),
+                    "{module_name}: missing distribution key "
+                    "('{dist_key_col}') for table ({table}). "
+                    "Please ensure that the input table ({table}) "
+                    "has been preprocessed by the image preprocessor.".format(
+                        module_name=self.module_name,
+                        dist_key_col=DISTRIBUTION_KEY_COLNAME,
+                        table=table))
+
     def _is_valid_metrics_compute_frequency(self):
         return self.metrics_compute_frequency is None or \
                (self.metrics_compute_frequency >= 1 and \
@@ -340,11 +350,11 @@ class FitCommonValidator(object):
 
     def validate_input_shapes(self, input_shape):
         InputValidator.validate_input_shape(self.source_table, self.independent_varname,
-                               input_shape, 2)
+                               input_shape, 2, True)
         if self.validation_table:
             InputValidator.validate_input_shape(
                 self.validation_table, self.independent_varname,
-                input_shape, 2)
+                input_shape, 2, True)
 
 
 class FitInputValidator(FitCommonValidator):
