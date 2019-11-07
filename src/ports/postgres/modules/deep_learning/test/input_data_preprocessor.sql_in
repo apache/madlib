@@ -112,6 +112,60 @@ SELECT training_preprocessor_dl(
 SELECT assert(count(*)=(SELECT ceil(17.0/count(*)) from gp_segment_configuration WHERE role = 'p' and content != -1), 'Even distribution of buffers failed.')
 FROM data_preprocessor_input_batch
 WHERE gp_segment_id = 0;
+SELECT assert(gpu_config = 'all_segments', 'Missing column in summary table')
+FROM data_preprocessor_input_batch_summary;
+
+-- Test validation data is evenly distributed across all segments (GPDB only)
+DROP TABLE IF EXISTS validation_out, validation_out_summary;
+SELECT validation_preprocessor_dl(
+  'data_preprocessor_input',
+  'validation_out',
+  'id',
+  'x',
+  'data_preprocessor_input_batch',
+  1);
+SELECT assert(count(*)=(SELECT ceil(17.0/count(*)) from gp_segment_configuration WHERE role = 'p' and content != -1), 'Even distribution of validation buffers failed.')
+FROM validation_out
+WHERE gp_segment_id = 0;
+SELECT assert(gpu_config = 'all_segments', 'Missing column in validation summary table')
+FROM validation_out_summary;
+
+-- Test data distributed on specified segments
+CREATE TABLE segments_to_use (dbid INTEGER, notes TEXT);
+INSERT INTO segments_to_use VALUES (2, 'GPU segment');
+DROP TABLE IF EXISTS data_preprocessor_input_batch, data_preprocessor_input_batch_summary;
+SELECT training_preprocessor_dl(
+  'data_preprocessor_input',
+  'data_preprocessor_input_batch',
+  'id',
+  'x',
+  1,
+  NULL,
+  NULL,
+  'segments_to_use');
+SELECT assert(count(DISTINCT(gp_segment_id)) = 1, 'Fail to distribute data on segment0')
+FROM data_preprocessor_input_batch;
+SELECT assert(count(*) = 17, 'Fail to distribute all data on segment0')
+FROM data_preprocessor_input_batch;
+SELECT assert(gpu_config = ARRAY[0], 'Invalid column value in summary table')
+FROM data_preprocessor_input_batch_summary;
+
+-- Test data distributed on specified segments for validation_preprocessor_dl
+DROP TABLE IF EXISTS validation_out, validation_out_summary;
+SELECT validation_preprocessor_dl(
+  'data_preprocessor_input',
+  'validation_out',
+  'id',
+  'x',
+  'data_preprocessor_input_batch',
+  1,
+  'segments_to_use');
+SELECT assert(count(DISTINCT(gp_segment_id)) = 1, 'Failed to distribute validation data on segment0')
+FROM validation_out;
+SELECT assert(count(*) = 17, 'Fail to distribute all validation data on segment0')
+FROM validation_out;
+SELECT assert(gpu_config = ARRAY[0], 'Invalid column value in validation summary table')
+FROM validation_out_summary;
 !>)
 
 DROP TABLE IF EXISTS data_preprocessor_input;
