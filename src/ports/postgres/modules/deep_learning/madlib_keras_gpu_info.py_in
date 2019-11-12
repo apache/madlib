@@ -24,14 +24,16 @@
 @namespace madlib_keras_gpu_info
 """
 
+import os
+import subprocess
+
 import plpy
 from utilities.utilities import is_platform_pg
 from utilities.utilities import unique_string
-import subprocess
-import os
+from utilities.validate_args import output_tbl_valid
 
 class OutputInfoSchema:
-    INFO_TABLE = unique_string(desp='gpu_info')
+    TEMP_INFO_TABLE = unique_string(desp='gpu_info')
     SEG_ID_COL = 'gp_seg_id'
     GPU_DESCR_COL = 'gpu_descr'
 
@@ -69,40 +71,50 @@ class GPUInfoFunctions:
         return gpus
 
 
-def gpu_configuration(schema_madlib, source):
+def gpu_configuration(schema_madlib, output_table, source):
     """
     :return: List of gpus along with their hostname in the format
+        GPDB
         gpu_descr         |       hostname
         ------------------+--------------------------
-        NVIDIA Tesla P100 | pm-demo-machine-keras1
-        NVIDIA Tesla P100 | pm-demo-machine-keras1
-        Super Duper GPU   | pm-demo-machine-keras2
-        Super Duper GPU   | pm-demo-machine-keras2
-    1. We use gp_dist_random to run either the nvidia smi UDF or the tensorflow UDF
-        on all the hosts.
-    2. Also we do not need to run the tf/nvidia UDF on all the segments, just
-        one segment per host. That's why we group the output of
-        gp_segment_configuration by hostname and get the min segment from each host.
-    3. To get the hostname along with the gpu description, we have to join the
-        output of nvidia/tf UDF with gp_segment_configuration and filter out the
-        following
-        * master
-        * mirror segments
-        * empty/null gpu description
-    Workflow for gpdb
-    1. Run query to get min seg ids on each host. This is so that we can run
-    the gpu UDF on just one segment per host.
-    2. Create a table by running the tf/nvidia UDF on the segment ids returned
-    from the previous step. Note that this table will only contain the output
-    of the UDF and the segment id itself. This table does not contain hostnames
-    3. To get the hostname associated with the segment id, we need to join the
-    table created in step with gp_segment_configuration.
-    It's important to note that we can merge all these 3 queries into one but
-    the problem with that is that a redistribution happens before running the UDF
-    which means the UDF does not run on the segments that we pass in to the query.
-    To avoid this, we broke down the query into 3 parts so that the UDF is always
-    run on the intended segments.
+        NVIDIA Tesla P100 | host1
+        NVIDIA Tesla P100 | host1
+        Super Duper GPU   | host2
+        Super Duper GPU   | host2
+        1. We use gp_dist_random to run either the nvidia smi UDF or the tensorflow UDF
+            on all the hosts. (see gpu_info_nvidia/gpu_info_tensorflow)
+        2. Also we do not need to run the tf/nvidia UDF on all the segments,
+            just one segment per host. That's why we group the output of
+            gp_segment_configuration by hostname and get the min segment from
+            each host.
+        3. To get the hostname along with the gpu description, we have to join
+            the output of nvidia/tf UDF with gp_segment_configuration and filter
+            out the following
+            * master
+            * mirror segments
+            * empty/null gpu description
+        Workflow for gpdb
+        1. Run query to get min seg ids on each host. This is so that we can run
+        the gpu UDF on just one segment per host.
+        2. Create a table by running the tf/nvidia UDF on the segment ids returned
+        from the previous step. Note that this table will only contain the output
+        of the UDF and the segment id itself. This table does not contain hostnames
+        3. To get the hostname associated with the segment id, we need to join the
+        table created in step with gp_segment_configuration.
+        It's important to note that we can merge all these 3 queries into one but
+        the problem with that is that a redistribution happens before running the UDF
+        which means the UDF does not run on the segments that we pass in to the query.
+        To avoid this, we broke down the query into 3 parts so that the UDF is always
+        run on the intended segments.
+
+        POSTGRES
+        gpu_descr         |       hostname
+        ------------------+--------------------------
+        NVIDIA Tesla P100 | localhost
     """
+    module_name = 'madlib_keras_gpu_info'
+    output_tbl_valid(output_table, module_name)
+
     if not source:
         source = Source.TENSORFLOW
     source = source.lower()
@@ -112,32 +124,30 @@ def gpu_configuration(schema_madlib, source):
 
     gpu_fn_name = 'gpu_info_{0}'.format(source)
     if is_platform_pg():
-        return gpu_for_postgres(schema_madlib, gpu_fn_name)
+        gpu_for_postgres(schema_madlib, output_table, gpu_fn_name)
     else:
-        return gpu_for_gpdb(schema_madlib, gpu_fn_name)
+        gpu_for_gpdb(schema_madlib, output_table, gpu_fn_name)
 
 
-def gpu_for_postgres(schema_madlib, gpu_fn_name):
+def gpu_for_postgres(schema_madlib, output_table, gpu_fn_name):
     gpu_info_query = """
-     SELECT 'localhost' as hostname, {0} from (SELECT unnest({1}.{2}()) AS {0}) s1
-     where {0} is NOT NULL AND {0} != ''
-        """.format(OutputInfoSchema.GPU_DESCR_COL, schema_madlib, gpu_fn_name)
-    gpus = plpy.execute(gpu_info_query)
-    if not gpus or len(gpus) == 0:
-        return []
-    return gpus
+    CREATE TABLE {0} AS
+    SELECT 'localhost' as hostname, {1} from (SELECT unnest({2}.{3}()) AS {1}) s1
+    where {1} is NOT NULL AND {1} != ''
+        """.format(output_table, OutputInfoSchema.GPU_DESCR_COL,
+                   schema_madlib, gpu_fn_name)
+    plpy.execute(gpu_info_query)
 
 
-def gpu_for_gpdb(schema_madlib, gpu_fn_name):
+def gpu_for_gpdb(schema_madlib, output_table, gpu_fn_name):
     min_seg_on_each_host = get_min_seg_ids_on_each_host()
-    create_gpu_info_table(schema_madlib, gpu_fn_name, min_seg_on_each_host)
-    gpus_per_host = get_gpu_info_with_hostname()
 
-    plpy.execute("DROP TABLE IF EXISTS {0}".format(OutputInfoSchema.INFO_TABLE))
+    create_gpu_info_table_without_hostname(schema_madlib, gpu_fn_name,
+                                           min_seg_on_each_host)
 
-    if not gpus_per_host or len(gpus_per_host) == 0:
-        return []
-    return gpus_per_host
+    create_gpu_info_table_with_hostname(output_table)
+
+    plpy.execute("DROP TABLE IF EXISTS {0}".format(OutputInfoSchema.TEMP_INFO_TABLE))
 
 
 def get_min_seg_ids_on_each_host():
@@ -162,8 +172,9 @@ def get_min_seg_ids_on_each_host():
     return min_seg_on_each_host
 
 
-def create_gpu_info_table(schema_madlib, gpu_fn_name, min_seg_on_each_host):
-    """
+def create_gpu_info_table_without_hostname(schema_madlib, gpu_fn_name,
+                                           min_seg_on_each_host):
+    """ output_table,
     Create a table by running the tf/nvidia UDF on the segment ids returned
     from the previous step. Note that this table will only contain the output
     of the UDF and the segment id itself. This table does not contain hostnames
@@ -174,7 +185,7 @@ def create_gpu_info_table(schema_madlib, gpu_fn_name, min_seg_on_each_host):
     gpu_info_per_host_query = """
     CREATE TEMP TABLE {0} AS SELECT gp_segment_id AS {1}, {2}.{3}()
     AS {4} FROM gp_dist_random('gp_id') WHERE gp_segment_id IN ({5})
-    """.format(OutputInfoSchema.INFO_TABLE,
+    """.format(OutputInfoSchema.TEMP_INFO_TABLE,
                OutputInfoSchema.SEG_ID_COL,
                schema_madlib, gpu_fn_name,
                OutputInfoSchema.GPU_DESCR_COL,
@@ -182,22 +193,22 @@ def create_gpu_info_table(schema_madlib, gpu_fn_name, min_seg_on_each_host):
     plpy.execute(gpu_info_per_host_query)
 
 
-def get_gpu_info_with_hostname():
+def create_gpu_info_table_with_hostname(output_table):
     """
-    To get the hostname associated with the segment id, we need to join the
-    table created in step with gp_segment_configuration.
-    :return: List of gpus and their associated hostname
+    Create the final output table that contains the hostname and the gpu description.
+    To create this table, we need to join the table created in
+    create_gpu_info_table_without_hostname with gp_segment_configuration.
     """
     final_join_query = """
-    SELECT hostname, {0} FROM
+    CREATE TABLE {0} AS
+    SELECT hostname, {1} FROM
     (
-    SELECT hostname, unnest({0}) AS {0} FROM {1}
+    SELECT hostname, unnest({1}) AS {1} FROM {2}
     JOIN
-    gp_segment_configuration ON {2}=content WHERE content != -1 AND role='p'
+    gp_segment_configuration ON {3}=content WHERE content != -1 AND role='p'
     ) s1
-    WHERE {0} != '' AND {0} is NOT NULL ORDER BY 1,2;
-    """.format(OutputInfoSchema.GPU_DESCR_COL,
-               OutputInfoSchema.INFO_TABLE,
+    WHERE {1} != '' AND {1} is NOT NULL ORDER BY 1,2;
+    """.format(output_table, OutputInfoSchema.GPU_DESCR_COL,
+               OutputInfoSchema.TEMP_INFO_TABLE,
                OutputInfoSchema.SEG_ID_COL)
-    gpus_per_host = plpy.execute(final_join_query)
-    return gpus_per_host
+    plpy.execute(final_join_query)
