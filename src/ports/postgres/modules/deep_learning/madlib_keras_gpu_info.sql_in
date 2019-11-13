@@ -56,24 +56,35 @@ to those locations only in subsequent training and evaluation steps.
 @par GPU Confuguration
 
 <pre class="syntax">
-gpu_configuration(
-	source
-	)
+gpu_configuration( output_table,
+                   source
+	               )
 </pre>
 \b Arguments
 <dl class="arglist">
+  <dt>output_table</dt>
+  <dd>TEXT. Name of the output table to write out the GPU information.
+  </dd>
+
   <dt>source (optional)</dt>
   <dd>TEXT, default: 'tensorflow'. Source for determining GPU configuration.
   Using 'tensorflow' returns a description based on what TensorFlow reports.
   Using 'nvidia' returns a description based on what the Nvidia Systems
   Management Interface (nvidia-smi) reports [1].  Note that MADlib and Keras will use the
   TensorFlow information; the lower level nvidia-smi info is provided for convenience.
+
+  @note
+  If the command 'nvidia-smi -L' returns an error, we do not pass through
+  the error message, but instead will show no GPUs for that host in the output table.
+  You may want to run nvidia-smi from the command line to see error
+  and informational messages.
+
   </dd>
 </dl>
 
 <b>Output</b>
 <br>
-    The output contains the following:
+    The output table contains the following:
     <table class="output">
       <tr>
         <th>hostname</th>
@@ -83,7 +94,7 @@ gpu_configuration(
         </td>
       </tr>
       <tr>
-        <th>gpu_info</th>
+        <th>gpu_descr</th>
         <td>TEXT. String reported by TensorFlow or nvidia-smi.
         The formats are different and shown in the examples below.
         </td>
@@ -91,13 +102,14 @@ gpu_configuration(
     </table>
 </br>
 
-
 @anchor example
 @par Examples
 
 -# Get GPU configuration as per TensorFlow:
 <pre class="example">
-SELECT * FROM madlib.gpu_configuration();
+DROP TABLE IF EXISTS host_gpu_mapping_tf;
+SELECT * FROM madlib.gpu_configuration('host_gpu_mapping_tf');
+SELECT * FROM host_gpu_mapping_tf ORDER BY hostname, gpu_descr;
 </pre>
 <pre class="result">
  hostname |                                        gpu_descr
@@ -108,12 +120,6 @@ SELECT * FROM madlib.gpu_configuration();
  phoenix0 | device: 3, name: Tesla P100-PCIE-16GB, pci bus id: 0000:00:07.0, compute capability: 6.0
  phoenix1 | device: 0, name: Tesla P100-PCIE-16GB, pci bus id: 0000:00:04.0, compute capability: 6.0
  phoenix1 | device: 1, name: Tesla P100-PCIE-16GB, pci bus id: 0000:00:05.0, compute capability: 6.0
- phoenix1 | device: 2, name: Tesla P100-PCIE-16GB, pci bus id: 0000:00:06.0, compute capability: 6.0
- phoenix1 | device: 3, name: Tesla P100-PCIE-16GB, pci bus id: 0000:00:07.0, compute capability: 6.0
- phoenix2 | device: 0, name: Tesla P100-PCIE-16GB, pci bus id: 0000:00:04.0, compute capability: 6.0
- phoenix2 | device: 1, name: Tesla P100-PCIE-16GB, pci bus id: 0000:00:05.0, compute capability: 6.0
- phoenix2 | device: 2, name: Tesla P100-PCIE-16GB, pci bus id: 0000:00:06.0, compute capability: 6.0
- phoenix2 | device: 3, name: Tesla P100-PCIE-16GB, pci bus id: 0000:00:07.0, compute capability: 6.0
  phoenix3 | device: 0, name: Tesla P100-PCIE-16GB, pci bus id: 0000:00:04.0, compute capability: 6.0
  phoenix3 | device: 1, name: Tesla P100-PCIE-16GB, pci bus id: 0000:00:05.0, compute capability: 6.0
  phoenix3 | device: 2, name: Tesla P100-PCIE-16GB, pci bus id: 0000:00:06.0, compute capability: 6.0
@@ -122,41 +128,41 @@ SELECT * FROM madlib.gpu_configuration();
  phoenix4 | device: 1, name: Tesla P100-PCIE-16GB, pci bus id: 0000:00:05.0, compute capability: 6.0
  phoenix4 | device: 2, name: Tesla P100-PCIE-16GB, pci bus id: 0000:00:06.0, compute capability: 6.0
  phoenix4 | device: 3, name: Tesla P100-PCIE-16GB, pci bus id: 0000:00:07.0, compute capability: 6.0
-(20 rows)
+(14 rows)
 </pre>
+In this heterogeneous cluster there are 4 GPUs attached to hosts 0, 3 and 4.  There are 2 GPUs
+attached to host 1 and no GPUs attached to host 2.
 
 -# Get GPU configuration as per nvidia-smi:
 <pre class="example">
-SELECT * FROM madlib.gpu_configuration('nvidia');
+DROP TABLE IF EXISTS host_gpu_mapping_nvidia;
+SELECT * FROM madlib.gpu_configuration('host_gpu_mapping_nvidia', -- output table
+                                       'nvidia'                   -- source for GPU info
+                                       );
+SELECT * FROM host_gpu_mapping_nvidia ORDER BY hostname, gpu_descr;
 </pre>
 <pre class="result">
  hostname |                                  gpu_descr
 ----------+------------------------------------------------------------------------------
- phoenix0 | GPU 0: Tesla P100-PCIE-16GB (UUID: GPU-120672ff-0527-6340-14c1-ac6400103a69)
- phoenix0 | GPU 1: Tesla P100-PCIE-16GB (UUID: GPU-063a5803-a4cb-44b3-818e-b72886b75a7f)
- phoenix0 | GPU 2: Tesla P100-PCIE-16GB (UUID: GPU-a44f8948-f944-ddb9-ea90-e28bc14c176a)
- phoenix0 | GPU 3: Tesla P100-PCIE-16GB (UUID: GPU-11aebd04-b7fe-0a13-b18f-52e41c901956)
- phoenix1 | GPU 0: Tesla P100-PCIE-16GB (UUID: GPU-120672ff-0527-6340-14c1-ac6400103a69)
- phoenix1 | GPU 1: Tesla P100-PCIE-16GB (UUID: GPU-063a5803-a4cb-44b3-818e-b72886b75a7f)
- phoenix1 | GPU 2: Tesla P100-PCIE-16GB (UUID: GPU-a44f8948-f944-ddb9-ea90-e28bc14c176a)
- phoenix1 | GPU 3: Tesla P100-PCIE-16GB (UUID: GPU-11aebd04-b7fe-0a13-b18f-52e41c901956)
- phoenix2 | GPU 0: Tesla P100-PCIE-16GB (UUID: GPU-120672ff-0527-6340-14c1-ac6400103a69)
- phoenix2 | GPU 1: Tesla P100-PCIE-16GB (UUID: GPU-063a5803-a4cb-44b3-818e-b72886b75a7f)
- phoenix2 | GPU 2: Tesla P100-PCIE-16GB (UUID: GPU-a44f8948-f944-ddb9-ea90-e28bc14c176a)
- phoenix2 | GPU 3: Tesla P100-PCIE-16GB (UUID: GPU-11aebd04-b7fe-0a13-b18f-52e41c901956)
- phoenix3 | GPU 0: Tesla P100-PCIE-16GB (UUID: GPU-120672ff-0527-6340-14c1-ac6400103a69)
- phoenix3 | GPU 1: Tesla P100-PCIE-16GB (UUID: GPU-063a5803-a4cb-44b3-818e-b72886b75a7f)
- phoenix3 | GPU 2: Tesla P100-PCIE-16GB (UUID: GPU-a44f8948-f944-ddb9-ea90-e28bc14c176a)
- phoenix3 | GPU 3: Tesla P100-PCIE-16GB (UUID: GPU-11aebd04-b7fe-0a13-b18f-52e41c901956)
- phoenix4 | GPU 0: Tesla P100-PCIE-16GB (UUID: GPU-120672ff-0527-6340-14c1-ac6400103a69)
- phoenix4 | GPU 1: Tesla P100-PCIE-16GB (UUID: GPU-063a5803-a4cb-44b3-818e-b72886b75a7f)
- phoenix4 | GPU 2: Tesla P100-PCIE-16GB (UUID: GPU-a44f8948-f944-ddb9-ea90-e28bc14c176a)
- phoenix4 | GPU 3: Tesla P100-PCIE-16GB (UUID: GPU-11aebd04-b7fe-0a13-b18f-52e41c901956)
-(20 rows)
+ phoenix0 | GPU 0: Tesla P100-PCIE-16GB (UUID: GPU-f2ccc77e-2501-f6ee-4754-069dda256fb2)
+ phoenix0 | GPU 1: Tesla P100-PCIE-16GB (UUID: GPU-b1fc40ca-c7c6-bc86-f20f-6e9a62cda3f8)
+ phoenix0 | GPU 2: Tesla P100-PCIE-16GB (UUID: GPU-d93bb21b-96f9-7c1d-3bab-cdd92b7bbc9d)
+ phoenix0 | GPU 3: Tesla P100-PCIE-16GB (UUID: GPU-2d79c4a8-479e-2f33-39f8-3ba80b63f830)
+ phoenix1 | GPU 0: Tesla P100-PCIE-16GB (UUID: GPU-0af6bb1e-5b5b-4988-ad3a-a917e9584702)
+ phoenix1 | GPU 1: Tesla P100-PCIE-16GB (UUID: GPU-d824c976-a8aa-ef26-a13c-9a9a7fe86bfd)
+ phoenix3 | GPU 0: Tesla P100-PCIE-16GB (UUID: GPU-3681d0b6-1ec6-0453-fd81-29d88e549cd9)
+ phoenix3 | GPU 1: Tesla P100-PCIE-16GB (UUID: GPU-d4b1f2e7-b238-ac9a-bbfe-918adeb69472)
+ phoenix3 | GPU 2: Tesla P100-PCIE-16GB (UUID: GPU-42a32ef1-a60c-e599-c8cf-0e669111ab6f)
+ phoenix3 | GPU 3: Tesla P100-PCIE-16GB (UUID: GPU-1cce09c4-6856-8031-be0b-8e8bbf9a10f3)
+ phoenix4 | GPU 0: Tesla P100-PCIE-16GB (UUID: GPU-a71bdc18-fdd5-ba25-617e-19b23cc8e827)
+ phoenix4 | GPU 1: Tesla P100-PCIE-16GB (UUID: GPU-f9d13688-7fe6-a029-24d1-985a5659f18f)
+ phoenix4 | GPU 2: Tesla P100-PCIE-16GB (UUID: GPU-06a7f54b-c07a-e87a-20d6-09bd99b19531)
+ phoenix4 | GPU 3: Tesla P100-PCIE-16GB (UUID: GPU-af3b32f3-8bd9-cb75-a8fb-25253b9da926)
+(14 rows)
 </pre>
 
--# To get a fuller picture, combine with Greenplum catalog
-table gp_segment_configuration which contains information about
+-# To get a fuller picture at the segment level, combine with the Greenplum catalog
+table 'gp_segment_configuration' which contains information about
 segment instance configuration [2].  Here is an example of this table
 filtering out master and mirrors:
 <pre class="example">
@@ -187,29 +193,35 @@ SELECT * FROM gp_segment_configuration WHERE role='p' AND content>=0 ORDER BY ho
    21 |      19 | p    | p              | c    | u      | 40003 | phoenix4 | phoenix4 |            70003
 (20 rows)
 </pre>
-To create a table showing segments with all available
-GPU resources:
+Now join this table with the GPU resources table to create a table containing a
+list of all segments on hosts with GPUs attached:
 <pre class="example">
-TBD
+DROP TABLE IF EXISTS segments_to_use;
+CREATE TABLE segments_to_use AS
+  SELECT DISTINCT dbid, hostname FROM gp_segment_configuration JOIN host_gpu_mapping_tf USING (hostname)
+  WHERE role='p' AND content>=0;
+SELECT * FROM segments_to_use ORDER BY hostname, dbid;
 </pre>
 <pre class="result">
-TBD
-</pre>
-To create a table showing segments with a certain type of
-GPU resource:
-<pre class="example">
-TBD
-</pre>
-<pre class="result">
-TBD
-</pre>
-To create a table limiting the number of segments
-on hosts with GPU resource:
-<pre class="example">
-TBD
-</pre>
-<pre class="result">
-TBD
+ dbid | hostname
+------+----------
+    2 | phoenix0
+    3 | phoenix0
+    4 | phoenix0
+    5 | phoenix0
+    6 | phoenix1
+    7 | phoenix1
+    8 | phoenix1
+    9 | phoenix1
+   14 | phoenix3
+   15 | phoenix3
+   16 | phoenix3
+   17 | phoenix3
+   18 | phoenix4
+   19 | phoenix4
+   20 | phoenix4
+   21 | phoenix4
+(16 rows)
 </pre>
 
 @anchor references
