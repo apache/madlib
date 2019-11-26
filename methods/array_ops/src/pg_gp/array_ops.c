@@ -14,6 +14,7 @@
 #include "utils/typcache.h"
 #include "access/hash.h"
 #include <math.h>
+#include <float.h>
 
 #ifndef NO_PG_MODULE_MAGIC
     PG_MODULE_MAGIC;
@@ -524,7 +525,7 @@ array_min(PG_FUNCTION_ARGS){
 
     ArrayType *v = PG_GETARG_ARRAYTYPE_P(0);
     Oid element_type = ARR_ELEMTYPE(v);
-    Datum res = General_Array_to_Element(v, Float8GetDatum(0), get_float8_infinity(),
+    Datum res = General_Array_to_Element(v, Float8GetDatum(0), FLT_MAX,
             element_min, noop_finalize);
 
     PG_FREE_IF_COPY(v, 0);
@@ -543,7 +544,7 @@ array_max(PG_FUNCTION_ARGS){
     ArrayType *v = PG_GETARG_ARRAYTYPE_P(0);
     Oid element_type = ARR_ELEMTYPE(v);
 
-    Datum res = General_Array_to_Element(v, Float8GetDatum(0), -get_float8_infinity(),
+    Datum res = General_Array_to_Element(v, Float8GetDatum(0), -FLT_MAX,
             element_max, noop_finalize);
 
     PG_FREE_IF_COPY(v, 0);
@@ -572,7 +573,7 @@ array_max_index(PG_FUNCTION_ARGS) {
     }
 
     value_index *result = (value_index *)palloc(sizeof(value_index));
-    result->value = -get_float8_infinity();
+    result->value = -FLT_MAX;
     result->index = 0;
 
     Datum res = General_Array_to_Struct(v, result, element_argmax, value_index_finalize);
@@ -597,7 +598,7 @@ array_min_index(PG_FUNCTION_ARGS) {
     }
 
     value_index *result = (value_index *)palloc(sizeof(value_index));
-    result->value = get_float8_infinity();
+    result->value = FLT_MAX;
     result->index = 0;
 
     Datum res = General_Array_to_Struct(v, result, element_argmin, value_index_finalize);

@@ -98,7 +98,11 @@ exec_sql_using(PG_FUNCTION_ARGS) {
             ));
 
     char* nulls = NULL;
-    for (int i = 1; i < nargs; i++)
+#if PG_VERSION_NUM >= 120000
+    Datum* args_copy = palloc0(sizeof(Datum) * (nargs - 1));
+#endif
+
+    for (int i = 1; i < nargs; i++){
         if (PG_ARGISNULL(i)) {
             if (nulls == NULL) {
                 nulls = palloc0(sizeof(char) * (nargs - 1));
@@ -106,7 +110,10 @@ exec_sql_using(PG_FUNCTION_ARGS) {
             }
             nulls[i - 1] = 'n';
         }
-
+#if PG_VERSION_NUM >= 120000
+        args_copy[i-1] = fcinfo->args[i].value;
+#endif
+    }
     SPI_connect();
     SPIPlanPtr plan = SPI_prepare(stmt, nargs - 1, &types[1]);
     if (plan == NULL)
@@ -116,8 +123,13 @@ exec_sql_using(PG_FUNCTION_ARGS) {
                 format_procedure(fcinfo->flinfo->fn_oid))
             ));
 
+#if PG_VERSION_NUM >= 120000
+    int result = SPI_execute_plan(plan, args_copy, nulls, false,
+        returnVoid ? 0 : 1);
+#else
     int result = SPI_execute_plan(plan, &fcinfo->arg[1], nulls, false,
         returnVoid ? 0 : 1);
+#endif
 
     Datum returnValue = 0;
     bool returnNull = false;
@@ -153,6 +165,10 @@ exec_sql_using(PG_FUNCTION_ARGS) {
     SPI_freeplan(plan);
     if (nulls)
         pfree(nulls);
+#if PG_VERSION_NUM >= 120000
+    if (args_copy)
+        pfree(args_copy);
+#endif
     SPI_finish();
 
     if (result < 0)
