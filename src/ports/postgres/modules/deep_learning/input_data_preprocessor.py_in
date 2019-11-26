@@ -102,6 +102,27 @@ class InputDataPreprocessorDL(object):
                 "in table ({1}).".format(
                     self.module_name, len(self.dependent_levels)))
 
+    def _validate_distribution_table(self):
+
+        input_tbl_valid(self.distribution_rules, self.module_name,
+                        error_suffix_str="""
+                        segments_to_use table ({self.distribution_rules}) doesn't exist.
+                        """.format(self=self))
+        _assert(is_var_valid(self.distribution_rules, 'dbid'),
+                "{self.module_name}: segments_to_use table must contain dbib column".format(
+                    self=self))
+        dbids = plpy.execute("""
+            SELECT array_agg(dbid) as dbids FROM gp_segment_configuration
+            WHERE content >= 0 AND role = 'p'
+            """)[0]['dbids']
+        dist_ids = plpy.execute("SELECT dbid FROM {0} ".format(
+            self.distribution_rules))
+
+        for i in dist_ids:
+            _assert(i['dbid'] in dbids,
+                '{self.module_name}: Invalid dbid:{i} in the segments_to_use table'.format(
+                    self=self, i=i['dbid']))
+
     def get_one_hot_encoded_dep_var_expr(self):
         """
         :param dependent_varname: Name of the dependent variable
@@ -255,8 +276,9 @@ class InputDataPreprocessorDL(object):
                 """.format(**locals())
                 segment_ids_result = plpy.execute(get_segment_query)[0]
                 plpy.execute("DROP TABLE IF EXISTS {0}".format(gpu_info_table))
-                self.gpu_config = "ARRAY{0}".format(segment_ids_result['segment_ids'])
-                self.distribution_rules = "ARRAY{0}".format(segment_ids_result['dbid'])
+
+                self.gpu_config = "ARRAY{0}".format(sorted(segment_ids_result['segment_ids']))
+                self.distribution_rules = "ARRAY{0}".format(sorted(segment_ids_result['dbid']))
 
                 num_segments = segment_ids_result['count']
                 where_clause = "WHERE gp_segment_id=ANY({self.gpu_config})".format(**locals())
@@ -270,12 +292,8 @@ class InputDataPreprocessorDL(object):
                 join_clause = 'JOIN {dist_key_tbl} ON (b.buffer_id%{num_segments})= {dist_key_tbl}.id'.format(**locals())
 
             else:  # Read from a table with dbids to distribute the data
-                input_tbl_valid(self.distribution_rules, self.module_name,
-                                error_suffix_str="""
-                                segments_to_use table ({self.distribution_rules}) doesn't exist.
-                                """.format(self=self))
-                _assert(is_var_valid(self.distribution_rules, 'dbid'),
-                        "{self.module_name}: segments_to_use table must contain dbib column".format(self=self))
+
+                self._validate_distribution_table()
                 gpu_query = """
                     SELECT array_agg(content) as gpu_config,
                            array_agg(gp_segment_configuration.dbid) as dbid
@@ -283,11 +301,11 @@ class InputDataPreprocessorDL(object):
                     ON {self.distribution_rules}.dbid = gp_segment_configuration.dbid
                 """.format(**locals())
                 gpu_query_result = plpy.execute(gpu_query)[0]
-                self.gpu_config = "ARRAY{0}".format(gpu_query_result['gpu_config'])
+                self.gpu_config = "ARRAY{0}".format(sorted(gpu_query_result['gpu_config']))
                 where_clause = "WHERE gp_segment_id=ANY({self.gpu_config})".format(**locals())
                 num_segments = plpy.execute("SELECT count(*) as count FROM {self.distribution_rules}".format(**locals()))[0]['count']
                 join_clause = gpu_join_clause.format(**locals())
-                self.distribution_rules = "ARRAY{0}".format(gpu_query_result['dbid'])
+                self.distribution_rules = "ARRAY{0}".format(sorted(gpu_query_result['dbid']))
 
             dist_key_query = """
                     CREATE TEMP TABLE {dist_key_tbl} AS
@@ -425,7 +443,6 @@ class InputDataPreprocessorDL(object):
         self.buffer_size = buffer_size_calculator.calculate_default_buffer_size(
             self.buffer_size, num_rows_in_tbl, indepdent_var_dim)
         return ceil((1.0 * num_rows_in_tbl) / self.buffer_size)
-
 
 class ValidationDataPreprocessorDL(InputDataPreprocessorDL):
     def __init__(self, schema_madlib, source_table, output_table,
