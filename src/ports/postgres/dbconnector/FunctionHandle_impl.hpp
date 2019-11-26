@@ -125,7 +125,13 @@ FunctionHandle::invoke(AnyType &args) {
         oldContext = MemoryContextSwitchTo(callContext);
     }
 
+#if PG_VERSION_NUM >= 120000
+    FunctionCallInfoBaseData funcPtrCallInfo;
+    int nargs = args.numFields();
+    MemSet(&funcPtrCallInfo, 0, SizeForFunctionCallInfo(nargs));
+#else
     FunctionCallInfoData funcPtrCallInfo;
+#endif
     // Initializes all the fields of a FunctionCallInfoData except for the arg[]
     // and argnull[] arrays
     madlib_InitFunctionCallInfoData(
@@ -147,11 +153,22 @@ FunctionHandle::invoke(AnyType &args) {
         NULL
     );
 
+#if PG_VERSION_NUM >= 120000
     for (uint16_t i = 0; i < funcPtrCallInfo.nargs; ++i) {
-        funcPtrCallInfo.arg[i] = args[i].getAsDatum(&funcPtrCallInfo,
+
+        funcPtrCallInfo.args[i].value = args[i].getAsDatum(&funcPtrCallInfo,
+            mFuncInfo->getArgumentType(i));
+        funcPtrCallInfo.args[i].isnull = args[i].isNull();
+        elog(WARNING, "funcPtrCallInfo.args[i].value %d funcPtrCallInfo.args[i].isnull %d", funcPtrCallInfo.args[i].value, funcPtrCallInfo.args[i].isnull);
+    }
+#else
+    for (uint16_t i = 0; i < funcPtrCallInfo.nargs; ++i) {
+        funcPtrCallInfo.arg[i]= args[i].getAsDatum(&funcPtrCallInfo,
             mFuncInfo->getArgumentType(i));
         funcPtrCallInfo.argnull[i] = args[i].isNull();
     }
+#endif
+
 
     Datum result = internalInvoke(&funcPtrCallInfo);
 

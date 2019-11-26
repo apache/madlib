@@ -104,8 +104,15 @@ MADLIB_WRAP_VOID_PG_FUNC(
 
 inline
 void
-madlib_InitFunctionCallInfoData(FunctionCallInfoData& fcinfo, FmgrInfo* flinfo,
-    short nargs, Oid fncollation, fmNodePtr context, fmNodePtr resultinfo) {
+
+#if PG_VERSION_NUM >= 120000
+madlib_InitFunctionCallInfoData(FunctionCallInfoBaseData& fcinfo,
+#else
+madlib_InitFunctionCallInfoData(FunctionCallInfoData& fcinfo,
+#endif
+
+    FmgrInfo* flinfo, short nargs, Oid fncollation, fmNodePtr context,
+    fmNodePtr resultinfo) {
 
 #if PG_VERSION_NUM >= 90100
     // Collation support has been added to PostgreSQL with commit
@@ -113,6 +120,7 @@ madlib_InitFunctionCallInfoData(FunctionCallInfoData& fcinfo, FmgrInfo* flinfo,
     // on Tue Apr 12 2011 23:19:24 UTC. First release: PG9.1.
     InitFunctionCallInfoData(fcinfo, flinfo, nargs, fncollation, context,
         resultinfo);
+
 #else
     (void) fncollation;
     InitFunctionCallInfoData(fcinfo, flinfo, nargs, context, resultinfo);
