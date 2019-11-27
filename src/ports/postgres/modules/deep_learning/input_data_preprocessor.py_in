@@ -109,19 +109,26 @@ class InputDataPreprocessorDL(object):
                         segments_to_use table ({self.distribution_rules}) doesn't exist.
                         """.format(self=self))
         _assert(is_var_valid(self.distribution_rules, 'dbid'),
-                "{self.module_name}: segments_to_use table must contain dbib column".format(
+                "{self.module_name}: distribution rules table must contain dbib column".format(
                     self=self))
         dbids = plpy.execute("""
-            SELECT array_agg(dbid) as dbids FROM gp_segment_configuration
+            SELECT array_agg(dbid) AS dbids FROM gp_segment_configuration
             WHERE content >= 0 AND role = 'p'
             """)[0]['dbids']
-        dist_ids = plpy.execute("SELECT dbid FROM {0} ".format(
-            self.distribution_rules))
+        dist_result = plpy.execute("""
+            SELECT array_agg(dbid) AS dbids,
+                   count(dbid) AS c1,
+                   count(DISTINCT dbid) AS c2
+            FROM {0} """.format(self.distribution_rules))
 
-        for i in dist_ids:
-            _assert(i['dbid'] in dbids,
-                '{self.module_name}: Invalid dbid:{i} in the segments_to_use table'.format(
-                    self=self, i=i['dbid']))
+        _assert(dist_result[0]['c1'] == dist_result[0]['c2'],
+            '{self.module_name}: distribution rules table contains duplicate dbids'.format(
+                self=self))
+
+        for i in dist_result[0]['dbids']:
+            _assert(i in dbids,
+                '{self.module_name}: invalid dbid:{i} in the distribution rules table'.format(
+                    self=self, i=i))
 
     def get_one_hot_encoded_dep_var_expr(self):
         """
