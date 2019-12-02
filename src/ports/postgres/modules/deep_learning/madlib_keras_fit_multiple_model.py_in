@@ -27,6 +27,7 @@ from madlib_keras import get_initial_weights
 from madlib_keras import get_model_arch_weights
 from madlib_keras import get_segments_and_gpus
 from madlib_keras import get_source_summary_table_dict
+from madlib_keras import should_compute_metrics_this_iter
 from madlib_keras_helper import *
 from madlib_keras_model_selection import ModelSelectionSchema
 from madlib_keras_validator import *
@@ -73,7 +74,9 @@ Note that this function is disabled for Postgres.
 class FitMultipleModel():
     def __init__(self, schema_madlib, source_table, model_output_table,
                  model_selection_table, num_iterations,
-                 gpus_per_host=0, validation_table=None, **kwargs):
+                 gpus_per_host=0, validation_table=None,
+                 metrics_compute_frequency=None, warm_start=False, name="",
+                 description="", **kwargs):
         # set the random seed for visit order/scheduling
         random.seed(1)
         if is_platform_pg():
@@ -90,6 +93,9 @@ class FitMultipleModel():
             self.model_summary_table = add_postfix(
                 model_output_table, '_summary')
         self.num_iterations = num_iterations
+        self.metrics_compute_frequency = metrics_compute_frequency
+        self.name = name
+        self.description = description
         self.module_name = 'madlib_keras_fit_multiple_model'
         self.schema_madlib = schema_madlib
         self.version = madlib_version(self.schema_madlib)
@@ -111,9 +117,17 @@ class FitMultipleModel():
             self.model_selection_table, self.model_selection_summary_table,
             mb_dep_var_col, mb_indep_var_col, self.num_iterations,
             self.model_info_table, self.mst_key_col, self.model_arch_table_col,
-            1, False)
+            self.metrics_compute_frequency, warm_start)
+        if self.metrics_compute_frequency is None:
+            self.metrics_compute_frequency = num_iterations
+        self.warm_start = bool(warm_start)
         self.msts = self.fit_validator_train.msts
         self.model_arch_table = self.fit_validator_train.model_arch_table
+
+        original_cuda_env = None
+        if CUDA_VISIBLE_DEVICES_KEY in os.environ:
+            original_cuda_env = os.environ[CUDA_VISIBLE_DEVICES_KEY]
+
         self.seg_ids_train, self.images_per_seg_train = \
             get_image_count_per_seg_for_minibatched_data_from_db(
                 self.source_table)
@@ -138,26 +152,24 @@ class FitMultipleModel():
         self.grand_schedule = self.generate_schedule(self.msts_for_schedule)
         self.segments_per_host, self.gpus_per_host = get_segments_and_gpus(
             gpus_per_host)
-        self.create_model_output_table()
+        if not self.warm_start:
+            self.create_model_output_table()
         self.weights_to_update_tbl = unique_string(desp='weights_to_update')
         self.fit_multiple_model()
+        reset_cuda_env(original_cuda_env)
 
     def fit_multiple_model(self):
         # WARNING: set orca off to prevent unwanted redistribution
         with OptimizerControl(False):
-            original_cuda_env = None
-            if CUDA_VISIBLE_DEVICES_KEY in os.environ:
-                original_cuda_env = os.environ[CUDA_VISIBLE_DEVICES_KEY]
             self.start_training_time = datetime.datetime.now()
             self.train_multiple_model()
             self.end_training_time = datetime.datetime.now()
             self.insert_info_table()
             self.create_model_summary_table()
-        reset_cuda_env(original_cuda_env)
 
     def train_multiple_model(self):
         total_msts = len(self.msts_for_schedule)
-        for iter in range(self.num_iterations):
+        for iter in range(1, self.num_iterations+1):
             for mst_idx in range(total_msts):
                 mst_row = [self.grand_schedule[dist_key][mst_idx]
                            for dist_key in self.dist_keys]
@@ -167,12 +179,15 @@ class FitMultipleModel():
                 self.run_training()
                 if mst_idx == (total_msts - 1):
                     end_iteration = time.time()
-                    self.info_str = "\tTime for training in iteration {0}: {1} sec\n".format(
-                        iter, end_iteration - start_iteration)
-            self.info_str += "\tTraining set after iteration {0}:".format(iter)
-            self.evaluate_model(iter, self.source_table, True)
-            if self.validation_table:
-                self.evaluate_model(iter, self.validation_table, False)
+                    self.info_str = "\tTime for training in iteration {0}: {1} sec\n".format(iter,
+                                        end_iteration - start_iteration)
+            if should_compute_metrics_this_iter(iter,
+                                                self.metrics_compute_frequency,
+                                                self.num_iterations):
+                self.info_str += "\tTraining set after iteration {0}:".format(iter)
+                self.evaluate_model(iter, self.source_table, True)
+                if self.validation_table:
+                    self.evaluate_model(iter, self.validation_table, False)
             plpy.info("\n"+self.info_str)
 
     def evaluate_model(self, epoch, table, is_train):
@@ -246,7 +261,6 @@ class FitMultipleModel():
             plpy.execute(mst_insert_query)
 
     def create_model_output_table(self):
-
         output_table_create_query = """
                                     CREATE TABLE {self.model_output_table}
                                     ({self.mst_key_col} INTEGER PRIMARY KEY,
@@ -282,10 +296,8 @@ class FitMultipleModel():
                                                      model_arch,
                                                      model_weights,
                                                      False,
-                                                     self.gpus_per_host
-                                                     )
+                                                     self.gpus_per_host)
             model = model_from_json(model_arch)
-
             serialized_state = model_weights if model_weights else \
                 madlib_keras_serializer.serialize_nd_weights(model.get_weights())
 
@@ -295,7 +307,6 @@ class FitMultipleModel():
             is_metrics_specified = True if metrics_list else False
             metrics_type = 'ARRAY{0}'.format(
                 metrics_list) if is_metrics_specified else 'NULL'
-
             output_table_insert_query = """
                                 INSERT INTO {self.model_output_table}(
                                     {self.mst_key_col}, {self.model_weights_col},
@@ -327,6 +338,8 @@ class FitMultipleModel():
             plpy.execute(info_table_insert_query)
 
     def create_model_summary_table(self):
+        if self.warm_start:
+            plpy.execute("DROP TABLE {0}".format(self.model_summary_table))
         src_summary_dict = get_source_summary_table_dict(self.fit_validator_train)
         class_values = src_summary_dict['class_values']
         dep_vartype = src_summary_dict['dep_vartype']
@@ -344,6 +357,8 @@ class FitMultipleModel():
             class_values_str = 'ARRAY{0}::{1}'.format(class_values,
                                                       src_summary_dict['class_values_type'])
             num_classes = len(class_values)
+        name = 'NULL' if self.name is None else '$MAD${0}$MAD$'.format(self.name)
+        descr = 'NULL' if self.description is None else '$MAD${0}$MAD$'.format(self.description)
         class_values_colname = CLASS_VALUES_COLNAME
         dependent_vartype_colname = DEPENDENT_VARTYPE_COLNAME
         normalizing_const_colname = NORMALIZING_CONST_COLNAME
@@ -359,6 +374,10 @@ class FitMultipleModel():
                     $MAD${independent_varname}$MAD$::TEXT AS independent_varname,
                     $MAD${self.model_arch_table}$MAD$::TEXT AS model_arch_table,
                     {self.num_iterations}::INTEGER AS num_iterations,
+                    {self.metrics_compute_frequency}::INTEGER AS metrics_compute_frequency,
+                    {self.warm_start} AS warm_start,
+                    {name}::TEXT AS name,
+                    {descr}::TEXT AS description,
                     '{self.start_training_time}'::TIMESTAMP AS start_training_time,
                     '{self.end_training_time}'::TIMESTAMP AS end_training_time,
                     '{self.version}'::TEXT AS madlib_version,
