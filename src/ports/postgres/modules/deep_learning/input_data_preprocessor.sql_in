@@ -40,6 +40,7 @@ Interface and implementation are subject to change. </em>
 <li class="level1"><a href="#validation_preprocessor_dl">Preprocessor for Validation Image Data</a></li>
 <li class="level1"><a href="#output">Output Tables</a></li>
 <li class="level1"><a href="#example">Examples</a></li>
+<li class="level1"><a href="#references">References</a></li>
 <li class="level1"><a href="#related">Related Topics</a></li>
 </ul></div>
 
@@ -71,7 +72,8 @@ training_preprocessor_dl(source_table,
                          independent_varname,
                          buffer_size,
                          normalizing_const,
-                         num_classes
+                         num_classes,
+                         distribution_rules
                         )
 </pre>
 
@@ -136,6 +138,25 @@ training_preprocessor_dl(source_table,
   length will be equal to the number
   of distinct class values found in the input table.
   </dd>
+
+  <dt>distribution_rules (optional)</dt>
+  <dd>TEXT, default: 'all_segments'. Specifies how to distribute the
+  'output_table'.  This is important for how the fit function will use
+  resources on the cluster.  The default 'all_segments' means the
+  'output_table' will be distributed to all segments in the database
+  cluster.
+
+  If you specify 'gpu_segments' then the 'output_table' will be distributed
+  to all segments that are on hosts that have GPUs attached. This will make
+  maximum use of GPU resources when training a deep learning model.
+
+  You can also specify the name of a resources table containing the segments
+  to be used for training.  This table must contain a column called 'dbid' that
+  specifies the segment id from the 'gp_segment_configuration' table [1].
+  Refer to the utility function <a href="group__grp__gpu__configuration.html">GPU Configuration</a>
+  for more information on how to
+  identify segments attached to hosts that are GPU enabled.
+  </dd>
 </dl>
 
 @anchor validation_preprocessor_dl
@@ -146,7 +167,8 @@ validation_preprocessor_dl(source_table,
                            dependent_varname,
                            independent_varname,
                            training_preprocessor_table,
-                           buffer_size
+                           buffer_size,
+                           distribution_rules
                           )
 </pre>
 
@@ -204,6 +226,24 @@ validation_preprocessor_dl(source_table,
   rows specified in by the 'buffer_size' parameter.
   </dd>
 
+ <dt>distribution_rules (optional)</dt>
+  <dd>TEXT, default: 'all_segments'. Specifies how to distribute the
+  'output_table'.  This is important for how the fit function will use
+  resources on the cluster.  The default 'all_segments' means the
+  'output_table' will be distributed to all segments in the database
+  cluster.
+
+  If you specify 'gpu_segments' then the 'output_table' will be distributed
+  to all segments that are on hosts that have GPUs attached. This will make
+  maximum use of GPU resources when training a deep learning model.
+
+  You can also specify the name of a resources table containing the segments
+  to be used for training.  This table must contain a column called 'dbid' that
+  specifies the segment id from the 'gp_segment_configuration' table [1].
+  Refer to the utility function <a href="group__grp__gpu__configuration.html">GPU Configuration</a>
+  for more information on how to
+  identify segments attached to hosts that are GPU enabled.
+  </dd>
 
 </dl>
 
@@ -297,6 +337,20 @@ both validation_preprocessor_dl() and training_preprocessor_dl() ):
         for. NULLs are padded at the end if the number of distinct class
         levels found in the input data is less than the 'num_classes' parameter
         specified in training_preprocessor_dl().</td>
+    </tr>
+    <tr>
+        <th>distribution_rules</th>
+        <td>This is the list of segment id's in the form of 'dbid'
+        describing how the 'output_table' is distributed,
+        as per the 'distribution_rules' input parameter.
+        If the 'distribution_rules' parameter is set to 'all_segments', then
+        this will also be set to 'all_segments'.</td>
+    </tr>
+    <tr>
+        <th>__internal_gpu_config__</th>
+        <td>For internal use.  (Note: this is the list of segment id's
+        where data is distributed in the form of 'content' id, which
+        is different from 'dbid' [1].)</td>
     </tr>
    </table>
 
@@ -420,16 +474,18 @@ Review the output summary table:
 SELECT * FROM image_data_packed_summary;
 </pre>
 <pre class="result">
--[ RECORD 1 ]-------+------------------
-source_table        | image_data
-output_table        | image_data_packed
-dependent_varname   | species
-independent_varname | rgb
-dependent_vartype   | text
-class_values        | {bird,cat,dog}
-buffer_size         | 26
-normalizing_const   | 255
-num_classes         | 3
+-[ RECORD 1 ]-----------+------------------
+source_table            | image_data
+output_table            | image_data_packed
+dependent_varname       | species
+independent_varname     | rgb
+dependent_vartype       | text
+class_values            | {bird,cat,dog}
+buffer_size             | 26
+normalizing_const       | 255
+num_classes             | 3
+distribution_rules      | all_segments
+__internal_gpu_config__ | all_segments
 </pre>
 
 -#  Run the preprocessor for the validation dataset.
@@ -447,8 +503,9 @@ SELECT madlib.validation_preprocessor_dl(
       NULL                      -- Buffer size
       );
 </pre>
-We can choose to use a new buffer size compared to the
-training_preprocessor_dl run. Other parameters such as num_classes and
+We could choose to use a different buffer size compared to the
+training_preprocessor_dl run (but generally don't need to).
+Other parameters such as num_classes and
 normalizing_const that were passed to training_preprocessor_dl are
 automatically inferred using the image_data_packed param that is passed.
 Here is the packed output table of validation data for our simple example:
@@ -468,16 +525,18 @@ Review the output summary table:
 SELECT * FROM val_image_data_packed_summary;
 </pre>
 <pre class="result">
--[ RECORD 1 ]-------+----------------------
-source_table        | image_data
-output_table        | val_image_data_packed
-dependent_varname   | species
-independent_varname | rgb
-dependent_vartype   | text
-class_values        | {bird,cat,dog}
-buffer_size         | 26
-normalizing_const   | 255
-num_classes         | 3
+-[ RECORD 1 ]-----------+----------------------
+source_table            | image_data
+output_table            | val_image_data_packed
+dependent_varname       | species
+independent_varname     | rgb
+dependent_vartype       | text
+class_values            | {bird,cat,dog}
+buffer_size             | 26
+normalizing_const       | 255
+num_classes             | 3
+distribution_rules      | all_segments
+__internal_gpu_config__ | all_segments
 </pre>
 
 -#  Load data in another format.  Create an artificial 2x2 resolution color image
@@ -641,16 +700,18 @@ Review the output summary table:
 SELECT * FROM image_data_packed_summary;
 </pre>
 <pre class="result">
--[ RECORD 1 ]-------+------------------
-source_table        | image_data
-output_table        | image_data_packed
-dependent_varname   | species
-independent_varname | rgb
-dependent_vartype   | text
-class_values        | {bird,cat,dog}
-buffer_size         | 10
-normalizing_const   | 255
-num_classes         | 3
+-[ RECORD 1 ]-----------+------------------
+source_table            | image_data
+output_table            | image_data_packed
+dependent_varname       | species
+independent_varname     | rgb
+dependent_vartype       | text
+class_values            | {bird,cat,dog}
+buffer_size             | 10
+normalizing_const       | 255
+num_classes             | 3
+distribution_rules      | all_segments
+__internal_gpu_config__ | all_segments
 </pre>
 
 -#  Run the preprocessor for image data with num_classes greater than 3 (distinct class values found in table):
@@ -682,22 +743,103 @@ Review the output summary table:
 SELECT * FROM image_data_packed_summary;
 </pre>
 <pre class="result">
--[ RECORD 1 ]-------+-------------------------
-source_table        | image_data
-output_table        | image_data_packed
-dependent_varname   | species
-independent_varname | rgb
-dependent_vartype   | text
-class_values        | {bird,cat,dog,NULL,NULL}
-buffer_size         | 26
-normalizing_const   | 255
-num_classes         | 5
+-[ RECORD 1 ]-----------+-------------------------
+source_table            | image_data
+output_table            | image_data_packed
+dependent_varname       | species
+independent_varname     | rgb
+dependent_vartype       | text
+class_values            | {bird,cat,dog,NULL,NULL}
+buffer_size             | 26
+normalizing_const       | 255
+num_classes             | 5
+distribution_rules      | all_segments
+__internal_gpu_config__ | all_segments
 </pre>
+
+-#  Using distribution rules to specify how to distribute
+the 'output_table'. This is important for how the fit function
+will use resources on the cluster. To distribute to all segments
+on hosts with GPUs attached:
+<pre class="example">
+DROP TABLE IF EXISTS image_data_packed, image_data_packed_summary;
+SELECT madlib.training_preprocessor_dl('image_data',          -- Source table
+                                        'image_data_packed',  -- Output table
+                                        'species',            -- Dependent variable
+                                        'rgb',                -- Independent variable
+                                        NULL,                 -- Buffer size
+                                        255,                  -- Normalizing constant
+                                        NULL,                 -- Number of classes
+                                        'gpu_segments'        -- Distribution rules
+                                        );
+\\x on
+SELECT * FROM image_data_packed_summary;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]-----------+------------------
+source_table            | image_data
+output_table            | image_data_packed
+dependent_varname       | species
+independent_varname     | rgb
+dependent_vartype       | text
+class_values            | {bird,cat,dog}
+buffer_size             | 26
+normalizing_const       | 255
+num_classes             | 3
+distribution_rules      | {2,3,4,5}
+__internal_gpu_config__ | {0,1,2,3}
+</pre>
+To distribute to only specified segments, create a
+distribution table with a column called 'dbid' that
+lists the segments you want:
+<pre class="example">
+DROP TABLE IF EXISTS segments_to_use;
+CREATE TABLE segments_to_use(
+    dbid INTEGER,
+    hostname TEXT
+);
+INSERT INTO segments_to_use VALUES
+(2, 'hostname-01'),
+(3, 'hostname-01');
+DROP TABLE IF EXISTS image_data_packed, image_data_packed_summary;
+SELECT madlib.training_preprocessor_dl('image_data',          -- Source table
+                                        'image_data_packed',  -- Output table
+                                        'species',            -- Dependent variable
+                                        'rgb',                -- Independent variable
+                                        NULL,                 -- Buffer size
+                                        255,                  -- Normalizing constant
+                                        NULL,                 -- Number of classes
+                                        'segments_to_use'     -- Distribution rules
+                                        );
+\\x on
+SELECT * FROM image_data_packed_summary;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]-----------+------------------
+source_table            | image_data
+output_table            | image_data_packed
+dependent_varname       | species
+independent_varname     | rgb
+dependent_vartype       | text
+class_values            | {bird,cat,dog}
+buffer_size             | 26
+normalizing_const       | 255
+num_classes             | 3
+distribution_rules      | {2,3}
+__internal_gpu_config__ | {0,1}
+</pre>
+
+@anchor references
+@par References
+
+[1] Greenplum 'gp_segment_configuration' table https://gpdb.docs.pivotal.io/latest/ref_guide/system_catalogs/gp_segment_configuration.html
 
 @anchor related
 @par Related Topics
 
 minibatch_preprocessing.sql_in
+
+gpu_configuration()
 
 */
 
@@ -707,7 +849,8 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.validation_preprocessor_dl(
     dependent_varname           VARCHAR,
     independent_varname         VARCHAR,
     training_preprocessor_table VARCHAR,
-    buffer_size                 INTEGER
+    buffer_size                 INTEGER,
+    distribution_rules          TEXT
 ) RETURNS VOID AS $$
     PythonFunctionBodyOnly(deep_learning, input_data_preprocessor)
     from utilities.control import MinWarning
@@ -723,9 +866,21 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.validation_preprocessor_dl(
     output_table                VARCHAR,
     dependent_varname           VARCHAR,
     independent_varname         VARCHAR,
+    training_preprocessor_table VARCHAR,
+    buffer_size                 INTEGER
+) RETURNS VOID AS $$
+  SELECT MADLIB_SCHEMA.validation_preprocessor_dl($1, $2, $3, $4, $5, $6, NULL);
+$$ LANGUAGE sql VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.validation_preprocessor_dl(
+    source_table                VARCHAR,
+    output_table                VARCHAR,
+    dependent_varname           VARCHAR,
+    independent_varname         VARCHAR,
     training_preprocessor_table VARCHAR
 ) RETURNS VOID AS $$
-  SELECT MADLIB_SCHEMA.validation_preprocessor_dl($1, $2, $3, $4, $5, NULL);
+  SELECT MADLIB_SCHEMA.validation_preprocessor_dl($1, $2, $3, $4, $5, NULL, NULL);
 $$ LANGUAGE sql VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
@@ -754,7 +909,8 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.training_preprocessor_dl(
     independent_varname         VARCHAR,
     buffer_size                 INTEGER,
     normalizing_const           REAL,
-    num_classes                 INTEGER
+    num_classes                 INTEGER,
+    distribution_rules          TEXT
 ) RETURNS VOID AS $$
     PythonFunctionBodyOnly(deep_learning, input_data_preprocessor)
     from utilities.control import MinWarning
@@ -771,9 +927,22 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.training_preprocessor_dl(
     dependent_varname       VARCHAR,
     independent_varname     VARCHAR,
     buffer_size             INTEGER,
+    normalizing_const       REAL,
+    num_classes             INTEGER
+) RETURNS VOID AS $$
+  SELECT MADLIB_SCHEMA.training_preprocessor_dl($1, $2, $3, $4, $5, $6, $7, NULL);
+$$ LANGUAGE sql VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.training_preprocessor_dl(
+    source_table            VARCHAR,
+    output_table            VARCHAR,
+    dependent_varname       VARCHAR,
+    independent_varname     VARCHAR,
+    buffer_size             INTEGER,
     normalizing_const       REAL
 ) RETURNS VOID AS $$
-  SELECT MADLIB_SCHEMA.training_preprocessor_dl($1, $2, $3, $4, $5, $6, NULL);
+  SELECT MADLIB_SCHEMA.training_preprocessor_dl($1, $2, $3, $4, $5, $6, NULL, NULL);
 $$ LANGUAGE sql VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
@@ -784,7 +953,7 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.training_preprocessor_dl(
     independent_varname     VARCHAR,
     buffer_size             INTEGER
 ) RETURNS VOID AS $$
-  SELECT MADLIB_SCHEMA.training_preprocessor_dl($1, $2, $3, $4, $5, 1.0, NULL);
+  SELECT MADLIB_SCHEMA.training_preprocessor_dl($1, $2, $3, $4, $5, 1.0, NULL, NULL);
 $$ LANGUAGE sql VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
@@ -794,7 +963,7 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.training_preprocessor_dl(
     dependent_varname       VARCHAR,
     independent_varname     VARCHAR
 ) RETURNS VOID AS $$
-  SELECT MADLIB_SCHEMA.training_preprocessor_dl($1, $2, $3, $4, NULL, 1.0, NULL);
+  SELECT MADLIB_SCHEMA.training_preprocessor_dl($1, $2, $3, $4, NULL, 1.0, NULL, NULL);
 $$ LANGUAGE sql VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 

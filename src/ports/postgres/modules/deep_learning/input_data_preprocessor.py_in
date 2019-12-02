@@ -34,6 +34,7 @@ from utilities.utilities import add_postfix
 from utilities.utilities import is_platform_pg
 from utilities.utilities import is_psql_char_type
 from utilities.utilities import is_valid_psql_type
+from utilities.utilities import is_var_valid
 from utilities.utilities import BOOLEAN, NUMERIC, ONLY_ARRAY, TEXT
 from utilities.utilities import py_list_to_sql_string
 from utilities.utilities import split_quoted_delimited_str
@@ -51,7 +52,7 @@ NUM_CLASSES_COLNAME = "num_classes"
 class InputDataPreprocessorDL(object):
     def __init__(self, schema_madlib, source_table, output_table,
                  dependent_varname, independent_varname, buffer_size,
-                 normalizing_const, num_classes, module_name):
+                 normalizing_const, num_classes, distribution_rules, module_name):
         self.schema_madlib = schema_madlib
         self.source_table = source_table
         self.output_table = output_table
@@ -60,10 +61,12 @@ class InputDataPreprocessorDL(object):
         self.buffer_size = buffer_size
         self.normalizing_const = normalizing_const if normalizing_const is not None else DEFAULT_NORMALIZING_CONST
         self.num_classes = num_classes
+        self.distribution_rules = distribution_rules if distribution_rules else DEFAULT_GPU_CONFIG
         self.module_name = module_name
         self.output_summary_table = None
         self.dependent_vartype = None
         self.independent_vartype = None
+        self.gpu_config = '$__madlib__$all_segments$__madlib__$'
         if self.output_table:
             self.output_summary_table = add_postfix(self.output_table, "_summary")
 
@@ -98,6 +101,34 @@ class InputDataPreprocessorDL(object):
                 "be equal to or greater than distinct class values found "\
                 "in table ({1}).".format(
                     self.module_name, len(self.dependent_levels)))
+
+    def _validate_distribution_table(self):
+
+        input_tbl_valid(self.distribution_rules, self.module_name,
+                        error_suffix_str="""
+                        segments_to_use table ({self.distribution_rules}) doesn't exist.
+                        """.format(self=self))
+        _assert(is_var_valid(self.distribution_rules, 'dbid'),
+                "{self.module_name}: distribution rules table must contain dbib column".format(
+                    self=self))
+        dbids = plpy.execute("""
+            SELECT array_agg(dbid) AS dbids FROM gp_segment_configuration
+            WHERE content >= 0 AND role = 'p'
+            """)[0]['dbids']
+        dist_result = plpy.execute("""
+            SELECT array_agg(dbid) AS dbids,
+                   count(dbid) AS c1,
+                   count(DISTINCT dbid) AS c2
+            FROM {0} """.format(self.distribution_rules))
+
+        _assert(dist_result[0]['c1'] == dist_result[0]['c2'],
+            '{self.module_name}: distribution rules table contains duplicate dbids'.format(
+                self=self))
+
+        for i in dist_result[0]['dbids']:
+            _assert(i in dbids,
+                '{self.module_name}: invalid dbid:{i} in the distribution rules table'.format(
+                    self=self, i=i))
 
     def get_one_hot_encoded_dep_var_expr(self):
         """
@@ -204,42 +235,96 @@ class InputDataPreprocessorDL(object):
         dep_shape = self._get_dependent_var_shape()
         dep_shape = ','.join([str(i) for i in dep_shape])
 
-        # Create the mini-batched output table
         if is_platform_pg():
+            self.distribution_rules = '$__madlib__$all_segments$__madlib__$'
             distributed_by_clause = ''
             dist_key_clause = ''
             join_clause = ''
-            select_clause = 'b.*'
             dist_key_comma = ''
-
         else:
-
             dist_key = DISTRIBUTION_KEY_COLNAME
             # Create large temp table such that there is atleast 1 row on each segment
             # Using 999999 would distribute data(atleast 1 row on each segment) for
             # a cluster as large as 20000
             query = """
-                CREATE TEMP TABLE {series_tbl}
-                AS
-                SELECT generate_series(0, 999999) {dist_key}
-                DISTRIBUTED BY ({dist_key})
-            """.format(**locals())
+                    CREATE TEMP TABLE {series_tbl}
+                    AS
+                    SELECT generate_series(0, 999999) {dist_key}
+                    DISTRIBUTED BY ({dist_key})
+                """.format(**locals())
             plpy.execute(query)
+            distributed_by_clause= ' DISTRIBUTED BY ({dist_key}) '.format(**locals())
+            dist_key_comma = dist_key + ' ,'
+            gpu_join_clause = """JOIN {dist_key_tbl} ON
+                ({self.gpu_config})[b.buffer_id%{num_segments}+1] = {dist_key_tbl}.id
+                """
 
-            # Create temp table to get unique distribution key values for each segment
-            query = """
+            if self.distribution_rules == 'gpu_segments':
+                gpu_info_table = unique_string(desp='gpu_info')
+                plpy.execute("""
+                    SELECT {self.schema_madlib}.gpu_configuration('{gpu_info_table}')
+                """.format(**locals()))
+                gpu_query = """
+                    SELECT array_agg(DISTINCT(hostname)) as gpu_config
+                    FROM {gpu_info_table}
+                """.format(**locals())
+                gpu_query_result = plpy.execute(gpu_query)[0]['gpu_config']
+                if not gpu_query_result:
+                   plpy.error("{self.module_name}: No GPUs configured on hosts.".format(self=self))
+
+                gpu_config_hostnames = "ARRAY{0}".format(gpu_query_result)
+                # find hosts with gpus
+                get_segment_query = """
+                    SELECT array_agg(content) as segment_ids,
+                           array_agg(dbid) as dbid,
+                           count(*) as count
+                    FROM gp_segment_configuration
+                    WHERE content != -1 AND role = 'p'
+                    AND hostname=ANY({gpu_config_hostnames})
+                """.format(**locals())
+                segment_ids_result = plpy.execute(get_segment_query)[0]
+                plpy.execute("DROP TABLE IF EXISTS {0}".format(gpu_info_table))
+
+                self.gpu_config = "ARRAY{0}".format(sorted(segment_ids_result['segment_ids']))
+                self.distribution_rules = "ARRAY{0}".format(sorted(segment_ids_result['dbid']))
+
+                num_segments = segment_ids_result['count']
+                where_clause = "WHERE gp_segment_id=ANY({self.gpu_config})".format(**locals())
+                join_clause = gpu_join_clause.format(**locals())
+
+            elif self.distribution_rules == 'all_segments':
+
+                self.distribution_rules = '$__madlib__$all_segments$__madlib__$'
+                where_clause = ''
+                num_segments = get_seg_number()
+                join_clause = 'JOIN {dist_key_tbl} ON (b.buffer_id%{num_segments})= {dist_key_tbl}.id'.format(**locals())
+
+            else:  # Read from a table with dbids to distribute the data
+
+                self._validate_distribution_table()
+                gpu_query = """
+                    SELECT array_agg(content) as gpu_config,
+                           array_agg(gp_segment_configuration.dbid) as dbid
+                    FROM {self.distribution_rules} JOIN gp_segment_configuration
+                    ON {self.distribution_rules}.dbid = gp_segment_configuration.dbid
+                """.format(**locals())
+                gpu_query_result = plpy.execute(gpu_query)[0]
+                self.gpu_config = "ARRAY{0}".format(sorted(gpu_query_result['gpu_config']))
+                where_clause = "WHERE gp_segment_id=ANY({self.gpu_config})".format(**locals())
+                num_segments = plpy.execute("SELECT count(*) as count FROM {self.distribution_rules}".format(**locals()))[0]['count']
+                join_clause = gpu_join_clause.format(**locals())
+                self.distribution_rules = "ARRAY{0}".format(sorted(gpu_query_result['dbid']))
+
+            dist_key_query = """
                     CREATE TEMP TABLE {dist_key_tbl} AS
                     SELECT gp_segment_id AS id, min({dist_key}) AS {dist_key}
                     FROM {series_tbl}
+                    {where_clause}
                     GROUP BY gp_segment_id
-            """.format(**locals())
-            plpy.execute(query)
+            """
+            plpy.execute(dist_key_query.format(**locals()))
 
-            num_segments = get_seg_number()
-            join_clause = 'JOIN {dist_key_tbl} ON (b.buffer_id%{num_segments})= {dist_key_tbl}.id'.format(**locals())
-            distributed_by_clause= ' DISTRIBUTED BY ({dist_key}) '.format(**locals())
-            dist_key_comma = dist_key + ' ,'
-
+        # Create the mini-batched output table
         sql = """
             CREATE TABLE {self.output_table} AS
             SELECT {dist_key_comma}
@@ -297,7 +382,9 @@ class InputDataPreprocessorDL(object):
                 {class_level_str} AS {class_values_colname},
                 {self.buffer_size} AS buffer_size,
                 {self.normalizing_const}::{FLOAT32_SQL_TYPE} AS {normalizing_const_colname},
-                {self.num_classes} AS {num_classes_colname}
+                {self.num_classes} AS {num_classes_colname},
+                {self.distribution_rules} AS distribution_rules,
+                {self.gpu_config} AS __internal_gpu_config__
             """.format(self=self, class_level_str=class_level_str,
                        dependent_varname_colname=DEPENDENT_VARNAME_COLNAME,
                        independent_varname_colname=INDEPENDENT_VARNAME_COLNAME,
@@ -365,11 +452,11 @@ class InputDataPreprocessorDL(object):
             self.buffer_size, num_rows_in_tbl, indepdent_var_dim)
         return ceil((1.0 * num_rows_in_tbl) / self.buffer_size)
 
-
 class ValidationDataPreprocessorDL(InputDataPreprocessorDL):
     def __init__(self, schema_madlib, source_table, output_table,
                  dependent_varname, independent_varname,
-                 training_preprocessor_table, buffer_size, **kwargs):
+                 training_preprocessor_table, buffer_size, distribution_rules,
+                 **kwargs):
         """
             This prepares the variables that are required by
             InputDataPreprocessorDL.
@@ -382,7 +469,7 @@ class ValidationDataPreprocessorDL(InputDataPreprocessorDL):
             self, schema_madlib, source_table, output_table,
             dependent_varname, independent_varname, buffer_size,
             summary_table[NORMALIZING_CONST_COLNAME], num_classes,
-            self.module_name)
+            distribution_rules, self.module_name)
         # Update value of dependent_levels from training batch summary table.
         self.dependent_levels = self._get_dependent_levels(
             summary_table[CLASS_VALUES_COLNAME],
@@ -474,15 +561,18 @@ class ValidationDataPreprocessorDL(InputDataPreprocessorDL):
 class TrainingDataPreprocessorDL(InputDataPreprocessorDL):
     def __init__(self, schema_madlib, source_table, output_table,
                  dependent_varname, independent_varname, buffer_size,
-                 normalizing_const, num_classes, **kwargs):
+                 normalizing_const, num_classes, distribution_rules,
+                **kwargs):
         """
             This prepares the variables that are required by
             InputDataPreprocessorDL.
         """
+        self.module_name = "training_preprocessor_dl"
         InputDataPreprocessorDL.__init__(
             self, schema_madlib, source_table, output_table,
             dependent_varname, independent_varname, buffer_size,
-            normalizing_const, num_classes, "training_preprocessor_dl")
+            normalizing_const, num_classes, distribution_rules,
+            self.module_name)
         # Update default value of dependent_levels in superclass
         self.dependent_levels = self._get_dependent_levels()
 
@@ -549,6 +639,12 @@ class InputDataPreprocessorDocumentation:
             training_preprocessor_table, -- TEXT. packed training data table.
             buffer_size            -- INTEGER. Default computed automatically.
                                       Number of source input rows to pack into a buffer.
+            distribution_rules     -- TEXT. Default: 'all_segments'. Specifies how to
+                                      distribute the 'output_table'. This is important
+                                      for how the fit function will use resources on the
+                                      cluster.  The default 'all_segments' means the
+                                      'output_table' will be distributed to all segments
+                                      in the database cluster.
         );
 
 
@@ -585,6 +681,10 @@ class InputDataPreprocessorDocumentation:
                                      arrays in independent_varname.
         num_classes               -- num_classes value passed by user while
                                      generating training_preprocessor_table.
+        gpu_config                -- List of segment id's the data is distributed
+                                     on depending on the 'distribution_rules' parameter
+                                     specified as input. Set to 'all_segments' if
+                                     'distribution_rules' is specified as 'all_segments'.
 
         ---------------------------------------------------------------------------
         """.format(**locals())
@@ -646,6 +746,12 @@ class InputDataPreprocessorDocumentation:
                                       the 1-hot encoded array length will be equal to
                                       the number of distinct class values found in the
                                       input table.
+            distribution_rules     -- TEXT. Default: 'all_segments'. Specifies how to
+                                      distribute the 'output_table'. This is important
+                                      for how the fit function will use resources on the
+                                      cluster.  The default 'all_segments' means the
+                                      'output_table' will be distributed to all segments
+                                      in the database cluster.
         );
 
 
@@ -681,6 +787,11 @@ class InputDataPreprocessorDocumentation:
         normalizing_const         -- Normalizing constant used for standardizing
                                      arrays in independent_varname.
         num_classes               -- num_classes input param passed to function.
+        gpu_config                -- List of segment id's the data is distributed
+                                     on depending on the 'distribution_rules' param
+                                     specified as input. Set to 'all_segments' if
+                                     'distribution_rules' is specified as 'all_segments'.
+
 
         ---------------------------------------------------------------------------
         """.format(**locals())
