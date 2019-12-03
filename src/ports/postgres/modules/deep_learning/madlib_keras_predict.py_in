@@ -41,7 +41,7 @@ from madlib_keras_wrapper import *
 
 class BasePredict():
     def __init__(self, schema_madlib, table_to_validate, test_table, id_col,
-                 independent_varname, output_table, pred_type, gpus_per_host):
+                 independent_varname, output_table, pred_type, use_gpus, module_name):
         self.schema_madlib = schema_madlib
         self.table_to_validate = table_to_validate
         self.test_table = test_table
@@ -49,14 +49,23 @@ class BasePredict():
         self.independent_varname = independent_varname
         self.output_table = output_table
         self.pred_type = pred_type
-        self.gpus_per_host = gpus_per_host
-        self._set_default_gpus_pred_type()
+        self.module_name = module_name
 
-    def _set_default_gpus_pred_type(self):
+        self.segments_per_host = get_segments_per_host()
+        self.use_gpus = use_gpus if use_gpus else False
+        if self.use_gpus:
+            accessible_gpus_for_seg = get_accessible_gpus_for_seg(schema_madlib, self.segments_per_host, self.module_name)
+            _assert(len(set(accessible_gpus_for_seg)) == 1,
+                '{0}: Asymmetric gpu configurations are not supported'.format(self.module_name))
+            self.gpus_per_host = accessible_gpus_for_seg[0]
+        else:
+            self.gpus_per_host = 0
+
+        self._set_default_pred_type()
+
+    def _set_default_pred_type(self):
         self.pred_type =  'response' if not self.pred_type else self.pred_type
         self.is_response = True if self.pred_type == 'response' else False
-        self.gpus_per_host = 0 if self.gpus_per_host is None else self.gpus_per_host
-
 
     def call_internal_keras(self):
         if self.is_response:
@@ -104,6 +113,7 @@ class BasePredict():
                             {gp_segment_id_col},
                             ARRAY{seg_ids_test},
                             ARRAY{images_per_seg_test},
+                            {self.use_gpus},
                             {self.gpus_per_host},
                             {segments_per_host})
                        ) AS {intermediate_col}
@@ -138,7 +148,7 @@ class BasePredict():
 class Predict(BasePredict):
     def __init__(self, schema_madlib, model_table,
                  test_table, id_col, independent_varname,
-                 output_table, pred_type, gpus_per_host,
+                 output_table, pred_type, use_gpus,
                  mst_key, **kwargs):
 
         self.module_name = 'madlib_keras_predict'
@@ -151,7 +161,7 @@ class Predict(BasePredict):
         BasePredict.__init__(self, schema_madlib, model_table, test_table,
                               id_col, independent_varname,
                               output_table, pred_type,
-                              gpus_per_host)
+                              use_gpus, self.module_name)
         param_proc = PredictParamsProcessor(self.model_table, self.module_name, self.mst_key)
         if self.is_mult_model:
             self.temp_summary_view = param_proc.model_summary_table
@@ -194,7 +204,7 @@ class Predict(BasePredict):
 class PredictBYOM(BasePredict):
     def __init__(self, schema_madlib, model_arch_table, model_id,
                  test_table, id_col, independent_varname, output_table,
-                 pred_type, gpus_per_host, class_values, normalizing_const,
+                 pred_type, use_gpus, class_values, normalizing_const,
                  **kwargs):
 
         self.module_name='madlib_keras_predict_byom'
@@ -205,13 +215,13 @@ class PredictBYOM(BasePredict):
         self.dependent_varname = 'dependent_var'
         BasePredict.__init__(self, schema_madlib, model_arch_table,
                              test_table, id_col, independent_varname,
-                             output_table, pred_type, gpus_per_host)
+                             output_table, pred_type, use_gpus, self.module_name)
         if self.is_response:
             self.dependent_vartype = 'text'
         else:
             self.dependent_vartype = 'double precision'
         ## Set default values for norm const and class_values
-        # gpus_per_host and pred_type are defaulted in base_predict's init
+        # use_gpus and pred_type are defaulted in base_predict's init
         self.normalizing_const = normalizing_const
         if self.normalizing_const is None:
             self.normalizing_const = DEFAULT_NORMALIZING_CONST
@@ -244,14 +254,13 @@ class PredictBYOM(BasePredict):
 
 def internal_keras_predict(independent_var, model_architecture, model_weights,
                            is_response, normalizing_const, current_seg_id, seg_ids,
-                           images_per_seg, gpus_per_host, segments_per_host,
+                           images_per_seg, use_gpus, gpus_per_host, segments_per_host,
                            **kwargs):
     SD = kwargs['SD']
     model_key = 'segment_model_predict'
     row_count_key = 'row_count'
     try:
-        device_name = get_device_name_and_set_cuda_env_predict(gpus_per_host,
-                                                       current_seg_id)
+        device_name = get_device_name_and_set_cuda_env( gpus_per_host, current_seg_id)
         if model_key not in SD:
             set_keras_session(device_name, gpus_per_host, segments_per_host)
             model = model_from_json(model_architecture)
@@ -284,7 +293,7 @@ def internal_keras_predict(independent_var, model_architecture, model_weights,
             # and not mini-batched, this list contains exactly one list in it,
             # so return back the first list in probs.
             result = probs[0]
-        total_images = get_image_count_per_seg_from_array_predict(current_seg_id, seg_ids,
+        total_images = get_image_count_per_seg_from_array(seg_ids.index(current_seg_id),
                                                           images_per_seg)
 
         if SD[row_count_key] == total_images:
@@ -335,8 +344,7 @@ For more details on function usage:
                                 variables in the test table
     output_table,   --  Name of the output table
     pred_type,      --  The type of the desired output
-    gpus_per_host,  --  Number of GPUs per segment host to
-                        be used for training
+    use_gpus,       --  Flag for enabling GPU support
     mst_key         --  Identifier for the desired model out of multimodel
                         training output
     )
@@ -401,8 +409,7 @@ For more details on function usage:
                                 variables in the test table
     output_table,           --  Name of the output table
     pred_type,              --  The type of the desired output
-    gpus_per_host,          --  Number of GPUs per segment host to
-                                be used for training
+    use_gpus,               --  Flag for enabling GPU support
     class_values,           --  List of class labels that were used while training the
                                 model. If class_values is passed in as NULL, the output
                                 table will have a column named 'prob' which is an array

@@ -555,7 +555,7 @@ class InternalKerasPredictTestCase(unittest.TestCase):
         result = self.subject.internal_keras_predict(
             self.independent_var, self.model.to_json(),
             serialized_weights, is_response, 255, 0, self.all_seg_ids,
-            self.total_images_per_seg, 0, 4, **k)
+            self.total_images_per_seg, False, 0, 4, **k)
         self.assertEqual(1, len(result))
         self.assertEqual(1,  k['SD']['row_count'])
         self.assertEqual(True, 'segment_model_predict' in k['SD'])
@@ -568,7 +568,7 @@ class InternalKerasPredictTestCase(unittest.TestCase):
         is_response = True
         result = self.subject.internal_keras_predict(
             self.independent_var, None, None, is_response, 255, 0,
-            self.all_seg_ids, self.total_images_per_seg, 0, 4, **k)
+            self.all_seg_ids, self.total_images_per_seg, False, 0, 4, **k)
         self.assertEqual(1, len(result))
         self.assertEqual(2,  k['SD']['row_count'])
         self.assertEqual(True, 'segment_model_predict' in k['SD'])
@@ -582,7 +582,7 @@ class InternalKerasPredictTestCase(unittest.TestCase):
         is_response = True
         result = self.subject.internal_keras_predict(
             self.independent_var, None, None, is_response, 255, 0,
-            self.all_seg_ids, self.total_images_per_seg, 0, 4, **k)
+            self.all_seg_ids, self.total_images_per_seg, False, 0, 4, **k)
         self.assertEqual(1, len(result))
         self.assertEqual(False, 'row_count' in k['SD'])
         self.assertEqual(False, 'segment_model_predict' in k['SD'])
@@ -592,7 +592,7 @@ class InternalKerasPredictTestCase(unittest.TestCase):
         is_response = False
         result = self.subject.internal_keras_predict(
             self.independent_var, None, None, is_response, 255, 0,
-            self.all_seg_ids, self.total_images_per_seg, 0, 4, **k)
+            self.all_seg_ids, self.total_images_per_seg, False, 0, 4, **k)
 
         # we except len(result) to be 3 because we have 3 dense layers in the
         # architecture
@@ -613,7 +613,7 @@ class InternalKerasPredictTestCase(unittest.TestCase):
         with self.assertRaises(plpy.PLPYException):
             self.subject.internal_keras_predict(
                 self.independent_var, None, None, is_response, normalizing_const,
-                0, self.all_seg_ids, self.total_images_per_seg, 0, 4, **k)
+                0, self.all_seg_ids, self.total_images_per_seg, False, 0, 4, **k)
         self.assertEqual(False, 'row_count' in k['SD'])
         self.assertEqual(False, 'segment_model_predict' in k['SD'])
 
@@ -637,7 +637,7 @@ class MadlibKerasPredictBYOMTestCase(unittest.TestCase):
         self.model.add(Dense(self.num_classes))
 
         self.pred_type = 'prob'
-        self.gpus_per_host = 2
+        self.use_gpus = False
         self.class_values = ['foo', 'bar', 'baaz', 'foo2', 'bar2']
         self.normalizing_const = 255.0
 
@@ -653,12 +653,13 @@ class MadlibKerasPredictBYOMTestCase(unittest.TestCase):
         self.module_patcher.stop()
 
     def test_predictbyom_defaults_1(self):
+        self.module.get_accessible_gpus_for_seg = Mock(return_value = [2,2,2])
         res = self.module.PredictBYOM('schema_madlib', 'model_arch_table',
                                  'model_id', 'test_table', 'id_col',
                                  'independent_varname', 'output_table', None,
-                                 None, None, None)
+                                 True, None, None)
         self.assertEqual('response', res.pred_type)
-        self.assertEqual(0, res.gpus_per_host)
+        self.assertEqual(2, res.gpus_per_host)
         self.assertEqual([0,1,2,3,4], res.class_values)
         self.assertEqual(1.0, res.normalizing_const)
         self.assertEqual('text', res.dependent_vartype)
@@ -667,10 +668,10 @@ class MadlibKerasPredictBYOMTestCase(unittest.TestCase):
         res = self.module.PredictBYOM('schema_madlib', 'model_arch_table',
                                        'model_id', 'test_table', 'id_col',
                                        'independent_varname', 'output_table',
-                                       self.pred_type, self.gpus_per_host,
+                                       self.pred_type, self.use_gpus,
                                        self.class_values, self.normalizing_const)
         self.assertEqual('prob', res.pred_type)
-        self.assertEqual(2, res.gpus_per_host)
+        self.assertEqual(0, res.gpus_per_host)
         self.assertEqual(['foo', 'bar', 'baaz', 'foo2', 'bar2'], res.class_values)
         self.assertEqual(255.0, res.normalizing_const)
         self.assertEqual('double precision', res.dependent_vartype)
@@ -680,7 +681,7 @@ class MadlibKerasPredictBYOMTestCase(unittest.TestCase):
             self.module.PredictBYOM('schema_madlib', 'model_arch_table',
                                      'model_id', 'test_table', 'id_col',
                                      'independent_varname', 'output_table',
-                                     'invalid_pred_type', self.gpus_per_host,
+                                     'invalid_pred_type', self.use_gpus,
                                      self.class_values, self.normalizing_const)
         self.assertIn('invalid_pred_type', str(error.exception))
 
@@ -688,7 +689,7 @@ class MadlibKerasPredictBYOMTestCase(unittest.TestCase):
             self.module.PredictBYOM('schema_madlib', 'model_arch_table',
                                      'model_id', 'test_table', 'id_col',
                                      'independent_varname', 'output_table',
-                                     self.pred_type, self.gpus_per_host,
+                                     self.pred_type, self.use_gpus,
                                      ["foo", "bar", "baaz"], self.normalizing_const)
         self.assertIn('class values', str(error.exception).lower())
 
@@ -696,7 +697,7 @@ class MadlibKerasPredictBYOMTestCase(unittest.TestCase):
             self.module.PredictBYOM('schema_madlib', 'model_arch_table',
                                      'model_id', 'test_table', 'id_col',
                                      'independent_varname', 'output_table',
-                                     self.pred_type, self.gpus_per_host,
+                                     self.pred_type, self.use_gpus,
                                      self.class_values, 0)
         self.assertIn('normalizing const', str(error.exception).lower())
 
@@ -751,12 +752,12 @@ class MadlibKerasWrapperTestCase(unittest.TestCase):
         gpus_per_host = 3
 
         self.assertEqual('/gpu:0', self.subject.get_device_name_and_set_cuda_env(
-            True, gpus_per_host, seg_id ))
+            gpus_per_host, seg_id ))
         self.assertEqual('0,1,2', os.environ['CUDA_VISIBLE_DEVICES'])
 
         gpus_per_host = 0
         self.assertEqual('/cpu:0', self.subject.get_device_name_and_set_cuda_env(
-            False, gpus_per_host, seg_id ))
+            gpus_per_host, seg_id ))
         self.assertEqual('-1', os.environ['CUDA_VISIBLE_DEVICES'])
 
     def test_get_device_name_and_set_cuda_env_gpdb(self):
@@ -765,12 +766,12 @@ class MadlibKerasWrapperTestCase(unittest.TestCase):
         seg_id=3
         gpus_per_host=2
         self.assertEqual('/gpu:0', self.subject.get_device_name_and_set_cuda_env(
-            True, gpus_per_host, seg_id))
+            gpus_per_host, seg_id))
         self.assertEqual('1', os.environ['CUDA_VISIBLE_DEVICES'])
 
         gpus_per_host=0
         self.assertEqual('/cpu:0', self.subject.get_device_name_and_set_cuda_env(
-            False, gpus_per_host, seg_id))
+            gpus_per_host, seg_id))
         self.assertEqual('-1', os.environ['CUDA_VISIBLE_DEVICES'])
 
 
