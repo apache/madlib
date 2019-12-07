@@ -23,6 +23,7 @@ from utilities.utilities import add_postfix
 from utilities.utilities import unique_string
 from utilities.utilities import is_platform_pg
 from utilities.validate_args import table_exists
+from madlib_keras_gpu_info import GPUInfoFunctions
 import plpy
 
 
@@ -51,6 +52,8 @@ SMALLINT_SQL_TYPE = 'SMALLINT'
 
 DEFAULT_NORMALIZING_CONST = 1.0
 DEFAULT_GPU_CONFIG = 'all_segments'
+GP_SEGMENT_ID_COLNAME = "gp_segment_id"
+INTERNAL_GPU_CONFIG = '__internal_gpu_config__'
 
 #####################################################################
 
@@ -105,7 +108,7 @@ def strip_trailing_nulls_from_class_values(class_values):
         class_values = class_values[:num_of_valid_class_values]
     return class_values
 
-def get_image_count_per_seg_from_array(current_seg_id, seg_ids, images_per_seg):
+def get_image_count_per_seg_from_array_predict(current_seg_id, seg_ids, images_per_seg):
     """
     Get the image count from the array containing all the images
     per segment. Based on the platform, we find the index of the current segment.
@@ -115,6 +118,18 @@ def get_image_count_per_seg_from_array(current_seg_id, seg_ids, images_per_seg):
         total_images = images_per_seg[0]
     else:
         total_images = images_per_seg[seg_ids.index(current_seg_id)]
+    return total_images
+
+def get_image_count_per_seg_from_array(current_seg_id, images_per_seg):
+    """
+    Get the image count from the array containing all the images
+    per segment. Based on the platform, we find the index of the current segment.
+    This function is only called from inside the transition function.
+    """
+    if is_platform_pg():
+        total_images = images_per_seg[0]
+    else:
+        total_images = images_per_seg[current_seg_id]
     return total_images
 
 def get_image_count_per_seg_for_minibatched_data_from_db(table_name):
@@ -266,3 +281,47 @@ def create_summary_view(module_name, model_table, mst_key):
         WHERE mst_key = {mst_key}
         """.format(**locals()))
     return tmp_view_summary
+
+def get_accessible_gpus_for_seg(schema_madlib, segments_per_host, module_name):
+
+    if is_platform_pg():
+        gpus = GPUInfoFunctions.get_gpu_info_from_tensorflow()
+        return [len(gpus)]
+    else:
+        gpu_table_name = unique_string(desp = 'gpu_table')
+        gpu_table_query = """
+            SELECT {schema_madlib}.gpu_configuration('{gpu_table_name}')
+        """.format(**locals())
+        plpy.execute(gpu_table_query)
+        gpu_query = """
+            SELECT hostname, count(*) AS count FROM {gpu_table_name} GROUP BY hostname
+            """.format(**locals())
+        gpu_query_result = plpy.execute(gpu_query)
+
+        if not gpu_query_result:
+           plpy.error("{0} error: No GPUs configured on hosts.".format(module_name))
+
+        host_dict = {}
+        for i in gpu_query_result:
+            host_dict[i['hostname']] = int(i['count'])
+
+        seg_query = """
+            SELECT hostname, content AS segment_id
+            FROM gp_segment_configuration
+            WHERE content != -1 AND role = 'p'
+        """
+        seg_query_result = plpy.execute(seg_query)
+
+        accessible_gpus_for_seg = [0] * len(seg_query_result)
+        warning_flag = True
+        for i in seg_query_result:
+            if i['hostname'] in host_dict.keys():
+                accessible_gpus_for_seg[i['segment_id']] = host_dict[i['hostname']]
+            if 0 < accessible_gpus_for_seg[i['segment_id']] < segments_per_host and warning_flag:
+                plpy.warning(
+                    'The number of GPUs per segment host is less than the number of '
+                    'segments per segment host. When different segments share the '
+                    'same GPU, this may fail in some scenarios. The current '
+                    'recommended configuration is to have 1 GPU available per segment.')
+                warning_flag = False
+        return accessible_gpus_for_seg

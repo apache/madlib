@@ -34,8 +34,6 @@ import unittest
 from mock import *
 import plpy_mock as plpy
 
-
-
 # helper for multiplying array by int
 def mult(k,arr):
     return [ k*a for a in arr ]
@@ -65,8 +63,8 @@ class MadlibKerasFitTestCase(unittest.TestCase):
         self.model_weights = [3,4,5,6]
         self.serialized_weights = np.array(self.model_weights, dtype=np.float32
                                            ).tostring()
-
-        self.all_seg_ids = [0,1,2]
+        self.dist_key_mapping = [0,1,2]
+        self.accessible_gpus_for_seg = [0]
 
         self.independent_var_real = [[[[0.5]]]] * 10
         self.dependent_var_int = [[0,1]] * 10
@@ -102,8 +100,9 @@ class MadlibKerasFitTestCase(unittest.TestCase):
             None, self.dependent_var, self.independent_var,
             self.dependent_var_shape, self.independent_var_shape,
             self.model.to_json(), self.compile_params, self.fit_params, 0,
-            self.all_seg_ids, self.total_images_per_seg, 0, 4,
-            previous_state.tostring(), True, **k)
+            self.dist_key_mapping, 0, 4, self.total_images_per_seg, False,
+            self.accessible_gpus_for_seg, previous_state.tostring(), True, **k)
+
         state = np.fromstring(new_state, dtype=np.float32)
         image_count = state[0]
         weights = np.rint(state[1:]).astype(np.int)
@@ -127,8 +126,9 @@ class MadlibKerasFitTestCase(unittest.TestCase):
             None, self.dependent_var, self.independent_var,
             self.dependent_var_shape, self.independent_var_shape,
             self.model.to_json(), self.compile_params, self.fit_params, 0,
-            self.all_seg_ids, self.total_images_per_seg, 0, 4,
-            previous_state.tostring(), False, **k)
+            self.dist_key_mapping, 0, 4, self.total_images_per_seg, False,
+            self.accessible_gpus_for_seg, previous_state.tostring(), False, **k)
+
         state = np.fromstring(new_state, dtype=np.float32)
         image_count = state[0]
         weights = np.rint(state[1:]).astype(np.int)
@@ -154,11 +154,12 @@ class MadlibKerasFitTestCase(unittest.TestCase):
         k = {'SD': {}}
 
         new_state = self.subject.fit_transition(
-            None, self.dependent_var, self.independent_var ,
-            self.dependent_var_shape, self.independent_var_shape, self.model.to_json(),
-            self.compile_params, self.fit_params, 0, self.all_seg_ids,
-            self.total_images_per_seg, 0, 4, previous_weights.tostring(), True,
-            True, **k)
+            None, self.dependent_var, self.independent_var,
+            self.dependent_var_shape, self.independent_var_shape,
+            self.model.to_json(), self.compile_params, self.fit_params, 0,
+            self.dist_key_mapping, 0, 4, self.total_images_per_seg, False,
+            self.accessible_gpus_for_seg, previous_weights.tostring(), True, True, **k)
+
         state = np.fromstring(new_state, dtype=np.float32)
         image_count = state[0]
         weights = np.rint(state[1:]).astype(np.int)
@@ -194,8 +195,9 @@ class MadlibKerasFitTestCase(unittest.TestCase):
         new_state = self.subject.fit_transition(
             state.tostring(), self.dependent_var, self.independent_var,
             self.dependent_var_shape, self.independent_var_shape,
-            self.model.to_json(), None, self.fit_params, 0, self.all_seg_ids,
-            self.total_images_per_seg, 0, 4, 'dummy_previous_state', True, **k)
+            self.model.to_json(), None, self.fit_params, 0,
+            self.dist_key_mapping, 0, 4, self.total_images_per_seg, False,
+            self.accessible_gpus_for_seg, 'dummy_previous_state', True, **k)
 
         state = np.fromstring(new_state, dtype=np.float32)
         image_count = state[0]
@@ -223,8 +225,9 @@ class MadlibKerasFitTestCase(unittest.TestCase):
         new_state = self.subject.fit_transition(
             state.tostring(), self.dependent_var, self.independent_var,
             self.dependent_var_shape, self.independent_var_shape,
-            self.model.to_json(), None, self.fit_params, 0, self.all_seg_ids,
-            self.total_images_per_seg, 0, 4, 'dummy_previous_state', False, **k)
+            self.model.to_json(), None, self.fit_params, 0,
+            self.dist_key_mapping, 0, 4, self.total_images_per_seg, False,
+            self.accessible_gpus_for_seg, 'dummy_previous_state', False, **k)
 
         state = np.fromstring(new_state, dtype=np.float32)
         image_count = state[0]
@@ -259,8 +262,9 @@ class MadlibKerasFitTestCase(unittest.TestCase):
         new_state = self.subject.fit_transition(
             state.tostring(), self.dependent_var, self.independent_var,
             self.dependent_var_shape, self.independent_var_shape,
-            self.model.to_json(), None, self.fit_params, 0, self.all_seg_ids,
-            self.total_images_per_seg, 0, 4, 'dummy_previous_state', True, True, **k)
+            self.model.to_json(), None, self.fit_params, 0,
+            self.dist_key_mapping, 0, 4, self.total_images_per_seg, False,
+            self.accessible_gpus_for_seg, 'dummy_previous_state', True, True, **k)
 
         state = np.fromstring(new_state, dtype=np.float32)
         image_count = state[0]
@@ -293,11 +297,13 @@ class MadlibKerasFitTestCase(unittest.TestCase):
         self.subject.compile_and_set_weights(self.model, self.compile_params,
                                              '/cpu:0', self.serialized_weights)
         k = {'SD': {'segment_model' :self.model, 'sess': Mock()}}
+
         new_state = self.subject.fit_transition(
             state.tostring(), self.dependent_var, self.independent_var,
             self.dependent_var_shape, self.independent_var_shape,
-            self.model.to_json(), None, self.fit_params, 0, self.all_seg_ids,
-            self.total_images_per_seg, 0, 4, 'dummy_previous_state', True, **k)
+            self.model.to_json(), None, self.fit_params, 0,
+            self.dist_key_mapping, 0, 4, self.total_images_per_seg, False,
+            self.accessible_gpus_for_seg, 'dummy_previous_state', True, **k)
 
         state = np.fromstring(new_state, dtype=np.float32)
         image_count = state[0]
@@ -323,11 +329,13 @@ class MadlibKerasFitTestCase(unittest.TestCase):
         self.subject.compile_and_set_weights(self.model, self.compile_params,
                                              '/cpu:0', self.serialized_weights)
         k = {'SD': {'segment_model' :self.model, 'sess': Mock()}}
+
         new_state = self.subject.fit_transition(
             state.tostring(), self.dependent_var, self.independent_var,
             self.dependent_var_shape, self.independent_var_shape,
-            self.model.to_json(), None, self.fit_params, 0, self.all_seg_ids,
-            self.total_images_per_seg, 0, 4, 'dummy_previous_state', False, **k)
+            self.model.to_json(), None, self.fit_params, 0,
+            self.dist_key_mapping, 0, 4, self.total_images_per_seg, False,
+            self.accessible_gpus_for_seg, 'dummy_previous_state', False, **k)
 
         state = np.fromstring(new_state, dtype=np.float32)
         image_count = state[0]
@@ -359,11 +367,13 @@ class MadlibKerasFitTestCase(unittest.TestCase):
         self.subject.compile_and_set_weights(self.model, self.compile_params,
                                              '/cpu:0', self.serialized_weights)
         k = {'SD': {'segment_model' :self.model, 'sess': Mock()}}
+
         new_state = self.subject.fit_transition(
             state.tostring(), self.dependent_var, self.independent_var,
-            self.dependent_var_shape, self.independent_var_shape, self.model.to_json(),
-            None, self.fit_params, 0, self.all_seg_ids, self.total_images_per_seg,
-            0, 4, 'dummy_previous_state', True, True, **k)
+            self.dependent_var_shape, self.independent_var_shape,
+            self.model.to_json(), None, self.fit_params, 0,
+            self.dist_key_mapping, 0, 4, self.total_images_per_seg, False,
+            self.accessible_gpus_for_seg, 'dummy_previous_state', True, True, **k)
 
         state = np.fromstring(new_state, dtype=np.float32)
         image_count = state[0]
@@ -399,20 +409,20 @@ class MadlibKerasFitTestCase(unittest.TestCase):
                          self.subject.fit_transition('dummy_state', [0], None,
                                                      'noshape', 'noshape',
                                                      'dummy_model_json', "foo", "bar",
-                                                     1, [0,1,2], [3,3,3], 0, 4,
-                                                     'dummy_prev_state', **k))
+                                                     1, [0,1,2], 0, 4, [3,3,3], False,
+                                                     [0], 'dummy_prev_state', **k))
         self.assertEqual('dummy_state',
                          self.subject.fit_transition('dummy_state', None, [[0.5]],
                                                      'noshape', 'noshape',
                                                      'dummy_model_json', "foo", "bar",
-                                                     1, [0,1,2], [3,3,3], 0, 4,
-                                                     'dummy_prev_state', **k))
+                                                     1, [0,1,2], 0, 4, [3,3,3], False,
+                                                     [0], 'dummy_prev_state', **k))
         self.assertEqual('dummy_state',
                          self.subject.fit_transition('dummy_state', None, None,
                                                      'noshape', 'noshape',
                                                      'dummy_model_json', "foo", "bar",
-                                                     1, [0,1,2], [3,3,3], 0, 4,
-                                                     'dummy_prev_state', **k))
+                                                     1, [0,1,2], 0, 4, [3,3,3], False,
+                                                     [0], 'dummy_prev_state', **k))
 
     def test_fit_merge(self):
         image_count = self.total_images_per_seg[0]
@@ -707,6 +717,8 @@ class MadlibKerasWrapperTestCase(unittest.TestCase):
         import madlib_keras_wrapper
         self.subject = madlib_keras_wrapper
 
+        self.use_gpus = False
+
     def tearDown(self):
         self.module_patcher.stop()
 
@@ -739,12 +751,12 @@ class MadlibKerasWrapperTestCase(unittest.TestCase):
         gpus_per_host = 3
 
         self.assertEqual('/gpu:0', self.subject.get_device_name_and_set_cuda_env(
-            gpus_per_host, seg_id ))
+            True, gpus_per_host, seg_id ))
         self.assertEqual('0,1,2', os.environ['CUDA_VISIBLE_DEVICES'])
 
         gpus_per_host = 0
         self.assertEqual('/cpu:0', self.subject.get_device_name_and_set_cuda_env(
-            gpus_per_host, seg_id ))
+            False, gpus_per_host, seg_id ))
         self.assertEqual('-1', os.environ['CUDA_VISIBLE_DEVICES'])
 
     def test_get_device_name_and_set_cuda_env_gpdb(self):
@@ -753,12 +765,12 @@ class MadlibKerasWrapperTestCase(unittest.TestCase):
         seg_id=3
         gpus_per_host=2
         self.assertEqual('/gpu:0', self.subject.get_device_name_and_set_cuda_env(
-            gpus_per_host, seg_id))
+            True, gpus_per_host, seg_id))
         self.assertEqual('1', os.environ['CUDA_VISIBLE_DEVICES'])
 
         gpus_per_host=0
         self.assertEqual('/cpu:0', self.subject.get_device_name_and_set_cuda_env(
-            gpus_per_host, seg_id))
+            False, gpus_per_host, seg_id))
         self.assertEqual('-1', os.environ['CUDA_VISIBLE_DEVICES'])
 
 
@@ -1038,28 +1050,32 @@ class MadlibKerasFitCommonValidatorTestCase(unittest.TestCase):
         self.subject.FitCommonValidator._validate_common_args = Mock()
         obj = self.subject.FitCommonValidator(
             'test_table', 'val_table', 'model_table', 'model_arch_table', 2,
-            'dep_varname', 'independent_varname', 5, None, False, 'module_name')
+            'dep_varname', 'independent_varname', 5, None, False, False, [0],
+            'module_name')
         self.assertEqual(True, obj._is_valid_metrics_compute_frequency())
 
     def test_is_valid_metrics_compute_frequency_True_num(self):
         self.subject.FitCommonValidator._validate_common_args = Mock()
         obj = self.subject.FitCommonValidator(
             'test_table', 'val_table', 'model_table', 'model_arch_table', 2,
-            'dep_varname', 'independent_varname', 5, 3, False, 'module_name')
+            'dep_varname', 'independent_varname', 5, 3, False, False, [0],
+            'module_name')
         self.assertEqual(True, obj._is_valid_metrics_compute_frequency())
 
     def test_is_valid_metrics_compute_frequency_False_zero(self):
         self.subject.FitCommonValidator._validate_common_args = Mock()
         obj = self.subject.FitCommonValidator(
             'test_table', 'val_table', 'model_table', 'model_arch_table', 2,
-            'dep_varname', 'independent_varname', 5, 0, False, 'module_name')
+            'dep_varname', 'independent_varname', 5, 0, False, False, [0],
+            'module_name')
         self.assertEqual(False, obj._is_valid_metrics_compute_frequency())
 
     def test_is_valid_metrics_compute_frequency_False_greater(self):
         self.subject.FitCommonValidator._validate_common_args = Mock()
         obj = self.subject.FitCommonValidator(
             'test_table', 'val_table', 'model_table', 'model_arch_table', 2,
-            'dep_varname', 'independent_varname', 5, 6, False, 'module_name')
+            'dep_varname', 'independent_varname', 5, 6, False, False, [0],
+            'module_name')
         self.assertEqual(False, obj._is_valid_metrics_compute_frequency())
 
 
@@ -1159,6 +1175,29 @@ class InputValidatorTestCase(unittest.TestCase):
                 self.module_name, self.model_arch_table, None)
         self.assertIn('id', str(error.exception).lower())
 
+    def test_validate_gpu_config_with_gpu_all_segments(self):
+
+        self.plpy_mock_execute.return_value = [{'__internal_gpu_config__': 'all_segments'}]
+        obj = self.subject._validate_gpu_config(self.module_name, 'foo', [1])
+
+    def test_validate_gpu_config_no_gpu_all_segments(self):
+
+        self.plpy_mock_execute.return_value = [{'__internal_gpu_config__': 'all_segments'}]
+        with self.assertRaises(plpy.PLPYException) as error:
+            obj = self.subject._validate_gpu_config(self.module_name, 'foo', [0])
+        self.assertIn('missing gpus', str(error.exception).lower())
+
+    def test_validate_gpu_config_with_gpu_valid_seg_list(self):
+
+        self.plpy_mock_execute.return_value = [{'__internal_gpu_config__': [0,1]}]
+        obj = self.subject._validate_gpu_config(self.module_name, 'foo', [1,1,0,1])
+
+    def test_validate_gpu_config_with_gpu_invalid_seg_list(self):
+
+        self.plpy_mock_execute.return_value = [{'__internal_gpu_config__': [0,1]}]
+        with self.assertRaises(plpy.PLPYException) as error:
+            obj = self.subject._validate_gpu_config(self.module_name, 'foo', [1,0,0,1])
+        self.assertIn('does not have gpu', str(error.exception).lower())
 
 class MadlibSerializerTestCase(unittest.TestCase):
     def setUp(self):
@@ -1289,6 +1328,45 @@ class MadlibKerasHelperTestCase(unittest.TestCase):
                          self.subject.strip_trailing_nulls_from_class_values(
                 [None, None]))
 
+    def test_get_gpus_per_one_seg_gpu_gpdb(self):
+
+        self.subject.is_platform_pg = Mock(return_value = False)
+
+        self.plpy_mock_execute.side_effect = \
+            [ [],
+            [ {'hostname': 'mdw0', 'count' : 1}],
+            [ {'hostname': 'mdw0', 'segment_id' : 0},
+              {'hostname': 'mdw1', 'segment_id' : 1},
+              {'hostname': 'mdw2', 'segment_id' : 2}
+            ]]
+
+        self.assertEqual([1,0,0], self.subject.get_accessible_gpus_for_seg(
+            'schema_madlib', 2, 'foo'))
+
+    def test_get_gpus_per_mult_seg_gpu_gpdb(self):
+
+        self.subject.is_platform_pg = Mock(return_value = False)
+
+        self.plpy_mock_execute.side_effect = \
+            [[],
+            [ {'hostname': 'mdw0', 'count' : 1}],
+            [ {'hostname': 'mdw0', 'segment_id' : 0},
+              {'hostname': 'mdw0', 'segment_id' : 1},
+              {'hostname': 'mdw1', 'segment_id' : 2},
+              {'hostname': 'mdw1', 'segment_id' : 3}
+            ]]
+
+        self.assertEqual([1,1,0,0], self.subject.get_accessible_gpus_for_seg(
+            'schema_madlib', 2, 'foo'))
+
+    def test_get_gpus_per_no_gpu_gpdb(self):
+
+        self.subject.is_platform_pg = Mock(return_value = False)
+
+        self.plpy_mock_execute.side_effect = [[],[]]
+        with self.assertRaises(plpy.PLPYException) as error:
+            self.subject.get_accessible_gpus_for_seg('schema_madlib', 2, 'foo')
+        self.assertIn('no gpus configured on hosts', str(error.exception).lower())
 
 class MadlibKerasEvaluationTestCase(unittest.TestCase):
     def setUp(self):
@@ -1316,7 +1394,8 @@ class MadlibKerasEvaluationTestCase(unittest.TestCase):
                                            ).tostring()
         self.loss = 0.5947071313858032
         self.accuracy = 1.0
-        self.all_seg_ids = [0,1,2]
+        self.dist_key_mapping = [0,1,2]
+        self.accessible_gpus_for_seg = [0]
 
         #self.model.evaluate = Mock(return_value = [self.loss, self.accuracy])
 
@@ -1351,8 +1430,9 @@ class MadlibKerasEvaluationTestCase(unittest.TestCase):
             state, self.dependent_var , self.independent_var,
             self.dependent_var_shape, self.independent_var_shape,
             self.model.to_json(),
-            self.serialized_weights, self.compile_params, 0, self.all_seg_ids,
-            self.total_images_per_seg, 0, 3, True, **k)
+            self.serialized_weights, self.compile_params, 0,
+            self.dist_key_mapping, 0, 4,
+            self.total_images_per_seg, False, self.accessible_gpus_for_seg, True, **k)
 
         agg_loss, agg_accuracy, image_count = new_state
 
@@ -1372,11 +1452,14 @@ class MadlibKerasEvaluationTestCase(unittest.TestCase):
         self.subject.K.clear_session.reset_mock()
         k = {'SD' : {}}
         state = [0,0,0]
+
         new_state = self.subject.internal_keras_eval_transition(
             state, self.dependent_var , self.independent_var,
             self.dependent_var_shape, self.independent_var_shape,
-            self.model.to_json(), self.serialized_weights, self.compile_params,
-            0, self.all_seg_ids, self.total_images_per_seg, 0, 3, False, **k)
+            self.model.to_json(),
+            self.serialized_weights, self.compile_params, 0,
+            self.dist_key_mapping, 0, 4,
+            self.total_images_per_seg, False, self.accessible_gpus_for_seg, False, **k)
         agg_loss, agg_accuracy, image_count = new_state
 
         self.assertEqual(ending_image_count, image_count)
@@ -1414,8 +1497,9 @@ class MadlibKerasEvaluationTestCase(unittest.TestCase):
             state, self.dependent_var , self.independent_var,
             self.dependent_var_shape, self.independent_var_shape,
             self.model.to_json(),
-            'dummy_model_weights', None, 0,self.all_seg_ids,
-            self.total_images_per_seg, 0, 3, True, **k)
+            'dummy_model_weights', None, 0,
+            self.dist_key_mapping, 0, 4,
+            self.total_images_per_seg, False, self.accessible_gpus_for_seg, True, **k)
 
         agg_loss, agg_accuracy, image_count = new_state
 
@@ -1445,9 +1529,9 @@ class MadlibKerasEvaluationTestCase(unittest.TestCase):
             state, self.dependent_var , self.independent_var,
             self.dependent_var_shape, self.independent_var_shape,
             self.model.to_json(),
-            'dummy_model_weights', None, 0,self.all_seg_ids,
-            self.total_images_per_seg, 0, 3, False, **k)
-
+            'dummy_model_weights', None, 0,
+            self.dist_key_mapping, 0, 4,
+            self.total_images_per_seg, False, self.accessible_gpus_for_seg, False, **k)
         agg_loss, agg_accuracy, image_count = new_state
 
         self.assertEqual(ending_image_count, image_count)
@@ -1485,9 +1569,9 @@ class MadlibKerasEvaluationTestCase(unittest.TestCase):
             state, self.dependent_var , self.independent_var,
             self.dependent_var_shape, self.independent_var_shape,
             self.model.to_json(),
-            'dummy_model_weights', None, 0, self.all_seg_ids,
-            self.total_images_per_seg, 0, 3, True, **k)
-
+            'dummy_model_weights', None, 0,
+            self.dist_key_mapping, 0, 4,
+            self.total_images_per_seg, False, self.accessible_gpus_for_seg, True, **k)
         agg_loss, agg_accuracy, image_count = new_state
 
         self.assertEqual(ending_image_count, image_count)
@@ -1520,8 +1604,9 @@ class MadlibKerasEvaluationTestCase(unittest.TestCase):
             state, self.dependent_var , self.independent_var,
             self.dependent_var_shape, self.independent_var_shape,
             self.model.to_json(),
-            'dummy_model_weights', None, 0, self.all_seg_ids,
-            self.total_images_per_seg, 0, 3, False, **k)
+            'dummy_model_weights', None, 0,
+            self.dist_key_mapping, 0, 4,
+            self.total_images_per_seg, False, self.accessible_gpus_for_seg, False, **k)
 
         agg_loss, agg_accuracy, image_count = new_state
 

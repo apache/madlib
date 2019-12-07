@@ -25,7 +25,6 @@ from keras.models import *
 from madlib_keras import compute_loss_and_metrics
 from madlib_keras import get_initial_weights
 from madlib_keras import get_model_arch_weights
-from madlib_keras import get_segments_and_gpus
 from madlib_keras import get_source_summary_table_dict
 from madlib_keras import should_compute_metrics_this_iter
 from madlib_keras_helper import *
@@ -40,6 +39,8 @@ from utilities.utilities import add_postfix
 from utilities.utilities import rotate
 from utilities.utilities import madlib_version
 from utilities.utilities import is_platform_pg
+from utilities.utilities import get_seg_number
+from utilities.utilities import get_segments_per_host
 import json
 from collections import defaultdict
 import random
@@ -74,7 +75,7 @@ Note that this function is disabled for Postgres.
 class FitMultipleModel():
     def __init__(self, schema_madlib, source_table, model_output_table,
                  model_selection_table, num_iterations,
-                 gpus_per_host=0, validation_table=None,
+                 use_gpus=False, validation_table=None,
                  metrics_compute_frequency=None, warm_start=False, name="",
                  description="", **kwargs):
         # set the random seed for visit order/scheduling
@@ -112,12 +113,21 @@ class FitMultipleModel():
         self.info_str = ""
         self.dep_shape_col = add_postfix(mb_dep_var_col, "_shape")
         self.ind_shape_col = add_postfix(mb_indep_var_col, "_shape")
+        self.use_gpus = use_gpus
+        self.segments_per_host = get_segments_per_host()
+        if self.use_gpus:
+            self.accessible_gpus_for_seg = get_accessible_gpus_for_seg(self.schema_madlib,
+                self.segments_per_host, self.module_name)
+        else:
+            self.accessible_gpus_for_seg = get_seg_number()*[0]
+
         self.fit_validator_train = FitMultipleInputValidator(
             self.source_table, self.validation_table, self.model_output_table,
             self.model_selection_table, self.model_selection_summary_table,
             mb_dep_var_col, mb_indep_var_col, self.num_iterations,
             self.model_info_table, self.mst_key_col, self.model_arch_table_col,
-            self.metrics_compute_frequency, warm_start)
+            self.metrics_compute_frequency, warm_start, self.use_gpus,
+            self.accessible_gpus_for_seg)
         if self.metrics_compute_frequency is None:
             self.metrics_compute_frequency = num_iterations
         self.warm_start = bool(warm_start)
@@ -129,7 +139,8 @@ class FitMultipleModel():
         if CUDA_VISIBLE_DEVICES_KEY in os.environ:
             original_cuda_env = os.environ[CUDA_VISIBLE_DEVICES_KEY]
 
-        self.seg_ids_train, self.images_per_seg_train = \
+        self.dist_key_mapping, self.images_per_seg_train = \
+
             get_image_count_per_seg_for_minibatched_data_from_db(
                 self.source_table)
 
@@ -137,7 +148,7 @@ class FitMultipleModel():
             self.valid_mst_metric_eval_time = defaultdict(list)
             self.valid_mst_loss = defaultdict(list)
             self.valid_mst_metric = defaultdict(list)
-            self.seg_ids_valid, self.images_per_seg_valid = \
+            self.dist_key_mapping_valid, self.images_per_seg_valid = \
                 get_image_count_per_seg_for_minibatched_data_from_db(
                     self.validation_table)
         self.mst_weights_tbl = unique_string(desp='mst_weights')
@@ -153,6 +164,7 @@ class FitMultipleModel():
         self.grand_schedule = self.generate_schedule(self.msts_for_schedule)
         self.segments_per_host, self.gpus_per_host = get_segments_and_gpus(
             gpus_per_host)
+        self.gp_segment_id_col = '0' if is_platform_pg() else GP_SEGMENT_ID_COLNAME
         if not self.warm_start:
             self.create_model_output_table()
         self.weights_to_update_tbl = unique_string(desp='weights_to_update')
@@ -197,13 +209,13 @@ class FitMultipleModel():
             mst_metric_eval_time = self.train_mst_metric_eval_time
             mst_loss = self.train_mst_loss
             mst_metric = self.train_mst_metric
-            seg_ids = self.seg_ids_train
+            seg_ids = self.dist_key_mapping
             images_per_seg = self.images_per_seg_train
         else:
             mst_metric_eval_time = self.valid_mst_metric_eval_time
             mst_loss = self.valid_mst_loss
             mst_metric = self.valid_mst_metric
-            seg_ids = self.seg_ids_valid
+            seg_ids = self.dist_key_mapping_valid
             images_per_seg = self.images_per_seg_valid
         for mst in self.msts:
             weights = query_weights(self.model_output_table, self.model_weights_col,
@@ -214,10 +226,11 @@ class FitMultipleModel():
                     mst[self.compile_params_col]),
                 model_arch,
                 weights,
-                self.gpus_per_host,
-                self.segments_per_host,
+                self.use_gpus,
+                self.accessible_gpus_for_seg,
                 seg_ids,
-                images_per_seg, [], [], epoch, True)
+                self.images_per_seg_train,
+                [], [], epoch, True)
             mst_metric_eval_time[mst[self.mst_key_col]] \
                 .append(metric_eval_time)
             mst_loss[mst[self.mst_key_col]].append(loss)
@@ -298,7 +311,9 @@ class FitMultipleModel():
                                                      model_arch,
                                                      model_weights,
                                                      False,
-                                                     self.gpus_per_host)
+                                                     self.use_gpus,
+                                                     self.accessible_gpus_for_seg
+                                                     )
             model = model_from_json(model_arch)
             serialized_state = model_weights if model_weights else \
                 madlib_keras_serializer.serialize_nd_weights(model.get_weights())
@@ -468,34 +483,38 @@ class FitMultipleModel():
         """.format(dist_key_col=dist_key_col,
                    **locals())
         plpy.execute(mst_weights_query)
+        use_gpus = self.use_gpus if self.use_gpus else False
         uda_query = """
             CREATE TABLE {self.weights_to_update_tbl} AS
             SELECT {self.schema_madlib}.fit_step_multiple_model({mb_dep_var_col},
-                                                      {mb_indep_var_col},
-                                                      {self.dep_shape_col},
-                                                      {self.ind_shape_col},
-                                                      {self.mst_weights_tbl}.{self.model_arch_col}::TEXT,
-                                                      {self.mst_weights_tbl}.{self.compile_params_col}::TEXT,
-                                                      {self.mst_weights_tbl}.{self.fit_params_col}::TEXT,
-                                                      src.{dist_key_col},
-                                                      ARRAY{self.seg_ids_train},
-                                                      ARRAY{self.images_per_seg_train},
-                                                      {self.gpus_per_host},
-                                                      {self.segments_per_host},
-                                                      {self.mst_weights_tbl}.{self.model_weights_col}::BYTEA,
-                                                      {is_final_iteration}::BOOLEAN
-                                                      )::BYTEA AS {self.model_weights_col},
+                {mb_indep_var_col},
+                {self.dep_shape_col},
+                {self.ind_shape_col},
+                {self.mst_weights_tbl}.{self.model_arch_col}::TEXT,
+                {self.mst_weights_tbl}.{self.compile_params_col}::TEXT,
+                {self.mst_weights_tbl}.{self.fit_params_col}::TEXT,
+                src.{dist_key_col},
+                ARRAY{self.dist_key_mapping},
+                src.{self.gp_segment_id_col},
+                {self.segments_per_host},
+                ARRAY{self.images_per_seg_train},
+                {use_gpus}::BOOLEAN,
+                ARRAY{self.accessible_gpus_for_seg},
+                {self.mst_weights_tbl}.{self.model_weights_col}::BYTEA,
+                {is_final_iteration}::BOOLEAN
+                )::BYTEA AS {self.model_weights_col},
                 {self.mst_weights_tbl}.{self.mst_key_col} AS {self.mst_key_col}
                 ,src.{dist_key_col} AS {dist_key_col}
-                FROM {self.source_table} src JOIN {self.mst_weights_tbl}
-                    USING ({dist_key_col})
-                WHERE {self.mst_weights_tbl}.{self.mst_key_col} IS NOT NULL
-                GROUP BY src.{dist_key_col}, {self.mst_weights_tbl}.{self.mst_key_col}
+            FROM {self.source_table} src JOIN {self.mst_weights_tbl}
+                USING ({dist_key_col})
+            WHERE {self.mst_weights_tbl}.{self.mst_key_col} IS NOT NULL
+            GROUP BY src.{dist_key_col}, {self.mst_weights_tbl}.{self.mst_key_col}
             DISTRIBUTED BY({dist_key_col})
             """.format(mb_dep_var_col=mb_dep_var_col,
                        mb_indep_var_col=mb_indep_var_col,
                        is_final_iteration=True,
                        dist_key_col=dist_key_col,
+                       use_gpus=use_gpus,
                        self=self
                        )
         plpy.execute(uda_query)
