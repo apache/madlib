@@ -7,6 +7,9 @@
 --    all objects created in the default schema will be cleaned-up outside.
 ---------------------------------------------------------------------------
 
+m4_include(`SQLCommon.m4')
+m4_changequote(`<!', `!>')
+
 ---------------------------------------------------------------------------
 -- Setup:
 ---------------------------------------------------------------------------
@@ -307,3 +310,71 @@ FROM (
     unnest_2d_tbl05_groundtruth t2
     USING (id,unnest_row_id)
 ) t3;
+
+-- TESTING array_to_bytea() function - skip for gpdb 4.3
+m4_ifelse(__PORT__ __DBMS_VERSION_MAJOR__, <!GREENPLUM 4!>,,
+<!
+
+-- create input table ( n = 3 x 5 x 7 dim SMALLINT[], r =  2 x 3 x 5 dim REAL[] )
+DROP TABLE IF EXISTS array_input_tbl;
+CREATE TABLE array_input_tbl (id SMALLINT, n SMALLINT[], r REAL[]);
+INSERT INTO array_input_tbl SELECT generate_series(1, 10);
+SELECT id, count(*), array_agg(n) from (select id, unnest(n) as n from array_input_tbl) u group by id order by id;
+UPDATE array_input_tbl SET
+    n=array_fill(2*id, ARRAY[3, 5, 7]),
+    r=array_fill(id + 0.4, array[2, 3, 5]);
+
+-- create flattened input table
+DROP TABLE IF EXISTS flat_array_input_tbl;
+CREATE TABLE flat_array_input_tbl (id SMALLINT, n SMALLINT[], n_length SMALLINT, r REAL[], r_length SMALLINT);
+INSERT INTO flat_array_input_tbl
+    SELECT n.id, n, n_length, r, r_length
+    FROM
+    (
+        SELECT id, array_agg(n) AS n, 2*COUNT(*) AS n_length
+        FROM
+        (
+            SELECT id, unnest(n) AS n FROM array_input_tbl
+        ) n_values
+        GROUP BY id
+    ) n
+    JOIN
+    (
+        SELECT id, array_agg(r) AS r, 4*COUNT(*) AS r_length
+        FROM
+        (
+            SELECT id, unnest(r) AS r FROM array_input_tbl
+        ) r_values
+        GROUP BY id
+    ) r
+    USING (id);
+
+CREATE TABLE bytea_tbl AS SELECT id, array_to_bytea(n) AS n, array_to_bytea(r) AS r FROM array_input_tbl;
+
+    -- verify lengths of BYTEA output is correct for SMALLINT & REAL arrays
+    SELECT assert(
+        length(o.n) = i.n_length AND length(o.r) = i.r_length,
+        'array_to_bytea() returned incorrect lengths:\n' ||
+        '   Expected length(n) = ' || n_length::TEXT || ', got ' || length(o.n) ||
+        '   Expected ' || r_length::TEXT || ', got ' || length(o.r)
+    )
+    FROM flat_array_input_tbl i JOIN bytea_tbl o USING (id);
+
+    -- convert BYTEA back to flat arrays of SMALLINT's & REAL's
+
+    CREATE TABLE array_output_tbl AS
+    SELECT
+        id,
+        convert_bytea_to_smallint_array(n) AS n,
+        convert_bytea_to_real_array(r) AS r
+    FROM bytea_tbl;
+
+    -- verify that data in above table matches flattened input table exactly
+    SELECT assert(
+        i.n = o.n AND i.r = o.r,
+        'output of array_to_bytea() does not convert back to flattened input'
+    )
+    FROM flat_array_input_tbl i JOIN array_output_tbl o USING (id);
+!>)
+
+m4_changequote(,)

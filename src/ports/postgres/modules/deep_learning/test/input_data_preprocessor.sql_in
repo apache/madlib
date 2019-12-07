@@ -19,6 +19,7 @@
  *
  *//* ----------------------------------------------------------------------- */
 m4_include(`SQLCommon.m4')
+m4_changequote(`<!', `!>')
 
 DROP TABLE IF EXISTS data_preprocessor_input;
 CREATE TABLE data_preprocessor_input(id serial, x double precision[], label TEXT);
@@ -49,20 +50,72 @@ SELECT training_preprocessor_dl(
   'x',
   5);
 
-SELECT assert(count(*)=4, 'Incorrect number of buffers in data_preprocessor_input_batch.')
+-- Divide two numbers and round up to the nearest integer
+CREATE FUNCTION divide_roundup(numerator NUMERIC, denominator NUMERIC)
+RETURNS INTEGER AS
+$$
+    SELECT (ceil($1 / $2)::INTEGER);
+$$ LANGUAGE SQL;
+
+-- num_buffers_calc() represents the num_buffers value that should be
+--  calculated by the preprocessor.
+-- For postgres, just need total rows / buffer_size rounded up.
+-- For greenplum, we take that result, and round up to the nearest multiple
+--   of num_segments.
+CREATE FUNCTION num_buffers_calc(rows_in_tbl INTEGER, buffer_size INTEGER)
+RETURNS INTEGER AS
+$$
+m4_ifdef(<!__POSTGRESQL__!>,
+    <! SELECT divide_roundup($1, $2); !>,
+    <! SELECT (COUNT(*)::INTEGER) * divide_roundup(divide_roundup($1, $2), COUNT(*)) FROM gp_segment_configuration
+                                                WHERE role = 'p' AND content != -1; !>
+)
+$$ LANGUAGE SQL;
+
+--  num_buffers() represents the actual number of buffers expected to
+--      be returned in the output table.
+--   For postgres, this should always be the same as num_buffers_calc()
+--      (as long as rows_in_tbl > 0, which should be validated elsewhere)
+--   For greenplum, this can be less than num_buffers_calc() in
+--     the special case where there is only one row per buffer.  In
+--      that case, the buffers in the output table will be equal to
+--      the number of rows in the input table.  This can only happen
+--      if rows_in_tbl < num_segments and is the only case where the
+--      number of buffers on each segment will not be exactly equal
+CREATE FUNCTION num_buffers(rows_in_tbl INTEGER, buffer_size INTEGER)
+RETURNS INTEGER AS
+$$
+    SELECT LEAST(num_buffers_calc($1, $2), $1);
+$$ LANGUAGE SQL;
+
+CREATE FUNCTION buffer_size(rows_in_tbl INTEGER, requested_buffer_size INTEGER)
+RETURNS INTEGER AS
+$$
+  SELECT divide_roundup($1, num_buffers($1, $2));
+$$ LANGUAGE SQL;
+
+SELECT assert(COUNT(*) = num_buffers(17, 5),
+    'Incorrect number of buffers in data_preprocessor_input_batch.')
 FROM data_preprocessor_input_batch;
 
-SELECT assert(independent_var_shape[2]=6, 'Incorrect buffer size.')
+SELECT assert(independent_var_shape[2]=6, 'Incorrect image shape ' || independent_var_shape[2])
 FROM data_preprocessor_input_batch WHERE buffer_id=0;
 
-SELECT assert(independent_var_shape[1]=5, 'Incorrect buffer size.')
-FROM data_preprocessor_input_batch WHERE buffer_id=1;
+SELECT assert(independent_var_shape[1]=buffer_size, 'Incorrect buffer size ' || independent_var_shape[1])
+FROM (SELECT buffer_size(17, 5) buffer_size) a, data_preprocessor_input_batch WHERE buffer_id=0;
 
-SELECT assert(independent_var_shape[1]=4, 'Incorrect buffer size.')
-FROM data_preprocessor_input_batch WHERE buffer_id=3;
+SELECT assert(independent_var_shape[1]=buffer_size, 'Incorrect buffer size ' || independent_var_shape[1])
+FROM (SELECT buffer_size(17, 5) buffer_size) a, data_preprocessor_input_batch WHERE buffer_id=1;
 
-SELECT assert(octet_length(independent_var) = 96, 'Incorrect buffer size')
-FROM data_preprocessor_input_batch WHERE buffer_id=0;
+SELECT assert(independent_var_shape[1]=buffer_size, 'Incorrect buffer size ' || independent_var_shape[1])
+FROM (SELECT buffer_size(17, 5) buffer_size) a, data_preprocessor_input_batch WHERE buffer_id=2;
+
+SELECT assert(total_images = 17, 'Incorrect total number of images! Last buffer has incorrect size?')
+FROM (SELECT SUM(independent_var_shape[1]) AS total_images FROM data_preprocessor_input_batch) a;
+
+SELECT assert(octet_length(independent_var) = buffer_size*6*4, 'Incorrect buffer length ' || octet_length(independent_var)::TEXT)
+FROM (SELECT buffer_size(17, 5) buffer_size) a, data_preprocessor_input_batch WHERE buffer_id=0;
+
 
 DROP TABLE IF EXISTS validation_out, validation_out_summary;
 SELECT validation_preprocessor_dl(
@@ -73,20 +126,21 @@ SELECT validation_preprocessor_dl(
   'data_preprocessor_input_batch',
   5);
 
-SELECT assert(count(*)=4, 'Incorrect number of buffers in validation_out.')
+SELECT assert(COUNT(*) = num_buffers(17, 5),
+    'Incorrect number of buffers in validation_out.')
 FROM validation_out;
 
-SELECT assert(independent_var_shape[2]=6, 'Incorrect buffer size.')
+SELECT assert(independent_var_shape[2]=6, 'Incorrect image shape.')
 FROM data_preprocessor_input_batch WHERE buffer_id=0;
 
-SELECT assert(independent_var_shape[1]=5, 'Incorrect buffer size.')
-FROM data_preprocessor_input_batch WHERE buffer_id=1;
+SELECT assert(independent_var_shape[1]=buffer_size, 'Incorrect buffer size.')
+FROM (SELECT buffer_size(17, 5) buffer_size) a, data_preprocessor_input_batch WHERE buffer_id=1;
 
-SELECT assert(independent_var_shape[1]=4, 'Incorrect buffer size.')
-FROM data_preprocessor_input_batch WHERE buffer_id=3;
+SELECT assert(total_images = 17, 'Incorrect total number of images! Last buffer has incorrect size?')
+FROM (SELECT SUM(independent_var_shape[1]) AS total_images FROM data_preprocessor_input_batch) a;
 
-SELECT assert(octet_length(independent_var) = 96, 'Incorrect buffer size')
-FROM validation_out WHERE buffer_id=0;
+SELECT assert(octet_length(independent_var) = buffer_size*6*4, 'Incorrect buffer length')
+FROM (SELECT buffer_size(17, 5) buffer_size) a, validation_out WHERE buffer_id=0;
 
 DROP TABLE IF EXISTS data_preprocessor_input_batch, data_preprocessor_input_batch_summary;
 SELECT training_preprocessor_dl(
@@ -96,7 +150,6 @@ SELECT training_preprocessor_dl(
   'x');
 
 -- Test data is evenly distributed across all segments (GPDB only)
-m4_changequote(`<!', `!>')
 m4_ifdef(<!__POSTGRESQL__!>, <!!>, <!
 DROP TABLE IF EXISTS data_preprocessor_input_batch, data_preprocessor_input_batch_summary;
 SELECT training_preprocessor_dl(
@@ -109,11 +162,10 @@ SELECT training_preprocessor_dl(
 -- This test expects that total number of images(17 for input table data_preprocessor_input)
 -- are equally distributed across all segments.
 -- Therefore, after preprocessing seg0 will have 17/(# of segs) buffers.
-SELECT assert(count(*)=(SELECT ceil(17.0/count(*)) from gp_segment_configuration WHERE role = 'p' and content != -1), 'Even distribution of buffers failed.')
-FROM data_preprocessor_input_batch
-WHERE gp_segment_id = 0;
+SELECT gp_segment_id, assert((SELECT divide_roundup(17, count(*)) from gp_segment_configuration WHERE role = 'p' and content != -1) - COUNT(*) <= 1, 'Even distribution of buffers failed. Seeing ' || count(*) || ' buffers.')
+    FROM data_preprocessor_input_batch GROUP BY 1;
 SELECT assert(__internal_gpu_config__ = 'all_segments', 'Missing column in summary table')
-FROM data_preprocessor_input_batch_summary;
+    FROM data_preprocessor_input_batch_summary;
 
 -- Test validation data is evenly distributed across all segments (GPDB only)
 DROP TABLE IF EXISTS validation_out, validation_out_summary;
@@ -124,9 +176,8 @@ SELECT validation_preprocessor_dl(
   'x',
   'data_preprocessor_input_batch',
   1);
-SELECT assert(count(*)=(SELECT ceil(17.0/count(*)) from gp_segment_configuration WHERE role = 'p' and content != -1), 'Even distribution of validation buffers failed.')
-FROM validation_out
-WHERE gp_segment_id = 0;
+SELECT gp_segment_id, assert((SELECT divide_roundup(17, count(*)) from gp_segment_configuration WHERE role = 'p' and content != -1) - COUNT(*) <= 1, 'Even distribution of buffers failed. Seeing ' || count(*) || ' buffers.')
+    FROM validation_out GROUP BY 1;
 SELECT assert(__internal_gpu_config__ = 'all_segments', 'Missing column in validation summary table')
 FROM validation_out_summary;
 
@@ -208,8 +259,8 @@ SELECT assert(relative_error(MAX(x),46.6) < 0.00001, 'Independent var not normal
 SELECT assert(dependent_var_shape[2] = 16, 'Incorrect one-hot encode dimension with num_classes') FROM
   data_preprocessor_input_batch WHERE buffer_id = 0;
 
-SELECT assert(octet_length(independent_var) = 72, 'Incorrect buffer size')
-FROM data_preprocessor_input_batch WHERE buffer_id=0;
+SELECT assert(octet_length(independent_var) = buffer_size*6*4, 'Incorrect buffer length')
+FROM (SELECT buffer_size(17, 4) buffer_size) a, data_preprocessor_input_batch WHERE buffer_id=0;
 
 -- Test summary table
 SELECT assert
@@ -220,13 +271,14 @@ SELECT assert
         independent_varname = 'x' AND
         dependent_vartype   = 'integer' AND
         class_values        = '{-6,-3,-1,0,2,3,4,5,6,7,8,9,10,12,NULL,NULL}' AND
-        buffer_size         = 4 AND  -- we sort the class values in python
+        summary.buffer_size = a.buffer_size AND  -- we sort the class values in python
         normalizing_const   = 5 AND
         pg_typeof(normalizing_const) = 'real'::regtype AND
         num_classes         = 16 AND
         distribution_rules  = 'all_segments',
         'Summary Validation failed. Actual:' || __to_char(summary)
-        ) from (select * from data_preprocessor_input_batch_summary) summary;
+        ) FROM (SELECT buffer_size(17, 4) buffer_size) a,
+          (SELECT * FROM data_preprocessor_input_batch_summary) summary;
 
 --- Test output data type
 SELECT assert(pg_typeof(independent_var) = 'bytea'::regtype, 'Wrong independent_var type') FROM data_preprocessor_input_batch WHERE buffer_id = 0;
@@ -286,8 +338,8 @@ SELECT assert(pg_typeof(dependent_var) = 'bytea'::regtype, 'One-hot encode doesn
 SELECT assert(dependent_var_shape[2] = 2, 'Incorrect one-hot encode dimension') FROM
    data_preprocessor_input_batch WHERE buffer_id = 0;
 
-SELECT assert(octet_length(independent_var) = 72, 'Incorrect buffer size')
-FROM data_preprocessor_input_batch WHERE buffer_id=0;
+SELECT assert(octet_length(independent_var) = buffer_size*6*4, 'Incorrect buffer length')
+FROM (SELECT buffer_size(17, 4) buffer_size) a, data_preprocessor_input_batch WHERE buffer_id=0;
 
 SELECT assert(SUM(y) = 1, 'Incorrect one-hot encode format') FROM (SELECT buffer_id, UNNEST((convert_bytea_to_smallint_array(dependent_var))[1:2]) as y FROM data_preprocessor_input_batch) a WHERE buffer_id = 0;
 SELECT assert (dependent_vartype   = 'boolean' AND
@@ -328,8 +380,8 @@ SELECT assert(pg_typeof(dependent_var) = 'bytea'::regtype, 'One-hot encode doesn
 SELECT assert(dependent_var_shape[2] = 3, 'Incorrect one-hot encode dimension') FROM
    data_preprocessor_input_batch WHERE buffer_id = 0;
 
-SELECT assert(octet_length(independent_var) = 72, 'Incorrect buffer size')
-FROM data_preprocessor_input_batch WHERE buffer_id=0;
+SELECT assert(octet_length(independent_var) = buffer_size*6*4, 'Incorrect buffer length')
+FROM (SELECT buffer_size(17, 4) buffer_size) a, data_preprocessor_input_batch WHERE buffer_id=0;
 
 SELECT assert(SUM(y) = 1, 'Incorrect one-hot encode format') FROM (SELECT buffer_id, UNNEST((convert_bytea_to_smallint_array(dependent_var))[1:3]) as y FROM data_preprocessor_input_batch) a WHERE buffer_id = 0;
 SELECT assert (dependent_vartype   = 'text' AND
@@ -363,8 +415,8 @@ SELECT training_preprocessor_dl(
 SELECT assert(pg_typeof(dependent_var) = 'bytea'::regtype, 'One-hot encode doesn''t convert into integer array format') FROM data_preprocessor_input_batch WHERE buffer_id = 0;
 SELECT assert(dependent_var_shape[2] = 3, 'Incorrect one-hot encode dimension') FROM
   data_preprocessor_input_batch WHERE buffer_id = 0;
-SELECT assert(octet_length(independent_var) = 72, 'Incorrect buffer size')
-FROM data_preprocessor_input_batch WHERE buffer_id=0;
+SELECT assert(octet_length(independent_var) = buffer_size*6*4, 'Incorrect buffer length')
+FROM (SELECT buffer_size(17, 4) buffer_size) a, data_preprocessor_input_batch WHERE buffer_id=0;
 SELECT assert(SUM(y) = 1, 'Incorrect one-hot encode format') FROM (SELECT buffer_id, UNNEST((convert_bytea_to_smallint_array(dependent_var))[1:3]) as y FROM data_preprocessor_input_batch) a WHERE buffer_id = 0;
 SELECT assert (dependent_vartype   = 'double precision' AND
                class_values        = '{4.0,4.2,5.0}' AND
@@ -385,8 +437,8 @@ SELECT assert(pg_typeof(dependent_var) = 'bytea'::regtype, 'One-hot encode doesn
 SELECT assert(dependent_var_shape[2] = 2, 'Incorrect one-hot encode dimension') FROM
   data_preprocessor_input_batch WHERE buffer_id = 0;
 
-SELECT assert(octet_length(independent_var) = 72, 'Incorrect buffer size')
-FROM data_preprocessor_input_batch WHERE buffer_id=0;
+SELECT assert(octet_length(independent_var) = buffer_size*6*4, 'Incorrect buffer length')
+FROM (SELECT buffer_size(17, 4) buffer_size) a, data_preprocessor_input_batch WHERE buffer_id=0;
 
 SELECT assert(relative_error(SUM(y), SUM(y4)) < 0.000001, 'Incorrect one-hot encode value') FROM (SELECT UNNEST(convert_bytea_to_smallint_array(dependent_var)) AS y FROM data_preprocessor_input_batch) a, (SELECT UNNEST(y4) as y4 FROM data_preprocessor_input) b;
 SELECT assert (dependent_vartype   = 'double precision[]' AND
@@ -419,8 +471,8 @@ SELECT assert(pg_typeof(dependent_var) = 'bytea'::regtype, 'One-hot encode doesn
 SELECT assert(dependent_var_shape[2] = 2, 'Incorrect one-hot encode dimension') FROM
   data_preprocessor_input_batch WHERE buffer_id = 0;
 
-SELECT assert(octet_length(independent_var) = 72, 'Incorrect buffer size')
-FROM data_preprocessor_input_batch WHERE buffer_id=0;
+SELECT assert(octet_length(independent_var) = buffer_size*6*4, 'Incorrect buffer length')
+FROM (SELECT buffer_size(17, 4) buffer_size) a, data_preprocessor_input_batch WHERE buffer_id=0;
 
 SELECT assert(relative_error(SUM(y), SUM(y5)) < 0.000001, 'Incorrect one-hot encode value') FROM (SELECT UNNEST(convert_bytea_to_smallint_array(dependent_var)) AS y FROM data_preprocessor_input_batch) a, (SELECT UNNEST(y5) as y5 FROM data_preprocessor_input) b;
 SELECT assert (dependent_vartype   = 'integer[]' AND
@@ -473,8 +525,8 @@ SELECT assert
 SELECT assert(dependent_var_shape[2] = 5, 'Incorrect one-hot encode dimension') FROM
   data_preprocessor_input_batch WHERE buffer_id = 0;
 
-SELECT assert(octet_length(independent_var) = 72, 'Incorrect buffer size')
-FROM data_preprocessor_input_batch WHERE buffer_id=0;
+SELECT assert(octet_length(independent_var) = buffer_size*6*4, 'Incorrect buffer length')
+FROM (SELECT buffer_size(17, 4) buffer_size) a, data_preprocessor_input_batch WHERE buffer_id=0;
 
 -- The same tests, but for validation.
 DROP TABLE IF EXISTS data_preprocessor_input_validation_null;
@@ -541,7 +593,7 @@ SELECT assert
 
 SELECT assert(dependent_var_shape[2] = 3, 'Incorrect one-hot encode dimension') FROM
   data_preprocessor_input_batch WHERE buffer_id = 0;
-SELECT assert(octet_length(independent_var) = 24, 'Incorrect buffer size')
+SELECT assert(octet_length(independent_var) = 24, 'Incorrect buffer length')
 FROM data_preprocessor_input_batch WHERE buffer_id=0;
 -- NULL is treated as a class label, so it should show '1' for the
 -- first index
@@ -570,7 +622,7 @@ SELECT assert
 
 SELECT assert(dependent_var_shape[2] = 3, 'Incorrect one-hot encode dimension') FROM
   validation_out_batch WHERE buffer_id = 0;
-SELECT assert(octet_length(independent_var) = 24, 'Incorrect buffer size')
+SELECT assert(octet_length(independent_var) = 24, 'Incorrect buffer length')
 FROM data_preprocessor_input_batch WHERE buffer_id=0;
 -- NULL is treated as a class label, so it should show '1' for the
 -- first index

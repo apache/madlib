@@ -29,6 +29,8 @@ from internal.db_utils import get_distinct_col_levels
 from internal.db_utils import quote_literal
 from internal.db_utils import get_product_of_dimensions
 from utilities.minibatch_preprocessing import MiniBatchBufferSizeCalculator
+from utilities.control import OptimizerControl
+from utilities.control import HashaggControl
 from utilities.utilities import _assert
 from utilities.utilities import add_postfix
 from utilities.utilities import is_platform_pg
@@ -46,6 +48,7 @@ from utilities.validate_args import input_tbl_valid
 from utilities.validate_args import get_expr_type
 
 from madlib_keras_helper import *
+import time
 
 NUM_CLASSES_COLNAME = "num_classes"
 
@@ -59,9 +62,9 @@ class InputDataPreprocessorDL(object):
         self.dependent_varname = dependent_varname
         self.independent_varname = independent_varname
         self.buffer_size = buffer_size
-        self.normalizing_const = normalizing_const if normalizing_const is not None else DEFAULT_NORMALIZING_CONST
+        self.normalizing_const = normalizing_const
         self.num_classes = num_classes
-        self.distribution_rules = distribution_rules if distribution_rules else DEFAULT_GPU_CONFIG
+        self.distribution_rules = distribution_rules if distribution_rules else 'all_segments'
         self.module_name = module_name
         self.output_summary_table = None
         self.dependent_vartype = None
@@ -73,7 +76,6 @@ class InputDataPreprocessorDL(object):
         ## Validating input args prior to using them in _set_validate_vartypes()
         self._validate_args()
         self._set_validate_vartypes()
-        self.num_of_buffers = self._get_num_buffers()
         self.dependent_levels = None
         # The number of padded zeros to include in 1-hot vector
         self.padding_size = 0
@@ -199,9 +201,212 @@ class InputDataPreprocessorDL(object):
             3) One-hot encodes the dependent variable.
             4) Minibatches the one-hot encoded dependent variable.
         """
+        # setup for 1-hot encoding
         self._set_one_hot_encoding_variables()
-        # Create a temp table that has independent var normalized.
-        norm_tbl = unique_string(desp='normalized')
+
+        # Generate random strings for TEMP tables
+        series_tbl = unique_string(desp='series')
+        dist_key_tbl = unique_string(desp='dist_key')
+        normalized_tbl = unique_string(desp='normalized_table')
+        batched_table = unique_string(desp='batched_table')
+
+        # Used later in locals() for formatting queries
+        x=MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL
+        y=MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL
+        float32=FLOAT32_SQL_TYPE
+        dep_shape_col = add_postfix(y, "_shape")
+        ind_shape_col = add_postfix(x, "_shape")
+
+        ind_shape = self._get_independent_var_shape()
+        ind_shape = ','.join([str(i) for i in ind_shape])
+        dep_shape = self._get_dependent_var_shape()
+        dep_shape = ','.join([str(i) for i in dep_shape])
+
+        one_hot_dep_var_array_expr = self.get_one_hot_encoded_dep_var_expr()
+
+        # skip normalization step if normalizing_const = 1.0
+        if self.normalizing_const and (self.normalizing_const < 0.999999 or self.normalizing_const > 1.000001):
+            rescale_independent_var = """{self.schema_madlib}.array_scalar_mult(
+                                         {self.independent_varname}::{float32}[],
+                                         (1/{self.normalizing_const})::{float32})
+                                      """.format(**locals())
+        else:
+            self.normalizing_const = DEFAULT_NORMALIZING_CONST
+            rescale_independent_var = "{self.independent_varname}::{float32}[]".format(**locals())
+
+        # It's important that we shuffle all rows before batching for fit(), but
+        #  we can skip that for predict()
+        order_by_clause = " ORDER BY RANDOM()" if order_by_random else ""
+
+        # This query template will be used later in pg & gp specific code paths,
+        #  where {make_buffer_id} and {dist_by_buffer_id} are filled in
+        batching_query = """
+            CREATE TEMP TABLE {batched_table} AS SELECT
+                {{make_buffer_id}} buffer_id,
+                {self.schema_madlib}.agg_array_concat(
+                    ARRAY[x_norm::{float32}[]]) AS {x},
+                {self.schema_madlib}.agg_array_concat(
+                    ARRAY[y]) AS {y},
+                COUNT(*) AS count
+            FROM {normalized_tbl}
+            GROUP BY buffer_id
+            {{dist_by_buffer_id}}
+        """.format(**locals())
+
+        # This query template will be used later in pg & gp specific code paths,
+        #  where {dist_key_col_comma} and {dist_by_dist_key} will be filled in
+        bytea_query = """
+            CREATE TABLE {self.output_table} AS SELECT
+                {{dist_key_col_comma}}
+                {self.schema_madlib}.array_to_bytea({x}) AS {x},
+                {self.schema_madlib}.array_to_bytea({y}) AS {y},
+                ARRAY[count,{ind_shape}]::SMALLINT[] AS {ind_shape_col},
+                ARRAY[count,{dep_shape}]::SMALLINT[] AS {dep_shape_col},
+                buffer_id
+            FROM {batched_table}
+            {{dist_by_dist_key}}
+        """.format(**locals())
+
+        if is_platform_pg():
+            # used later for writing summary table
+            self.distribution_rules = '$__madlib__$all_segments$__madlib__$'
+
+            #
+            # For postgres, we just need 3 simple queries:
+            #   1-hot-encode/normalize + batching + bytea conversion
+            #
+
+            # see note in gpdb code branch (lower down) on
+            # 1-hot-encoding of dependent var
+            one_hot_sql = """
+                CREATE TEMP TABLE {normalized_tbl} AS SELECT
+                    (ROW_NUMBER() OVER({order_by_clause}) - 1)::INTEGER as row_id,
+                    {rescale_independent_var} AS x_norm,
+                    {one_hot_dep_var_array_expr} AS y
+                FROM {self.source_table}
+            """.format(**locals())
+
+            plpy.execute(one_hot_sql)
+
+            self.buffer_size = self._get_buffer_size(1)
+
+            # Used to format query templates with locals()
+            make_buffer_id = 'row_id / {0} AS '.format(self.buffer_size)
+            dist_by_dist_key = ''
+            dist_by_buffer_id = ''
+            dist_key_col_comma = ''
+
+            # Disable hashagg since large number of arrays being concatenated
+            # could result in excessive memory usage.
+            with HashaggControl(False):
+                # Batch rows with GROUP BY
+                plpy.execute(batching_query.format(**locals()))
+
+            plpy.execute("DROP TABLE {0}".format(normalized_tbl))
+
+            # Convert to BYTEA and output final (permanent table)
+            plpy.execute(bytea_query.format(**locals()))
+
+            plpy.execute("DROP TABLE {0}".format(batched_table))
+
+            self._create_output_summary_table()
+
+            return
+
+        # Done with postgres, rest is all for gpdb
+        #
+        # This gpdb code path is far more complex, and depends on
+        #   how the user wishes to distribute the data.  Even if
+        #   it's to be spread evenly across all segments, we still
+        #   need to do some extra work to ensure that happens.
+
+        if self.distribution_rules == 'all_segments':
+            all_segments = True
+            self.distribution_rules = '$__madlib__$all_segments$__madlib__$'
+            num_segments = get_seg_number()
+        else:
+            all_segments = False
+
+        if self.distribution_rules == 'gpu_segments':
+            gpu_info_table = unique_string(desp='gpu_info')
+            plpy.execute("""
+                SELECT {self.schema_madlib}.gpu_configuration('{gpu_info_table}')
+            """.format(**locals()))
+            gpu_query = """
+                SELECT array_agg(DISTINCT(hostname)) as gpu_config
+                FROM {gpu_info_table}
+            """.format(**locals())
+            gpu_query_result = plpy.execute(gpu_query)[0]['gpu_config']
+            if not gpu_query_result:
+               plpy.error("{self.module_name}: No GPUs configured on hosts.".format(self=self))
+
+            gpu_config_hostnames = "ARRAY{0}".format(gpu_query_result)
+            # find hosts with gpus
+            get_segment_query = """
+                SELECT array_agg(content) as segment_ids,
+                       array_agg(dbid) as dbid,
+                       count(*) as count
+                FROM gp_segment_configuration
+                WHERE content != -1 AND role = 'p'
+                AND hostname=ANY({gpu_config_hostnames})
+            """.format(**locals())
+            segment_ids_result = plpy.execute(get_segment_query)[0]
+            plpy.execute("DROP TABLE IF EXISTS {0}".format(gpu_info_table))
+
+            self.gpu_config = "ARRAY{0}".format(sorted(segment_ids_result['segment_ids']))
+            self.distribution_rules = "ARRAY{0}".format(sorted(segment_ids_result['dbid']))
+
+            num_segments = segment_ids_result['count']
+
+        elif not all_segments:  # Read from a table with dbids to distribute the data
+            self._validate_distribution_table()
+            gpu_query = """
+                SELECT array_agg(content) as gpu_config,
+                       array_agg(gp_segment_configuration.dbid) as dbid
+                FROM {self.distribution_rules} JOIN gp_segment_configuration
+                ON {self.distribution_rules}.dbid = gp_segment_configuration.dbid
+            """.format(**locals())
+            gpu_query_result = plpy.execute(gpu_query)[0]
+            self.gpu_config = "ARRAY{0}".format(sorted(gpu_query_result['gpu_config']))
+            num_segments = plpy.execute("SELECT count(*) as count FROM {self.distribution_rules}".format(**locals()))[0]['count']
+            self.distribution_rules = "ARRAY{0}".format(sorted(gpu_query_result['dbid']))
+
+        join_key = 't.buffer_id % {num_segments}'.format(**locals())
+
+        if not all_segments:
+            join_key = '({self.gpu_config})[{join_key} + 1]'.format(**locals())
+
+        # Create large temp table such that there is atleast 1 row on each segment
+        # Using 999999 would distribute data(atleast 1 row on each segment) for
+        # a cluster as large as 20000
+        dist_key_col = DISTRIBUTION_KEY_COLNAME
+        query = """
+            CREATE TEMP TABLE {series_tbl} AS
+                SELECT generate_series(0, 999999) {dist_key_col}
+                DISTRIBUTED BY ({dist_key_col})
+            """.format(**locals())
+
+        plpy.execute(query)
+
+        # Used in locals() to format queries, including template queries
+        #  bytea_query & batching_query defined in section common to
+        #  pg & gp (very beginning of this function)
+        dist_by_dist_key = 'DISTRIBUTED BY ({dist_key_col})'.format(**locals())
+        dist_by_buffer_id = 'DISTRIBUTED BY (buffer_id)'
+        dist_key_col_comma = dist_key_col + ' ,'
+        make_buffer_id = ''
+
+        dist_key_query = """
+                CREATE TEMP TABLE {dist_key_tbl} AS
+                SELECT min({dist_key_col}) AS {dist_key_col}
+                FROM {series_tbl}
+                GROUP BY gp_segment_id
+                DISTRIBUTED BY ({dist_key_col})
+        """.format(**locals())
+
+        plpy.execute(dist_key_query)
+
+        plpy.execute("DROP TABLE {0}".format(series_tbl))
 
         # Always one-hot encode the dependent var. For now, we are assuming
         # that input_preprocessor_dl will be used only for deep
@@ -209,150 +414,169 @@ class InputDataPreprocessorDL(object):
         # assumption that it is only for classification, so one-hot
         # encode the dep var, unless it's already a numeric array in
         # which case we assume it's already one-hot encoded.
-        one_hot_dep_var_array_expr = \
-            self.get_one_hot_encoded_dep_var_expr()
-        order_by_clause = " ORDER BY RANDOM() " if order_by_random else ""
-        scalar_mult_sql = """
+
+        # While 1-hot-encoding is done, we also normalize the independent
+        # var and randomly shuffle the rows on each segment.  (The dist key
+        # we're adding avoids any rows moving between segments.  This may
+        # make things slightly less random, but helps with speed--probably
+        # a safe tradeoff to make.)
+
+        norm_tbl = unique_string(desp='norm_table')
+
+        one_hot_sql = """
             CREATE TEMP TABLE {norm_tbl} AS
-            SELECT {self.schema_madlib}.array_scalar_mult(
-                {self.independent_varname}::{FLOAT32_SQL_TYPE}[],
-                (1/{self.normalizing_const})::{FLOAT32_SQL_TYPE}) AS x_norm,
-                {one_hot_dep_var_array_expr} AS y,
-                row_number() over() AS row_id
-            FROM {self.source_table} {order_by_clause}
-            """.format(FLOAT32_SQL_TYPE=FLOAT32_SQL_TYPE, **locals())
-        plpy.execute(scalar_mult_sql)
+            SELECT {dist_key_col},
+                {rescale_independent_var} AS x_norm,
+                {one_hot_dep_var_array_expr} AS y
+            FROM {self.source_table} s JOIN {dist_key_tbl} AS d
+                ON (s.gp_segment_id = d.gp_segment_id)
+            {order_by_clause}
+            DISTRIBUTED BY ({dist_key_col})
+        """.format(**locals())
+        plpy.execute(one_hot_sql)
 
-        series_tbl = unique_string(desp='series')
-        dist_key_tbl = unique_string(desp='dist_key')
-        dep_shape_col = add_postfix(
-            MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL, "_shape")
-        ind_shape_col = add_postfix(
-            MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL, "_shape")
+        rows_per_seg_tbl = unique_string(desp='rows_per_seg')
+        start_rows_tbl = unique_string(desp='start_rows')
 
-        ind_shape = self._get_independent_var_shape()
-        ind_shape = ','.join([str(i) for i in ind_shape])
-        dep_shape = self._get_dependent_var_shape()
-        dep_shape = ','.join([str(i) for i in dep_shape])
-
-        if is_platform_pg():
-            self.distribution_rules = '$__madlib__$all_segments$__madlib__$'
-            distributed_by_clause = ''
-            dist_key_clause = ''
-            join_clause = ''
-            dist_key_comma = ''
-        else:
-            dist_key = DISTRIBUTION_KEY_COLNAME
-            # Create large temp table such that there is atleast 1 row on each segment
-            # Using 999999 would distribute data(atleast 1 row on each segment) for
-            # a cluster as large as 20000
-            query = """
-                    CREATE TEMP TABLE {series_tbl}
-                    AS
-                    SELECT generate_series(0, 999999) {dist_key}
-                    DISTRIBUTED BY ({dist_key})
-                """.format(**locals())
-            plpy.execute(query)
-            distributed_by_clause= ' DISTRIBUTED BY ({dist_key}) '.format(**locals())
-            dist_key_comma = dist_key + ' ,'
-            gpu_join_clause = """JOIN {dist_key_tbl} ON
-                ({self.gpu_config})[b.buffer_id%{num_segments}+1] = {dist_key_tbl}.id
-                """
-
-            if self.distribution_rules == 'gpu_segments':
-                gpu_info_table = unique_string(desp='gpu_info')
-                plpy.execute("""
-                    SELECT {self.schema_madlib}.gpu_configuration('{gpu_info_table}')
-                """.format(**locals()))
-                gpu_query = """
-                    SELECT array_agg(DISTINCT(hostname)) as gpu_config
-                    FROM {gpu_info_table}
-                """.format(**locals())
-                gpu_query_result = plpy.execute(gpu_query)[0]['gpu_config']
-                if not gpu_query_result:
-                   plpy.error("{self.module_name}: No GPUs configured on hosts.".format(self=self))
-
-                gpu_config_hostnames = "ARRAY{0}".format(gpu_query_result)
-                # find hosts with gpus
-                get_segment_query = """
-                    SELECT array_agg(content) as segment_ids,
-                           array_agg(dbid) as dbid,
-                           count(*) as count
-                    FROM gp_segment_configuration
-                    WHERE content != -1 AND role = 'p'
-                    AND hostname=ANY({gpu_config_hostnames})
-                """.format(**locals())
-                segment_ids_result = plpy.execute(get_segment_query)[0]
-                plpy.execute("DROP TABLE IF EXISTS {0}".format(gpu_info_table))
-
-                self.gpu_config = "ARRAY{0}".format(sorted(segment_ids_result['segment_ids']))
-                self.distribution_rules = "ARRAY{0}".format(sorted(segment_ids_result['dbid']))
-
-                num_segments = segment_ids_result['count']
-                where_clause = "WHERE gp_segment_id=ANY({self.gpu_config})".format(**locals())
-                join_clause = gpu_join_clause.format(**locals())
-
-            elif self.distribution_rules == DEFAULT_GPU_CONFIG:
-
-                self.distribution_rules = '$__madlib__$all_segments$__madlib__$'
-                where_clause = ''
-                num_segments = get_seg_number()
-                join_clause = 'JOIN {dist_key_tbl} ON (b.buffer_id%{num_segments})= {dist_key_tbl}.id'.format(**locals())
-
-            else:  # Read from a table with dbids to distribute the data
-
-                self._validate_distribution_table()
-                gpu_query = """
-                    SELECT array_agg(content) as gpu_config,
-                           array_agg(gp_segment_configuration.dbid) as dbid
-                    FROM {self.distribution_rules} JOIN gp_segment_configuration
-                    ON {self.distribution_rules}.dbid = gp_segment_configuration.dbid
-                """.format(**locals())
-                gpu_query_result = plpy.execute(gpu_query)[0]
-                self.gpu_config = "ARRAY{0}".format(sorted(gpu_query_result['gpu_config']))
-                where_clause = "WHERE gp_segment_id=ANY({self.gpu_config})".format(**locals())
-                num_segments = plpy.execute("SELECT count(*) as count FROM {self.distribution_rules}".format(**locals()))[0]['count']
-                join_clause = gpu_join_clause.format(**locals())
-                self.distribution_rules = "ARRAY{0}".format(sorted(gpu_query_result['dbid']))
-
-            dist_key_query = """
-                    CREATE TEMP TABLE {dist_key_tbl} AS
-                    SELECT gp_segment_id AS id, min({dist_key}) AS {dist_key}
-                    FROM {series_tbl}
-                    {where_clause}
-                    GROUP BY gp_segment_id
-            """
-            plpy.execute(dist_key_query.format(**locals()))
-
-        # Create the mini-batched output table
+        #  Generate rows_per_segment table; this small table will
+        #  just have one row on each segment containing the number
+        #  of rows on that segment in the norm_tbl
         sql = """
-            CREATE TABLE {self.output_table} AS
-            SELECT {dist_key_comma}
-                   {self.schema_madlib}.convert_array_to_bytea({x}) AS {x},
-                   {self.schema_madlib}.convert_array_to_bytea({y}) AS {y},
-                   ARRAY[count,{ind_shape}]::SMALLINT[] AS {ind_shape_col},
-                   ARRAY[count,{dep_shape}]::SMALLINT[] AS {dep_shape_col},
-                   buffer_id
-            FROM
-            (
-                SELECT
-                    {self.schema_madlib}.agg_array_concat(
-                        ARRAY[{norm_tbl}.x_norm::{FLOAT32_SQL_TYPE}[]]) AS {x},
-                    {self.schema_madlib}.agg_array_concat(
-                        ARRAY[{norm_tbl}.y]) AS {y},
-                    ({norm_tbl}.row_id%{self.num_of_buffers})::smallint AS buffer_id,
-                    count(*) AS count
-                FROM {norm_tbl}
-                GROUP BY buffer_id
-            ) b
-            {join_clause}
-            {distributed_by_clause}
-            """.format(x=MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL,
-                       y=MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL,
-                       FLOAT32_SQL_TYPE=FLOAT32_SQL_TYPE,
-                       **locals())
+            CREATE TEMP TABLE {rows_per_seg_tbl} AS SELECT
+                COUNT(*) as rows_per_seg,
+                {dist_key_col}
+            FROM {norm_tbl}
+            GROUP BY {dist_key_col}
+            DISTRIBUTED BY ({dist_key_col})
+        """.format(**locals())
+
         plpy.execute(sql)
-        plpy.execute("DROP TABLE IF EXISTS {0}, {1}, {2}".format(norm_tbl, series_tbl, dist_key_tbl))
+
+        #  Generate start_rows_tbl from rows_per_segment table.
+        #  This assigns a start_row number for each segment based on
+        #  the sum of all rows in previous segments.  These will be
+        #  added to the row numbers within each segment to get an
+        #  absolute index into the table.  All of this is to accomplish
+        #  the equivalent of ROW_NUMBER() OVER() on the whole table,
+        #  but this way is much faster because we don't have to do an
+        #  N:1 Gather Motion (moving entire table to a single segment
+        #  and scanning through it).
+        #
+        sql = """
+            CREATE TEMP TABLE {start_rows_tbl} AS SELECT
+                {dist_key_col},
+                SUM(rows_per_seg) OVER (ORDER BY gp_segment_id) - rows_per_seg AS start_row
+            FROM {rows_per_seg_tbl}
+            DISTRIBUTED BY ({dist_key_col})
+        """.format(**locals())
+
+        plpy.execute(sql)
+
+        plpy.execute("DROP TABLE {0}".format(rows_per_seg_tbl))
+
+        self.buffer_size = self._get_buffer_size(num_segments)
+
+        # The query below assigns slot_id's to each row within
+        #  a segment, computes a row_id by adding start_row for
+        #  that segment to it, then divides by buffer_size to make
+        #  this into a buffer_id
+        # ie:
+        #  buffer_id = row_id / buffer_size
+        #     row_id = start_row + slot_id
+        #    slot_id = ROW_NUMBER() OVER(PARTITION BY <dist key>)::INTEGER
+        #
+        #   Instead of partitioning by gp_segment_id itself, we
+        # use __dist_key__ col instead.  This is the same partition,
+        # since there's a 1-to-1 mapping between the columns; but
+        # using __dist_key__ avoids an extra Redistribute Motion.
+        #
+        # Note: even though the ordering of these two columns is
+        #  different, this doesn't matter as each segment is being
+        #  numbered separately (only the start_row is different,
+        #  and those are fixed to the correct segments by the JOIN
+        #  condition.
+
+        sql = """
+        CREATE TEMP TABLE {normalized_tbl} AS SELECT
+            {dist_key_col},
+            x_norm,
+            y,
+            (ROW_NUMBER() OVER( PARTITION BY {dist_key_col} ))::INTEGER as slot_id,
+            ((start_row +
+               (ROW_NUMBER() OVER( PARTITION BY {dist_key_col} ) - 1)
+             )::INTEGER / {self.buffer_size}
+            ) AS buffer_id
+        FROM {norm_tbl} JOIN {start_rows_tbl}
+            USING ({dist_key_col})
+        ORDER BY buffer_id
+        DISTRIBUTED BY (slot_id)
+        """.format(**locals())
+
+        plpy.execute(sql)   # label buffer_id's
+
+        # A note on DISTRIBUTED BY (slot_id) in above query:
+        #
+        #     In the next query, we'll be doing the actual batching.  Due
+        #  to the GROUP BY, gpdb will Redistribute on buffer_id.  We could
+        #  avoid this by using DISTRIBUTED BY (buffer_id) in the above
+        #  (buffer-labelling) query.  But this also causes the GROUP BY
+        #  to use single-stage GroupAgg instead of multistage GroupAgg,
+        #  which for unknown reasons is *much* slower and often runs out
+        #  of VMEM unless it's set very high!
+
+        plpy.execute("DROP TABLE {norm_tbl}, {start_rows_tbl}".format(**locals()))
+
+        # Disable optimizer (ORCA) for platforms that use it
+        # since we want to use a groupagg instead of hashagg
+        with OptimizerControl(False) and HashaggControl(False):
+            # Run actual batching query
+            plpy.execute(batching_query.format(**locals()))
+
+        plpy.execute("DROP TABLE {0}".format(normalized_tbl))
+
+        if not all_segments: # remove any segments we don't plan to use
+            sql = """
+                DELETE FROM {dist_key_tbl}
+                    WHERE NOT gp_segment_id = ANY({self.gpu_config})
+            """.format(**locals())
+
+        plpy.execute("ANALYZE {dist_key_tbl}".format(**locals()))
+        plpy.execute("ANALYZE {batched_table}".format(**locals()))
+
+        # Redistribute from buffer_id to dist_key
+        #
+        #  This has to be separate from the batching query, because
+        #   we found that adding DISTRIBUTED BY (dist_key) to that
+        #   query causes it to run out of VMEM on large datasets such
+        #   as places100.  Possibly this is because the memory available
+        #   for GroupAgg has to be shared with an extra slice if they
+        #   are part of the same query.
+        #
+        #  We also tried adding this to the BYTEA conversion query, but
+        #   that resulted in slower performance than just keeping it
+        #   separate.
+        #
+        sql = """CREATE TEMP TABLE {batched_table}_dist_key AS
+                    SELECT {dist_key_col}, t.*
+                        FROM {batched_table} t
+                            JOIN {dist_key_tbl} d
+                                ON {join_key} = d.gp_segment_id
+                            DISTRIBUTED BY ({dist_key_col})
+              """.format(**locals())
+
+        # match buffer_id's with dist_keys
+        plpy.execute(sql)
+
+        sql = """DROP TABLE {batched_table}, {dist_key_tbl};
+                 ALTER TABLE {batched_table}_dist_key RENAME TO {batched_table}
+              """.format(**locals())
+        plpy.execute(sql)
+
+        # Convert batched table to BYTEA and output as final (permanent) table
+        plpy.execute(bytea_query.format(**locals()))
+
+        plpy.execute("DROP TABLE {0}".format(batched_table))
+
         # Create summary table
         self._create_output_summary_table()
 
@@ -405,7 +629,8 @@ class InputDataPreprocessorDL(object):
             _assert(self.buffer_size > 0,
                     "{0}: The buffer size has to be a "
                     "positive integer or NULL.".format(self.module_name))
-        _assert(self.normalizing_const > 0,
+        if self.normalizing_const is not None:
+            _assert(self.normalizing_const > 0,
                 "{0}: The normalizing constant has to be a "
                 "positive integer or NULL.".format(self.module_name))
 
@@ -442,16 +667,17 @@ class InputDataPreprocessorDL(object):
         return get_distinct_col_levels(table, dependent_varname,
             dependent_vartype, include_nulls=True)
 
-    def _get_num_buffers(self):
+    def _get_buffer_size(self, num_segments):
         num_rows_in_tbl = plpy.execute("""
                 SELECT count(*) AS cnt FROM {0}
             """.format(self.source_table))[0]['cnt']
         buffer_size_calculator = MiniBatchBufferSizeCalculator()
         indepdent_var_dim = get_product_of_dimensions(self.source_table,
             self.independent_varname)
-        self.buffer_size = buffer_size_calculator.calculate_default_buffer_size(
-            self.buffer_size, num_rows_in_tbl, indepdent_var_dim)
-        return ceil((1.0 * num_rows_in_tbl) / self.buffer_size)
+        buffer_size = buffer_size_calculator.calculate_default_buffer_size(
+            self.buffer_size, num_rows_in_tbl, indepdent_var_dim, num_segments)
+        num_buffers = num_segments * ceil((1.0 * num_rows_in_tbl) / buffer_size / num_segments)
+        return int(ceil(num_rows_in_tbl / num_buffers))
 
 class ValidationDataPreprocessorDL(InputDataPreprocessorDL):
     def __init__(self, schema_madlib, source_table, output_table,
