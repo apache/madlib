@@ -31,6 +31,8 @@ m4_include(`SQLCommon.m4')
 /**
 @addtogroup grp_keras
 
+@brief Fit, evaluate and predict using the Keras API.
+
 <div class="toc"><b>Contents</b><ul>
 <li class="level1"><a href="#keras_fit">Fit</a></li>
 <li class="level1"><a href="#keras_evaluate">Evaluate</a></li>
@@ -53,8 +55,11 @@ Keras was developed for fast experimentation.  It can run
 on top of different backends and the one that is currently
 supported by MADlib is TensorFlow [2].  The implementation
 in MADlib is distributed and designed to train
-a single large model across multiple segments (workers)
-in a Greenplum database.  PostgreSQL is also supported.
+a single model across multiple segments (workers)
+in Greenplum database.  (PostgreSQL is also supported.)
+Alternatively, to train multiple models at the same time for model
+architecture search or hyperparameter tuning, you can
+use <a href="group__grp__keras__run__model__selection.html">Model Selection</a>.
 
 The main use case is image classification
 using sequential models, which are made up of a
@@ -74,15 +79,13 @@ can perform better than stochastic gradient descent
 because it uses more than one training example at a time,
 typically resulting faster and smoother convergence [3].
 
-You can also do inference on models that have not been trained with MADlib,
-but rather imported from an external source.
+You can also do inference on models that have not been trained in MADlib,
+but rather imported from an external source.  This is in the section
+called "Predict BYOM" below, where "BYOM" stands for "Bring Your Own Model."
 
 Note that the following MADlib functions are targeting a specific Keras
 version (2.2.4) with a specific Tensorflow kernel version (1.14).
 Using a newer or older version may or may not work as intended.
-
-@brief Solves image classification problems by calling
-the Keras API
 
 @anchor keras_fit
 @par Fit
@@ -171,19 +174,19 @@ madlib_keras_fit(
   </DD>
 
   <DT>use_gpus (optional)</DT>
-  <DD>BOOLEAN, default: FALSE (i.e., CPU).
-    Flag to enable GPU support for training neural network.
-    The number of GPUs to use is determined by the parameters
-    passed to the preprocessor.
+  <DD>BOOLEAN, default: FALSE (i.e., CPU). Determines whether GPUs
+  are to be used for training the neural network.  Set to TRUE to use GPUs.
 
     @note
-    We have seen some memory related issues when segments
-    share GPU resources.
-    For example, if you provide 1 GPU and your
-    database cluster is set up to have 4
+    This parameter must not conflict with how the distribution rules are set in
+    the preprocessor function.  For example, if you set a distribution rule to use
+    certain segments on hosts that do not have GPUs attached, you will get an error
+    if you set ‘use_gpus’ to TRUE.  Also, we have seen some memory related issues
+    when segments share GPU resources.
+    For example, if you have 1 GPU per segment host and your cluster has 4
     segments per segment host, it means that all 4
-    segments on a segment host will share the same
-    GPU. The current recommended
+    segments will share the same
+    GPU on each host. The current recommended
     configuration is 1 GPU per segment.
   </DD>
 
@@ -498,27 +501,29 @@ madlib_keras_evaluate(
         <td>Type of metric used that was used in the training step.</td>
       </tr>
 
-
   <DT>use_gpus (optional)</DT>
-  <DD>BOOLEAN, default: FALSE (i.e., CPU).
-    Flag to enable GPU support for evaluating neural network.
-    The number of GPUs to use is determined by the parameters
-    passed to the preprocessor.
+  <DD>BOOLEAN, default: FALSE (i.e., CPU). Determines whether GPUs
+  are to be used for training the neural network.  Set to TRUE to use GPUs.
 
     @note
-    We have seen some memory related issues when segments
-    share GPU resources.
-    For example, if you provide 1 GPU and your
-    database cluster is set up to have 4
+    This parameter must not conflict with how the distribution rules are set in
+    the preprocessor function.  For example, if you set a distribution rule to use
+    certain segments on hosts that do not have GPUs attached, you will get an error
+    if you set ‘use_gpus’ to TRUE.  Also, we have seen some memory related issues
+    when segments share GPU resources.
+    For example, if you have 1 GPU per segment host and your cluster has 4
     segments per segment host, it means that all 4
-    segments on a segment host will share the same
-    GPU. The current recommended
+    segments will share the same
+    GPU on each host. The current recommended
     configuration is 1 GPU per segment.
   </DD>
 
-
   <DT>mst_key (optional)</DT>
-  <DD>INTEGER, default: NULL. To be filled.
+  <DD>INTEGER, default: NULL. ID that defines a unique tuple for
+  model architecture-compile parameters-fit parameters in a model
+  selection table.  Do not use this if training one model at a time using madlib_keras_fit().
+  See the <a href="group__grp__keras__run__model__selection.html">Model Selection</a> section
+  for more details on model selection by training multiple models at a time.
   </DD>
 </DL>
 
@@ -599,7 +604,7 @@ madlib_keras_predict(
   and 'prob' gives the probability value for each class.
   </DD>
 
-  <DT>use_gpus(optional)</DT>
+  <DT>use_gpus (optional)</DT>
   <DD>BOOLEAN, default: FALSE (i.e., CPU).
     Flag to enable GPU support for training neural network.
     The number of GPUs to use is determined by the parameters
@@ -617,10 +622,13 @@ madlib_keras_predict(
   </DD>
 
   <DT>mst_key (optional)</DT>
-  <DD>INTEGER, default: NULL. To be filled.
+  <DD>INTEGER, default: NULL. ID that defines a unique tuple for
+  model architecture-compile parameters-fit parameters in a model
+  selection table.  Do not use this if training one model at a time using madlib_keras_fit().
+  See the <a href="group__grp__keras__run__model__selection.html">Model Selection</a> section
+  for more details on model selection by training multiple models at a time.
   </DD>
 </DL>
-
 
 
 @anchor keras_predict_byom
@@ -709,7 +717,7 @@ madlib_keras_predict_byom(
    gives the actual prediction and 'prob' gives the probability value for each class.
   </DD>
 
-  <DT>use_gpus(optional)</DT>
+  <DT>use_gpus (optional)</DT>
   <DD>BOOLEAN, default: FALSE (i.e., CPU).
     Flag to enable GPU support for training neural network.
     The number of GPUs to use is determined by the parameters
@@ -1193,7 +1201,7 @@ SELECT madlib.madlib_keras_predict_byom('model_arch_library',  -- model arch tab
                                         'attributes',          -- independent var
                                         'iris_predict_byom',   -- output table
                                         'response',            -- prediction type
-                                         0,                    -- gpus per host
+                                         FALSE,                -- use GPUs
                                          ARRAY['Iris-setosa', 'Iris-versicolor', 'Iris-virginica'], -- class values
                                          1.0                   -- normalizing const
                                    );
@@ -1278,7 +1286,7 @@ SELECT madlib.madlib_keras_fit('iris_train_packed',   -- source table
                                 $$ loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'] $$,  -- compile_params
                                 $$ batch_size=5, epochs=3 $$,  -- fit_params
                                 10,                   -- num_iterations
-                                0,                    -- GPUs per host
+                                FALSE,                -- use GPUs
                                 'iris_test_packed',   -- validation dataset
                                 3,                    -- metrics compute frequency
                                 FALSE,                -- warm start
@@ -1384,7 +1392,7 @@ SELECT madlib.madlib_keras_fit('iris_train_packed',   -- source table
                                 $$ loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'] $$,  -- compile_params
                                 $$ batch_size=5, epochs=3 $$,  -- fit_params
                                 5,                   -- num_iterations
-                                0,                    -- GPUs per host
+                                FALSE,               -- use GPUs
                                 'iris_test_packed',   -- validation dataset
                                 1,                    -- metrics compute frequency
                                 TRUE,                 -- warm start
