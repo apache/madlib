@@ -737,7 +737,12 @@ madlib_keras_predict_byom(
   <DT>class_values (optional)</DT>
   <DD>TEXT[], default: NULL.
     List of class labels that were used while training the model. See the 'output_table'
-    column for more details.
+    column above for more details.
+
+    @note
+    If you specify the class values parameter,
+    it must reflect how the dependent variable was 1-hot encoded for training. If you accidently
+    pick another order that does not match the 1-hot encoding, the predictions would be wrong.
   </DD>
 
   <DT>normalizing_const (optional)</DT>
@@ -1166,7 +1171,7 @@ WHERE iris_predict.estimated_class_text != iris_test.class_text;
      6
 (1 row)
 </pre>
-Percent missclassifications:
+Accuracy:
 <pre class="example">
 SELECT round(count(*)*100/(150*0.2),2) as test_accuracy_percent from
     (select iris_test.class_text as actual, iris_predict.estimated_class_text as estimated
@@ -1188,10 +1193,18 @@ syntax. See <a href="group__grp__keras__model__arch.html">load_keras_model</a>
 for details on how to load the model architecture and weights.
 In this example we will use weights we already have:
 <pre class="example">
-UPDATE model_arch_library SET model_weights = model_weights FROM iris_model WHERE model_id = 1;
+UPDATE model_arch_library
+SET model_weights = iris_model.model_weights
+FROM iris_model
+WHERE model_arch_library.model_id = 1;
 </pre>
 Now train using a model from the model architecture table directly
-without referencing the model table from the MADlib training:
+without referencing the model table from the MADlib training.  Note that if you
+specify the class values parameter as we do below, it must reflect how the dependent
+variable was 1-hot encoded for training. In this example the 'training_preprocessor_dl()'
+in Step 2 above encoded in the order {'Iris-setosa', 'Iris-versicolor', 'Iris-virginica'} so
+this is the order we pass in the parameter. If we accidently pick another order that does
+not match the 1-hot encoding, the predictions would be wrong.
 <pre class="example">
 DROP TABLE IF EXISTS iris_predict_byom;
 SELECT madlib.madlib_keras_predict_byom('model_arch_library',  -- model arch table
@@ -1254,7 +1267,7 @@ WHERE iris_predict_byom.estimated_dependent_var != iris_test.class_text;
      6
 (1 row)
 </pre>
-Percent missclassifications:
+Accuracy:
 <pre class="example">
 SELECT round(count(*)*100/(150*0.2),2) as test_accuracy_percent from
     (select iris_test.class_text as actual, iris_predict_byom.estimated_dependent_var as estimated
@@ -1495,7 +1508,10 @@ Fetch the weights from a previous MADlib run. (Normally
 these would be downloaded from a source that trained
 the same model architecture on a related dataset.)
 <pre class="example">
-UPDATE model_arch_library SET model_weights = model_weights FROM iris_model WHERE model_id = 2;
+UPDATE model_arch_library
+SET model_weights = iris_model.model_weights
+FROM iris_model
+WHERE model_arch_library.model_id = 2;
 </pre>
 Now train the model using the transfer model and the pre-trained weights:
 <pre class="example">
@@ -1556,22 +1572,25 @@ and versions.
 
 2.  Classification is currently supported, not regression.
 
-3.  On the effect of database cluster size: as the database cluster
-size increases, the per iteration loss will be higher since the
-model only sees 1/n of the data, where n is the number of segments.
-However, each iteration runs faster than single node because it is only
-traversing 1/n of the data.  For large data sets, all else being equal,
-a bigger cluster will achieve a given accuracy faster than a single node
-although it may take more iterations to achieve that accuracy.
-However, for highly non-convex solution spaces, convergence behavior
-may diminish as cluster size increases.  Ensure that each segment has
-sufficient volume of data and examples of each class value.
-
 @anchor background
 @par Technical Background
 
 For an introduction to deep learning foundations, including MLP and CNN,
 refer to [6].
+
+This module trains a single large model across the database cluster
+using the bulk synchronous parallel (BSP) approach, with model averaging [7].
+
+On the effect of database cluster size: as the database cluster size increases, the per iteration
+loss will be higher since the model only sees 1/n of the data, where n is the number of segments.
+However, each iteration runs faster than single node because it is only traversing 1/n of the data.
+For highly non-convex solution spaces, convergence behavior may diminish as cluster size increases.
+Ensure that each segment has sufficient volume of data and examples of each class value.
+
+Alternatively, to train multiple models at the same time for model
+architecture search or hyperparameter tuning, you can
+use <a href="group__grp__keras__run__model__selection.html">Model Selection</a>,
+which does not do model averaging and hence may have better covergence efficiency.
 
 @anchor literature
 @literature
@@ -1590,6 +1609,10 @@ http://www.cs.toronto.edu/~tijmen/csc321/slides/lecture_slides_lec6.pdf
 [5] Deep learning section of Apache MADlib wiki, https://cwiki.apache.org/confluence/display/MADLIB/Deep+Learning
 
 [6] Deep Learning, Ian Goodfellow, Yoshua Bengio and Aaron Courville, MIT Press, 2016.
+
+[7] "Resource-Efficient and Reproducible Model Selection on Deep Learning Systems," Supun Nakandala,
+Yuhao Zhang, and Arun Kumar, Technical Report, Computer Science and Engineering, University of California,
+San Diego https://adalabucsd.github.io/papers/TR_2019_Cerebro.pdf.
 
 @anchor related
 @par Related Topics
