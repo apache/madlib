@@ -313,30 +313,50 @@ class FitMultipleModel():
             model_arch, model_weights = get_model_arch_weights(self.model_arch_table,
                                                                mst[self.model_id_col])
 
+
+            # If warm start is enabled, weigths from transfer learning cannot be
+            # used, even if a particular model doesn't have warm start weigths.
+            if self.warm_start:
+                model_weights = None
+
+            serialized_weights = get_initial_weights(self.model_output_table,
+                                                     model_arch,
+                                                     model_weights,
+                                                     mst['mst_key'] in warm_start_msts,
+                                                     self.use_gpus,
+                                                     self.accessible_gpus_for_seg
+                                                     )
+            model_size = sys.getsizeof(serialized_weights) / 1024.0
+
+            metrics_list = get_metrics_from_compile_param(
+                mst[self.compile_params_col])
+            is_metrics_specified = True if metrics_list else False
+            metrics_type = 'ARRAY{0}'.format(
+                metrics_list) if is_metrics_specified else 'NULL'
+
+            info_table_insert_query = """
+                    INSERT INTO {self.model_info_table}({self.mst_key_col},
+                                {self.model_id_col}, {self.compile_params_col},
+                                {self.fit_params_col}, model_type, model_size,
+                                metrics_type)
+                        VALUES ({mst_key_val}, {model_id},
+                                $madlib${compile_params}$madlib$,
+                                $madlib${fit_params}$madlib$, '{model_type}',
+                                {model_size}, {metrics_type})
+                """.format(self=self,
+                           mst_key_val=mst[self.mst_key_col],
+                           model_id=mst[self.model_id_col],
+                           compile_params=mst[self.compile_params_col],
+                           fit_params=mst[self.fit_params_col],
+                           model_type='madlib_keras',
+                           model_size=model_size,
+                           metrics_type=metrics_type)
+            plpy.execute(info_table_insert_query)
+
             if not mst['mst_key'] in warm_start_msts:
-
-                # If warm start is enabled, weigths from transfer learning cannot be
-                # used, even if a particular model doesn't have warm start weigths.
-                if self.warm_start:
-                    model_weights = None
-
-                serialized_weights = get_initial_weights(self.model_output_table,
-                                                         model_arch,
-                                                         model_weights,
-                                                         mst in warm_start_msts,
-                                                         self.use_gpus,
-                                                         self.accessible_gpus_for_seg
-                                                         )
                 model = model_from_json(model_arch)
                 serialized_state = model_weights if model_weights else \
                     madlib_keras_serializer.serialize_nd_weights(model.get_weights())
-
-                model_size = sys.getsizeof(serialized_weights) / 1024.0
-                metrics_list = get_metrics_from_compile_param(
-                    mst[self.compile_params_col])
-                is_metrics_specified = True if metrics_list else False
-                metrics_type = 'ARRAY{0}'.format(
-                    metrics_list) if is_metrics_specified else 'NULL'
                 output_table_insert_query = """
                                     INSERT INTO {self.model_output_table}(
                                         {self.mst_key_col}, {self.model_weights_col},
@@ -348,24 +368,6 @@ class FitMultipleModel():
                     output_table_insert_query, ["bytea", "json"])
                 plpy.execute(output_table_insert_query_prepared, [
                              serialized_state, model_arch])
-                info_table_insert_query = """
-                        INSERT INTO {self.model_info_table}({self.mst_key_col},
-                                    {self.model_id_col}, {self.compile_params_col},
-                                    {self.fit_params_col}, model_type, model_size,
-                                    metrics_type)
-                            VALUES ({mst_key_val}, {model_id},
-                                    $madlib${compile_params}$madlib$,
-                                    $madlib${fit_params}$madlib$, '{model_type}',
-                                    {model_size}, {metrics_type})
-                    """.format(self=self,
-                               mst_key_val=mst[self.mst_key_col],
-                               model_id=mst[self.model_id_col],
-                               compile_params=mst[self.compile_params_col],
-                               fit_params=mst[self.fit_params_col],
-                               model_type='madlib_keras',
-                               model_size=model_size,
-                               metrics_type=metrics_type)
-                plpy.execute(info_table_insert_query)
 
     def create_model_summary_table(self):
         if self.warm_start:
