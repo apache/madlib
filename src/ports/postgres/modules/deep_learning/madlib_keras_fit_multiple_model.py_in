@@ -276,10 +276,15 @@ class FitMultipleModel():
     def create_model_output_table(self):
         warm_start_msts = []
         if self.warm_start:
+            plpy.execute(""" DELETE FROM {self.model_output_table}
+                WHERE {self.mst_key_col} NOT IN (
+                    SELECT {self.mst_key_col} FROM {self.model_selection_table})
+                """.format(self=self))
             warm_start_msts = plpy.execute(
                 """ SELECT array_agg({0}) AS a FROM {1}
                 """.format(self.mst_key_col, self.model_output_table))[0]['a']
             plpy.execute("TRUNCATE TABLE {0}".format(self.model_info_table))
+
         else:
             output_table_create_query = """
                                         CREATE TABLE {self.model_output_table}
@@ -314,7 +319,7 @@ class FitMultipleModel():
                                                                mst[self.model_id_col])
 
 
-            # If warm start is enabled, weigths from transfer learning cannot be
+            # If warm start is enabled, weights from transfer learning cannot be
             # used, even if a particular model doesn't have warm start weigths.
             if self.warm_start:
                 model_weights = None
@@ -354,9 +359,6 @@ class FitMultipleModel():
             plpy.execute(info_table_insert_query)
 
             if not mst['mst_key'] in warm_start_msts:
-                model = model_from_json(model_arch)
-                serialized_state = model_weights if model_weights else \
-                    madlib_keras_serializer.serialize_nd_weights(model.get_weights())
                 output_table_insert_query = """
                                     INSERT INTO {self.model_output_table}(
                                         {self.mst_key_col}, {self.model_weights_col},
@@ -367,7 +369,7 @@ class FitMultipleModel():
                 output_table_insert_query_prepared = plpy.prepare(
                     output_table_insert_query, ["bytea", "json"])
                 plpy.execute(output_table_insert_query_prepared, [
-                             serialized_state, model_arch])
+                             serialized_weights, model_arch])
 
     def create_model_summary_table(self):
         if self.warm_start:
