@@ -162,8 +162,8 @@ class FitMultipleModel():
         random.shuffle(self.msts_for_schedule)
         self.grand_schedule = self.generate_schedule(self.msts_for_schedule)
         self.gp_segment_id_col = '0' if is_platform_pg() else GP_SEGMENT_ID_COLNAME
-        if not self.warm_start:
-            self.create_model_output_table()
+
+        self.create_model_output_table()
         self.weights_to_update_tbl = unique_string(desp='weights_to_update')
         self.fit_multiple_model()
         reset_cuda_env(original_cuda_env)
@@ -274,12 +274,26 @@ class FitMultipleModel():
             plpy.execute(mst_insert_query)
 
     def create_model_output_table(self):
-        output_table_create_query = """
-                                    CREATE TABLE {self.model_output_table}
-                                    ({self.mst_key_col} INTEGER PRIMARY KEY,
-                                     {self.model_weights_col} BYTEA,
-                                     {self.model_arch_col} JSON)
-                                    """.format(self=self)
+        warm_start_msts = []
+        if self.warm_start:
+            plpy.execute(""" DELETE FROM {self.model_output_table}
+                WHERE {self.mst_key_col} NOT IN (
+                    SELECT {self.mst_key_col} FROM {self.model_selection_table})
+                """.format(self=self))
+            warm_start_msts = plpy.execute(
+                """ SELECT array_agg({0}) AS a FROM {1}
+                """.format(self.mst_key_col, self.model_output_table))[0]['a']
+            plpy.execute("DROP TABLE {0}".format(self.model_info_table))
+
+        else:
+            output_table_create_query = """
+                                        CREATE TABLE {self.model_output_table}
+                                        ({self.mst_key_col} INTEGER PRIMARY KEY,
+                                         {self.model_weights_col} BYTEA,
+                                         {self.model_arch_col} JSON)
+                                        """.format(self=self)
+            plpy.execute(output_table_create_query)
+
         info_table_create_query = """
                                   CREATE TABLE {self.model_info_table}
                                   ({self.mst_key_col} INTEGER PRIMARY KEY,
@@ -300,39 +314,32 @@ class FitMultipleModel():
                                    validation_loss DOUBLE PRECISION[])
                                """.format(self=self)
 
-        plpy.execute(output_table_create_query)
         plpy.execute(info_table_create_query)
         for mst in self.msts:
             model_arch, model_weights = get_model_arch_weights(self.model_arch_table,
                                                                mst[self.model_id_col])
+
+
+            # If warm start is enabled, weights from transfer learning cannot be
+            # used, even if a particular model doesn't have warm start weigths.
+            if self.warm_start:
+                model_weights = None
+
             serialized_weights = get_initial_weights(self.model_output_table,
                                                      model_arch,
                                                      model_weights,
-                                                     False,
+                                                     mst['mst_key'] in warm_start_msts,
                                                      self.use_gpus,
                                                      self.accessible_gpus_for_seg
                                                      )
-            model = model_from_json(model_arch)
-            serialized_state = model_weights if model_weights else \
-                madlib_keras_serializer.serialize_nd_weights(model.get_weights())
-
             model_size = sys.getsizeof(serialized_weights) / 1024.0
+
             metrics_list = get_metrics_from_compile_param(
                 mst[self.compile_params_col])
             is_metrics_specified = True if metrics_list else False
             metrics_type = 'ARRAY{0}'.format(
                 metrics_list) if is_metrics_specified else 'NULL'
-            output_table_insert_query = """
-                                INSERT INTO {self.model_output_table}(
-                                    {self.mst_key_col}, {self.model_weights_col},
-                                    {self.model_arch_col})
-                                VALUES ({mst_key}, $1, $2)
-                                   """.format(self=self,
-                                              mst_key=mst[self.mst_key_col])
-            output_table_insert_query_prepared = plpy.prepare(
-                output_table_insert_query, ["bytea", "json"])
-            plpy.execute(output_table_insert_query_prepared, [
-                         serialized_state, model_arch])
+
             info_table_insert_query = """
                     INSERT INTO {self.model_info_table}({self.mst_key_col},
                                 {self.model_id_col}, {self.compile_params_col},
@@ -351,6 +358,19 @@ class FitMultipleModel():
                            model_size=model_size,
                            metrics_type=metrics_type)
             plpy.execute(info_table_insert_query)
+
+            if not mst['mst_key'] in warm_start_msts:
+                output_table_insert_query = """
+                                    INSERT INTO {self.model_output_table}(
+                                        {self.mst_key_col}, {self.model_weights_col},
+                                        {self.model_arch_col})
+                                    VALUES ({mst_key}, $1, $2)
+                                       """.format(self=self,
+                                                  mst_key=mst[self.mst_key_col])
+                output_table_insert_query_prepared = plpy.prepare(
+                    output_table_insert_query, ["bytea", "json"])
+                plpy.execute(output_table_insert_query_prepared, [
+                             serialized_weights, model_arch])
 
     def create_model_summary_table(self):
         if self.warm_start:
