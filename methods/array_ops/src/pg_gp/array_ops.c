@@ -2107,3 +2107,33 @@ General_Array_to_Cumulative_Array(
 
     return pgarray;
 }
+
+PG_FUNCTION_INFO_V1(array_to_bytea);
+Datum
+array_to_bytea(PG_FUNCTION_ARGS)
+{
+    ArrayType *a = PG_GETARG_ARRAYTYPE_P(0);
+    Oid element_type = ARR_ELEMTYPE(a);
+    TypeCacheEntry * TI;
+    int data_length, nitems, items_avail;
+
+    data_length = VARSIZE(a) - ARR_DATA_OFFSET(a);
+    nitems = ArrayGetNItems(ARR_NDIM(a), ARR_DIMS(a));
+    TI = lookup_type_cache(element_type, TYPECACHE_CMP_PROC_FINFO);
+    items_avail = (data_length / TI->typlen);
+
+    if (nitems > items_avail) {
+        elog(ERROR, "Unexpected end of array:  expected %d elements but received only %d",  nitems,  data_length);
+    } else if (nitems < items_avail) {
+        elog(WARNING, "to_bytea(): Ignoring %d extra elements after end of %d-element array!", items_avail - nitems, nitems);
+        data_length = (nitems * TI->typlen);
+    }
+
+    bytea *ba = palloc(VARHDRSZ + data_length);
+
+    SET_VARSIZE(ba, VARHDRSZ + data_length);
+
+    memcpy(((char *)ba) + VARHDRSZ, ARR_DATA_PTR(a), data_length);
+
+    PG_RETURN_BYTEA_P(ba);
+}
