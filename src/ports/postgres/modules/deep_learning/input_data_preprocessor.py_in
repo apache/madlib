@@ -328,6 +328,8 @@ class InputDataPreprocessorDL(object):
             all_segments = False
 
         if self.distribution_rules == 'gpu_segments':
+            #TODO can we reuse the function `get_accessible_gpus_for_seg` from
+            # madlib_keras_helper
             gpu_info_table = unique_string(desp='gpu_info')
             plpy.execute("""
                 SELECT {self.schema_madlib}.gpu_configuration('{gpu_info_table}')
@@ -339,6 +341,7 @@ class InputDataPreprocessorDL(object):
             gpu_query_result = plpy.execute(gpu_query)[0]['gpu_config']
             if not gpu_query_result:
                plpy.error("{self.module_name}: No GPUs configured on hosts.".format(self=self))
+            plpy.execute("DROP TABLE IF EXISTS {0}".format(gpu_info_table))
 
             gpu_config_hostnames = "ARRAY{0}".format(gpu_query_result)
             # find hosts with gpus
@@ -351,7 +354,6 @@ class InputDataPreprocessorDL(object):
                 AND hostname=ANY({gpu_config_hostnames})
             """.format(**locals())
             segment_ids_result = plpy.execute(get_segment_query)[0]
-            plpy.execute("DROP TABLE IF EXISTS {0}".format(gpu_info_table))
 
             self.gpu_config = "ARRAY{0}".format(sorted(segment_ids_result['segment_ids']))
             self.distribution_rules = "ARRAY{0}".format(sorted(segment_ids_result['dbid']))
