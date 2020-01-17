@@ -502,6 +502,9 @@ class ViewDependency(UpgradeBase):
         """
         @brief  Detect direct view dependencies on MADlib UDFs/UDAs
         """
+        proisagg_wrapper = "p.proisagg"
+        if self._portid == 'postgres' and self._dbver > 11:
+            proisagg_wrapper = "p.prokind = 'a'"
         rows = self._run_sql("""
             SELECT
                 view, nsp.nspname AS schema, procname, procoid, proisagg
@@ -513,7 +516,7 @@ class ViewDependency(UpgradeBase):
                         c.relnamespace AS namespace,
                         p.proname As procname,
                         p.oid AS procoid,
-                        p.proisagg AS proisagg
+                        {proisagg_wrapper} AS proisagg
                     FROM
                         pg_class AS c,
                         pg_rewrite AS rw,
@@ -529,7 +532,8 @@ class ViewDependency(UpgradeBase):
                 ) t1
             WHERE
                 t1.namespace = nsp.oid
-        """.format(schema_madlib_oid=self._schema_oid))
+        """.format(schema_madlib_oid=self._schema_oid,
+                   proisagg_wrapper=proisagg_wrapper))
 
         self._view2proc = defaultdict(list)
         for row in rows:
@@ -1029,6 +1033,10 @@ class ScriptCleaner(UpgradeBase):
         """
         # See _get_function_info for explanations.
 
+        proisagg_wrapper = "p.proisagg = true"
+        if self._portid == 'postgres' and self._dbver > 11:
+            proisagg_wrapper = "p.prokind = 'a'"
+
         rows = self._run_sql("""
             SELECT
                 max(proname) AS proname,
@@ -1047,12 +1055,12 @@ class ScriptCleaner(UpgradeBase):
                     pg_namespace AS nsp
                 WHERE
                     p.pronamespace = nsp.oid AND
-                    p.proisagg = true AND
+                    {proisagg_wrapper} AND
                     nsp.nspname = '{schema}'
             ) AS f
             GROUP BY
                 procoid
-            """.format(schema=self._schema))
+            """.format(schema=self._schema, proisagg_wrapper=proisagg_wrapper))
         self._existing_uda = defaultdict(list)
         for row in rows:
             # Consider about the overloaded aggregates
