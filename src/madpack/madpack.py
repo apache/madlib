@@ -701,6 +701,9 @@ def _process_py_sql_files_in_modules(modset, args_dict):
                     args_dict['create_obj_handle'],
                     args_dict['sc'])
             elif calling_operation == INSTALL_DEV_CHECK:
+                # Skip certain tests for GP4.3
+                if dbver == '4.3ORCA' and module in ['deep_learning', 'kmeans']:
+                    continue
                 _execute_per_module_install_dev_check_algo(
                     args_dict['schema'],
                     args_dict['test_user'],
