@@ -26,6 +26,7 @@
 
 import numpy as np
 import plpy
+import math
 from utilities.control import MinWarning
 from utilities.utilities import _assert
 from utilities.utilities import unique_string
@@ -151,8 +152,11 @@ def kmeans_auto(schema_madlib, rel_source, output_table, expr_point, k,
                          WHERE k = {current_k}),
                         '{fn_dist}')
                     """.format(**locals())
-                silhouette_vals.append(
-                    plpy.execute(silhouette_query)[0]['simple_silhouette'])
+                new_silh = plpy.execute(silhouette_query)[0]['simple_silhouette']
+                new_silh = "Infinity" if math.isinf(new_silh) else new_silh
+                new_silh = "NaN" if math.isnan(new_silh) else new_silh
+                silhouette_vals.append(str(new_silh))
+
 
         update_query = """
             UPDATE {output_table} SET {{column}} = __value__ FROM
@@ -165,12 +169,12 @@ def kmeans_auto(schema_madlib, rel_source, output_table, expr_point, k,
         if use_silhouette:
             optimal_sil =  k[np.argmax(np.array(silhouette_vals))]
             plpy.execute(update_query.format(column = SILHOUETTE,
-                calc_arr = str(silhouette_vals)[1:-1]))
+                calc_arr = silhouette_vals[1:-1]))
 
         if use_elbow:
             optimal_elbow, second_order = _calculate_elbow(output_table)
             plpy.execute(update_query.format(column = ELBOW,
-                calc_arr = str(second_order)[1:-1]))
+                calc_arr = second_order[1:-1]))
 
         optimal_k = optimal_sil if use_silhouette else optimal_elbow
 
