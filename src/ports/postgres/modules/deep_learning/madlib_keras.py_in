@@ -168,6 +168,8 @@ def fit(schema_madlib, source_table, model, model_arch_table,
         FROM {source_table}
         """.format(**locals()), ["bytea", "boolean"])
 
+    prepare_generic_plan(run_training_iteration, [DUMMY_WEIGHTS, False])
+
     # Define the state for the model and loss/metric storage lists
     training_loss, training_metrics, metrics_elapsed_time = [], [], []
     metrics_iters = []
@@ -313,11 +315,20 @@ def fit(schema_madlib, source_table, model, model_arch_table,
                  [compile_params, fit_params, name,
                   description, metrics_elapsed_time, class_values])
 
-    create_output_table = plpy.prepare("""
-        CREATE TABLE {0} AS SELECT
-        $1 as model_weights,
-        $2 as {1}""".format(model, ModelArchSchema.MODEL_ARCH), ["bytea", "json"])
-    plpy.execute(create_output_table, [serialized_weights, model_arch])
+    plpy.execute("""
+        CREATE TABLE {0}
+        (model_weights bytea,
+        {1} json)""".format(model, ModelArchSchema.MODEL_ARCH))
+    insert_output_table = plpy.prepare("""
+        INSERT INTO {0} SELECT model_weights, {1}
+        FROM (VALUES($1, $2))t(model_weights, {1})
+        """.format(model, ModelArchSchema.MODEL_ARCH), ["bytea", "json"])
+    ## prepare generic plan for GPDB6 insert query
+    if is_platform_gp6():
+        for i in range(1, 6):
+            plpy.execute(insert_output_table, [DUMMY_WEIGHTS, DUMMY_JSON])
+            plpy.execute("TRUNCATE TABLE {0}".format(model))
+    plpy.execute(insert_output_table, [serialized_weights, model_arch])
 
     #TODO add a unit test for this in a future PR
     reset_cuda_env(original_cuda_env)
@@ -475,7 +486,7 @@ def fit_transition(state, dependent_var, independent_var, dependent_var_shape,
         b. keras session is cleared at the end of the final iteration,
         i.e, last row of last iteration.
     """
-    if not independent_var or not dependent_var:
+    if not independent_var or not dependent_var or prev_serialized_weights==DUMMY_WEIGHTS:
         return state
     SD = kwargs['SD']
     device_name = get_device_name_and_set_cuda_env(accessible_gpus_for_seg[current_seg_id], current_seg_id)
@@ -664,11 +675,8 @@ def get_loss_metric_from_keras_eval(schema_madlib, table, compile_params,
         MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL, "_shape")
     ind_shape_col = add_postfix(
         MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL, "_shape")
-    """
-    This function will call the internal keras evaluate function to get the loss
-    and accuracy of each tuple which then gets averaged to get the final result.
-    """
     use_gpus = use_gpus if use_gpus else False
+
     evaluate_query = plpy.prepare("""
         select ({schema_madlib}.internal_keras_evaluate(
                                             {mb_dep_var_col},
@@ -685,11 +693,12 @@ def get_loss_metric_from_keras_eval(schema_madlib, table, compile_params,
                                             ARRAY{images_per_seg},
                                             {use_gpus}::BOOLEAN,
                                             ARRAY{accessible_gpus_for_seg},
-                                            {is_final_iteration}
+                                            $2
                                             )) as loss_metric
         from {table}
-        """.format(**locals()), ["bytea"])
-    res = plpy.execute(evaluate_query, [serialized_weights])
+        """.format(**locals()),["bytea", "boolean"])
+    prepare_generic_plan(evaluate_query, [DUMMY_WEIGHTS, False])
+    res = plpy.execute(evaluate_query, [serialized_weights, is_final_iteration])
     loss_metric = res[0]['loss_metric']
     return loss_metric
 
@@ -701,6 +710,8 @@ def internal_keras_eval_transition(state, dependent_var, independent_var,
                                    segments_per_host, images_per_seg,
                                    use_gpus, accessible_gpus_for_seg,
                                    is_final_iteration, **kwargs):
+    if serialized_weights == DUMMY_WEIGHTS:
+        return None
     SD = kwargs['SD']
     device_name = get_device_name_and_set_cuda_env(accessible_gpus_for_seg[current_seg_id], current_seg_id)
     agg_loss, agg_metric, agg_image_count = state
@@ -780,6 +791,10 @@ def internal_keras_eval_merge(state1, state2, **kwargs):
     return merged_state
 
 def internal_keras_eval_final(state, **kwargs):
+    # Return if called early
+    if not state or state == [0,0,0]:
+        return state
+
     loss, metric, image_count = state
 
     if image_count == 0:
