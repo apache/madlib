@@ -42,6 +42,7 @@ from utilities.utilities import split_quoted_delimited_str
 from utilities.utilities import is_platform_pg
 from utilities.validate_args import table_exists
 from utilities.validate_args import columns_exist_in_table
+from utilities.validate_args import get_cols_and_types
 from utilities.validate_args import table_is_empty
 from utilities.validate_args import get_expr_type
 
@@ -422,6 +423,13 @@ def graph_apsp_get_path(schema_madlib, apsp_table,
         dest = edge_params["dest"]
         weight = edge_params["weight"]
 
+        # Find the appropriate column type for correct concat operations
+        types = get_cols_and_types(apsp_table)
+        final_type = 'integer'
+        for i in types:
+            # We want to check the column types except the weight column
+            if 'bigint' in i[1] and weight not in i[0]:
+                final_type = 'bigint'
 
         if not vertex_id:
             vertex_id = "id"
@@ -450,7 +458,7 @@ def graph_apsp_get_path(schema_madlib, apsp_table,
         if source_vertex == dest_vertex:
             plpy.execute("""
                 CREATE TABLE {path_table} AS
-                SELECT {grp_comma} '{{{dest_vertex}}}'::INT[] AS path
+                SELECT {grp_comma} '{{{dest_vertex}}}'::{final_type}[] AS path
                 FROM {apsp_table} WHERE {src} = {source_vertex} AND
                     {dest} = {dest_vertex}
                 """.format(**locals()))
@@ -462,7 +470,7 @@ def graph_apsp_get_path(schema_madlib, apsp_table,
         # Initialize the temporary tables
         out = plpy.execute(""" CREATE TEMP TABLE {temp1_name} AS
                 SELECT {grp_comma} {apsp_table}.parent AS {vertex_id},
-                    ARRAY[{dest_vertex}] AS path
+                    ARRAY[{dest_vertex}]::{final_type}[] AS path
                 FROM {apsp_table}
                 WHERE {src} = {source_vertex} AND {dest} = {dest_vertex}
                     AND {apsp_table}.parent IS NOT NULL
@@ -513,15 +521,15 @@ def graph_apsp_get_path(schema_madlib, apsp_table,
         # Path with 1 vertex (src == dest) has been handled before
         plpy.execute("""
             CREATE TABLE {path_table} AS
-            SELECT {grp_comma} {source_vertex} || ({vertex_id} || path) AS path
+            SELECT {grp_comma} {source_vertex}::{final_type} || ({vertex_id} || path) AS path
             FROM {temp2_name}
             WHERE {vertex_id} <> {dest_vertex}
             UNION
-            SELECT {grp_comma} {source_vertex} || path AS path
+            SELECT {grp_comma} {source_vertex}::{final_type} || path AS path
             FROM {temp2_name}
             WHERE {vertex_id} = {dest_vertex}
             UNION
-            SELECT {grp_comma} '{{}}'::INT[] AS path
+            SELECT {grp_comma} '{{}}'::{final_type}[] AS path
             FROM {apsp_table}
             WHERE {src} = {source_vertex} AND {dest} = {dest_vertex}
                 AND {apsp_table}.parent IS NULL
