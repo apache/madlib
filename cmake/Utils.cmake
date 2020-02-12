@@ -74,16 +74,34 @@ macro(architecture FILENAME OUT_ARCHITECTURE)
         # architecture of an executable
         osx_archs("${FILENAME}" _ARCHITECTURE)
     else(APPLE)
+        # On linux, 'file' is used to determine the architecture. However, its
+        # output is kernel-dependent. http://www.darwinsys.com/file/ is the
+        # widest used implementation. Its outputs for most recent version are
+        # defined in
+        # https://github.com/file/file/blob/master/magic/Magdir/elf
         execute_process(
             COMMAND file "${FILENAME}"
             OUTPUT_VARIABLE _FILE_OUTPUT
             OUTPUT_STRIP_TRAILING_WHITESPACE)
 
         # Filter out known architectures
-        string(REGEX MATCHALL "x86[-_]64|i386|ppc|ppc64" _ARCHITECTURE "${_FILE_OUTPUT}")
-
-        # Normalize (e.g., some vendors use x86-64 instead of x86_64)
-        string(REGEX REPLACE "x86[-_]64" "x86_64" _ARCHITECTURE "${_ARCHITECTURE}")
+        string(
+            REGEX MATCH
+            "x86-64|Intel 80386|PowerPC or cisco 4500|64-bit PowerPC or cisco 7500"
+            _FILE_OUTPUT_MATCHED "${_FILE_OUTPUT}"
+        )
+        # Convert the result to Mac OS X lipo format
+        if(_FILE_OUTPUT_MATCHED STREQUAL "x86-64")
+            set(_ARCHITECTURE "x86_64")
+        elseif(_FILE_OUTPUT_MATCHED STREQUAL "Intel 80386")
+            set(_ARCHITECTURE "i386")
+        elseif(_FILE_OUTPUT_MATCHED STREQUAL "PowerPC or cisco 4500")
+            set(_ARCHITECTURE "ppc")
+        elseif(_FILE_OUTPUT_MATCHED STREQUAL "64-bit PowerPC or cisco 7500")
+            set(_ARCHITECTURE "ppc64")
+        else()
+            message(FATAL_ERROR "Unknown architecture (file command output '${_FILE_OUTPUT}')")
+        endif()
     endif(APPLE)
 
     list(REMOVE_DUPLICATES _ARCHITECTURE)
