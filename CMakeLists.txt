@@ -18,6 +18,7 @@ project(MADlib)
 cmake_minimum_required(VERSION 2.8.4 FATAL_ERROR)
 
 include(ExternalProject)
+include(CheckCXXCompilerFlag)
 
 # -- Local definitions (filenames, paths, etc.) --------------------------------
 
@@ -92,13 +93,20 @@ if(CMAKE_COMPILER_IS_GNUCXX)
         OUTPUT_VARIABLE GNUCXX_VERSION
         OUTPUT_STRIP_TRAILING_WHITESPACE)
 
+    # This flag is specific for i386 and x86-64 families
+    # https://gcc.gnu.org/onlinedocs/gcc-4.8.5/gcc/i386-and-x86-64-Options.html
+    CHECK_CXX_COMPILER_FLAG(-mno-sse2 SSE_DISABLE_OPTIONS_AVAILABLE)
+    if (SSE_DISABLE_OPTIONS_AVAILABLE)
+        set(SSE_DISABLE_OPTIONS "-mno-sse2")
+    endif()
+
     # We need the 1998 standard plus amendments (ISO/IEC 14882:2003) plus TR1
     # Unfortunately, we only get this with gnu++98
     # Special notes:
     # - long long is not part of the C++ 1998/2003 standard, but it is such a
     # common (and useful) extension that we do not want to hear warnings about
     # it.
-    set(CMAKE_CXX_FLAGS "-std=gnu++98 -D_GLIBCXX_USE_CXX11_ABI=0 -fdiagnostics-show-option -Wall -Wextra -pedantic -Wconversion -Wno-long-long -Wno-clobbered -mno-sse2 -fstrict-aliasing"
+    set(CMAKE_CXX_FLAGS "-std=gnu++98 -D_GLIBCXX_USE_CXX11_ABI=0 -fdiagnostics-show-option -Wall -Wextra -pedantic -Wconversion -Wno-long-long -Wno-clobbered ${SSE_DISABLE_OPTIONS} -fstrict-aliasing"
         CACHE STRING
         "Flags used by the compiler during all build types." FORCE)
 
