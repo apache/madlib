@@ -34,6 +34,7 @@ from madlib_keras_wrapper import *
 
 from utilities.control import MinWarning
 from utilities.control import OptimizerControl
+from utilities.control import SetGUC
 from utilities.utilities import unique_string
 from utilities.utilities import add_postfix
 from utilities.utilities import rotate
@@ -41,6 +42,8 @@ from utilities.utilities import madlib_version
 from utilities.utilities import is_platform_pg
 from utilities.utilities import get_seg_number
 from utilities.utilities import get_segments_per_host
+from utilities.utilities import rename_table
+
 import json
 from collections import defaultdict
 import random
@@ -88,11 +91,7 @@ class FitMultipleModel():
         self.model_selection_table = model_selection_table
         if self.model_selection_table:
             self.model_selection_summary_table = add_postfix(self.model_selection_table, '_summary')
-        self.model_output_table = model_output_table
-        if self.model_output_table:
-            self.model_info_table = add_postfix(model_output_table, '_info')
-            self.model_summary_table = add_postfix(
-                model_output_table, '_summary')
+
         self.num_iterations = num_iterations
         self.metrics_compute_frequency = metrics_compute_frequency
         self.name = name
@@ -105,8 +104,8 @@ class FitMultipleModel():
         self.compile_params_col = ModelSelectionSchema.COMPILE_PARAMS
         self.fit_params_col = ModelSelectionSchema.FIT_PARAMS
         self.model_arch_table_col = ModelSelectionSchema.MODEL_ARCH_TABLE
-        self.model_weights_col=ModelArchSchema.MODEL_WEIGHTS
-        self.model_arch_col=ModelArchSchema.MODEL_ARCH
+        self.model_weights_col = ModelArchSchema.MODEL_WEIGHTS
+        self.model_arch_col = ModelArchSchema.MODEL_ARCH
         self.train_mst_metric_eval_time = defaultdict(list)
         self.train_mst_loss = defaultdict(list)
         self.train_mst_metric = defaultdict(list)
@@ -116,21 +115,41 @@ class FitMultipleModel():
         self.use_gpus = use_gpus
         self.segments_per_host = get_segments_per_host()
         if self.use_gpus:
-            self.accessible_gpus_for_seg = get_accessible_gpus_for_seg(self.schema_madlib,
-                self.segments_per_host, self.module_name)
+            self.accessible_gpus_for_seg = get_accessible_gpus_for_seg(
+                self.schema_madlib, self.segments_per_host, self.module_name)
         else:
             self.accessible_gpus_for_seg = get_seg_number()*[0]
 
+        self.original_model_output_table = model_output_table
+        if self.original_model_output_table:
+            self.model_info_table = add_postfix(self.original_model_output_table, '_info')
+            self.model_summary_table = add_postfix(
+                self.original_model_output_table, '_summary')
+
+        self.model_output_table = self.original_model_output_table
+
+        """
+        For warm start, we need to copy the model output table to a temp table
+        because we call truncate on the model output table while training.
+        If the query gets aborted, we need to make sure that the user passed
+        model output table can be recovered.
+        """
+        self.warm_start = bool(warm_start)
+        self.warm_start_msts = []
+        if self.warm_start:
+            self.model_output_table = unique_string('initial_model')
+
         self.fit_validator_train = FitMultipleInputValidator(
-            self.source_table, self.validation_table, self.model_output_table,
+            self.source_table, self.validation_table, self.original_model_output_table,
             self.model_selection_table, self.model_selection_summary_table,
             mb_dep_var_col, mb_indep_var_col, self.num_iterations,
             self.model_info_table, self.mst_key_col, self.model_arch_table_col,
-            self.metrics_compute_frequency, warm_start, self.use_gpus,
+            self.metrics_compute_frequency, self.warm_start, self.use_gpus,
             self.accessible_gpus_for_seg)
         if self.metrics_compute_frequency is None:
             self.metrics_compute_frequency = num_iterations
-        self.warm_start = bool(warm_start)
+
+
         self.msts = self.fit_validator_train.msts
         self.model_arch_table = self.fit_validator_train.model_arch_table
         self.metrics_iters = []
@@ -156,16 +175,26 @@ class FitMultipleModel():
         self.dist_keys = query_dist_keys(self.source_table, dist_key_col)
         if len(self.msts) < len(self.dist_keys):
             self.msts_for_schedule = self.msts + [None] * \
-                (len(self.dist_keys) - len(self.msts))
+                                     (len(self.dist_keys) - len(self.msts))
         else:
             self.msts_for_schedule = self.msts
         random.shuffle(self.msts_for_schedule)
         self.grand_schedule = self.generate_schedule(self.msts_for_schedule)
         self.gp_segment_id_col = '0' if is_platform_pg() else GP_SEGMENT_ID_COLNAME
 
-        self.create_model_output_table()
+        if self.warm_start:
+            self.create_model_output_table_warm_start()
+        else:
+            self.create_model_output_table()
+
         self.weights_to_update_tbl = unique_string(desp='weights_to_update')
         self.fit_multiple_model()
+
+        # Update and cleanup metadata tables
+        self.insert_info_table()
+        self.create_model_summary_table()
+        if self.warm_start:
+            self.cleanup_for_warm_start()
         reset_cuda_env(original_cuda_env)
 
     def fit_multiple_model(self):
@@ -175,8 +204,18 @@ class FitMultipleModel():
             self.metrics_elapsed_start_time = time.time()
             self.train_multiple_model()
             self.end_training_time = datetime.datetime.now()
-            self.insert_info_table()
-            self.create_model_summary_table()
+
+    def cleanup_for_warm_start(self):
+        """
+        1. drop original model table
+        2. rename temp to original
+        :return:
+        """
+        drop_query = "DROP TABLE IF EXISTS {}".format(
+            self.original_model_output_table)
+        plpy.execute(drop_query)
+        rename_table(self.schema_madlib, self.model_output_table,
+                     self.original_model_output_table)
 
     def train_multiple_model(self):
         total_msts = len(self.msts_for_schedule)
@@ -187,11 +226,13 @@ class FitMultipleModel():
                 self.create_mst_schedule_table(mst_row)
                 if mst_idx == 0:
                     start_iteration = time.time()
-                self.run_training()
+                self.run_training(mst_idx)
                 if mst_idx == (total_msts - 1):
                     end_iteration = time.time()
-                    self.info_str = "\tTime for training in iteration {0}: {1} sec\n".format(iter,
-                                        end_iteration - start_iteration)
+                    self.info_str = "\tTime for training in iteration " \
+                                    "{0}: {1} sec\n".format(iter,
+                                                            end_iteration -
+                                                            start_iteration)
             if should_compute_metrics_this_iter(iter,
                                                 self.metrics_compute_frequency,
                                                 self.num_iterations):
@@ -218,7 +259,7 @@ class FitMultipleModel():
             self.info_str += "\n\tValidation set after iteration {0}:".format(epoch)
         for mst in self.msts:
             weights = query_weights(self.model_output_table, self.model_weights_col,
-                self.mst_key_col, mst[self.mst_key_col])
+                                    self.mst_key_col, mst[self.mst_key_col])
             model_arch, _ = get_model_arch_weights(self.model_arch_table, mst[self.model_id_col])
             _, metric, loss = compute_loss_and_metrics(
                 self.schema_madlib, table, "$madlib${0}$madlib$".format(
@@ -274,27 +315,44 @@ class FitMultipleModel():
                                 """.format(**locals())
             plpy.execute(mst_insert_query)
 
+
     def create_model_output_table(self):
-        warm_start_msts = []
-        if self.warm_start:
-            plpy.execute(""" DELETE FROM {self.model_output_table}
+        output_table_create_query = """
+                                    CREATE TABLE {self.model_output_table}
+                                    ({self.mst_key_col} INTEGER PRIMARY KEY,
+                                     {self.model_weights_col} BYTEA,
+                                     {self.model_arch_col} JSON)
+                                    """.format(self=self)
+        plpy.execute(output_table_create_query)
+        self.initialize_model_output_and_info()
+
+    def create_model_output_table_warm_start(self):
+        """
+        For warm start, we need to copy the model output table to a temp table
+        because we call truncate on the model output table while training.
+        If the query gets aborted, we need to make sure that the user passed
+        model output table can be recovered.
+        """
+        plpy.execute("""
+            CREATE TABLE {self.model_output_table} (
+            LIKE {self.original_model_output_table} INCLUDING indexes);
+            """.format(self=self))
+
+        plpy.execute("""INSERT INTO {self.model_output_table}
+            SELECT * FROM {self.original_model_output_table};
+            """.format(self=self))
+
+        plpy.execute(""" DELETE FROM {self.model_output_table}
                 WHERE {self.mst_key_col} NOT IN (
                     SELECT {self.mst_key_col} FROM {self.model_selection_table})
                 """.format(self=self))
-            warm_start_msts = plpy.execute(
-                """ SELECT array_agg({0}) AS a FROM {1}
-                """.format(self.mst_key_col, self.model_output_table))[0]['a']
-            plpy.execute("DROP TABLE {0}".format(self.model_info_table))
+        self.warm_start_msts = plpy.execute(
+            """ SELECT array_agg({0}) AS a FROM {1}
+            """.format(self.mst_key_col, self.model_output_table))[0]['a']
+        plpy.execute("DROP TABLE {0}".format(self.model_info_table))
+        self.initialize_model_output_and_info()
 
-        else:
-            output_table_create_query = """
-                                        CREATE TABLE {self.model_output_table}
-                                        ({self.mst_key_col} INTEGER PRIMARY KEY,
-                                         {self.model_weights_col} BYTEA,
-                                         {self.model_arch_col} JSON)
-                                        """.format(self=self)
-            plpy.execute(output_table_create_query)
-
+    def initialize_model_output_and_info(self):
         info_table_create_query = """
                                   CREATE TABLE {self.model_info_table}
                                   ({self.mst_key_col} INTEGER PRIMARY KEY,
@@ -313,7 +371,7 @@ class FitMultipleModel():
                                    validation_loss_final DOUBLE PRECISION,
                                    validation_metrics DOUBLE PRECISION[],
                                    validation_loss DOUBLE PRECISION[])
-                               """.format(self=self)
+                                       """.format(self=self)
 
         plpy.execute(info_table_create_query)
         for mst in self.msts:
@@ -322,23 +380,23 @@ class FitMultipleModel():
 
 
             # If warm start is enabled, weights from transfer learning cannot be
-            # used, even if a particular model doesn't have warm start weigths.
+            # used, even if a particular model doesn't have warm start weights.
             if self.warm_start:
                 model_weights = None
                 mst_filter = """
-                    WHERE {mst_col}={mst_key}
-                """.format(
-                        mst_col=self.mst_key_col,
-                        mst_key=mst['mst_key']
-                    )
- 
+                            WHERE {mst_col}={mst_key}
+                        """.format(
+                    mst_col=self.mst_key_col,
+                    mst_key=mst['mst_key']
+                )
+
             else:
                 mst_filter = ''
 
             serialized_weights = get_initial_weights(self.model_output_table,
                                                      model_arch,
                                                      model_weights,
-                                                     mst['mst_key'] in warm_start_msts,
+                                                     mst['mst_key'] in self.warm_start_msts,
                                                      self.use_gpus,
                                                      self.accessible_gpus_for_seg,
                                                      mst_filter
@@ -352,25 +410,25 @@ class FitMultipleModel():
                 metrics_list) if is_metrics_specified else 'NULL'
 
             info_table_insert_query = """
-                    INSERT INTO {self.model_info_table}({self.mst_key_col},
-                                {self.model_id_col}, {self.compile_params_col},
-                                {self.fit_params_col}, model_type, model_size,
-                                metrics_type)
-                        VALUES ({mst_key_val}, {model_id},
-                                $madlib${compile_params}$madlib$,
-                                $madlib${fit_params}$madlib$, '{model_type}',
-                                {model_size}, {metrics_type})
-                """.format(self=self,
-                           mst_key_val=mst[self.mst_key_col],
-                           model_id=mst[self.model_id_col],
-                           compile_params=mst[self.compile_params_col],
-                           fit_params=mst[self.fit_params_col],
-                           model_type='madlib_keras',
-                           model_size=model_size,
-                           metrics_type=metrics_type)
+                            INSERT INTO {self.model_info_table}({self.mst_key_col},
+                                        {self.model_id_col}, {self.compile_params_col},
+                                        {self.fit_params_col}, model_type, model_size,
+                                        metrics_type)
+                                VALUES ({mst_key_val}, {model_id},
+                                        $madlib${compile_params}$madlib$,
+                                        $madlib${fit_params}$madlib$, '{model_type}',
+                                        {model_size}, {metrics_type})
+                        """.format(self=self,
+                                   mst_key_val=mst[self.mst_key_col],
+                                   model_id=mst[self.model_id_col],
+                                   compile_params=mst[self.compile_params_col],
+                                   fit_params=mst[self.fit_params_col],
+                                   model_type='madlib_keras',
+                                   model_size=model_size,
+                                   metrics_type=metrics_type)
             plpy.execute(info_table_insert_query)
 
-            if not mst['mst_key'] in warm_start_msts:
+            if not mst['mst_key'] in self.warm_start_msts:
                 output_table_insert_query = """
                                     INSERT INTO {self.model_output_table}(
                                         {self.mst_key_col}, {self.model_weights_col},
@@ -484,7 +542,7 @@ class FitMultipleModel():
             if self.validation_table:
                 self.update_info_table(mst, False)
 
-    def run_training(self):
+    def run_training(self, mst_idx):
         # NOTE: In the DL module, we want to avoid CREATING TEMP tables
         # (creates a slice which stays until the session is disconnected)
         # or minimize writing queries that generate plans with Motions (creating
@@ -496,6 +554,7 @@ class FitMultipleModel():
         # Therefore we want to have queries that do not add motions and all the
         # sub-queries running Keras/tensorflow operations reuse the same slice(process)
         # that was used for initializing GPU memory.
+        use_gpus = self.use_gpus if self.use_gpus else False
         mst_weights_query = """
             CREATE TABLE {self.mst_weights_tbl} AS
                 SELECT mst_tbl.*, wgh_tbl.{self.model_weights_col},
@@ -553,7 +612,55 @@ class FitMultipleModel():
             WHERE {self.model_output_table}.{self.mst_key_col} = {self.weights_to_update_tbl}.{self.mst_key_col}
         """.format(self=self)
         plpy.execute(update_query)
-        plpy.execute("DROP TABLE IF EXISTS {0}, {1}, {2}".format(
-                                                        self.mst_weights_tbl,
-                                                        self.mst_current_schedule_tbl,
-                                                        self.weights_to_update_tbl))
+
+        self.truncate_and_drop_tables()
+
+    def truncate_and_drop_tables(self):
+        """
+        Context: UPDATE statements in postgres are not in-place replacements but
+        the row to be updated is marked for deletion(note that the disk space for
+        this row doesn't get released until vaccuum is called) and a new row in
+        inserted.
+
+        This function will clear out the disk space used by the model_output_table
+        and also drop all the other intermediate tables.
+        If available, set the `` guc so that the truncate command can release the
+        disk space. The disk space will be released immediately and hence the
+        model_output table won't grow in size with each UPDATE statement.
+
+        Without this guc, the disk space won't be released and each
+        call to the UPDATE statement will keep adding to the disk space. The disk
+        space will only be released when the query is completed.
+
+        The guc can cause data loss if not used properly. Since truncate will
+        actually clear the disk space immediately, there is no way to recover to
+        the state before truncate was called on that table. So this guc should only
+        be set for intermediate tables and never for tables created outside the
+        scope of the fit_multiple udf.
+
+        Workflow
+        1. Create temp table from model table (including the indexes)
+        2. truncate the model table to release disk space
+        3. rename temp table to model table so that it can be reused for the next
+        hop
+        :return:
+        """
+
+        with SetGUC("dev_opt_unsafe_truncate_in_subtransaction", "on"):
+            temp_model_table = unique_string('updated_model')
+            plpy.execute("""
+            CREATE TABLE {temp_model_table} ( LIKE {self.model_output_table}
+            INCLUDING indexes);""".format(temp_model_table=temp_model_table,
+                                          self=self))
+            plpy.execute("""
+            INSERT INTO {temp_model_table} SELECT * FROM {self.model_output_table};
+            TRUNCATE TABLE {self.model_output_table};
+            DROP TABLE {self.model_output_table};
+            """.format(temp_model_table=temp_model_table, self=self))
+            rename_table(self.schema_madlib, temp_model_table,
+                         self.model_output_table)
+            plpy.execute("""
+            TRUNCATE TABLE {self.mst_weights_tbl}, {self.mst_current_schedule_tbl},
+            {self.weights_to_update_tbl};
+            DROP TABLE IF EXISTS {self.mst_weights_tbl}, {self.mst_current_schedule_tbl},
+            {self.weights_to_update_tbl};""".format(self=self))

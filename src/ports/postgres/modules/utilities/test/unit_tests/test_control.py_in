@@ -94,18 +94,22 @@ class SetGUCTestCase(unittest.TestCase):
         self.module_patcher.stop()
 
     def test_set_guc_sets_new_value(self):
-        self.plpy_mock_execute.return_value = [{'foo': 'new_bar'}]
+        self.plpy_mock_execute.return_value = [{'foo': 'old_bar'}]
         with self.subject.SetGUC("foo", "new_bar") as C:
             self.assertTrue("new_bar", C.new_guc_value)
-        self.plpy_mock_execute.assert_called_with(
-            "set foo='new_bar'")
+        self.assertEqual(3, self.plpy_mock_execute.call_count)
+        self.plpy_mock_execute.assert_has_calls([call('show foo'),
+                                                 call("set foo='new_bar'"),
+                                                 call("set foo='old_bar'")])
+
 
     def test_set_guc_missing(self):
         self.plpy_mock_execute.side_effect = plpy.SPIError(
             'Unrecognized configuration parameter "foo"')
         with self.subject.SetGUC("foo", "new_bar") as C:
             self.assertFalse(C.guc_exists)
-
+        self.assertEqual(1, self.plpy_mock_execute.call_count)
+        self.plpy_mock_execute.assert_has_calls([call('show foo')])
 
 if __name__ == '__main__':
     unittest.main()
