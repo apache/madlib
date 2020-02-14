@@ -346,6 +346,11 @@ SELECT madlib_keras_fit_multiple_model(
 	FALSE
 );
 
+-- The default value of the guc 'dev_opt_unsafe_truncate_in_subtransaction' is 'off'
+-- but we change it to 'on' in fit_multiple.py. Assert that the value is
+-- reset after calling fit_multiple
+select assert_guc_value('dev_opt_unsafe_truncate_in_subtransaction', 'off');
+
 SELECT assert(COUNT(*)=4, 'Info table must have exactly same rows as the number of msts.')
 FROM iris_multiple_model_info;
 
@@ -388,4 +393,29 @@ SELECT assert(
         'Keras Fit Multiple num_clases and class values Validation failed. Actual:' || __to_char(summary))
 FROM (SELECT * FROM iris_multiple_model_summary) summary;
 
+------------- Test for schema qualified output table and input table -----------------------
+CREATE SCHEMA __MADLIB__DEEP_LEARNING_SCHEMA__MADLIB__;
+CREATE TABLE __MADLIB__DEEP_LEARNING_SCHEMA__MADLIB__.iris_data_packed as select * from iris_data_packed;
+CREATE TABLE __MADLIB__DEEP_LEARNING_SCHEMA__MADLIB__.iris_data_packed_summary as select * from iris_data_packed_summary;
+
+-- do not drop the output table created in the previous test
+SELECT count(*) from iris_multiple_model;
+SELECT madlib_keras_fit_multiple_model(
+	'__MADLIB__DEEP_LEARNING_SCHEMA__MADLIB__.iris_data_packed',
+	'__MADLIB__DEEP_LEARNING_SCHEMA__MADLIB__.iris_multiple_model',
+	'mst_table_1row',
+	1,
+	FALSE,
+	NULL,
+	1,
+	FALSE
+);
+SELECT count(*) from __MADLIB__DEEP_LEARNING_SCHEMA__MADLIB__.iris_multiple_model;
+SELECT assert(
+        num_classes = 3 AND
+        class_values = '{Iris-setosa,Iris-versicolor,NULL}',
+        'Keras Fit Multiple validation failed. Actual:' || __to_char(summary))
+FROM (SELECT * FROM __MADLIB__DEEP_LEARNING_SCHEMA__MADLIB__.iris_multiple_model_summary) summary;
+
+DROP SCHEMA __MADLIB__DEEP_LEARNING_SCHEMA__MADLIB__ CASCADE;
 !>)

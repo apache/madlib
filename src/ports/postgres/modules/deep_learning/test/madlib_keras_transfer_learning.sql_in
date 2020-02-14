@@ -25,10 +25,11 @@ m4_include(`SQLCommon.m4')
              `\(.*\)libmadlib\.so',
              `\1../../modules/deep_learning/test/madlib_keras_iris.setup.sql_in'
 )
-
-DROP TABLE IF EXISTS pg_temp.iris_model, pg_temp.iris_model_summary;
+-------------- Warm start test (along with schema qualified output table) -------------------------
+CREATE SCHEMA __MADLIB__DEEP_LEARNING_SCHEMA__MADLIB__;
+DROP TABLE IF EXISTS iris_model, iris_model_summary;
 SELECT madlib_keras_fit('iris_data_packed',   -- source table
-                        'pg_temp.iris_model',          -- model output table
+                        '__MADLIB__DEEP_LEARNING_SCHEMA__MADLIB__.iris_model',          -- model output table
                         'iris_model_arch',  -- model arch table
                          1,                    -- model arch id
                          $$ loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'] $$,  -- compile_params
@@ -45,43 +46,44 @@ SELECT assert(
   array_upper(training_loss, 1) = 5 AND
   array_upper(training_metrics, 1) = 5,
   'metrics compute frequency must be 1.')
-FROM pg_temp.iris_model_summary;
+FROM __MADLIB__DEEP_LEARNING_SCHEMA__MADLIB__.iris_model_summary;
 
 SELECT assert(
   training_loss[5]-training_loss[1] < 0.1 AND
   training_metrics[5]-training_metrics[1] > -0.1,
     'The loss and accuracy should have improved with more iterations.'
 )
-FROM pg_temp.iris_model_summary;
+FROM __MADLIB__DEEP_LEARNING_SCHEMA__MADLIB__.iris_model_summary;
 
 -- Make a copy of the loss and metrics array, to compare it with runs after
 -- warm start and transfer learning.
 DROP TABLE IF EXISTS iris_model_first_run;
 CREATE TABLE iris_model_first_run AS
 SELECT training_loss_final, training_metrics_final
-FROM pg_temp.iris_model_summary;
+FROM __MADLIB__DEEP_LEARNING_SCHEMA__MADLIB__.iris_model_summary;
 
 -- Copy weights that were learnt from the previous run, for transfer
 -- learning. Copy it now, because using warm_start will overwrite it.
-UPDATE iris_model_arch set model_weights = (select model_weights from iris_model)  WHERE model_id = 2;
+UPDATE iris_model_arch set model_weights = (select model_weights from __MADLIB__DEEP_LEARNING_SCHEMA__MADLIB__.iris_model)
+WHERE model_id = 2;
 
 -- Warm start test
 SELECT madlib_keras_fit('iris_data_packed',   -- source table
-                       'pg_temp.iris_model',          -- model output table
+                       '__MADLIB__DEEP_LEARNING_SCHEMA__MADLIB__.iris_model',          -- model output table
                        'iris_model_arch',  -- model arch table
                         2,                    -- model arch id
                         $$ loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'] $$,  -- compile_params
                         $$ batch_size=5, epochs=3 $$,  -- fit_params
                         2,                    -- num_iterations,
                         NULL, NULL, 1,
-                        true -- warm start
+                        TRUE -- warm start
                       );
 
 SELECT assert(
   array_upper(training_loss, 1) = 2 AND
   array_upper(training_metrics, 1) = 2,
   'metrics compute frequency must be 1.')
-FROM pg_temp.iris_model_summary;
+FROM __MADLIB__DEEP_LEARNING_SCHEMA__MADLIB__.iris_model_summary;
 
 SELECT assert(
   abs(first.training_loss_final-second.training_loss[1]) < 1e-6 AND
@@ -89,12 +91,16 @@ SELECT assert(
   abs(first.training_metrics_final-second.training_metrics[1]) < 1e-10 AND
   abs(first.training_metrics_final-second.training_metrics[2]) < 1e-10,
   'warm start test failed because training loss and metrics don''t match the expected value from the previous run of keras fit.')
-FROM iris_model_first_run AS first, pg_temp.iris_model_summary AS second;
+FROM iris_model_first_run AS first, __MADLIB__DEEP_LEARNING_SCHEMA__MADLIB__.iris_model_summary AS second;
 
--- Transfer learning test
+DROP SCHEMA __MADLIB__DEEP_LEARNING_SCHEMA__MADLIB__ CASCADE;
+
+---------------- end Warm start test ----------------------------------------------------
+
+---------------- Transfer learning test ----------------------------------------------------
 DROP TABLE IF EXISTS iris_model_transfer, iris_model_transfer_summary;
 SELECT madlib_keras_fit('iris_data_packed',   -- source table
-                       'pg_temp.iris_model_transfer',          -- model output table
+                       'iris_model_transfer',          -- model output table
                        'iris_model_arch',  -- model arch table
                         2,                    -- model arch id
                         $$ loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'] $$,  -- compile_params
@@ -107,7 +113,7 @@ SELECT assert(
   array_upper(training_loss, 1) = 2 AND
   array_upper(training_metrics, 1) = 2,
   'metrics compute frequency must be 1.')
-FROM pg_temp.iris_model_transfer_summary;
+FROM iris_model_transfer_summary;
 
 SELECT assert(
   abs(first.training_loss_final-second.training_loss[1]) < 1e-6 AND
@@ -115,7 +121,8 @@ SELECT assert(
   abs(first.training_metrics_final-second.training_metrics[1]) < 1e-10 AND
   abs(first.training_metrics_final-second.training_metrics[2]) < 1e-10,
   'Transfer learning test failed because training loss and metrics don''t match the expected value.')
-FROM iris_model_first_run AS first, iris_model_transfer_summary AS second;
+FROM iris_model_first_run AS first,
+iris_model_transfer_summary AS second;
 
 -- Rerun the iris setup to discard the changes
 \i m4_regexp(MODULE_PATHNAME,
@@ -139,11 +146,11 @@ SELECT load_model_selection_table(
     ]
 );
 
-DROP TABLE if exists pg_temp.iris_multiple_model, pg_temp.iris_multiple_model_summary, pg_temp.iris_multiple_model_info;
+DROP TABLE if exists iris_multiple_model, iris_multiple_model_summary, iris_multiple_model_info;
 SELECT setseed(0);
 SELECT madlib_keras_fit_multiple_model(
   'iris_data_packed',
-  'pg_temp.iris_multiple_model',
+  'iris_multiple_model',
   'mst_table',
   3,
   FALSE, NULL, 1
@@ -153,12 +160,12 @@ DROP TABLE IF EXISTS iris_model_first_run;
 CREATE TABLE iris_model_first_run AS
 SELECT mst_key, model_id, training_loss, training_metrics,
     training_loss_final, training_metrics_final
-FROM pg_temp.iris_multiple_model_info;
+FROM iris_multiple_model_info;
 
 -- warm start for fit multiple model
 SELECT madlib_keras_fit_multiple_model(
   'iris_data_packed',
-  'pg_temp.iris_multiple_model',
+  'iris_multiple_model',
   'mst_table',
   3,
   FALSE,
@@ -170,7 +177,7 @@ SELECT assert(
   array_upper(training_loss, 1) = 3 AND
   array_upper(training_metrics, 1) = 3,
   'metrics compute frequency must be 1.')
-FROM pg_temp.iris_multiple_model_info;
+FROM iris_multiple_model_info;
 
 SELECT assert(
   abs(first.training_loss_final-second.training_loss[1]) < 1e-6 AND
@@ -178,7 +185,7 @@ SELECT assert(
   abs(first.training_metrics_final-second.training_metrics[1]) < 1e-10 AND
   abs(first.training_metrics_final-second.training_metrics[2]) < 1e-10,
   'warm start test failed because training loss and metrics don''t match the expected value from the previous run of keras fit.')
-FROM iris_model_first_run AS first, pg_temp.iris_multiple_model_info AS second
+FROM iris_model_first_run AS first, iris_multiple_model_info AS second
 WHERE first.mst_key = second.mst_key AND first.model_id = 2;
 
 -- warm start with different mst tables
@@ -244,6 +251,11 @@ SELECT madlib_keras_fit_multiple_model(
   NULL, 1,
   TRUE -- warm_start
 );
+-- The default value of the guc 'dev_opt_unsafe_truncate_in_subtransaction' is 'off'
+-- but we change it to 'on' in fit_multiple.py. Assert that the value is
+-- reset after calling fit_multiple
+select assert_guc_value('dev_opt_unsafe_truncate_in_subtransaction', 'off');
+
 
 SELECT assert(
   5 IN (SELECT mst_key FROM iris_multiple_model),
@@ -298,30 +310,31 @@ SELECT load_model_selection_table(
     ]
 );
 
-DROP TABLE if exists pg_temp.iris_multiple_model, pg_temp.iris_multiple_model_summary, pg_temp.iris_multiple_model_info;
+-- TODO we need to drop iris_multiple_model as well as iris_multiple_model
+DROP TABLE if exists iris_multiple_model, iris_multiple_model_summary, iris_multiple_model_info;
 SELECT setseed(0);
 SELECT madlib_keras_fit_multiple_model(
   'iris_data_packed',
-  'pg_temp.iris_multiple_model',
+  'iris_multiple_model',
   'mst_table',
   3,
   FALSE, NULL, 1
 );
 
 UPDATE iris_model_arch
-SET model_weights = (SELECT model_weights FROM pg_temp.iris_multiple_model WHERE mst_key=1)
+SET model_weights = (SELECT model_weights FROM iris_multiple_model WHERE mst_key=1)
 WHERE model_id = 1;
 
 DROP TABLE IF EXISTS iris_model_first_run;
 CREATE TABLE iris_model_first_run AS
 SELECT mst_key, model_id, training_loss, training_metrics,
     training_loss_final, training_metrics_final
-FROM pg_temp.iris_multiple_model_info;
+FROM iris_multiple_model_info;
 
-DROP TABLE if exists pg_temp.iris_multiple_model, pg_temp.iris_multiple_model_summary, pg_temp.iris_multiple_model_info;
+DROP TABLE if exists iris_multiple_model, iris_multiple_model_summary, iris_multiple_model_info;
 SELECT madlib_keras_fit_multiple_model(
   'iris_data_packed',
-  'pg_temp.iris_multiple_model',
+  'iris_multiple_model',
   'mst_table',
   3,
   FALSE, NULL, 1
@@ -330,6 +343,8 @@ SELECT madlib_keras_fit_multiple_model(
 SELECT assert(
   (first.training_loss_final-second.training_loss_final) > 1e-6,
   'Transfer learning test failed because training loss and metrics don''t match the expected value.')
-FROM iris_model_first_run AS first, pg_temp.iris_multiple_model_info AS second
+FROM iris_model_first_run AS first, iris_multiple_model_info AS second
 WHERE first.mst_key = second.mst_key AND first.model_id = 1;
+
 !>)
+
