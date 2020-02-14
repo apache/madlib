@@ -189,7 +189,7 @@ if(${PKG_NAME}_PG_CONFIG AND ${PKG_NAME}_SERVER_INCLUDE_DIR)
                 OUTPUT_STRIP_TRAILING_WHITESPACE
             )
 
-            architecture("${${PKG_NAME}_EXECUTABLE}" ${PKG_NAME}_ARCHITECTURE)
+            architecture(${PKG_NAME}_ARCHITECTURE)
         else()
 		  if(${PACKAGE_FIND_VERSION})
             message(FATAL_ERROR "Found \"${${PKG_NAME}_PG_CONFIG}\", "

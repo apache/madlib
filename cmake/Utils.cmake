@@ -68,40 +68,23 @@ macro(get_dir_name OUT_DIR IN_PATH)
     endif(${IN_PATH} MATCHES "^.+/[^/]*\$")
 endmacro(get_dir_name)
 
-macro(architecture FILENAME OUT_ARCHITECTURE)
-    if (APPLE)
-        # On Mac OS X, "lipo" is a more reliable way of finding out the
-        # architecture of an executable
-        osx_archs("${FILENAME}" _ARCHITECTURE)
-    else(APPLE)
-        execute_process(
-            COMMAND file "${FILENAME}"
-            OUTPUT_VARIABLE _FILE_OUTPUT
-            OUTPUT_STRIP_TRAILING_WHITESPACE)
-
-        # Filter out known architectures
-        string(REGEX MATCHALL "x86[-_]64|i386|ppc|ppc64" _ARCHITECTURE "${_FILE_OUTPUT}")
-
-        # Normalize (e.g., some vendors use x86-64 instead of x86_64)
-        string(REGEX REPLACE "x86[-_]64" "x86_64" _ARCHITECTURE "${_ARCHITECTURE}")
-    endif(APPLE)
-
-    list(REMOVE_DUPLICATES _ARCHITECTURE)
-    list(LENGTH _ARCHITECTURE _ARCHITECTURE_LENGTH)
-    if(_ARCHITECTURE_LENGTH GREATER 1)
-        join_strings(_ARCHITECTURES_STRING ", " "${_ARCHITECTURE}")
-        message(FATAL_ERROR "Unique word length requested, but "
-            "${FILENAME} is fat binary (${_ARCHITECTURES_STRING}).")
-    endif(_ARCHITECTURE_LENGTH GREATER 1)
-    set(${OUT_ARCHITECTURE} ${_ARCHITECTURE})
+macro(architecture OUT_ARCHITECTURE)
+    execute_process(
+        COMMAND uname -m
+        OUTPUT_VARIABLE ${OUT_ARCHITECTURE}
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
 endmacro(architecture)
 
-macro(word_length FILENAME OUT_WORD_LENGTH)
-    architecture(${FILENAME} _ARCHITECTURE)
-    string(REPLACE "ppc" 32 _${OUT_WORD_LENGTH} "${_ARCHITECTURE}")
-    string(REPLACE "ppc64" 64 ${OUT_WORD_LENGTH} "${_ARCHITECTURE}")
-    string(REPLACE "i386" 32 ${OUT_WORD_LENGTH} "${_ARCHITECTURE}")
-    string(REPLACE "x86_64" 64 ${OUT_WORD_LENGTH} "${_ARCHITECTURE}")
+macro(word_length OUT_WORD_LENGTH)
+    architecture(_ARCHITECTURE)
+    if(${_ARCHITECTURE} MATCHES "ppc$|ppcle|i[3456]86")
+        set(${OUT_WORD_LENGTH} 32)
+    elseif(${_ARCHITECTURE} MATCHES "ppc64|ppc64le|x86_64")
+        set(${OUT_WORD_LENGTH} 64)
+    else()
+        message(FATAL_ERROR "Unable to determine word length for unknown architecture '${_ARCHITECTURE}'")
+    endif()
 endmacro(word_length)
 
 # Given the length of the parameter list, we require named arguments.
