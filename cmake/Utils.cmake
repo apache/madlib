@@ -68,58 +68,23 @@ macro(get_dir_name OUT_DIR IN_PATH)
     endif(${IN_PATH} MATCHES "^.+/[^/]*\$")
 endmacro(get_dir_name)
 
-macro(architecture FILENAME OUT_ARCHITECTURE)
-    if (APPLE)
-        # On Mac OS X, "lipo" is a more reliable way of finding out the
-        # architecture of an executable
-        osx_archs("${FILENAME}" _ARCHITECTURE)
-    else(APPLE)
-        # On linux, 'file' is used to determine the architecture. However, its
-        # output is kernel-dependent. http://www.darwinsys.com/file/ is the
-        # widest used implementation. Its outputs for most recent version are
-        # defined in
-        # https://github.com/file/file/blob/master/magic/Magdir/elf
-        execute_process(
-            COMMAND file "${FILENAME}"
-            OUTPUT_VARIABLE _FILE_OUTPUT
-            OUTPUT_STRIP_TRAILING_WHITESPACE)
-
-        # Filter out known architectures
-        string(
-            REGEX MATCH
-            "x86-64|Intel 80386|PowerPC or cisco 4500|64-bit PowerPC or cisco 7500"
-            _FILE_OUTPUT_MATCHED "${_FILE_OUTPUT}"
-        )
-        # Convert the result to Mac OS X lipo format
-        if(_FILE_OUTPUT_MATCHED STREQUAL "x86-64")
-            set(_ARCHITECTURE "x86_64")
-        elseif(_FILE_OUTPUT_MATCHED STREQUAL "Intel 80386")
-            set(_ARCHITECTURE "i386")
-        elseif(_FILE_OUTPUT_MATCHED STREQUAL "PowerPC or cisco 4500")
-            set(_ARCHITECTURE "ppc")
-        elseif(_FILE_OUTPUT_MATCHED STREQUAL "64-bit PowerPC or cisco 7500")
-            set(_ARCHITECTURE "ppc64")
-        else()
-            message(FATAL_ERROR "Unknown architecture (file command output '${_FILE_OUTPUT}')")
-        endif()
-    endif(APPLE)
-
-    list(REMOVE_DUPLICATES _ARCHITECTURE)
-    list(LENGTH _ARCHITECTURE _ARCHITECTURE_LENGTH)
-    if(_ARCHITECTURE_LENGTH GREATER 1)
-        join_strings(_ARCHITECTURES_STRING ", " "${_ARCHITECTURE}")
-        message(FATAL_ERROR "Unique word length requested, but "
-            "${FILENAME} is fat binary (${_ARCHITECTURES_STRING}).")
-    endif(_ARCHITECTURE_LENGTH GREATER 1)
-    set(${OUT_ARCHITECTURE} ${_ARCHITECTURE})
+macro(architecture OUT_ARCHITECTURE)
+    execute_process(
+        COMMAND uname -m
+        OUTPUT_VARIABLE ${OUT_ARCHITECTURE}
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
 endmacro(architecture)
 
-macro(word_length FILENAME OUT_WORD_LENGTH)
-    architecture(${FILENAME} _ARCHITECTURE)
-    string(REPLACE "ppc" 32 _${OUT_WORD_LENGTH} "${_ARCHITECTURE}")
-    string(REPLACE "ppc64" 64 ${OUT_WORD_LENGTH} "${_ARCHITECTURE}")
-    string(REPLACE "i386" 32 ${OUT_WORD_LENGTH} "${_ARCHITECTURE}")
-    string(REPLACE "x86_64" 64 ${OUT_WORD_LENGTH} "${_ARCHITECTURE}")
+macro(word_length OUT_WORD_LENGTH)
+    architecture(_ARCHITECTURE)
+    if(${_ARCHITECTURE} MATCHES "ppc$|ppcle|i[3456]86")
+        set(${OUT_WORD_LENGTH} 32)
+    elseif(${_ARCHITECTURE} MATCHES "ppc64|ppc64le|x86_64")
+        set(${OUT_WORD_LENGTH} 64)
+    else()
+        message(FATAL_ERROR "Unable to determine word length for unknown architecture '${_ARCHITECTURE}'")
+    endif()
 endmacro(word_length)
 
 # Given the length of the parameter list, we require named arguments.
