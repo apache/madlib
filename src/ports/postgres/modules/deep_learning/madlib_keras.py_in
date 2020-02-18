@@ -506,30 +506,52 @@ def fit_transition(state, dependent_var, independent_var, dependent_var_shape,
     # Fit segment model on data
     #TODO consider not doing this every time
     fit_params = parse_and_validate_fit_params(fit_params)
-    history = segment_model.fit(x_train, y_train, **fit_params)
-    image_count = len(x_train)
+    segment_model.fit(x_train, y_train, **fit_params)
+    updated_model_weights = segment_model.get_weights()
 
     # Aggregating number of images, loss and accuracy
-    agg_image_count += image_count
-    updated_weights = segment_model.get_weights()
+    agg_image_count += len(x_train)
     total_images = get_image_count_per_seg_from_array(dist_key_mapping.index(dist_key),
                                                       images_per_seg)
-    if agg_image_count == total_images:
-        # For madlib_keras_fit_multiple_model(), we don't need to update weights
-        # with the total no of images as there is no merge function for it.
-        if not is_multiple_model:
-            updated_weights = [total_images * w for w in updated_weights]
+    is_last_row = agg_image_count == total_images
+    if is_last_row:
         if is_final_iteration or is_multiple_model:
             SD_STORE.clear_SD(SD)
             clear_keras_session(sess)
-            del segment_model
-            del sess
 
-    new_state = madlib_keras_serializer.serialize_state_with_nd_weights(
-        agg_image_count, updated_weights)
+    return get_state_to_return(is_last_row, is_multiple_model, agg_image_count,
+                               total_images, updated_model_weights)
 
-    del x_train
-    del y_train
+def get_state_to_return(is_last_row, is_multiple_model, agg_image_count,
+                        total_images, updated_model_weights):
+    """
+    1. For model averaging fit_transition, the state always contains the image count
+    as well as the model weights
+    2. For fit multiple transition,
+        a. The state that gets passed from one row/buffer (within the same hop)
+        to the next needs to have the image_count and model weights. image_count
+        is needed to keep track of the last image for that hop.
+        b. Once we get to the last row, the state only needs the model
+        weights. This state is the output of the UDA for that hop. We don't need
+        the image_count here because unlike model averaging, model hopper does
+        not have a merge function and there is no need to average the weights
+        based on the image count.
+    :param is_last_row: boolean to indicate if last row for that hop
+    :param is_multiple_model: boolean
+    :param agg_image_count: aggregated image count per hop
+    :param updated_model_weights: updated weights after learning (calling keras.fit)
+    :return:
+    """
+    if is_last_row:
+        if is_multiple_model:
+            new_state = madlib_keras_serializer.serialize_nd_weights(updated_model_weights)
+        else:
+            updated_model_weights = [total_images * w for w in updated_model_weights]
+            new_state = madlib_keras_serializer.serialize_state_with_nd_weights(
+                agg_image_count, updated_model_weights)
+    else:
+        new_state = madlib_keras_serializer.serialize_state_with_nd_weights(
+            agg_image_count, updated_model_weights)
 
     return new_state
 
@@ -566,14 +588,6 @@ def fit_final(state, **kwargs):
     weights /= image_count
     return madlib_keras_serializer.serialize_nd_weights(weights)
 
-def fit_final_multiple_model(state, **kwargs):
-    # Return if called early
-    if not state:
-        return state
-
-    _, weights = madlib_keras_serializer.deserialize_as_image_1d_weights(state)
-
-    return madlib_keras_serializer.serialize_nd_weights(weights)
 
 def evaluate(schema_madlib, model_table, test_table, output_table,
              use_gpus, mst_key, **kwargs):
