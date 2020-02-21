@@ -674,7 +674,6 @@ def _process_py_sql_files_in_modules(modset, args_dict):
 
         # Loop through all SQL files for this module
         source_files = glob.glob(mask)
-        source_files = [s for s in source_files if '.setup' not in s]
         if calling_operation == INSTALL_DEV_CHECK and madpack_cmd != 'install-check':
             source_files = [s for s in source_files if '.ic' not in s]
 
@@ -780,12 +779,12 @@ def _execute_per_module_install_dev_check_algo(schema, test_user,
         test_schema = "madlib_installcheck_%s" % (module)
         _internal_run_query("DROP SCHEMA IF EXISTS %s CASCADE; CREATE SCHEMA %s;" %
                             (test_schema, test_schema), True)
-        _internal_run_query("GRANT ALL ON SCHEMA %s TO %s;" %
+        _internal_run_query("GRANT ALL ON SCHEMA %s TO \"%s\";" %
                             (test_schema, test_user), True)
 
         # Switch to test user and prepare the search_path
         pre_sql = '-- Switch to test user:\n' \
-                  'SET ROLE %s;\n' \
+                  'SET ROLE \"%s\";\n' \
                   '-- Set SEARCH_PATH for install-check:\n' \
                   'SET search_path=%s,%s;\n' \
                   % (test_user, test_schema, schema)
@@ -1018,19 +1017,19 @@ def run_install_check(args, testcase, madpack_cmd):
     if not _is_madlib_installation_valid_for_tests(schema, db_madlib_ver, madpack_cmd):
         return
     # Create install-check user
-    db_name = args["c_db"].replace('.', '').replace('-', '_')
+    db_name = args["c_db"].replace('.', '').replace('-', '_').replace('"','""')
     test_user = ('madlib_' +
                  new_madlib_ver.replace('.', '').replace('-', '_') +
                  '_installcheck_' + db_name)
     try:
-        _internal_run_query("DROP USER IF EXISTS %s;" % (test_user), False)
+        _internal_run_query("DROP USER IF EXISTS \"%s\";" % (test_user), False)
     except Exception as e:
-        _internal_run_query("DROP OWNED BY %s CASCADE;" % (test_user), True)
-        _internal_run_query("DROP USER IF EXISTS %s;" % (test_user), True)
+        _internal_run_query("DROP OWNED BY \"%s\" CASCADE;" % (test_user), True)
+        _internal_run_query("DROP USER IF EXISTS \"%s\";" % (test_user), True)
 
-    _internal_run_query("CREATE USER %s WITH SUPERUSER NOINHERIT;" % (test_user), True)
-    _internal_run_query("GRANT USAGE ON SCHEMA %s TO %s;" % (schema, test_user), True)
-    _internal_run_query("GRANT ALL PRIVILEGES ON DATABASE %s TO %s;" % (db_name, test_user), True)
+    _internal_run_query("CREATE USER \"%s\"  WITH SUPERUSER NOINHERIT;" % (test_user), True)
+    _internal_run_query("GRANT USAGE ON SCHEMA %s TO \"%s\";" % (schema, test_user), True)
+    _internal_run_query("GRANT ALL PRIVILEGES ON DATABASE \"%s\" TO \"%s\";" % (db_name, test_user), True)
 
     # 2) Run test SQLs
     info_(this, "> Running %s scripts for:" % madpack_cmd, verbose)
@@ -1042,9 +1041,9 @@ def run_install_check(args, testcase, madpack_cmd):
         _process_py_sql_files_in_modules(modset, locals())
     finally:
         # Drop install-check user
-        _internal_run_query("REVOKE USAGE ON SCHEMA %s FROM %s;" % (schema, test_user), True)
+        _internal_run_query("REVOKE USAGE ON SCHEMA %s FROM \"%s\";" % (schema, test_user), True)
         try:
-            _internal_run_query("DROP OWNED BY %s CASCADE;" % (test_user), show_error=False)
+            _internal_run_query("DROP OWNED BY \"%s\" CASCADE;" % (test_user), show_error=False)
         except Exception as e:
             # We've intermittently noticed a "cache lookup failure" due to this
             # "DROP OWNED BY". This could be related to an error on
@@ -1054,10 +1053,10 @@ def run_install_check(args, testcase, madpack_cmd):
             # command after a time gap.
             from time import sleep
             sleep(1)
-            _internal_run_query("DROP OWNED BY %s CASCADE;" % (test_user), show_error=True)
+            _internal_run_query("DROP OWNED BY \"%s\" CASCADE;" % (test_user), show_error=True)
 
-        _internal_run_query("REVOKE ALL PRIVILEGES ON DATABASE %s FROM %s;" % (db_name, test_user), True)
-        _internal_run_query("DROP USER %s;" % (test_user), True)
+        _internal_run_query("REVOKE ALL PRIVILEGES ON DATABASE \"%s\" FROM \"%s\";" % (db_name, test_user), True)
+        _internal_run_query("DROP USER \"%s\";" % (test_user), True)
 
 
 def _append_uninstall_madlib_sqlfile(schema, db_madlib_ver, is_schema_in_db,
