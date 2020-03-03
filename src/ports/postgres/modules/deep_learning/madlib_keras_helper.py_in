@@ -19,7 +19,6 @@
 
 import numpy as np
 from model_arch_info import ModelArchSchema
-from utilities.utilities import __mad_version
 from utilities.utilities import add_postfix
 from utilities.utilities import unique_string
 from utilities.utilities import is_platform_pg
@@ -54,8 +53,6 @@ SMALLINT_SQL_TYPE = 'SMALLINT'
 DEFAULT_NORMALIZING_CONST = 1.0
 GP_SEGMENT_ID_COLNAME = "gp_segment_id"
 INTERNAL_GPU_CONFIG = '__internal_gpu_config__'
-DUMMY_WEIGHTS = 'DUMMY'
-DUMMY_JSON = '{"a": "DUMMY"}'
 
 #####################################################################
 
@@ -317,25 +314,3 @@ def get_accessible_gpus_for_seg(schema_madlib, segments_per_host, module_name):
                     'recommended configuration is to have 1 GPU available per segment.')
                 warning_flag = False
         return accessible_gpus_for_seg
-
-def is_platform_gp6():
-    version_wrapper = __mad_version()
-    return not is_platform_pg() and not version_wrapper.is_gp_version_less_than('6.0')
-
-def prepare_generic_plan(query_plan, query_params):
-    # For >=GPDB6, previously, when the queries called with the
-    # initial weights value passed in, the query plan for it would
-    # create custom plans with weights embedded in the plan itself.
-    # This meant that the query plan size would also include the size
-    # of these weights, bloating it up to hit the 1GB limit when dispatching
-    # the query plan to segments, leading to OOM for large weights.
-    # In GPDB, for PREPARE plans, there is a threshold of 5 attempts to create
-    # custom plans(constant folding the passed in params) for execution and then
-    # it uses a generic plan(not constant folding the passed in params) for all
-    # the subsequent executions.
-    # Therefore, to avoid GPDB6 from creating custom plans when passing in
-    # weights, the query is executed passing in DUMMY weights for 5
-    # time, prior to calling it with the actual weights.
-    if is_platform_gp6():
-        for i in range(1, 6):
-            plpy.execute(query_plan, query_params)
