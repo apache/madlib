@@ -30,6 +30,7 @@
 import plpy
 from graph_utils import validate_graph_coding
 from graph_utils import get_graph_usage
+from graph_utils import get_edge_params
 from utilities.control import MinWarning
 
 from utilities.utilities import _assert
@@ -411,6 +412,11 @@ def graph_sssp_get_path(schema_madlib, sssp_table, dest_vertex, path_table,
         summary = plpy.execute("SELECT * FROM {0}".format(summary_table))
         vertex_id = summary[0]['vertex_id']
         source_vertex = summary[0]['source_vertex']
+        edge_args = summary[0]['edge_args']
+
+        edge_params, final_type = get_edge_params(schema_madlib, sssp_table, edge_args)
+
+        weight = edge_params["weight"]
 
         if not vertex_id:
             vertex_id = "id"
@@ -432,7 +438,7 @@ def graph_sssp_get_path(schema_madlib, sssp_table, dest_vertex, path_table,
         if source_vertex == dest_vertex:
             plpy.execute("""
                 CREATE TABLE {path_table} AS
-                SELECT {grp_comma} '{{{dest_vertex}}}'::INT[] AS path
+                SELECT {grp_comma} '{{{dest_vertex}}}'::{final_type}[] AS path
                 FROM {sssp_table} WHERE {vertex_id} = {dest_vertex}
                 """.format(**locals()))
             return
@@ -441,7 +447,7 @@ def graph_sssp_get_path(schema_madlib, sssp_table, dest_vertex, path_table,
                      format(temp1_name, temp2_name))
         out = plpy.execute(""" CREATE TEMP TABLE {temp1_name} AS
                 SELECT {grp_comma} {sssp_table}.parent AS {vertex_id},
-                    ARRAY[{dest_vertex}] AS path
+                    ARRAY[{dest_vertex}]::{final_type}[] AS path
                 FROM {sssp_table}
                 WHERE {vertex_id} = {dest_vertex}
                     AND {sssp_table}.parent IS NOT NULL
@@ -481,10 +487,10 @@ def graph_sssp_get_path(schema_madlib, sssp_table, dest_vertex, path_table,
         # the destination vertex
         plpy.execute("""
             CREATE TABLE {path_table} AS
-            SELECT {grp_comma} {source_vertex} || path AS path
+            SELECT {grp_comma} {source_vertex}::{final_type} || path AS path
             FROM {temp2_name}
             UNION
-            SELECT {grp_comma} '{{}}'::INT[] AS path
+            SELECT {grp_comma} '{{}}'::{final_type}[] AS path
             FROM {sssp_table}
             WHERE {vertex_id} = {dest_vertex}
                 AND {sssp_table}.parent IS NULL
@@ -508,7 +514,7 @@ def _validate_sssp(vertex_table, vertex_id, edge_table, edge_params,
     validate_graph_coding(vertex_table, vertex_id, edge_table, edge_params,
                           out_table, 'SSSP')
 
-    _assert(isinstance(source_vertex, int),
+    _assert(isinstance(source_vertex, int) or isinstance(source_vertex, long),
             """Graph SSSP: Source vertex {source_vertex} has to be an integer.""".
             format(**locals()))
     src_exists = plpy.execute("""
