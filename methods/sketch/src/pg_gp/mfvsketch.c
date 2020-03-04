@@ -313,6 +313,13 @@ bytea *mfv_transval_insert_at(bytea *transblob, Datum dat, uint32 i)
     bytea *      tmpblob;
     size_t       datumLen = ExtractDatumLen(dat, transval->typLen, transval->typByVal, -1);
 
+    // In order to compare pass-by-val Datum's where length < 8 bytes in
+    // an arch/platform independent way, each Datum needs to be aligned
+    // on an 8-byte boundary (and be padded with zero's from palloc0)
+    if ((transval->typByVal) && (datumLen < sizeof(Datum))) {
+        datumLen = sizeof(Datum);
+    }
+
     if (i > transval->next_mfv)
         elog(
             ERROR,
@@ -565,35 +572,77 @@ bytea *mfvsketch_merge_c(bytea *transblob1, bytea *transblob2)
     qsort(transval1->mfvs, transval1->next_mfv, sizeof(offsetcnt), cnt_cmp_desc);
     qsort(transval2->mfvs, transval2->next_mfv, sizeof(offsetcnt), cnt_cmp_desc);
 
+    Datum *values_seen = palloc0((2 * newval->max_mfvs) * sizeof(Datum));
+    unsigned int k;
+
     /* choose top k from transval1 and transval2 */
     for (i = j = cnt = 0;
          cnt < newval->max_mfvs
-         && (j < transval2->next_mfv || i < transval1->next_mfv);
-         cnt++) {
+         && (j < transval2->next_mfv || i < transval1->next_mfv);) {
         Datum iDatum, jDatum;
 
-    if (i < transval1->next_mfv &&
+        if (i < transval1->next_mfv &&
             (j == transval2->next_mfv
              || transval1->mfvs[i].cnt >= transval2->mfvs[j].cnt)) {
-          /* next item comes from transval1 */
-          iDatum = PointerExtractDatum(mfv_transval_getval(transblob1, i),
-                                       transval1->typByVal);
-          newblob = mfv_transval_append(newblob, iDatum);
-          newval = (mfvtransval *)VARDATA(newblob);
-          newval->mfvs[cnt].cnt = transval1->mfvs[i].cnt;
-          i++;
+            /* next item comes from transval1 */
+            iDatum = PointerExtractDatum(mfv_transval_getval(transblob1, i),
+                                         transval1->typByVal);
+            for (k = 0; k < cnt; k++) {
+                if (datumIsEqual(iDatum, values_seen[k], transval1->typByVal, transval1->typLen)) {
+                    break;
+                }
+            }
+
+            if (k == cnt) {
+                newblob = mfv_transval_append(newblob, iDatum);
+                newval = (mfvtransval *)VARDATA(newblob);
+                newval->mfvs[cnt].cnt = transval1->mfvs[i].cnt;
+                if (cnt < 2 * transval1->max_mfvs) {
+                    values_seen[cnt] = datumCopy(iDatum, transval1->typByVal,
+                        transval1->typLen);
+                    cnt++;
+                } else {
+                    elog(WARNING, "Merge received more than %d values from transition functions", 2*transval1->max_mfvs);
+                }
+            }
+            i++;
         }
         else if (j < transval2->next_mfv &&
                  (i == transval1->next_mfv
                   || transval1->mfvs[i].cnt < transval2->mfvs[j].cnt)) {
-          /* next item comes from transval2 */
-          jDatum = PointerExtractDatum(mfv_transval_getval(transblob2, j),
+            /* next item comes from transval2 */
+            jDatum = PointerExtractDatum(mfv_transval_getval(transblob2, j),
                                        transval2->typByVal);
-          newblob = mfv_transval_append(newblob, jDatum);
-          newval = (mfvtransval *)VARDATA(newblob);
-          newval->mfvs[cnt].cnt = transval2->mfvs[j].cnt;
-          j++;
+
+            for (k = 0; k < cnt; k++) {
+                if (datumIsEqual(jDatum, values_seen[k], transval2->typByVal,
+                                 transval2->typLen)) {
+                    break;
+                }
+            }
+
+            if (k == cnt) {
+                newblob = mfv_transval_append(newblob, jDatum);
+                newval = (mfvtransval *)VARDATA(newblob);
+                newval->mfvs[cnt].cnt = transval2->mfvs[j].cnt;
+                if (cnt < 2*transval1->max_mfvs) {
+                    values_seen[cnt] = datumCopy(jDatum, transval2->typByVal, transval2->typLen);
+                    cnt++;
+                } else {
+                    elog(WARNING, "Merge received more than %d values from transition functions", 2*transval2->max_mfvs);
+                }
+            }
+            j++;
         }
     }
+
+    if (!transval1->typByVal){
+        for (k = 0; k < cnt; k++) {
+            Pointer s = DatumGetPointer(values_seen[k]);
+            pfree(s);
+        }
+    }
+    pfree(values_seen);
+
     return(newblob);
 }
