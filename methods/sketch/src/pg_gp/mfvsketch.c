@@ -35,6 +35,7 @@
 #include <utils/lsyscache.h>
 #include <utils/numeric.h>
 #include <utils/typcache.h>
+#include <utils/datum.h>
 #include <nodes/execnodes.h>
 #include <fmgr.h>
 #include <catalog/pg_type.h>
@@ -179,10 +180,8 @@ int mfv_find(bytea *blob, Datum val)
 {
     mfvtransval *transval = (mfvtransval *)VARDATA(blob);
     unsigned     i;
-    uint32       len;
-    void *       datp;
+    void *datp;
     Datum        iDat;
-    void        *valp = DatumExtractPointer(val, transval->typByVal);
 
     /* look for existing entry for this value */
     for (i = 0; i < transval->next_mfv; i++) {
@@ -190,11 +189,9 @@ int mfv_find(bytea *blob, Datum val)
         datp = mfv_transval_getval(blob,i);
         iDat = PointerExtractDatum(datp, transval->typByVal);
 
-        if ((len = ExtractDatumLen(iDat, transval->typLen, transval->typByVal, -1))
-            == ExtractDatumLen(val, transval->typLen, transval->typByVal, -1)) {
-            if (!memcmp(datp, valp, len))
-                /* arg is an mfv */
-                return(i);
+        if (datumIsEqual(iDat, val, transval->typByVal, transval->typLen)) {
+            /* arg is an mfv */
+            return(i);
         }
     }
     return(-1);
