@@ -30,10 +30,10 @@ m4_changequote(`<!', `!>')
 m4_ifdef(<!__POSTGRESQL__!>, <!!>, <!
 -- Multiple models End-to-End test
 -- Prepare model selection table with four rows
-DROP TABLE IF EXISTS mst_table, mst_table_summary;
+DROP TABLE IF EXISTS pg_temp.mst_table, pg_temp.mst_table_summary;
 SELECT load_model_selection_table(
     'iris_model_arch',
-    'public.mst_table',
+    'pg_temp.mst_table',
     ARRAY[1],
     ARRAY[
         $$loss='categorical_crossentropy', optimizer='Adam(lr=0.01)', metrics=['accuracy']$$,
@@ -45,11 +45,13 @@ SELECT load_model_selection_table(
     ]
 );
 
-DROP TABLE if exists iris_multiple_model, iris_multiple_model_summary, iris_multiple_model_info;
+DROP TABLE if exists pg_temp.iris_multiple_model,
+                     pg_temp.iris_multiple_model_summary,
+                     pg_temp.iris_multiple_model_info;
 SELECT madlib_keras_fit_multiple_model(
 	'iris_data_packed',
-	'public.iris_multiple_model',
-	'public.mst_table',
+	'pg_temp.iris_multiple_model',
+	'pg_temp.mst_table',
 	3,
 	FALSE
 );
@@ -57,9 +59,9 @@ SELECT madlib_keras_fit_multiple_model(
 SELECT assert(
         model_arch_table = 'iris_model_arch' AND
         validation_table is NULL AND
-        model_info = 'public.iris_multiple_model_info' AND
+        model_info = 'pg_temp.iris_multiple_model_info' AND
         source_table = 'iris_data_packed' AND
-        model = 'public.iris_multiple_model' AND
+        model = 'pg_temp.iris_multiple_model' AND
         dependent_varname = 'class_text' AND
         independent_varname = 'attributes' AND
         madlib_version is NOT NULL AND
@@ -71,40 +73,40 @@ SELECT assert(
         dependent_vartype LIKE '%char%' AND
         normalizing_const = 1,
         'Keras Fit Multiple Output Summary Validation failed. Actual:' || __to_char(summary))
-FROM (SELECT * FROM public.iris_multiple_model_summary) summary;
+FROM (SELECT * FROM pg_temp.iris_multiple_model_summary) summary;
 
 -- Run Predict
-DROP TABLE IF EXISTS public.iris_predict;
+DROP TABLE IF EXISTS pg_temp.iris_predict;
 SELECT madlib_keras_predict(
-    'public.iris_multiple_model',
+    'pg_temp.iris_multiple_model',
     'iris_data',
     'id',
     'attributes',
-    'public.iris_predict',
+    'pg_temp.iris_predict',
     'prob',
     NULL,
     1);
 
 -- Run Evaluate
-DROP TABLE IF EXISTS public.evaluate_out;
+DROP TABLE IF EXISTS pg_temp.evaluate_out;
 SELECT madlib_keras_evaluate(
-    'public.iris_multiple_model',
+    'pg_temp.iris_multiple_model',
     'iris_data_val',
-    'public.evaluate_out',
+    'pg_temp.evaluate_out',
     NULL,
     1);
 
 SELECT assert(loss >= 0 AND
         metric >= 0 AND
         metrics_type = '{accuracy}', 'Evaluate output validation failed.  Actual:' || __to_char(evaluate_out))
-FROM public.evaluate_out;
+FROM pg_temp.evaluate_out;
 
 -- Test for one-hot encoded user input data
 DROP TABLE if exists iris_multiple_model, iris_multiple_model_summary, iris_multiple_model_info;
 SELECT madlib_keras_fit_multiple_model(
 	'iris_data_one_hot_encoded_packed',
 	'iris_multiple_model',
-	'public.mst_table',
+	'pg_temp.mst_table',
 	3,
 	FALSE
 );
