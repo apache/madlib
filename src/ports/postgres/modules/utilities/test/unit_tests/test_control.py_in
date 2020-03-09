@@ -76,6 +76,36 @@ class ControlTestCase(unittest.TestCase):
         with self.subject.AOControl(True) as C:
             self.assertFalse(C.guc_exists)
 
+class SetGUCTestCase(unittest.TestCase):
+    def setUp(self):
+        patches = {
+            'plpy': plpy
+        }
+        self.plpy_mock_execute = MagicMock()
+        plpy.execute = self.plpy_mock_execute
+
+        self.module_patcher = patch.dict('sys.modules', patches)
+        self.module_patcher.start()
+
+        import control
+        self.subject = control
+
+    def tearDown(self):
+        self.module_patcher.stop()
+
+    def test_set_guc_sets_new_value(self):
+        self.plpy_mock_execute.return_value = [{'foo': 'new_bar'}]
+        with self.subject.SetGUC("foo", "new_bar") as C:
+            self.assertTrue("new_bar", C.new_guc_value)
+        self.plpy_mock_execute.assert_called_with(
+            "set foo='new_bar'")
+
+    def test_set_guc_missing(self):
+        self.plpy_mock_execute.side_effect = plpy.SPIError(
+            'Unrecognized configuration parameter "foo"')
+        with self.subject.SetGUC("foo", "new_bar") as C:
+            self.assertFalse(C.guc_exists)
+
 
 if __name__ == '__main__':
     unittest.main()
