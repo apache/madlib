@@ -313,11 +313,15 @@ def fit(schema_madlib, source_table, model, model_arch_table,
                  [compile_params, fit_params, name,
                   description, metrics_elapsed_time, class_values])
 
-    create_output_table = plpy.prepare("""
-        CREATE TABLE {0} AS SELECT
-        $1 as model_weights,
-        $2 as {1}""".format(model, ModelArchSchema.MODEL_ARCH), ["bytea", "json"])
-    plpy.execute(create_output_table, [serialized_weights, model_arch])
+    plpy.execute("""
+        CREATE TABLE {0}
+        (model_weights bytea,
+        {1} json)""".format(model, ModelArchSchema.MODEL_ARCH))
+    insert_output_table = plpy.prepare("""
+        INSERT INTO {0} SELECT model_weights, {1}
+        FROM (VALUES($1, $2))t(model_weights, {1})
+        """.format(model, ModelArchSchema.MODEL_ARCH), ["bytea", "json"])
+    plpy.execute(insert_output_table, [serialized_weights, model_arch])
 
     #TODO add a unit test for this in a future PR
     reset_cuda_env(original_cuda_env)

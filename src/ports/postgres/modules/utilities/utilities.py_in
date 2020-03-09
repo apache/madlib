@@ -431,7 +431,8 @@ def create_cols_from_array_sql_string(py_list, sql_array_col, colname,
                                       coltype, has_one_ele,
                                       module_name='Input Error'):
     """
-    Create SQL string to convert array of elements into multiple columns.
+    Create SQL string to convert array of elements into multiple columns and corresponding
+    SQL string of columns for CREATE TABLE.
     @args:
         @param: py_list, python list, if None, return sql_array_col as colname.
                             The py_list can at most have one 'None' element that
@@ -454,6 +455,7 @@ def create_cols_from_array_sql_string(py_list, sql_array_col, colname,
                 coltype = TEXT
                 has_one_ele = FALSE
             Output:
+                prob_cat TEXT, prob_dog TEXT
                 CAST(sqlcol[1] AS TEXT) AS prob_cat, CAST(sqlcol[2] AS TEXT) AS prob_dog
         2) Input:
                 py_list = ['cat', 'dog']
@@ -462,22 +464,24 @@ def create_cols_from_array_sql_string(py_list, sql_array_col, colname,
                 coltype = TEXT
                 has_one_ele = TRUE
             Output:
+                estimated_pred TEXT
                 (ARRAY['cat','dog'])[sqlcol[1]+1]::TEXT AS estimated_pred
 
     @NOTE:
         If py_list is [None, 'cat', 'dog', NULL']:
         then the SQL query string returned would create the following
         column names:
-            prob_NULL, prob_cat, 'prob_dog', and 'prob_"NULL'.
+            prob_NULL, prob_cat, 'prob_dog', and 'prob_"NULL"'.
         1. Notice that for None, which represents Postgres' NULL value, the
         column name will be 'prob_NULL',
         2. and to differentiate the column name for a string 'NULL', the
-        resulting column name will be 'prob_"NULL'.
+        resulting column name will be 'prob_"NULL"'.
 
         The weird quoting in this column name is due to calling strip after
         quote_ident in the code below.
 
     @returns:
+        @param, str, that can be used in a SQL query.
         @param, str, that can be used in a SQL query.
 
     """
@@ -515,6 +519,8 @@ def create_cols_from_array_sql_string(py_list, sql_array_col, colname,
             py_list_sql_str = py_list_to_sql_string(py_list, coltype+'[]')
             select_clause = "({0})[{1}[1]+1]::{2} AS {3}".format(
                 py_list_sql_str, sql_array_col, coltype, colname)
+            create_columns = "{0} {1}".format(
+                colname, coltype)
         else:
             # Create as many columns as the length of py_list. The
             # colnames are created based on the elements in py_list,
@@ -534,12 +540,21 @@ def create_cols_from_array_sql_string(py_list, sql_array_col, colname,
                            coltype=coltype)
                 for i, suffix in enumerate(py_list)
                 ])
+            create_columns = ', '.join(
+                ['"{final_colname}" {coltype}'.
+                     format(final_colname=quote_ident("{0}_{1}".
+                                                      format(colname, str(suffix))).strip(' "'),
+                            coltype=coltype)
+                 for i, suffix in enumerate(py_list)
+                 ])
     else:
         if has_one_ele:
             select_clause = '{0}[1]+1 AS {1}'.format(sql_array_col, colname)
+            create_columns = '{0} {1}'.format(colname, coltype)
         else:
             select_clause = '{0} AS {1}'.format(sql_array_col, colname)
-    return select_clause
+            create_columns = '{0} {1}'.format(colname, coltype+'[]')
+    return select_clause, create_columns
 # ------------------------------------------------------------------------
 
 def _array_to_string(origin):
