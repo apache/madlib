@@ -44,6 +44,59 @@ class ContextDecorator(object):
         return wrapper
 
 
+class SetGUC(ContextDecorator):
+    """
+    @brief: A wrapper that sets/unsets GUCs and then sets it
+        back to the original value on exit
+
+    This context manager sets the specified GUC to the value passed in
+    """
+
+    def __init__(self, guc_name, new_guc_value, error_on_fail=True):
+        self.guc_name = guc_name
+        self.new_guc_value = new_guc_value
+        if not self.guc_name or not self.new_guc_value:
+            plpy.error("Both guc_name and new_guc_value need to have a non null"
+                       "value")
+        self.error_on_fail = error_on_fail
+        self.guc_exists = True
+        self.old_value = None
+
+    def __enter__(self):
+        if self.guc_exists:
+            # check if allowed to change the GUC
+            try:
+                show_query = "show {0}".format(self.guc_name)
+                self.old_value = plpy.execute(show_query)[0]
+                self.old_value = self.old_value["{0}".format(self.guc_name)]
+            except plpy.SPIError:
+                self.guc_exists = False
+                return self
+
+            if self.new_guc_value:
+                plpy.execute("set {0}={1}".format(self.guc_name, self.new_guc_value))
+            else:
+                if self.error_on_fail:
+                    plpy.error("Cannot set {0} to None. Please provide a valid value"
+                               .format(self.guc_name))
+                    plpy.error("Unable to change '{0}' value. "
+                               "Set '{0} = \'{1}\'' to proceed.".
+                               format(self.guc_name, self.guc_value))
+        return self
+
+    def __exit__(self, *args):
+        if args and args[0]:
+            # an exception was raised in code, return False so that any
+            # exception is re-raised after exit. The transaction will not
+            # commit leading to reset of any change to parameter.
+            return False
+        else:
+            if self.guc_exists and self.old_value:
+                pass
+                plpy.execute("set {0}='{1}'".
+                             format(self.guc_name, self.old_value))
+
+
 class OptimizerControl(ContextDecorator):
     """
     @brief: A wrapper that enables/disables the optimizer and
