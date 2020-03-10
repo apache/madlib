@@ -35,8 +35,9 @@ from madlib_keras_wrapper import *
 from utilities.control import MinWarning
 from utilities.control import OptimizerControl
 from utilities.control import SetGUC
-from utilities.utilities import unique_string
 from utilities.utilities import add_postfix
+from utilities.utilities import is_platform_gp6_or_up
+from utilities.utilities import unique_string
 from utilities.utilities import rotate
 from utilities.utilities import madlib_version
 from utilities.utilities import is_platform_pg
@@ -181,6 +182,7 @@ class FitMultipleModel():
         random.shuffle(self.msts_for_schedule)
         self.grand_schedule = self.generate_schedule(self.msts_for_schedule)
         self.gp_segment_id_col = '0' if is_platform_pg() else GP_SEGMENT_ID_COLNAME
+        self.unlogged_table = "UNLOGGED" if is_platform_gp6_or_up() else ''
 
         if self.warm_start:
             self.create_model_output_table_warm_start()
@@ -224,6 +226,7 @@ class FitMultipleModel():
                 mst_row = [self.grand_schedule[dist_key][mst_idx]
                            for dist_key in self.dist_keys]
                 self.create_mst_schedule_table(mst_row)
+                self.is_final_training_call = (iter == self.num_iterations and mst_idx == total_msts-1)
                 if mst_idx == 0:
                     start_iteration = time.time()
                 self.run_training(mst_idx)
@@ -286,7 +289,7 @@ class FitMultipleModel():
 
     def create_mst_schedule_table(self, mst_row):
         mst_temp_query = """
-                         CREATE TABLE {self.mst_current_schedule_tbl}
+                         CREATE {self.unlogged_table} TABLE {self.mst_current_schedule_tbl}
                                 ({self.model_id_col} INTEGER,
                                  {self.compile_params_col} VARCHAR,
                                  {self.fit_params_col} VARCHAR,
@@ -556,7 +559,7 @@ class FitMultipleModel():
         # that was used for initializing GPU memory.
         use_gpus = self.use_gpus if self.use_gpus else False
         mst_weights_query = """
-            CREATE TABLE {self.mst_weights_tbl} AS
+            CREATE {self.unlogged_table} TABLE {self.mst_weights_tbl} AS
                 SELECT mst_tbl.*, wgh_tbl.{self.model_weights_col},
                        model_arch_tbl.{self.model_arch_col}
                 FROM
@@ -571,7 +574,7 @@ class FitMultipleModel():
         plpy.execute(mst_weights_query)
         use_gpus = self.use_gpus if self.use_gpus else False
         uda_query = """
-            CREATE TABLE {self.weights_to_update_tbl} AS
+            CREATE {self.unlogged_table} TABLE {self.weights_to_update_tbl} AS
             SELECT {self.schema_madlib}.fit_step_multiple_model({mb_dep_var_col},
                 {mb_indep_var_col},
                 {self.dep_shape_col},
@@ -648,9 +651,11 @@ class FitMultipleModel():
 
         with SetGUC("dev_opt_unsafe_truncate_in_subtransaction", "on"):
             temp_model_table = unique_string('updated_model')
+            unlogged_table = self.unlogged_table if not self.is_final_training_call else ''
             plpy.execute("""
-            CREATE TABLE {temp_model_table} ( LIKE {self.model_output_table}
+            CREATE {unlogged_table} TABLE {temp_model_table} ( LIKE {self.model_output_table}
             INCLUDING indexes);""".format(temp_model_table=temp_model_table,
+                                          unlogged_table=unlogged_table,
                                           self=self))
             plpy.execute("""
             INSERT INTO {temp_model_table} SELECT * FROM {self.model_output_table};
