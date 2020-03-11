@@ -388,6 +388,7 @@ class FitMultipleModel():
             plpy.execute("DROP TABLE {0}".format(self.model_summary_table))
         src_summary_dict = get_source_summary_table_dict(self.fit_validator_train)
         class_values = src_summary_dict['class_values']
+        class_values_type = src_summary_dict['class_values_type']
         dep_vartype = src_summary_dict['dep_vartype']
         dependent_varname = \
             src_summary_dict['dependent_varname_in_source_table']
@@ -397,11 +398,8 @@ class FitMultipleModel():
         self.validation_table = 'NULL' if self.validation_table is None \
             else '$MAD${0}$MAD$'.format(self.validation_table)
         if class_values is None:
-            class_values_str = 'NULL::{0}'.format(src_summary_dict['class_values_type'])
             num_classes = 'NULL'
         else:
-            class_values_str = 'ARRAY{0}::{1}'.format(class_values,
-                                                      src_summary_dict['class_values_type'])
             num_classes = len(class_values)
         name = 'NULL' if self.name is None else '$MAD${0}$MAD$'.format(self.name)
         descr = 'NULL' if self.description is None else '$MAD${0}$MAD$'.format(self.description)
@@ -410,7 +408,7 @@ class FitMultipleModel():
         dependent_vartype_colname = DEPENDENT_VARTYPE_COLNAME
         normalizing_const_colname = NORMALIZING_CONST_COLNAME
         float32_sql_type = FLOAT32_SQL_TYPE
-        update_query = """
+        create_query = plpy.prepare("""
                 CREATE TABLE {self.model_summary_table} AS
                 SELECT
                     $MAD${self.source_table}$MAD$::TEXT AS source_table,
@@ -429,12 +427,12 @@ class FitMultipleModel():
                     '{self.end_training_time}'::TIMESTAMP AS end_training_time,
                     '{self.version}'::TEXT AS madlib_version,
                     {num_classes}::INTEGER AS num_classes,
-                    {class_values_str} AS {class_values_colname},
+                    $1 AS {class_values_colname},
                     $MAD${dep_vartype}$MAD$::TEXT AS {dependent_vartype_colname},
                     {norm_const}::{float32_sql_type} AS {normalizing_const_colname},
                     ARRAY{metrics_iters}::INTEGER[] AS metrics_iters
-            """.format(**locals())
-        plpy.execute(update_query)
+            """.format(**locals()), [class_values_type])
+        plpy.execute(create_query, [class_values])
 
     def update_info_table(self, mst, is_train):
         mst_key = mst[self.mst_key_col]
