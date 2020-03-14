@@ -79,6 +79,8 @@ class MadlibKerasFitTestCase(unittest.TestCase):
         #  images each, or 30 images total
         self.total_images_per_seg = [3*len(self.dependent_var_int),20,40]
 
+        self.dummy_prev_weights = 'dummy weights'
+
     def tearDown(self):
         self.module_patcher.stop()
 
@@ -103,12 +105,8 @@ class MadlibKerasFitTestCase(unittest.TestCase):
             self.dist_key_mapping, 0, 4, self.total_images_per_seg, False,
             self.accessible_gpus_for_seg, previous_state.tostring(), True, **k)
 
-        state = np.fromstring(new_state, dtype=np.float32)
-        image_count = state[0]
-        weights = np.rint(state[1:]).astype(np.int)
+        image_count = new_state
         self.assertEqual(ending_image_count, image_count)
-        # weights should not be modified yet
-        self.assertTrue((self.model_weights == weights).all())
         # set_session is always called
         self.assertEqual(1, self.subject.K.set_session.call_count)
         # Clear session and sess.close must not get called for the first buffer
@@ -129,12 +127,9 @@ class MadlibKerasFitTestCase(unittest.TestCase):
             self.dist_key_mapping, 0, 4, self.total_images_per_seg, False,
             self.accessible_gpus_for_seg, previous_state.tostring(), False, **k)
 
-        state = np.fromstring(new_state, dtype=np.float32)
-        image_count = state[0]
-        weights = np.rint(state[1:]).astype(np.int)
+        image_count = new_state
+
         self.assertEqual(ending_image_count, image_count)
-        # weights should not be modified yet
-        self.assertTrue((self.model_weights == weights).all())
         # set_session is always called
         self.assertEqual(1, self.subject.K.set_session.call_count)
         # Clear session and sess.close must not get called for the first buffer
@@ -160,12 +155,8 @@ class MadlibKerasFitTestCase(unittest.TestCase):
             self.dist_key_mapping, 0, 4, self.total_images_per_seg, False,
             self.accessible_gpus_for_seg, previous_weights.tostring(), True, True, **k)
 
-        state = np.fromstring(new_state, dtype=np.float32)
-        image_count = state[0]
-        weights = np.rint(state[1:]).astype(np.int)
+        image_count = new_state
         self.assertEqual(ending_image_count, image_count)
-        # weights should not be modified yet
-        self.assertTrue((self.model_weights == weights).all())
         # set_session is always called
         self.assertEqual(1, self.subject.K.set_session.call_count)
         # Clear session must not be called for the first buffer
@@ -184,57 +175,45 @@ class MadlibKerasFitTestCase(unittest.TestCase):
 
         # last iteration Call
 
-        state = [starting_image_count]
-        state.extend(self.model_weights)
-        state = np.array(state, dtype=np.float32)
 
         self.subject.compile_and_set_weights(self.model, self.compile_params,
                                              '/cpu:0', self.serialized_weights)
         k = {'SD': {'segment_model': self.model, 'sess': Mock()}}
 
+        state = starting_image_count
         new_state = self.subject.fit_transition(
-            state.tostring(), self.dependent_var, self.independent_var,
+            state, self.dependent_var, self.independent_var,
             self.dependent_var_shape, self.independent_var_shape,
             self.model.to_json(), None, self.fit_params, 0,
             self.dist_key_mapping, 0, 4, self.total_images_per_seg, False,
-            self.accessible_gpus_for_seg, 'dummy_previous_state', True, **k)
+            self.accessible_gpus_for_seg, self.dummy_prev_weights, True, **k)
 
-        state = np.fromstring(new_state, dtype=np.float32)
-        image_count = state[0]
-        weights = np.rint(state[1:]).astype(np.int)
+        image_count = new_state
         self.assertEqual(ending_image_count, image_count)
-        # weights should not be modified yet
-        self.assertTrue((self.model_weights == weights).all())
+
         # set_session is always called
         self.assertEqual(1, self.subject.K.set_session.call_count)
         # Clear session and sess.close must not get called for the middle buffer
         self.assertEqual(0, self.subject.K.clear_session.call_count)
 
         # Non-last iteration Call
-
         self.subject.K.set_session.reset_mock()
         self.subject.K.clear_session.reset_mock()
-        state = [starting_image_count]
-        state.extend(self.model_weights)
-        state = np.array(state, dtype=np.float32)
 
         self.subject.compile_and_set_weights(self.model, self.compile_params,
                                              '/cpu:0', self.serialized_weights)
         k = {'SD': {'segment_model': self.model, 'sess': Mock()}}
 
+        state = starting_image_count
         new_state = self.subject.fit_transition(
-            state.tostring(), self.dependent_var, self.independent_var,
+            state, self.dependent_var, self.independent_var,
             self.dependent_var_shape, self.independent_var_shape,
             self.model.to_json(), None, self.fit_params, 0,
             self.dist_key_mapping, 0, 4, self.total_images_per_seg, False,
-            self.accessible_gpus_for_seg, 'dummy_previous_state', False, **k)
+            self.accessible_gpus_for_seg, self.dummy_prev_weights, False, **k)
 
-        state = np.fromstring(new_state, dtype=np.float32)
-        image_count = state[0]
-        weights = np.rint(state[1:]).astype(np.int)
+        image_count = new_state
         self.assertEqual(ending_image_count, image_count)
-        # weights should not be modified yet
-        self.assertTrue((self.model_weights == weights).all())
         # set_session is always called
         self.assertEqual(1, self.subject.K.set_session.call_count)
         # Clear session and sess.close must not get called for the middle buffer
@@ -251,27 +230,21 @@ class MadlibKerasFitTestCase(unittest.TestCase):
 
         # last iteration Call
 
-        state = [starting_image_count]
-        state.extend(self.model_weights)
-        state = np.array(state, dtype=np.float32)
 
         self.subject.compile_and_set_weights(self.model, self.compile_params,
                                              '/cpu:0', self.serialized_weights)
         k = {'SD': {'segment_model': self.model, 'sess': Mock()}}
 
+        state = starting_image_count
         new_state = self.subject.fit_transition(
-            state.tostring(), self.dependent_var, self.independent_var,
+            state, self.dependent_var, self.independent_var,
             self.dependent_var_shape, self.independent_var_shape,
             self.model.to_json(), None, self.fit_params, 0,
             self.dist_key_mapping, 0, 4, self.total_images_per_seg, False,
-            self.accessible_gpus_for_seg, 'dummy_previous_state', True, True, **k)
+            self.accessible_gpus_for_seg, self.dummy_prev_weights, True, True, **k)
 
-        state = np.fromstring(new_state, dtype=np.float32)
-        image_count = state[0]
-        weights = np.rint(state[1:]).astype(np.int)
+        image_count = new_state
         self.assertEqual(ending_image_count, image_count)
-        # weights should not be modified yet
-        self.assertTrue((self.model_weights == weights).all())
         # set_session is always called
         self.assertEqual(1, self.subject.K.set_session.call_count)
         # Clear session and sess.close must not get called for the middle buffer
@@ -288,9 +261,6 @@ class MadlibKerasFitTestCase(unittest.TestCase):
         ending_image_count = starting_image_count + len(self.dependent_var_int)
 
         # last iteration Call
-        state = [starting_image_count]
-        state.extend(self.model_weights)
-        state = np.array(state, dtype=np.float32)
 
         multiplied_weights = mult(self.total_images_per_seg[0],self.model_weights)
 
@@ -298,12 +268,13 @@ class MadlibKerasFitTestCase(unittest.TestCase):
                                              '/cpu:0', self.serialized_weights)
         k = {'SD': {'segment_model' :self.model, 'sess': Mock()}}
 
+        state = starting_image_count
         new_state = self.subject.fit_transition(
-            state.tostring(), self.dependent_var, self.independent_var,
+            state, self.dependent_var, self.independent_var,
             self.dependent_var_shape, self.independent_var_shape,
             self.model.to_json(), None, self.fit_params, 0,
             self.dist_key_mapping, 0, 4, self.total_images_per_seg, False,
-            self.accessible_gpus_for_seg, 'dummy_previous_state', True, **k)
+            self.accessible_gpus_for_seg, self.dummy_prev_weights, True, **k)
 
         state = np.fromstring(new_state, dtype=np.float32)
         image_count = state[0]
@@ -320,9 +291,6 @@ class MadlibKerasFitTestCase(unittest.TestCase):
         # Non-last iteration Call
         self.subject.K.set_session.reset_mock()
         self.subject.K.clear_session.reset_mock()
-        state = [starting_image_count]
-        state.extend(self.model_weights)
-        state = np.array(state, dtype=np.float32)
 
         multiplied_weights = mult(self.total_images_per_seg[0],self.model_weights)
 
@@ -330,12 +298,13 @@ class MadlibKerasFitTestCase(unittest.TestCase):
                                              '/cpu:0', self.serialized_weights)
         k = {'SD': {'segment_model' :self.model, 'sess': Mock()}}
 
+        state = starting_image_count
         new_state = self.subject.fit_transition(
-            state.tostring(), self.dependent_var, self.independent_var,
+            state, self.dependent_var, self.independent_var,
             self.dependent_var_shape, self.independent_var_shape,
             self.model.to_json(), None, self.fit_params, 0,
             self.dist_key_mapping, 0, 4, self.total_images_per_seg, False,
-            self.accessible_gpus_for_seg, 'dummy_previous_state', False, **k)
+            self.accessible_gpus_for_seg, self.dummy_prev_weights, False, **k)
 
         state = np.fromstring(new_state, dtype=np.float32)
         image_count = state[0]
@@ -359,21 +328,17 @@ class MadlibKerasFitTestCase(unittest.TestCase):
         ending_image_count = starting_image_count + len(self.dependent_var_int)
 
         # last iteration Call
-        state = [starting_image_count]
-        state.extend(self.model_weights)
-        state = np.array(state, dtype=np.float32)
-
-
         self.subject.compile_and_set_weights(self.model, self.compile_params,
                                              '/cpu:0', self.serialized_weights)
         k = {'SD': {'segment_model' :self.model, 'sess': Mock()}}
 
+        state = starting_image_count
         new_state = self.subject.fit_transition(
-            state.tostring(), self.dependent_var, self.independent_var,
+            state   , self.dependent_var, self.independent_var,
             self.dependent_var_shape, self.independent_var_shape,
             self.model.to_json(), None, self.fit_params, 0,
             self.dist_key_mapping, 0, 4, self.total_images_per_seg, False,
-            self.accessible_gpus_for_seg, 'dummy_previous_state', True, True, **k)
+            self.accessible_gpus_for_seg, self.dummy_prev_weights, True, True, **k)
 
         state = np.fromstring(new_state, dtype=np.float32)
         weights = np.rint(state[0:]).astype(np.int)
