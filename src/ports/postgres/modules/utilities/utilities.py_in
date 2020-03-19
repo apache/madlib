@@ -15,6 +15,7 @@ from validate_args import input_tbl_valid
 from validate_args import is_var_valid
 from validate_args import output_tbl_valid
 from validate_args import quote_ident
+from validate_args import drop_tables
 import plpy
 
 
@@ -1162,3 +1163,116 @@ def rotate(l, n):
     """
     return l[-n:] + l[:-n]
 # ------------------------------------------------------------------------------
+
+def rename_table(schema_madlib, orig_name, new_name):
+    """
+    Renames possibly schema qualified table name to a new schema qualified name
+    ensuring the schema qualification are changed appropriately
+
+    Args:
+        @param orig_name: string, Original name of the table
+                          (must be schema qualified if table schema is not in search path)
+        @param new_name: string, New name of the table
+                          (can be schema qualified. If it is not then the original
+                           schema is maintained)
+    Returns:
+        String. The new table name qualified with the schema name
+    """
+    new_names_split = new_name.split(".")
+    if len(new_names_split) > 2:
+        raise AssertionError("Invalid table name")
+    new_table_name = new_names_split[-1]
+    new_table_schema = new_names_split[0] if len(new_names_split) > 1 else None
+
+    orig_names_split = orig_name.split(".")
+    if len(orig_names_split) > 2:
+        raise AssertionError("Invalid table name")
+
+    if len(orig_names_split) > 1:
+        orig_table_schema = orig_names_split[0]
+    else:
+        # we need to get the schema name of the original table if we are
+        # to change the schema of the new table. This is to ensure that we
+        # change the schema of the correct table in case there are multiple
+        # tables with the same new name.
+        orig_table_schema = get_first_schema(orig_name)
+
+    if orig_table_schema is None:
+        raise AssertionError("Relation {0} not found during rename".
+                             format(orig_name))
+    return __do_rename_and_get_new_name(orig_name, new_name, orig_table_schema,
+                                        new_table_schema, new_table_name)
+
+def __do_rename_and_get_new_name(orig_name, new_name, orig_table_schema,
+                                 new_table_schema, new_table_name):
+    """
+    Internal private function to perform the rename operation after all the
+    validation checks
+    """
+
+    """
+    CASE 1
+    If the output table is schema is pg_temp, we cannot alter table schemas from/to
+    temp schemas. If it looks like a temp schema, we stay safe and just use
+    create/drop
+        Test cases
+        foo.bar to pg_temp.bar
+        foo.bar to pg_temp.bar2
+        foo to pg_temp.bar
+        pg_temp.foo to pg_temp.bar
+    """
+    if new_table_schema and 'pg_temp' in new_table_schema:
+        """
+        If both new_table_schema and orig_table_schema have pg_temp in it,
+        just run an alter statement instead of CTAS. Without this, pca dev-check
+        fails on gpdb5/6 (but not on pg)
+        """
+        if new_table_schema != orig_table_schema:
+            plpy.info("""CREATE TABLE {new_name} AS SELECT * FROM {orig_name}"""
+                      .format(**locals()))
+            plpy.execute("""CREATE TABLE {new_name} AS SELECT * FROM {orig_name}"""
+                         .format(**locals()))
+            drop_tables([orig_name])
+            return new_name
+        else:
+            plpy.execute("ALTER TABLE {orig_name} RENAME TO {new_table_name}".
+                         format(**locals()))
+            return new_name
+
+    """
+    CASE 2
+    Do direct rename if the new table does not have an output schema or
+    if the new table schema is the same as the original table schema
+    Test Cases
+    rename foo to bar
+    rename foo.bar to foo.bar2
+    rename foo.bar to bar2
+    """
+    if not new_table_schema or new_table_schema == orig_table_schema:
+        plpy.execute("ALTER TABLE {orig_name} RENAME TO {new_table_name}".
+                     format(**locals()))
+        return orig_table_schema + "." + new_table_name
+
+    """
+    CASE 3
+    output table is schema qualified
+    1. rename the original table to an interim temp name
+    2. set the new schema on that interim table
+    3. rename interim table to the new table name
+    Test cases
+    foo.bar to foo2.bar2
+    foo.bar to foo2.bar
+    """
+    interim_temp_name = unique_string("rename_table_helper")
+    plpy.execute(
+        "ALTER TABLE {orig_name} RENAME to {interim_temp_name}".format(
+            **locals()))
+
+    plpy.execute(
+        """ALTER TABLE {interim_temp_name} SET SCHEMA {new_table_schema}""".format(
+            **locals()))
+
+    plpy.execute(
+        """ALTER TABLE {new_table_schema}.{interim_temp_name} RENAME to {new_table_name}"""
+        .format(**locals()))
+    return new_name
