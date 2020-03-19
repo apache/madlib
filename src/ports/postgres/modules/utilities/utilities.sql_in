@@ -541,3 +541,36 @@ BEGIN
     RETURN 0;
 END;
 $$ LANGUAGE plpgsql;
+
+-- A few of the gucs like plan_cache_mode and dev_opt_unsafe_truncate_in_subtransaction
+-- are only available in either > pg 11 or > gpdb 6.5. Using this function we
+-- can make sure to run the guc assertion test (assert_guc_value) on the correct
+-- platform versions.
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.is_ver_greater_than_gp_640_or_pg_11()
+RETURNS BOOLEAN AS $$
+PythonFunctionBodyOnly(utilities, utilities, is_gp_version_less_than)
+    from utilities.utilities import __mad_version
+    from utilities.utilities import is_platform_pg
+    from utilities.utilities import is_pg_major_version_less_than
+    if is_platform_pg:
+        is_pg_major_less_than_12 = is_pg_major_version_less_than(None, 12)
+        return not is_pg_major_less_than_12
+    else:
+        is_ver_less_than_650 = __mad_version().is_gp_version_less_than('6.5.0')
+        return not is_ver_less_than_650
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `CONTAINS SQL', `');
+
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.assert_guc_value(
+ guc_name           TEXT,
+ expected_guc_value TEXT)
+RETURNS VOID AS $$
+import plpy
+actual_guc_value = plpy.execute('show {0}'.format(guc_name))[0]
+actual_guc_value = actual_guc_value[guc_name]
+if actual_guc_value != expected_guc_value:
+    plpy.error('guc {0} assertion failed. Expected Value: {1}, '
+               'Actual Value: {2}'.format(guc_name, expected_guc_value, actual_guc_value))
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `CONTAINS SQL', `');
