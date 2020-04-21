@@ -449,14 +449,6 @@ class ChangeHandler(UpgradeBase):
                                 format(sourcetype=self._udc[udc]['sourcetype'],
                                        targettype=self._udc[udc]['targettype']))
 
-    def drop_traininginfo_4dt(self):
-        """
-        @brief Drop the madlib.training_info table, which should no longer be used since
-        the version 1.5
-        """
-        _write_to_file(self.output_filehandle, "DROP TABLE IF EXISTS {schema}.training_info;".
-                            format(schema=self._schema))
-
     def drop_changed_udo(self):
         """
         @brief Drop all operators (UDO) that were removed/updated in new version
@@ -1314,10 +1306,10 @@ class ScriptCleaner(UpgradeBase):
             self._clean_comment()
             self._clean_type()
             self._clean_cast()
-            self._clean_operator()
-            self._clean_opclass()
-            self._clean_aggregate()
-            self._clean_function()
+            # self._clean_operator()
+            # self._clean_opclass()
+            # self._clean_aggregate()
+            # self._clean_function()
         return self._sql
 
 

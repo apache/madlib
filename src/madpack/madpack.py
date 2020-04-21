@@ -518,40 +518,34 @@ def _db_upgrade(schema, filehandle, db_madlib_ver):
         info_(this, vd.get_dependency_graph_str(), True)
         info_(this, "*" * 50, True)
 
-        c_udf = ch.get_udf_signature()
         d_udf = vd.get_depended_func_signature('UDF')
-        cd_udf = [udf for udf in d_udf if udf in c_udf]
-        if len(cd_udf) > 0:
+        if len(d_udf) > 0:
             error_(this, """
                 User has objects dependent on following updated MADlib functions!
                     {0}
-                These objects will fail to work with the updated functions and
+                These objects might fail to work with the updated functions and
                 need to be dropped before starting upgrade again.
-                """.format('\n\t\t\t\t\t'.join(cd_udf)), False)
+                """.format('\n\t\t\t\t\t'.join(d_udf)), False)
             abort = True
 
-        c_uda = ch.get_uda_signature()
         d_uda = vd.get_depended_func_signature('UDA')
-        cd_uda = [uda for uda in d_uda if uda in c_uda]
-        if len(cd_uda) > 0:
+        if len(d_uda) > 0:
             error_(this, """
                 User has objects dependent on following updated MADlib aggregates!
                     {0}
-                These objects will fail to work with the new aggregates and
+                These objects might fail to work with the new aggregates and
                 need to be dropped before starting upgrade again.
-                """.format('\n\t\t\t\t\t'.join(cd_uda)), False)
+                """.format('\n\t\t\t\t\t'.join(d_uda)), False)
             abort = True
 
-        c_udo = ch.get_udo_oids()
         d_udo = vd.get_depended_opr_oids()
-        cd_udo = [udo for udo in d_udo if udo in c_udo]
-        if len(cd_udo) > 0:
+        if len(d_udo) > 0:
             error_(this, """
                 User has objects dependent on following updated MADlib operators!
                     oid={0}
-                These objects will fail to work with the new operators and
+                These objects might fail to work with the new operators and
                 need to be dropped before starting upgrade again.
-                """.format('\n\t\t\t\t\t'.join(cd_udo)), False)
+                """.format('\n\t\t\t\t\t'.join(d_udo)), False)
             abort = True
 
     if abort:
@@ -565,13 +559,15 @@ def _db_upgrade(schema, filehandle, db_madlib_ver):
     sc = uu.ScriptCleaner(schema, portid, con_args, ch)
     info_(this, "Script Cleaner initialized ...", False)
 
-    ch.drop_changed_uda()
-    ch.drop_changed_udoc()
-    ch.drop_changed_udo()
+    function_drop_str = get_madlib_function_drop_str(schema)
+    flist = function_drop_str.split("\n\n")
+    for i in flist:
+        _internal_run_query(i, True)
+
+    operator_drop_str = get_madlib_operator_drop_str(schema)
+    _internal_run_query(operator_drop_str, True)
     ch.drop_changed_udc()
-    ch.drop_changed_udf()
     ch.drop_changed_udt()  # assume dependent udf for udt does not change
-    ch.drop_traininginfo_4dt()  # used types: oid, text, integer, float
     _db_create_objects(schema, filehandle, True, sc)
     return 0
 # ------------------------------------------------------------------------------
@@ -1200,9 +1196,76 @@ def create_install_madlib_sqlfile(args, madpack_cmd):
                 else:
                     # 3) Run upgrade
                     _plpy_check(py_min_ver)
+
                     return_signal = _db_upgrade(schema, output_filehandle, db_madlib_ver)
 
     return 1 if return_signal > 0 else 0
+
+def get_madlib_function_drop_str(schema):
+
+    if portid == 'greenplum':
+        case_str = """
+        CASE
+          WHEN p.proisagg THEN 'aggregate'
+          ELSE 'function'
+          """
+    else:
+        case_str = """
+        CASE p.prokind
+          WHEN 'a' THEN 'aggregate'
+          ELSE 'function'
+          """
+    madlib_functions = _internal_run_query("""
+        SELECT n.nspname as "Schema",
+          p.proname as "name",
+          pg_catalog.pg_get_function_arguments(p.oid) as "args",
+         {0}
+         END as "type"
+        FROM pg_catalog.pg_proc p
+             LEFT JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname OPERATOR(pg_catalog.~) '^({1})$'
+        ORDER BY 4, 1, 2;
+        """.format(case_str , schema.lower()), True)
+
+    drop_str = ""
+
+    for idx in range(len(madlib_functions)):
+
+        func = madlib_functions[idx]
+        # We don't drop type related functions
+        no_drop = ['bytea8', 'float8arr', 'svec']
+        if not any(x in func['name'] for x in no_drop):
+            drop_str = drop_str + "DROP {0} {1}.{2}({3}); \n".format(
+                func['type'], schema, func['name'], func['args'])
+
+        # Break the drop file into chunks because some systems complain with long sql commands
+        if idx%100 == 99:
+            drop_str = drop_str + "\n"
+    return drop_str
+
+
+def get_madlib_operator_drop_str(schema):
+
+    madlib_operators = _internal_run_query("""
+        SELECT n.nspname as "Schema",
+          o.oprname AS "name",
+          CASE WHEN o.oprkind='l' THEN NULL
+            ELSE pg_catalog.format_type(o.oprleft, NULL) END AS "left_op",
+          CASE WHEN o.oprkind='r' THEN NULL
+            ELSE pg_catalog.format_type(o.oprright, NULL) END AS "right_op"
+        FROM pg_catalog.pg_operator o
+             LEFT JOIN pg_catalog.pg_namespace n ON n.oid = o.oprnamespace
+        WHERE n.nspname OPERATOR(pg_catalog.~) '^(%s)$'
+        ORDER BY 1, 2, 3, 4;
+        """ % schema.lower(), True)
+
+    # Drop the Operator Class before the individual operators
+    drop_str = "DROP OPERATOR CLASS IF EXISTS {0}.svec_ops USING btree; \n".format(schema)
+
+    for i in madlib_operators:
+        drop_str = drop_str + "DROP OPERATOR {0}.{1}({2},{3}); \n".format(
+            schema, i['name'], i['left_op'], i['right_op'])
+    return drop_str
 
 def main(argv):
     args = parse_arguments()
@@ -1225,7 +1288,6 @@ def main(argv):
         schema = args.schema[0].lower()
     else:
         schema = args.schema.lower()
-
     # Parse DB Platform (== PortID) and compare with Ports.yml
     global portid
     if args.platform:
@@ -1396,7 +1458,6 @@ def main(argv):
             info_(this, "%s MADlib:" % op_msg, True)
             _cleanup_comments_in_sqlfile(output_filename, upgrade)
             result = _run_sql_file(schema, output_filename)
-
             if result == 'FAIL':
                 info_(this, "MADlib {0} unsuccessful.".format(args.command[0]), True)
                 info_(this, "All changes are rolled back.", True)
