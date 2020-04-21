@@ -28,7 +28,6 @@ import sys
 import subprocess
 import unittest
 
-
 # Some read-only variables
 this = os.path.basename(sys.argv[0])    # name of this script
 
