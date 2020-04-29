@@ -1,0 +1,313 @@
+/* ----------------------------------------------------------------------- */
+/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ *
+ * @file dbscan.sql_in
+ * @brief Partitions a set of observations into clusters of arbitrary shape based on the density of nearby neighbors.
+ * @date May 2020
+ *
+ */
+/* ----------------------------------------------------------------------- */
+
+
+/**
+@addtogroup grp_dbscan
+
+<div class="toc"><b>Contents</b>
+<ul>
+<li class="level1"><a href="#cluster">Clustering Function</a></li>
+<li class="level1"><a href="#assignment">Cluster Assignment</a></li>
+<li class="level1"><a href="#examples">Examples</a></li>
+<li class="level1"><a href="#literature">Literature</a></li>
+<li class="level1"><a href="#related">Related Topics</a></li>
+</ul>
+</div>
+
+@brief Partitions a set of observations into clusters of arbitrary
+shape based on the density of nearby neighbors.
+
+Density-based spatial clustering of applications with noise (DBSCAN)
+is a data clustering algorithm designed to discover clusters of arbitrary
+shape [1]. It places minimum requirements on domain knowledge to determine
+input parameters and has good efficiency on large databases.
+
+Given a set of points, DBSCAN groups together points that are closely packed with many
+nearby neighbors (core samples), and marks as outliers points that lie alone in
+low-density regions with few nearby neighbors (non-core samples).
+This method tends to be good for data which contains clusters
+of similar density.
+
+@anchor cluster
+@par Clustering Function
+
+<pre class="syntax">
+dbscan( source_table,
+        output_table,
+        id_column,
+        expr_point,
+        eps,
+        min_samples,
+        metric,
+        algorithm,
+        algorithm_params
+      )
+</pre>
+
+\b Arguments
+<dl class="arglist">
+<dt>source_table</dt>
+<dd>TEXT. Name of the table containing the input data points.
+</dd>
+
+<dt>output_table</dt>
+<dd>TEXT. Name of the table containing the clustering results.
+</dd>
+
+<dt>id_column</dt>
+<dd>TEXT. Name of the column containing a unique integer id for each training point.
+</dd>
+
+<dt>expr_point</dt>
+<dd>TEXT. Name of the column with point coordinates in array form,
+or an expression that evaluates to an array of point coordinates.
+</dd>
+
+<dt>eps</dt>
+<dd>FLOAT8. Maximum distance between two samples for one to
+be considered in the neighborhood of the other. (Note this is not a maximum
+bound on the distances of points within a cluster.) This is an
+important parameter to choose appropriately and should consider both the
+nature of the data set and the distance function. Usually it is not left
+at the default value.
+</dd>
+
+<dt>min_samples (optional)</dt>
+<dd>INTEGER, default: 5.  Number of samples in a neighborhood for a point
+to be considered as a core point. This includes the point itself.
+This parameter controls how tolerant the algorithm is towards
+noise, so on noisy data sets it may be useful to increase
+the magnitude of this parameter.
+</dd>
+
+@note
+The parameters 'eps' and 'min_samples' together define the density of a cluster.
+A core sample is a sample in the dataset such
+that there exist 'min_samples' other samples within a distance of 'eps',
+which are defined as neighbors of the core sample.
+A higher value of 'min_samples' or a lower value of 'eps' indicate that higher density
+is needed to form a cluster.
+
+<dt>metric (optional)</dt>
+<dd>TEXT, default: 'squared_dist_norm2'. The name of the function used
+to calculate the distance between data points. The following distance
+functions can be used:
+<ul>
+<li><b>\ref dist_norm1</b>:  1-norm/Manhattan (element-wise median).
+MADlib does not provide a median aggregate function for
+performance reasons.</li>
+<li><b>\ref dist_norm2</b>: 2-norm/Euclidean (element-wise mean)</li>
+<li><b>\ref squared_dist_norm2</b>: squared Euclidean distance (element-wise mean)</li>
+<li><b>\ref dist_angle</b>: angle (element-wise mean of normalized points)</li>
+<li><b>\ref dist_tanimoto</b>: tanimoto (element-wise mean of normalized points)</li>
+</dd>
+
+<dt>algorithm TBD (optional)</dt>
+<dd>TEXT, default: 'brute_force'. The name of the algorithm
+used to compute clusters. The following options are supported:
+<ul>
+<li><b>\ref brute_force</b>: Produces an exact result by searching
+all points in the search space.  You can also use a short
+form "b" or "brute" etc. to select brute force.</li>
+<li><b>\ref xx_tree</b>: Produces an approximate result by searching
+a subset of the search space, that is, only certain leaf nodes in the
+xx-tree as specified by "algorithm_params" below.
+You can also use a short
+form "x" or "xx" etc. to select xx-tree.</li></ul></dd>
+
+<dt>algorithm_params TBD (optional)</dt>
+<dd>TEXT, default: 'depth=3, leaf_nodes=2'. These parameters apply to the
+xx-tree algorithm only.
+<ul>
+<li><b>\ref depth</b>: Depth of the xx-tree. Increasing this value will
+decrease run-time but reduce the accuracy.</li>
+<li><b>\ref leaf_nodes</b>: Number of leaf nodes (regions) to search for each test point.
+Inceasing this value will improve the accuracy but increase run-time.</li></ul>
+
+@note
+Please note that the xx-tree accuracy will be lower for datasets with a high
+number of features. It is advised to use at least two leaf nodes.
+Refer to the <a href="#background">Technical Background</a> for more information
+on how the xx-tree is implemented.</dd>
+
+</dl>
+
+<<<<<<< Updated upstream
+<b>Output</b>
+<br>
+The output table for DBSCAN module has the following columns:
+<table class="output">
+    <tr>
+        <th>id_in</th>
+        <td>INTEGER. Test data point id.</td>
+    </tr>
+    <tr>
+        <th>cluster_id</th>
+        <td>INTEGER. Cluster id associated with the test data point.</td>
+    </tr>
+    <tr>
+        <th>is_core_point</th>
+        <td>BOOLEAN. Indicates if the test data point is core or non-core.</td>
+    </tr>
+    <tr>
+        <th>points</th>
+        <td>TEXT. Column or expression for the data point.</td>
+    </tr>
+</table>
+
+@anchor assignment
+@par Cluster Assignment
+
+After clustering, the cluster assignment for each data point can be computed:
+
+<pre class="syntax">
+dbscan_predict( dbscan_table,
+                new_point
+              )
+</pre>
+
+<b>Arguments</b>
+<dl class="arglist">
+<dt>dbscan_table</dt>
+<dd>TEXT. Name of the table created by running DBSCAN.</dd>
+
+<dt>x</dt>
+<dd>DOUBLE PRECISION[]. New points to be assigned to clusters.</dd>
+</dl>
+
+<b>Output TBD</b>
+<br>
+The output table has the following columns:
+<table class="output">
+    <tr>
+      <th>column_id</th>
+      <td>INTEGER. Cluster assignment (zero-based, i.e., 0,1,2...).</td>
+    </tr>
+    <tr>
+      <th>distance</th>
+      <td>DOUBLE PRECISION. Distance to the cluster centroid.</td>
+    </tr>
+</table>
+
+@anchor examples
+@par Examples
+
+@anchor literature
+@literature
+
+@anchor related
+@par Related Topics
+
+*/
+
+
+m4_include(`SQLCommon.m4')
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.dbscan(
+    source_table                VARCHAR,
+    output_table                VARCHAR,
+    id_column                   VARCHAR,
+    expr_point                  VARCHAR,
+    eps                         DOUBLE PRECISION,
+    min_samples                 INTEGER,
+    metric                      VARCHAR,
+    algorithm                   VARCHAR
+) RETURNS VOID AS $$
+    PythonFunction(dbscan, dbscan, dbscan)
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.dbscan(
+    source_table                VARCHAR,
+    output_table                VARCHAR,
+    id_column                   VARCHAR,
+    expr_point                  VARCHAR,
+    eps                         DOUBLE PRECISION,
+    min_samples                 INTEGER,
+    metric                      VARCHAR
+) RETURNS VOID AS $$
+    SELECT MADLIB_SCHEMA.dbscan($1, $2, $3, $4, $5, $6, $7, NULL);
+$$ LANGUAGE sql VOLATILE
+m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.dbscan(
+    source_table                VARCHAR,
+    output_table                VARCHAR,
+    id_column                   VARCHAR,
+    expr_point                  VARCHAR,
+    eps                         DOUBLE PRECISION,
+    min_samples                 INTEGER
+) RETURNS VOID AS $$
+    SELECT MADLIB_SCHEMA.dbscan($1, $2, $3, $4, $5, $6, NULL, NULL);
+$$ LANGUAGE sql VOLATILE
+m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.dbscan(
+    source_table                VARCHAR,
+    output_table                VARCHAR,
+    id_column                   VARCHAR,
+    expr_point                  VARCHAR,
+    eps                         DOUBLE PRECISION
+) RETURNS VOID AS $$
+    SELECT MADLIB_SCHEMA.dbscan($1, $2, $3, $4, $5, NULL, NULL, NULL);
+$$ LANGUAGE sql VOLATILE
+m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.dbscan_predict(
+    dbscan_table                VARCHAR,
+    new_point                   DOUBLE PRECISION[]
+) RETURNS INTEGER AS $$
+    PythonFunction(dbscan, dbscan, dbscan_predict)
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `MODIFIES SQL DATA', `');
+
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.dbscan(
+    message                VARCHAR
+) RETURNS VARCHAR AS $$
+    PythonFunction(dbscan, dbscan, dbscan_help)
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.dbscan(
+) RETURNS VARCHAR AS $$
+    PythonFunction(dbscan, dbscan, dbscan_help)
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.dbscan_predict(
+    message                VARCHAR
+) RETURNS VARCHAR AS $$
+    PythonFunction(dbscan, dbscan, dbscan_predict_help)
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.dbscan_predict(
+) RETURNS VARCHAR AS $$
+    PythonFunction(dbscan, dbscan, dbscan_predict_help)
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `MODIFIES SQL DATA', `');
