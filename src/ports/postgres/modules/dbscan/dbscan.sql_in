@@ -47,8 +47,9 @@ shape [1]. It places minimum requirements on domain knowledge to determine
 input parameters and has good efficiency on large databases.
 
 Given a set of points, DBSCAN groups together points that are closely packed with many
-nearby neighbors (core samples), and marks as outliers points that lie alone in
-low-density regions with few nearby neighbors (non-core samples).
+nearby neighbors (\em core), and marks points that lie alone in
+low-density regions with few nearby neighbors (\em border).  Other points in the dataset
+that are not core or border are considered as \em noise.
 This method tends to be good for data which contains clusters
 of similar density.
 
@@ -92,8 +93,7 @@ or an expression that evaluates to an array of point coordinates.
 be considered in the neighborhood of the other. (Note this is not a maximum
 bound on the distances of points within a cluster.) This is an
 important parameter to choose appropriately and should consider both the
-nature of the data set and the distance function. Usually it is not left
-at the default value.
+nature of the data set and the distance function.
 </dd>
 
 <dt>min_samples (optional)</dt>
@@ -106,9 +106,8 @@ the magnitude of this parameter.
 
 @note
 The parameters 'eps' and 'min_samples' together define the density of a cluster.
-A core sample is a sample in the dataset such
-that there exist 'min_samples' other samples within a distance of 'eps',
-which are defined as neighbors of the core sample.
+A core point is where there exist 'min_samples' other points within a distance of 'eps',
+which are defined as neighbors of the core point.
 A higher value of 'min_samples' or a lower value of 'eps' indicate that higher density
 is needed to form a cluster.
 
@@ -126,37 +125,28 @@ performance reasons.</li>
 <li><b>\ref dist_tanimoto</b>: tanimoto (element-wise mean of normalized points)</li>
 </dd>
 
-<dt>algorithm TBD (optional)</dt>
+<dt>algorithm TBD??? (optional)</dt>
 <dd>TEXT, default: 'brute_force'. The name of the algorithm
 used to compute clusters. The following options are supported:
 <ul>
 <li><b>\ref brute_force</b>: Produces an exact result by searching
-all points in the search space.  You can also use a short
+all points in the search space.  Brute force can be slow and is intended
+to be used for small datasets only.  You can also use a short
 form "b" or "brute" etc. to select brute force.</li>
-<li><b>\ref xx_tree</b>: Produces an approximate result by searching
-a subset of the search space, that is, only certain leaf nodes in the
-xx-tree as specified by "algorithm_params" below.
+<li><b>\ref kd_tree</b>: Uses a tree structure to reduce the amount
+of search required to form clusters
+The depth of the kd-tree to search is specified
+by the "algorithm_params" below.
 You can also use a short
-form "x" or "xx" etc. to select xx-tree.</li></ul></dd>
+form "k" or "kd" etc. to select kd-tree.</li></ul></dd>
 
-<dt>algorithm_params TBD (optional)</dt>
-<dd>TEXT, default: 'depth=3, leaf_nodes=2'. These parameters apply to the
-xx-tree algorithm only.
-<ul>
-<li><b>\ref depth</b>: Depth of the xx-tree. Increasing this value will
-decrease run-time but reduce the accuracy.</li>
-<li><b>\ref leaf_nodes</b>: Number of leaf nodes (regions) to search for each test point.
-Inceasing this value will improve the accuracy but increase run-time.</li></ul>
-
-@note
-Please note that the xx-tree accuracy will be lower for datasets with a high
-number of features. It is advised to use at least two leaf nodes.
-Refer to the <a href="#background">Technical Background</a> for more information
-on how the xx-tree is implemented.</dd>
+<dt>algorithm_params (optional)</dt>
+<dd>TEXT, default: 'depth=3'. This parameters apply to the
+kd-tree algorithm only.  Increasing the depth of the tree will
+decrease the run-time but reduce the accuracy. TBD???</dd>
 
 </dl>
 
-<<<<<<< Updated upstream
 <b>Output</b>
 <br>
 The output table for DBSCAN module has the following columns:
@@ -171,7 +161,10 @@ The output table for DBSCAN module has the following columns:
     </tr>
     <tr>
         <th>is_core_point</th>
-        <td>BOOLEAN. Indicates if the test data point is core or non-core.</td>
+        <td>BOOLEAN. Indicates if the test data point is core
+        If it is not a core point and listed in the output table,
+        it is a border point.  Noise points are not shown in this
+        table.</td>
     </tr>
     <tr>
         <th>points</th>
@@ -195,13 +188,13 @@ dbscan_predict( dbscan_table,
 <dt>dbscan_table</dt>
 <dd>TEXT. Name of the table created by running DBSCAN.</dd>
 
-<dt>x</dt>
+<dt>new_point</dt>
 <dd>DOUBLE PRECISION[]. New points to be assigned to clusters.</dd>
 </dl>
 
-<b>Output TBD</b>
+<b>Output TBD???</b>
 <br>
-The output table has the following columns:
+The output is a composite type with the following columns:
 <table class="output">
     <tr>
       <th>column_id</th>
@@ -215,6 +208,125 @@ The output table has the following columns:
 
 @anchor examples
 @par Examples
+
+-# Create input data:
+<pre class="example">
+DROP TABLE IF EXISTS dbscan_train_data;
+CREATE TABLE dbscan_train_data (pid int, points double precision[]);
+INSERT INTO dbscan_train_data VALUES
+(1,  '{1, 1}'),
+(2,  '{2, 1}'),
+(3,  '{1, 2}'),
+(4,  '{2, 2}'),
+(5,  '{3, 5}'),
+(6,  '{3, 9}'),
+(7,  '{3, 10}'),
+(8,  '{4, 10}'),
+(9,  '{4, 11}'),
+(10,  '{5, 10}'),
+(11,  '{7, 10}'),
+(12,  '{10, 9}'),
+(13,  '{10, 6}'),
+(14,  '{9, 5}'),
+(15,  '{10, 5}'),
+(16,  '{11, 5}'),
+(17,  '{9, 4}'),
+(18,  '{10, 4}'),
+(19,  '{11, 4}'),
+(20,  '{10, 3}');
+</pre>
+-#  Run DBSCAN using the brute force method with a Euclidean
+distance function:
+<pre class="example">
+DROP TABLE IF EXISTS dbscan_result, dbscan_result_summary;
+SELECT madlib.dbscan( 
+                'dbscan_train_data',    -- source table
+                'dbscan_result',        -- output table
+                'pid',                  -- point id column
+                'points',               -- data point
+                 1.75,                  -- epsilon
+                 4,                     -- min samples
+                'dist_norm2',           -- metric
+                'brute_force');         -- algorithm
+SELECT * FROM dbscan_result ORDER BY pid;
+</pre>
+<pre class="result">
+ pid | cluster_id | is_core_point | __points__ 
+-----+------------+---------------+------------
+   1 |          0 | t             | {1,1}
+   2 |          0 | t             | {2,1}
+   3 |          0 | t             | {1,2}
+   4 |          0 | t             | {2,2}
+   6 |          1 | f             | {3,9}
+   7 |          1 | t             | {3,10}
+   8 |          1 | t             | {4,10}
+   9 |          1 | t             | {4,11}
+  10 |          1 | f             | {5,10}
+  13 |          2 | t             | {10,6}
+  14 |          2 | t             | {9,5}
+  15 |          2 | t             | {10,5}
+  16 |          2 | t             | {11,5}
+  17 |          2 | t             | {9,4}
+  18 |          2 | t             | {10,4}
+  19 |          2 | t             | {11,4}
+  20 |          2 | t             | {10,3}
+(17 rows)
+</pre>
+There are three clusters created.  All points are core points
+except for 6 and 10 which are border points.  The noise points
+do not show up in the output table. If you want to see the noise points 
+you can use a query like:
+<pre class="example">
+SELECT l.* FROM dbscan_train_data l WHERE NOT EXISTS 
+    (SELECT NULL FROM dbscan_result r WHERE r.pid = l.pid) 
+    ORDER BY l.pid;
+</pre>
+<pre class="result">
+ pid | points 
+-----+--------
+   5 | {3,5}
+  11 | {7,10}
+  12 | {10,9}
+</pre>
+The summary table lists the 'eps' value and the distance metric used:
+<pre class="example">
+SELECT * FROM dbscan_result_summary;
+</pre>
+<pre class="result">
+ id_column | eps  |   metric   
+-----------+------+------------
+ pid       | 1.75 | dist_norm2
+</pre>
+-#  Find the cluster assignment.  In this example we use the same source
+points for demonstration purposes:
+<pre class="example">
+SELECT pid, madlib.dbscan_predict (
+                        'dbscan_result',   -- from DBSCAN run
+                         points)           -- data to cluster
+FROM dbscan_train_data ORDER BY pid;
+</pre>
+<pre class="result">
+TBD???
+</pre>
+-#  Now let's run DBSCAN using the kd-tree method with a Euclidean
+distance function:
+<pre class="example">
+DROP TABLE IF EXISTS dbscan_result_kd, dbscan_result_kd_summary;
+SELECT madlib.dbscan( 
+                'dbscan_train_data',    -- source table
+                'dbscan_result_kd',     -- output table
+                'pid',                  -- point id column
+                'points',               -- data point
+                 1.75,                  -- epsilon
+                 4,                     -- min samples
+                'dist_norm2',           -- metric
+                'kd_tree',              -- algorithm
+                'depth=3');             -- depth of kd-tree
+SELECT * FROM dbscan_result_kd ORDER BY pid;
+</pre>
+<pre class="result">
+TBD???
+</pre>
 
 @anchor literature
 @literature
