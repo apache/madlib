@@ -26,6 +26,11 @@ m4_include(`SQLCommon.m4')
              `\1../../modules/deep_learning/test/madlib_keras_iris.setup.sql_in'
 )
 
+\i m4_regexp(MODULE_PATHNAME,
+             `\(.*\)libmadlib\.so',
+             `\1../../modules/deep_learning/test/madlib_keras_custom_function.setup.sql_in'
+)
+
 -- MST table generation tests
 -- Valid inputs should pass and yield 6 msts in the table
 DROP TABLE IF EXISTS mst_table, mst_table_summary;
@@ -214,6 +219,43 @@ FROM (SELECT * FROM iris_multiple_model_summary) summary;
 SELECT assert(MADLIB_SCHEMA.is_table_unlogged('iris_multiple_model') = false, 'Model output table is unlogged');
 SELECT assert(MADLIB_SCHEMA.is_table_unlogged('iris_multiple_model_summary') = false, 'Model summary output table is unlogged');
 SELECT assert(MADLIB_SCHEMA.is_table_unlogged('iris_multiple_model_info') = false, 'Model info output table is unlogged');
+
+-- Test for object table
+
+DROP TABLE IF EXISTS test_custom_function_table;
+SELECT assert(MADLIB_SCHEMA.trap_error($MAD$
+  SELECT load_model_selection_table(
+    'iris_model_arch',
+    'mst_object_table',
+    ARRAY[1],
+    ARRAY[
+        $$loss='categorical_crossentropy', optimizer='Adam(lr=0.01)', metrics=['accuracy']$$
+    ],
+    ARRAY[
+        $$batch_size=16, epochs=1$$
+    ],
+    'test_custom_function_table')
+$MAD$) = 1, 'Object table does not exist!');
+SELECT load_custom_function('test_custom_function_table', custom_function_object(), 'sum_fn', 'returns sum');
+
+DROP TABLE IF EXISTS mst_object_table, mst_object_table_summary;
+SELECT load_model_selection_table(
+    'iris_model_arch',
+    'mst_object_table',
+    ARRAY[1],
+    ARRAY[
+        $$loss='categorical_crossentropy', optimizer='Adam(lr=0.01)', metrics=['accuracy']$$
+    ],
+    ARRAY[
+        $$batch_size=16, epochs=1$$
+    ],
+    'test_custom_function_table'
+);
+
+SELECT assert(
+        object_table = 'test_custom_function_table',
+        'Keras Fit Multiple Output Summary Validation failed when user passes in object_table. Actual:' || __to_char(summary))
+FROM (SELECT * FROM mst_object_table_summary) summary;
 
 -- Test when number of configs(3) equals number of segments(3)
 DROP TABLE IF EXISTS iris_multiple_model, iris_multiple_model_summary, iris_multiple_model_info;
