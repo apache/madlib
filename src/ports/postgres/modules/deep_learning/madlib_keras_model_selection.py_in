@@ -28,6 +28,7 @@ class ModelSelectionSchema:
     MST_KEY = 'mst_key'
     MODEL_ID = ModelArchSchema.MODEL_ID
     MODEL_ARCH_TABLE = 'model_arch_table'
+    OBJECT_TABLE = 'object_table'
     COMPILE_PARAMS = 'compile_params'
     FIT_PARAMS = 'fit_params'
     col_types = ('SERIAL', 'INTEGER', 'VARCHAR', 'VARCHAR')
@@ -55,6 +56,7 @@ class MstLoader():
                  model_id_list,
                  compile_params_list,
                  fit_params_list,
+                 object_table=None,
                  **kwargs):
 
         self.model_arch_table = model_arch_table
@@ -62,13 +64,15 @@ class MstLoader():
         self.model_selection_summary_table = add_postfix(
             model_selection_table, "_summary")
         self.model_id_list = sorted(list(set(model_id_list)))
+        self.object_table = object_table
         MstLoaderInputValidator(
             model_arch_table=self.model_arch_table,
             model_selection_table=self.model_selection_table,
             model_selection_summary_table=self.model_selection_summary_table,
             model_id_list=self.model_id_list,
             compile_params_list=compile_params_list,
-            fit_params_list=fit_params_list
+            fit_params_list=fit_params_list,
+            object_table=object_table
         )
         self.compile_params_list = self.params_preprocessed(
             compile_params_list)
@@ -148,10 +152,12 @@ class MstLoader():
         """
         create_query = """
                         CREATE TABLE {self.model_selection_summary_table} (
-                            {model_arch_table} VARCHAR
+                            {model_arch_table} VARCHAR,
+                            {object_table} VARCHAR
                         );
                        """.format(self=self,
-                                  model_arch_table=ModelSelectionSchema.MODEL_ARCH_TABLE)
+                                  model_arch_table=ModelSelectionSchema.MODEL_ARCH_TABLE,
+                                  object_table=ModelSelectionSchema.OBJECT_TABLE)
         with MinWarning('warning'):
             plpy.execute(create_query)
 
@@ -179,14 +185,21 @@ class MstLoader():
                                       fit_params_col=ModelSelectionSchema.FIT_PARAMS,
                                       **locals())
             plpy.execute(insert_query)
+        if self.object_table is None:
+            object_table = 'NULL::VARCHAR'
+        else:
+            object_table = '$${0}$$'.format(self.object_table)
         insert_summary_query = """
                         INSERT INTO
                             {self.model_selection_summary_table}(
-                                {model_arch_table_name}
+                                {model_arch_table_name},
+                                {object_table_name}
                         )
                         VALUES (
-                            $${self.model_arch_table}$$
+                            $${self.model_arch_table}$$,
+                            {object_table}
                         )
                        """.format(model_arch_table_name=ModelSelectionSchema.MODEL_ARCH_TABLE,
+                                  object_table_name=ModelSelectionSchema.OBJECT_TABLE,
                                   **locals())
         plpy.execute(insert_summary_query)

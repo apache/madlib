@@ -20,6 +20,7 @@
 import plpy
 from keras_model_arch_table import ModelArchSchema
 from model_arch_info import get_num_classes
+from madlib_keras_custom_function import CustomFunctionSchema
 from madlib_keras_helper import CLASS_VALUES_COLNAME
 from madlib_keras_helper import COMPILE_PARAMS_COLNAME
 from madlib_keras_helper import DEPENDENT_VARNAME_COLNAME
@@ -45,6 +46,8 @@ from utilities.validate_args import input_tbl_valid
 from utilities.validate_args import output_tbl_valid
 from madlib_keras_wrapper import parse_and_validate_fit_params
 from madlib_keras_wrapper import parse_and_validate_compile_params
+import keras.losses as losses
+import keras.metrics as metrics
 
 class InputValidator:
     @staticmethod
@@ -443,7 +446,8 @@ class MstLoaderInputValidator():
                  model_selection_summary_table,
                  model_id_list,
                  compile_params_list,
-                 fit_params_list
+                 fit_params_list,
+                 object_table
                  ):
         self.model_arch_table = model_arch_table
         self.model_selection_table = model_selection_table
@@ -451,6 +455,7 @@ class MstLoaderInputValidator():
         self.model_id_list = model_id_list
         self.compile_params_list = compile_params_list
         self.fit_params_list = fit_params_list
+        self.object_table = object_table
         self.module_name = 'load_model_selection_table'
         self._validate_input_args()
 
@@ -489,9 +494,36 @@ class MstLoaderInputValidator():
                     """.format(fit_params, str(e)))
         if not self.compile_params_list:
             plpy.error( "compile_params_list cannot be NULL")
+        custom_fn_name = []
+        ## Initialize builtin loss/metrics functions
+        builtin_losses = dir(losses)
+        builtin_metrics = dir(metrics)
+        # Default metrics, since it is not part of the builtin metrics list
+        builtin_metrics.append('accuracy')
+        if self.object_table is not None:
+            res = plpy.execute("SELECT {0} from {1}".format(CustomFunctionSchema.FN_NAME,
+                                                            self.object_table))
+            for r in res:
+                custom_fn_name.append(r[CustomFunctionSchema.FN_NAME])
         for compile_params in self.compile_params_list:
             try:
-                res = parse_and_validate_compile_params(compile_params)
+                _, _, res = parse_and_validate_compile_params(compile_params)
+                # Validating if loss/metrics function called in compile_params
+                # is either defined in object table or is a built_in keras
+                # loss/metrics function
+                error_suffix = "but input object table missing!"
+                if self.object_table is not None:
+                    error_suffix = "is not defined in object table '{0}'!".format(self.object_table)
+
+                _assert(res['loss'] in custom_fn_name or res['loss'] in builtin_losses,
+                        "custom function '{0}' used in compile params "\
+                        "{1}".format(res['loss'], error_suffix))
+                if 'metrics' in res:
+                    _assert((len(set(res['metrics']).intersection(custom_fn_name)) > 0
+                            or len(set(res['metrics']).intersection(builtin_metrics)) > 0),
+                            "custom function '{0}' used in compile params " \
+                            "{1}".format(res['metrics'], error_suffix))
+
             except Exception as e:
                 plpy.error(
                     """Compile param check failed for: {0} \n
@@ -500,6 +532,8 @@ class MstLoaderInputValidator():
 
     def _validate_input_output_tables(self):
         input_tbl_valid(self.model_arch_table, self.module_name)
+        if self.object_table is not None:
+            input_tbl_valid(self.object_table, self.module_name)
         output_tbl_valid(self.model_selection_table, self.module_name)
         output_tbl_valid(self.model_selection_summary_table, self.module_name)
 
