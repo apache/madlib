@@ -40,16 +40,16 @@ copy dbscan_train_data (id_in, data) FROM stdin delimiter '|';
 13|{8,113}
 \.
 
-DROP TABLE IF EXISTS out1, out1_summary;
+DROP TABLE IF EXISTS out1, out1_summary, out1_predict;
 SELECT dbscan('dbscan_train_data','out1','id_in','data',20,4,'squared_dist_norm2','brute');
 
 SELECT assert(count(DISTINCT id_in) = 5, 'Incorrect cluster 0') FROM out1 WHERE cluster_id = 0 and id_in=ANY(ARRAY[1,2,3,4,5]);
 
 SELECT assert(count(DISTINCT id_in) = 4, 'Incorrect cluster 1') FROM out1 WHERE cluster_id = 1 and id_in=ANY(ARRAY[6,7,8,9]);
 
-SELECT assert(dbscan_predict('out1', array[0,0]::double precision[]) = 0, 'Incorrect predict 0');
-SELECT assert(dbscan_predict('out1', array[9.1,10.8]::double precision[]) = 1, 'Incorrect predict 1');
-SELECT assert(dbscan_predict('out1', array[9,113]::double precision[]) IS NULL, 'Incorrect predict NULL');
+SELECT dbscan_predict('out1', 'dbscan_train_data', 'id_in', 'data', 'out1_predict');
+
+SELECT assert(count(DISTINCT cluster_id) = 2, 'Incorrect cluster count') FROM out1_predict;
 
 DROP TABLE IF EXISTS dbscan_train_data2;
 CREATE TABLE dbscan_train_data2 (pid int, points double precision[]);
@@ -75,7 +75,21 @@ INSERT INTO dbscan_train_data2 VALUES
 (19,  '{11, 4}'),
 (20,  '{10, 3}');
 
-DROP TABLE IF EXISTS dbscan_result, dbscan_result_summary;
+DROP TABLE IF EXISTS dbscan_test_data2;
+CREATE TABLE dbscan_test_data2 (pid int, points double precision[]);
+INSERT INTO dbscan_test_data2 VALUES
+(1,  '{1, 2}'),
+(2,  '{2, 2}'),
+(3,  '{1, 3}'),
+(4,  '{2, 2}'),
+(10,  '{5, 11}'),
+(11,  '{7, 10}'),
+(12,  '{10, 9}'),
+(13,  '{10, 6}'),
+(14,  '{9, 5}'),
+(15,  '{10, 6}');
+
+DROP TABLE IF EXISTS dbscan_result, dbscan_result_summary, dbscan_predict_out;
 SELECT dbscan(
 'dbscan_train_data2',    -- source table
 'dbscan_result',        -- output table
@@ -89,3 +103,7 @@ SELECT dbscan(
 SELECT * FROM dbscan_result ORDER BY pid;
 
 SELECT assert(count(DISTINCT cluster_id) = 3, 'Incorrect cluster count') FROM dbscan_result;
+
+SELECT dbscan_predict('dbscan_result', 'dbscan_test_data2', 'pid', 'points', 'dbscan_predict_out');
+
+SELECT assert(count(DISTINCT cluster_id) = 3, 'Incorrect cluster count') FROM dbscan_predict_out;

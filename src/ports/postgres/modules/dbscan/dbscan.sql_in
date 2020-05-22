@@ -179,25 +179,47 @@ After clustering, the cluster assignment for each data point can be computed:
 
 <pre class="syntax">
 dbscan_predict( dbscan_table,
-                new_point
-              )
+                source_table,
+                id_column,
+                expr_point,
+                output_table
+                )
 </pre>
 
 <b>Arguments</b>
 <dl class="arglist">
+
 <dt>dbscan_table</dt>
 <dd>TEXT. Name of the table created by running DBSCAN.</dd>
 
-<dt>new_point</dt>
-<dd>DOUBLE PRECISION[]. New points to be assigned to clusters.</dd>
-</dl>
+<dt>source_table</dt>
+<dd>TEXT. Name of the table containing the input data points.
+</dd>
 
-<b>Output TBD???</b>
+
+<dt>id_column</dt>
+<dd>TEXT. Name of the column containing a unique integer id for each training point.
+</dd>
+
+<dt>expr_point</dt>
+<dd>TEXT. Name of the column with point coordinates in array form,
+or an expression that evaluates to an array of point coordinates.
+</dd>
+
+<dt>output_table</dt>
+<dd>TEXT. Name of the table containing the clustering results.
+</dd>
+
+<b>Output TBD</b>
 <br>
-The output is a composite type with the following columns:
+The output is a table with the following columns:
 <table class="output">
     <tr>
-      <th>column_id</th>
+      <th>id_column</th>
+      <td>INTEGER. ID column passed to the function.</td>
+    </tr>
+    <tr>
+      <th>cluster_id</th>
       <td>INTEGER. Cluster assignment (zero-based, i.e., 0,1,2...).</td>
     </tr>
     <tr>
@@ -234,12 +256,24 @@ INSERT INTO dbscan_train_data VALUES
 (18,  '{10, 4}'),
 (19,  '{11, 4}'),
 (20,  '{10, 3}');
+CREATE TABLE dbscan_test_data (pid int, points double precision[]);
+INSERT INTO dbscan_test_data VALUES
+(1,  '{1, 2}'),
+(2,  '{2, 2}'),
+(3,  '{1, 3}'),
+(4,  '{2, 2}'),
+(10,  '{5, 11}'),
+(11,  '{7, 10}'),
+(12,  '{10, 9}'),
+(13,  '{10, 6}'),
+(14,  '{9, 5}'),
+(15,  '{10, 6}');
 </pre>
 -#  Run DBSCAN using the brute force method with a Euclidean
 distance function:
 <pre class="example">
 DROP TABLE IF EXISTS dbscan_result, dbscan_result_summary;
-SELECT madlib.dbscan( 
+SELECT madlib.dbscan(
                 'dbscan_train_data',    -- source table
                 'dbscan_result',        -- output table
                 'pid',                  -- point id column
@@ -251,7 +285,7 @@ SELECT madlib.dbscan(
 SELECT * FROM dbscan_result ORDER BY pid;
 </pre>
 <pre class="result">
- pid | cluster_id | is_core_point | __points__ 
+ pid | cluster_id | is_core_point | __points__
 -----+------------+---------------+------------
    1 |          0 | t             | {1,1}
    2 |          0 | t             | {2,1}
@@ -274,15 +308,15 @@ SELECT * FROM dbscan_result ORDER BY pid;
 </pre>
 There are three clusters created.  All points are core points
 except for 6 and 10 which are border points.  The noise points
-do not show up in the output table. If you want to see the noise points 
+do not show up in the output table. If you want to see the noise points
 you can use a query like:
 <pre class="example">
-SELECT l.* FROM dbscan_train_data l WHERE NOT EXISTS 
-    (SELECT NULL FROM dbscan_result r WHERE r.pid = l.pid) 
+SELECT l.* FROM dbscan_train_data l WHERE NOT EXISTS
+    (SELECT NULL FROM dbscan_result r WHERE r.pid = l.pid)
     ORDER BY l.pid;
 </pre>
 <pre class="result">
- pid | points 
+ pid | points
 -----+--------
    5 | {3,5}
   11 | {7,10}
@@ -293,17 +327,22 @@ The summary table lists the 'eps' value and the distance metric used:
 SELECT * FROM dbscan_result_summary;
 </pre>
 <pre class="result">
- id_column | eps  |   metric   
+ id_column | eps  |   metric
 -----------+------+------------
  pid       | 1.75 | dist_norm2
 </pre>
 -#  Find the cluster assignment.  In this example we use the same source
 points for demonstration purposes:
 <pre class="example">
-SELECT pid, madlib.dbscan_predict (
-                        'dbscan_result',   -- from DBSCAN run
-                         points)           -- data to cluster
-FROM dbscan_train_data ORDER BY pid;
+
+SELECT madlib.dbscan_predict(
+                        'dbscan_result',        -- from DBSCAN run
+                        'dbscan_test_data',     -- test dataset
+                        'pid',                  -- point id column
+                        'points',               -- data point
+                        'dbscan_predict_out'    -- output table
+                        );
+
 </pre>
 <pre class="result">
 TBD???
@@ -312,7 +351,7 @@ TBD???
 distance function:
 <pre class="example">
 DROP TABLE IF EXISTS dbscan_result_kd, dbscan_result_kd_summary;
-SELECT madlib.dbscan( 
+SELECT madlib.dbscan(
                 'dbscan_train_data',    -- source table
                 'dbscan_result_kd',     -- output table
                 'pid',                  -- point id column
@@ -391,8 +430,11 @@ m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `MODIFIES SQL DATA', `');
 
 CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.dbscan_predict(
     dbscan_table                VARCHAR,
-    new_point                   DOUBLE PRECISION[]
-) RETURNS INTEGER AS $$
+    source_table                VARCHAR,
+    id_column                   VARCHAR,
+    expr_point                  VARCHAR,
+    output_table                VARCHAR
+) RETURNS VOID AS $$
     PythonFunction(dbscan, dbscan, dbscan_predict)
 $$ LANGUAGE plpythonu VOLATILE
 m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `MODIFIES SQL DATA', `');

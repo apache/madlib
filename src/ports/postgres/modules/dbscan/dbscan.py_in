@@ -180,30 +180,37 @@ def dbscan(schema_madlib, source_table, output_table, id_column, expr_point, eps
                      reachable_points_table))
 
 
-def dbscan_predict(schema_madlib, dbscan_table, new_point, **kwargs):
+def dbscan_predict(schema_madlib, dbscan_table, source_table, id_column,
+    expr_point, output_table, **kwargs):
 
     with MinWarning("warning"):
+
+        _validate_dbscan_predict(schema_madlib, dbscan_table, source_table, id_column,
+    expr_point, output_table)
 
         dbscan_summary_table = add_postfix(dbscan_table, '_summary')
         summary = plpy.execute("SELECT * FROM {0}".format(dbscan_summary_table))[0]
 
         eps = summary['eps']
         metric = summary['metric']
+        db_id_column = summary['id_column']
         sql = """
-            SELECT cluster_id,
-                   {schema_madlib}.{metric}(__points__, ARRAY{new_point}) as dist
-            FROM {dbscan_table}
-            WHERE is_core_point = TRUE
-            ORDER BY dist LIMIT 1
+            CREATE TABLE {output_table} AS
+            SELECT __q1__.{id_column}, cluster_id, distance
+            FROM (
+                SELECT __t2__.{id_column}, cluster_id,
+                       min({schema_madlib}.{metric}(__t1__.__points__,
+                                                __t2__.{expr_point})) as distance
+                FROM {dbscan_table} AS __t1__, {source_table} AS __t2__
+                WHERE is_core_point = TRUE
+                GROUP BY __t2__.{id_column}, cluster_id
+                ) __q1__
+            WHERE distance <= {eps}
             """.format(**locals())
-        result = plpy.execute(sql)[0]
-        dist = result['dist']
-        if dist < eps:
-            return result['cluster_id']
-        else:
-            return None
+        result = plpy.execute(sql)
 
-def _validate_dbscan(schema_madlib, source_table, output_table, id_column, expr_point, eps, min_samples, metric, algorithm):
+def _validate_dbscan(schema_madlib, source_table, output_table, id_column,
+    expr_point, eps, min_samples, metric, algorithm):
 
     input_tbl_valid(source_table, 'dbscan')
     output_tbl_valid(output_table, 'dbscan')
@@ -228,6 +235,25 @@ def _validate_dbscan(schema_madlib, source_table, output_table, id_column, expr_
     fn_dist_list = ['dist_norm1', 'dist_norm2', 'squared_dist_norm2', 'dist_angle', 'dist_tanimoto']
     _assert(metric in fn_dist_list, "dbscan Error: metric has to be one of the madlib defined distance functions")
 
+def _validate_dbscan_predict(schema_madlib, dbscan_table, source_table,
+    id_column, expr_point, output_table):
+
+    input_tbl_valid(source_table, 'dbscan')
+    input_tbl_valid(dbscan_table, 'dbscan')
+    dbscan_summary_table = add_postfix(dbscan_table, '_summary')
+    input_tbl_valid(dbscan_summary_table, 'dbscan')
+    output_tbl_valid(output_table, 'dbscan')
+
+    cols_in_tbl_valid(source_table, [id_column], 'dbscan')
+
+    _assert(is_var_valid(source_table, expr_point),
+            "dbscan error: {0} is an invalid column name or "
+            "expression for expr_point param".format(expr_point))
+
+    point_col_type = get_expr_type(expr_point, source_table)
+    _assert(is_valid_psql_type(point_col_type, NUMERIC | ONLY_ARRAY),
+            "dbscan Error: Feature column or expression '{0}' in train table is not"
+            " a numeric array.".format(expr_point))
 
 def dbscan_help(schema_madlib, message=None, **kwargs):
     """
