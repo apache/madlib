@@ -159,7 +159,7 @@ FunctionHandle::invoke(AnyType &args) {
         funcPtrCallInfo.args[i].value = args[i].getAsDatum(&funcPtrCallInfo,
             mFuncInfo->getArgumentType(i));
         funcPtrCallInfo.args[i].isnull = args[i].isNull();
-        elog(WARNING, "funcPtrCallInfo.args[i].value %d funcPtrCallInfo.args[i].isnull %d", funcPtrCallInfo.args[i].value, funcPtrCallInfo.args[i].isnull);
+        elog(WARNING, "funcPtrCallInfo.args[i].value %lu funcPtrCallInfo.args[i].isnull %d", funcPtrCallInfo.args[i].value, funcPtrCallInfo.args[i].isnull);
     }
 #else
     for (uint16_t i = 0; i < funcPtrCallInfo.nargs; ++i) {
