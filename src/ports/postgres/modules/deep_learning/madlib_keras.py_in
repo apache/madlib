@@ -33,6 +33,8 @@ from madlib_keras_validator import *
 from madlib_keras_wrapper import *
 from model_arch_info import *
 
+from madlib_keras_model_selection import ModelSelectionSchema
+
 from utilities.utilities import _assert
 from utilities.utilities import add_postfix
 from utilities.utilities import is_platform_pg
@@ -396,7 +398,7 @@ def get_metrics_sql_string(metrics_list, is_metrics_specified):
 def compute_loss_and_metrics(schema_madlib, table, compile_params, model_arch,
                              serialized_weights, use_gpus, accessible_gpus_for_seg,
                              dist_key_mapping, images_per_seg_val, metrics_list, loss_list,
-                             curr_iter, is_final_iteration):
+                             curr_iter, is_final_iteration, model_table=None, mst_key=None):
     """
     Compute the loss and metric using a given model (serialized_weights) on the
     given dataset (table.)
@@ -411,7 +413,9 @@ def compute_loss_and_metrics(schema_madlib, table, compile_params, model_arch,
                                                    accessible_gpus_for_seg,
                                                    dist_key_mapping,
                                                    images_per_seg_val,
-                                                   is_final_iteration)
+                                                   is_final_iteration,
+                                                   model_table,
+                                                   mst_key)
     end_val = time.time()
 
     if len(evaluate_result) not in [1, 2]:
@@ -670,10 +674,10 @@ def validate_evaluate(module_name, model_table, model_summary_table, test_table,
 def get_loss_metric_from_keras_eval(schema_madlib, table, compile_params,
                                     model_arch, serialized_weights, use_gpus,
                                     accessible_gpus_for_seg, dist_key_mapping, images_per_seg,
-                                    is_final_iteration=True):
+                                    is_final_iteration=True, model_table=None, mst_key=None):
 
     dist_key_col = '0' if is_platform_pg() else DISTRIBUTION_KEY_COLNAME
-    gp_segment_id_col = '0' if is_platform_pg() else GP_SEGMENT_ID_COLNAME
+    gp_segment_id_col = '0' if is_platform_pg() else '__table__.{0}'.format(GP_SEGMENT_ID_COLNAME)
     segments_per_host = get_segments_per_host()
 
     mb_dep_var_col = MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL
@@ -688,14 +692,15 @@ def get_loss_metric_from_keras_eval(schema_madlib, table, compile_params,
     and accuracy of each tuple which then gets averaged to get the final result.
     """
     use_gpus = use_gpus if use_gpus else False
-    evaluate_query = plpy.prepare("""
+
+    eval_sql = """
         select ({schema_madlib}.internal_keras_evaluate(
                                             {mb_dep_var_col},
                                             {mb_indep_var_col},
                                             {dep_shape_col},
                                             {ind_shape_col},
                                             $MAD${model_arch}$MAD$,
-                                            $1,
+                                            {weights},
                                             {compile_params},
                                             {dist_key_col},
                                             ARRAY{dist_key_mapping},
@@ -706,9 +711,20 @@ def get_loss_metric_from_keras_eval(schema_madlib, table, compile_params,
                                             ARRAY{accessible_gpus_for_seg},
                                             {is_final_iteration}
                                             )) as loss_metric
-        from {table}
-        """.format(**locals()), ["bytea"])
-    res = plpy.execute(evaluate_query, [serialized_weights])
+        from {table} AS __table__ {mult_sql}
+        """
+
+    if mst_key:
+        weights = '__mt__.{0}'.format(MODEL_WEIGHTS_COLNAME)
+        mst_key_col = ModelSelectionSchema.MST_KEY
+        mult_sql = ', {model_table} AS __mt__ WHERE {mst_key_col} = {mst_key}'.format(**locals())
+        res = plpy.execute(eval_sql.format(**locals()))
+    else:
+        weights = '$1'
+        mult_sql = ''
+        evaluate_query = plpy.prepare(eval_sql.format(**locals()), ["bytea"])
+        res = plpy.execute(evaluate_query, [serialized_weights])
+
     loss_metric = res[0]['loss_metric']
     return loss_metric
 
