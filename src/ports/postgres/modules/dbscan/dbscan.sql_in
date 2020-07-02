@@ -377,7 +377,8 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.dbscan(
     eps                         DOUBLE PRECISION,
     min_samples                 INTEGER,
     metric                      VARCHAR,
-    algorithm                   VARCHAR
+    algorithm                   VARCHAR,
+    depth                       INTEGER
 ) RETURNS VOID AS $$
     PythonFunction(dbscan, dbscan, dbscan)
 $$ LANGUAGE plpythonu VOLATILE
@@ -390,9 +391,23 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.dbscan(
     expr_point                  VARCHAR,
     eps                         DOUBLE PRECISION,
     min_samples                 INTEGER,
+    metric                      VARCHAR,
+    algorithm                   VARCHAR
+) RETURNS VOID AS $$
+    SELECT MADLIB_SCHEMA.dbscan($1, $2, $3, $4, $5, $6, $7, $8, NULL);
+$$ LANGUAGE sql VOLATILE
+m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.dbscan(
+    source_table                VARCHAR,
+    output_table                VARCHAR,
+    id_column                   VARCHAR,
+    expr_point                  VARCHAR,
+    eps                         DOUBLE PRECISION,
+    min_samples                 INTEGER,
     metric                      VARCHAR
 ) RETURNS VOID AS $$
-    SELECT MADLIB_SCHEMA.dbscan($1, $2, $3, $4, $5, $6, $7, NULL);
+    SELECT MADLIB_SCHEMA.dbscan($1, $2, $3, $4, $5, $6, $7, NULL, NULL);
 $$ LANGUAGE sql VOLATILE
 m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `MODIFIES SQL DATA', `');
 
@@ -404,7 +419,7 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.dbscan(
     eps                         DOUBLE PRECISION,
     min_samples                 INTEGER
 ) RETURNS VOID AS $$
-    SELECT MADLIB_SCHEMA.dbscan($1, $2, $3, $4, $5, $6, NULL, NULL);
+    SELECT MADLIB_SCHEMA.dbscan($1, $2, $3, $4, $5, $6, NULL, NULL, NULL);
 $$ LANGUAGE sql VOLATILE
 m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `MODIFIES SQL DATA', `');
 
@@ -415,7 +430,7 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.dbscan(
     expr_point                  VARCHAR,
     eps                         DOUBLE PRECISION
 ) RETURNS VOID AS $$
-    SELECT MADLIB_SCHEMA.dbscan($1, $2, $3, $4, $5, NULL, NULL, NULL);
+    SELECT MADLIB_SCHEMA.dbscan($1, $2, $3, $4, $5, NULL, NULL, NULL, NULL);
 $$ LANGUAGE sql VOLATILE
 m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `MODIFIES SQL DATA', `');
 
@@ -454,5 +469,121 @@ m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `MODIFIES SQL DATA', `');
 CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.dbscan_predict(
 ) RETURNS VARCHAR AS $$
     PythonFunction(dbscan, dbscan, dbscan_predict_help)
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.sf_merge(
+    state1          INTEGER[][],
+    state2          INTEGER[][]
+) RETURNS INTEGER[][] AS $$
+PythonFunctionBodyOnlyNoSchema(`dbscan', `dbscan')
+    return dbscan.sf_merge(**globals())
+$$ LANGUAGE plpythonu
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.sf_final(
+    state INTEGER[][]
+) RETURNS INTEGER[][] AS $$
+PythonFunctionBodyOnlyNoSchema(`dbscan', `dbscan')
+    return dbscan.sf_final(**globals())
+$$ LANGUAGE plpythonu
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.sf_transition(
+    state                       INTEGER[],
+    src                         BIGINT,
+    dest                        BIGINT,
+    n_rows                      INTEGER[],
+    gp_segment_id               INTEGER
+
+) RETURNS INTEGER[][] AS $$
+PythonFunctionBodyOnlyNoSchema(`dbscan', `dbscan')
+    return dbscan.sf_transition(**globals())
+$$ LANGUAGE plpythonu
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+DROP AGGREGATE IF EXISTS MADLIB_SCHEMA.build_snowflake_table(
+    BIGINT,
+    BIGINT,
+    INTEGER[],
+    INTEGER);
+CREATE AGGREGATE MADLIB_SCHEMA.build_snowflake_table(
+    BIGINT,
+    BIGINT,
+    INTEGER[],
+    INTEGER
+)(
+    STYPE=INTEGER[][],
+    SFUNC=MADLIB_SCHEMA.sf_transition,
+    m4_ifdef(`__POSTGRESQL__', `', `prefunc=MADLIB_SCHEMA.sf_merge,')
+    FINALFUNC=MADLIB_SCHEMA.sf_final
+);
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.find_core_points_transition(
+    state                       INTEGER[],
+    id_in                         BIGINT,
+    expr_points DOUBLE PRECISION[],
+    eps     DOUBLE PRECISION,
+    min_samples INTEGER,
+    metric  VARCHAR,
+    n_rows  INTEGER[],
+    leaf_id     INTEGER
+
+) RETURNS INTEGER[][] AS $$
+PythonFunctionBodyOnlyNoSchema(`dbscan', `dbscan')
+    return dbscan.find_core_points_transition(**globals())
+$$ LANGUAGE plpythonu
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.find_core_points_merge(
+    state1          INTEGER[][],
+    state2          INTEGER[][]
+) RETURNS INTEGER[][] AS $$
+PythonFunctionBodyOnlyNoSchema(`dbscan', `dbscan')
+    return dbscan.find_core_points_merge(**globals())
+$$ LANGUAGE plpythonu
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.find_core_points_final(
+    state INTEGER[][]
+) RETURNS INTEGER[] AS $$
+PythonFunctionBodyOnlyNoSchema(`dbscan', `dbscan')
+    return dbscan.find_core_points_final(**globals())
+$$ LANGUAGE plpythonu
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+--id_in, expr_points, eps, min_samples, metric, n_rows, leaf_id,
+DROP AGGREGATE IF EXISTS MADLIB_SCHEMA.find_core_points(
+    BIGINT,
+    DOUBLE PRECISION[],
+    DOUBLE PRECISION,
+    INTEGER,
+    VARCHAR,
+    INTEGER[],
+    INTEGER);
+CREATE AGGREGATE MADLIB_SCHEMA.find_core_points(
+    BIGINT,
+    DOUBLE PRECISION[],
+    DOUBLE PRECISION,
+    INTEGER,
+    VARCHAR,
+    INTEGER[],
+    INTEGER
+)(
+    STYPE=INTEGER[][],
+    SFUNC=MADLIB_SCHEMA.find_core_points_transition,
+    m4_ifdef(`__POSTGRESQL__', `', `prefunc=MADLIB_SCHEMA.find_core_points_merge,')
+    FINALFUNC=MADLIB_SCHEMA.find_core_points_final
+);
+
+DROP TYPE IF EXISTS MADLIB_SCHEMA.unpacked_2d CASCADE;
+CREATE TYPE MADLIB_SCHEMA.unpacked_2d AS (
+    src BIGINT,
+    dest BIGINT);
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.unpack_2d (packed INTEGER[][])
+  RETURNS SETOF MADLIB_SCHEMA.unpacked_2d
+AS $$
+    return packed
 $$ LANGUAGE plpythonu VOLATILE
 m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `MODIFIES SQL DATA', `');
