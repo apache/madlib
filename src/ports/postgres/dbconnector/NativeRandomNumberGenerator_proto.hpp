@@ -22,13 +22,20 @@ namespace postgres {
  */
 class NativeRandomNumberGenerator {
 public:
+
+#if _GLIBCXX_USE_CXX11_ABI
+    typedef long long result_type;
+#define CONST_EXPR constexpr
+#else
     typedef double result_type;
+#define CONST_EXPR
+#endif
 
     NativeRandomNumberGenerator();
     void seed(result_type inSeed);
     result_type operator()();
-    static result_type min();
-    static result_type max();
+    static CONST_EXPR result_type min();
+    static CONST_EXPR result_type max();
 };
 
 } // namespace postgres

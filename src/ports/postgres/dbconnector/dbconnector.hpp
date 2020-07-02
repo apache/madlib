@@ -85,9 +85,11 @@ extern "C" {
 #include <boost/type_traits/remove_cv.hpp>
 #include <boost/math/special_functions/fpclassify.hpp>
 #include <boost/utility/enable_if.hpp>
+#if !_GLIBCXX_USE_CXX11_ABI
 #include <boost/tr1/array.hpp>
 #include <boost/tr1/functional.hpp>
 #include <boost/tr1/tuple.hpp>
+#endif // _GLIBCXX_USE_CXX11_ABI
 #include <algorithm>
 #include <complex>
 #include <limits>
@@ -99,6 +101,7 @@ extern "C" {
 #include <utils/Reference.hpp>
 #include <utils/Math.hpp>
 
+#if !_GLIBCXX_USE_CXX11_ABI
 namespace std {
     // Import names from TR1.
 
@@ -111,6 +114,7 @@ namespace std {
     using tr1::tie;
     using tr1::tuple;
 }
+#endif // _GLIBCXX_USE_CXX11_ABI
 
 #if !defined(NDEBUG) && !defined(EIGEN_NO_DEBUG)
 #define eigen_assert(x) \

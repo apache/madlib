@@ -425,7 +425,7 @@ DynamicStruct<Derived, Container, Mutable>::bindToStream(
     static_cast<Derived*>(this)->bind(inStream);
 
     if (mSizeIsLocked)
-        inStream.template seek(begin + size, std::ios_base::beg);
+        inStream.seek(begin + size, std::ios_base::beg);
     else
         inStream.template seek<ByteStream_type::maximumAlignment>(0,
             std::ios_base::cur);
