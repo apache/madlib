@@ -41,7 +41,7 @@ NativeRandomNumberGenerator::operator()() {
  * @brief Return tight lower bound on the set of all values returned by
  *     <tt>operator()</tt>
  */
-inline
+inline CONST_EXPR
 NativeRandomNumberGenerator::result_type
 NativeRandomNumberGenerator::min() {
     return 0.0;
@@ -57,7 +57,7 @@ NativeRandomNumberGenerator::min() {
  * shall not change during the lifetime of the object."
  * http://www.boost.org/doc/libs/1_50_0/doc/html/boost_random/reference.html
  */
-inline
+inline CONST_EXPR
 NativeRandomNumberGenerator::result_type
 NativeRandomNumberGenerator::max() {
     return 1.0;

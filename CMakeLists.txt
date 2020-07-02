@@ -122,7 +122,11 @@ if(CMAKE_COMPILER_IS_GNUCXX)
         set(CMAKE_INCLUDE_SYSTEM_FLAG_CXX "-isystem ")
     endif(APPLE)
 elseif(CMAKE_C_COMPILER_ID MATCHES "Clang")
-    set(CMAKE_CXX_FLAGS "-stdlib=libstdc++")
+if (CXX11)
+    set(CMAKE_CXX_FLAGS "-stdlib=libc++ -std=c++11 -D_GLIBCXX_USE_CXX11_ABI=1")
+else (CXX11)
+    set(CMAKE_CXX_FLAGS "-stdlib=libstdc++ -D_GLIBCXX_USE_CXX11_ABI=0")
+endif(CXX11)
 endif(CMAKE_COMPILER_IS_GNUCXX)
 
 # force a `m4_' prefix to all builtins

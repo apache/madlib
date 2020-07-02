@@ -7,6 +7,9 @@
 #ifndef MADLIB_MODULES_SAMPLE_WEIGHTED_SAMPLE_IMPL_HPP
 #define MADLIB_MODULES_SAMPLE_WEIGHTED_SAMPLE_IMPL_HPP
 
+#if _GLIBCXX_USE_CXX11_ABI
+#include <random>
+#else
 #include <boost/tr1/random.hpp>
 
 // Import TR1 names (currently used from boost). This can go away once we make
@@ -14,6 +17,7 @@
 namespace std {
     using tr1::bernoulli_distribution;
 }
+#endif // _GNUCXX_USE_CXX11_ABI
 
 namespace madlib {
 

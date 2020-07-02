@@ -179,6 +179,14 @@ root directory) for more options, after having run `cmake` the first time.
     flag is set to 'True', we will create an RPM instead. Note that
     package alien must be installed for this to work.
 
+- `CXX11` (default: *empty*)
+
+    Compile with C++11 compatibility.  This may be required for building
+    on newer platforms which don't come with support for pre-2011 C++
+    standards.  For example, MacOSX >= 10.13 (XCode >= 10.x).  This option
+    is also required for Boost >= 1.65 to work, as recent versions of
+    Boost have also dropped support for older C++ standards.
+
 Debugging
 =========
 
