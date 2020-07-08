@@ -18,8 +18,10 @@
 # under the License.
 
 import ast
+import dill
 import os
 import plpy
+from collections import defaultdict
 from math import ceil
 
 from keras import backend as K
@@ -31,6 +33,8 @@ import keras.losses as losses
 
 import madlib_keras_serializer
 import madlib_keras_gpu_info
+from madlib_keras_custom_function import CustomFunctionSchema
+
 from utilities.utilities import _assert
 from utilities.utilities import is_platform_pg
 
@@ -175,6 +179,16 @@ def get_metrics_from_compile_param(str_of_args):
                         "please refer to the documentation").format(ckey))
     return metrics
 
+def get_loss_from_compile_param(str_of_args):
+    compile_dict = convert_string_of_args_to_dict(str_of_args)
+    loss = None
+    if 'loss' in compile_dict:
+        loss = compile_dict['loss']
+    else:
+        plpy.error(("Invalid input value for parameter 'loss', "
+                    "please refer to the documentation"))
+    return loss
+
 # Parse the compile parameters and the optimizer.
 def parse_and_validate_compile_params(str_of_args):
     """
@@ -307,9 +321,12 @@ def get_optimizers():
     return optimizers
 
 # Run the keras.compile with the given parameters
-def compile_model(model, compile_params):
+def compile_model(model, compile_params, custom_function_map=None):
     optimizers = get_optimizers()
     (opt_name,final_args,compile_dict) = parse_and_validate_compile_params(compile_params)
+    if custom_function_map is not None:
+        map=dill.loads(custom_function_map)
+        compile_dict['loss']=map[compile_dict['loss']]
     compile_dict['optimizer'] = optimizers[opt_name](**final_args) if final_args else opt_name
     model.compile(**compile_dict)
 
@@ -331,3 +348,66 @@ def validate_compile_param_types(compile_dict):
             compile_dict['sample_weight_mode'] is None or
             compile_dict['sample_weight_mode'] == "temporal",
             """compile parameter sample_weight_mode can only be "temporal" or None""")
+
+# Returns an object of custom function name and it corresponding object
+def query_custom_functions_map(object_table, custom_fn_names):
+    """
+    Args:
+        @param: object_table    Name of the object table
+        @param: custom_fn_names List of custom function read from compile_param
+                                if custom function exisst in compile_params,
+                                    expected list length >= 1
+                                else,
+                                    an empty list is passed in
+    Returns:
+        custom_fn_map_obj:      A dill object of a dictionary mapping custom function
+                                name to its definition object as read from the object
+                                table
+                                Example:
+                                {custom_fn1 : function_def_obj1, custom_fn2 : function_def_obj2}
+
+    """
+    if len(custom_fn_names) < 1:
+        return None
+    custom_obj_col_name = '{0}'.format(CustomFunctionSchema.FN_OBJ)
+    # Dictionary map of name:object
+    # {custom_fn1 : function_def_obj1, custom_fn2 : function_def_obj2}
+    custom_fn_map = defaultdict(list)
+    # Query the custom function if not yet loaded from table
+    res = plpy.execute("""
+                        SELECT {custom_fn_col_name}, {custom_obj_col_name} FROM {object_table}
+                        WHERE {custom_fn_col_name} = ANY(ARRAY{custom_fn_names})
+                       """.format(custom_obj_col_name=custom_obj_col_name,
+                                  object_table=object_table,
+                                  custom_fn_col_name=CustomFunctionSchema.FN_NAME,
+                                  custom_fn_names=custom_fn_names))
+    if res.nrows() < len(custom_fn_names):
+        plpy.error("Custom function {0} not defined in object table '{1}'".format(custom_fn_names, object_table))
+    for r in res:
+        custom_fn_map[r[CustomFunctionSchema.FN_NAME]] = dill.loads(r[custom_obj_col_name])
+    custom_fn_map_obj = dill.dumps(custom_fn_map)
+    return custom_fn_map_obj
+
+def get_custom_functions_list(compile_params):
+    """
+    Args:
+        @param: compile_params  compile params passed to keras.compile
+    Returns:
+        custom_fn_list:         List of custom function read from compile_param
+                                if custom function exist in compile_params,
+                                    returns list length >= 1
+                                else,
+                                    returns an empty list
+                                Example:
+                                if custom function exist in compile_params,
+                                    returns [custom_fn1, custom_fn2, ....]
+                                else,
+                                    []
+
+    """
+    compile_dict = convert_string_of_args_to_dict(compile_params)
+    builtin_losses = dir(losses)
+    custom_fn_list = []
+    if compile_dict['loss'] not in builtin_losses:
+        custom_fn_list.append(compile_dict['loss'])
+    return custom_fn_list

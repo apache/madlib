@@ -270,6 +270,86 @@ SELECT assert(
   5 IN (SELECT mst_key FROM iris_multiple_model_info),
   'mst_key 5 should be in the info table since it has been added to mst_table');
 
+-- warm start with custom function
+CREATE OR REPLACE FUNCTION custom_function_zero_object()
+RETURNS BYTEA AS
+$$
+import dill
+def test_custom_fn(a, b):
+  c = a*b*0
+  return c
+
+pb=dill.dumps(test_custom_fn)
+return pb
+$$ language plpythonu;
+
+
+DROP TABLE IF EXISTS test_custom_function_table;
+SELECT load_custom_function('test_custom_function_table', custom_function_zero_object(), 'test_custom_fn', 'returns test_custom_fn');
+
+DROP TABLE IF EXISTS mst_table, mst_table_summary;
+SELECT load_model_selection_table(
+    'iris_model_arch',
+    'mst_table',
+    ARRAY[1,2],
+    ARRAY[
+        $$loss='categorical_crossentropy', optimizer='Adam(lr=0.001)',metrics=['accuracy']$$,
+        $$loss='test_custom_fn', optimizer='Adam(lr=0.001)',metrics=['accuracy']$$
+    ],
+    ARRAY[
+        $$batch_size=5,epochs=1$$
+    ],
+    'test_custom_function_table'
+);
+
+DROP TABLE if exists iris_multiple_model, iris_multiple_model_summary, iris_multiple_model_info;
+SELECT setseed(0);
+SELECT madlib_keras_fit_multiple_model(
+  'iris_data_packed',
+  'iris_multiple_model',
+  'mst_table',
+  3,
+  FALSE, NULL, 1
+);
+
+DROP TABLE IF EXISTS iris_model_first_run;
+CREATE TABLE iris_model_first_run AS
+SELECT mst_key, model_id, training_loss, training_metrics,
+    training_loss_final, training_metrics_final
+FROM iris_multiple_model_info;
+
+-- warm start for fit multiple model
+SELECT madlib_keras_fit_multiple_model(
+  'iris_data_packed',
+  'iris_multiple_model',
+  'mst_table',
+  3,
+  FALSE,
+  NULL, 1,
+  TRUE -- warm_start
+);
+
+-- Test that when warm_start is TRUE, all the output tables are persistent(not unlogged)
+SELECT assert(MADLIB_SCHEMA.is_table_unlogged('iris_multiple_model') = false, 'Model output table is unlogged');
+SELECT assert(MADLIB_SCHEMA.is_table_unlogged('iris_multiple_model_summary') = false, 'Model summary output table is unlogged');
+SELECT assert(MADLIB_SCHEMA.is_table_unlogged('iris_multiple_model_info') = false, 'Model info output table is unlogged');
+
+
+SELECT assert(
+  array_upper(training_loss, 1) = 3 AND
+  array_upper(training_metrics, 1) = 3,
+  'metrics compute frequency must be 1.')
+FROM iris_multiple_model_info;
+
+SELECT assert(
+  abs(first.training_loss_final-second.training_loss[1]) < 1e-6 AND
+  abs(first.training_loss_final-second.training_loss[2]) < 1e-6 AND
+  abs(first.training_metrics_final-second.training_metrics[1]) < 1e-10 AND
+  abs(first.training_metrics_final-second.training_metrics[2]) < 1e-10,
+  'warm start test failed because training loss and metrics don''t match the expected value from the previous run of keras fit.')
+FROM iris_model_first_run AS first, iris_multiple_model_info AS second
+WHERE first.mst_key = second.mst_key AND first.model_id = 2;
+
 -- Transfer learning tests
 
 -- Load the same arch again so that we can compare transfer learning results

@@ -137,3 +137,96 @@ SELECT assert(loss >= 0 AND
         metric >= 0 AND
         metrics_type = '{accuracy}', 'Evaluate output validation failed.  Actual:' || __to_char(evaluate_out))
 FROM evaluate_out;
+
+-- TEST custom loss function
+-- Custom loss function returns 0 as the loss
+CREATE OR REPLACE FUNCTION custom_function_zero_object()
+RETURNS BYTEA AS
+$$
+import dill
+def test_custom_fn(a, b):
+  c = a*b*0
+  return c
+
+pb=dill.dumps(test_custom_fn)
+return pb
+$$ language plpythonu;
+
+
+DROP TABLE IF EXISTS test_custom_function_table;
+SELECT load_custom_function('test_custom_function_table', custom_function_zero_object(), 'test_custom_fn', 'returns test_custom_fn');
+
+DROP TABLE if exists iris_model, iris_model_summary, iris_model_info;
+SELECT madlib_keras_fit(
+    'iris_data_packed',
+    'iris_model',
+    'iris_model_arch',
+    1,
+    $$ optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='test_custom_fn', metrics=['mae']$$::text,
+    $$ batch_size=2, epochs=1, verbose=0 $$::text,
+    3,
+    FALSE, NULL, 1, NULL, NULL, NULL,
+    'test_custom_function_table'
+);
+
+SELECT assert(
+        model_arch_table = 'iris_model_arch' AND
+        model_id = 1 AND
+        model_type = 'madlib_keras' AND
+        source_table = 'iris_data_packed' AND
+        model = 'iris_model' AND
+        dependent_varname = 'class_text' AND
+        independent_varname = 'attributes' AND
+        dependent_vartype LIKE '%char%' AND
+        normalizing_const = 1 AND
+        pg_typeof(normalizing_const) = 'real'::regtype AND
+        name is NULL AND
+        description is NULL AND
+        object_table = 'test_custom_function_table' AND
+        model_size > 0 AND
+        madlib_version is NOT NULL AND
+        compile_params = $$ optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='test_custom_fn', metrics=['mae']$$::text AND
+        fit_params = $$ batch_size=2, epochs=1, verbose=0 $$::text AND
+        num_iterations = 3 AND
+        metrics_compute_frequency = 1 AND
+        num_classes = 3 AND
+        class_values = '{Iris-setosa,Iris-versicolor,Iris-virginica}' AND
+        metrics_type = '{mae}' AND
+        array_upper(training_metrics, 1) = 3 AND
+        training_loss = '{0,0,0}' AND
+        array_upper(metrics_elapsed_time, 1) = 3 ,
+        'Keras model output Summary Validation failed. Actual:' || __to_char(summary))
+FROM (SELECT * FROM iris_model_summary) summary;
+
+SELECT assert(
+        model_weights IS NOT NULL AND
+        model_arch IS NOT NULL, 'Keras model output validation failed. Actual:' || __to_char(k))
+FROM (SELECT * FROM iris_model) k;
+
+DROP TABLE IF EXISTS evaluate_out;
+SELECT madlib_keras_evaluate(
+    'iris_model',
+    'iris_data_val',
+    'evaluate_out',
+    FALSE);
+
+SELECT assert(loss >= 0 AND
+        metric >= 0 AND
+        metrics_type = '{mae}' AND
+        loss_type = 'test_custom_fn', 'Evaluate output validation failed.  Actual:' || __to_char(evaluate_out))
+FROM evaluate_out;
+SELECT CASE WHEN is_ver_greater_than_gp_640_or_pg_11() is TRUE THEN assert_guc_value('plan_cache_mode', 'auto') END;
+
+DROP TABLE if exists iris_model, iris_model_summary, iris_model_info;
+SELECT assert(trap_error($TRAP$SELECT madlib_keras_fit(
+    'iris_data_packed',
+    'iris_model',
+    'iris_model_arch',
+    1,
+    $$ optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='test_custom_fn1', metrics=['mae']$$::text,
+    $$ batch_size=2, epochs=1, verbose=0 $$::text,
+    3,
+    FALSE, NULL, 1, NULL, NULL, NULL,
+    'test_custom_function_table'
+);$TRAP$) = 1,
+'custom function in compile_params not defined in Object table.');

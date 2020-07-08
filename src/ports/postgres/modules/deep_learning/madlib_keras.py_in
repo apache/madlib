@@ -61,7 +61,7 @@ class SD_STORE:
         del SD[SD_STORE.SESS]
 
 def get_init_model_and_sess(SD, device_name, gpu_count, segments_per_host,
-                               model_architecture, compile_params):
+                               model_architecture, compile_params, custom_function_map):
     # If a live session is present, re-use it. Otherwise, recreate it.
     if SD_STORE.SESS in SD :
         if SD_STORE.SEGMENT_MODEL not in SD:
@@ -73,7 +73,7 @@ def get_init_model_and_sess(SD, device_name, gpu_count, segments_per_host,
     else:
         sess = get_keras_session(device_name, gpu_count, segments_per_host)
         K.set_session(sess)
-        segment_model = init_model(model_architecture, compile_params)
+        segment_model = init_model(model_architecture, compile_params, custom_function_map)
         SD_STORE.init_SD(SD, sess, segment_model)
     return segment_model, sess
 
@@ -82,7 +82,7 @@ def fit(schema_madlib, source_table, model, model_arch_table,
         model_id, compile_params, fit_params, num_iterations,
         use_gpus, validation_table=None,
         metrics_compute_frequency=None, warm_start=False, name="",
-        description="", **kwargs):
+        description="", object_table=None, **kwargs):
 
     module_name = 'madlib_keras_fit'
     fit_params = "" if not fit_params else fit_params
@@ -107,7 +107,7 @@ def fit(schema_madlib, source_table, model, model_arch_table,
         source_table, validation_table, model, model_arch_table,
         model_id, mb_dep_var_col, mb_indep_var_col,
         num_iterations, metrics_compute_frequency, warm_start,
-        use_gpus, accessible_gpus_for_seg)
+        use_gpus, accessible_gpus_for_seg, object_table)
     if metrics_compute_frequency is None:
         metrics_compute_frequency = num_iterations
 
@@ -148,6 +148,19 @@ def fit(schema_madlib, source_table, model, model_arch_table,
     # Prepare the SQL for running distributed training via UDA
     compile_params_to_pass = "$madlib$" + compile_params + "$madlib$"
     fit_params_to_pass = "$madlib$" + fit_params + "$madlib$"
+    custom_function_map = None
+
+    # If the object_table exists, we read the list of custom
+    # function used in the compile_params and map it to their
+    # object definition from the object table
+    custom_fn_list = get_custom_functions_list(compile_params)
+    if object_table is not None:
+        custom_function_map = query_custom_functions_map(object_table, custom_fn_list)
+    elif len(custom_fn_list) >= 1:
+        # Error out if custom_function is called without specifying the object table
+        # with the function definition
+        plpy.error("Object table not specified for function {0} in compile_params".format(custom_fn_list))
+
     run_training_iteration = plpy.prepare("""
         SELECT {schema_madlib}.fit_step(
             {mb_dep_var_col},
@@ -165,10 +178,11 @@ def fit(schema_madlib, source_table, model, model_arch_table,
             {use_gpus}::BOOLEAN,
             ARRAY{accessible_gpus_for_seg},
             $1,
-            $2
+            $2,
+            $3
         ) AS iteration_result
         FROM {source_table}
-        """.format(**locals()), ["bytea", "boolean"])
+        """.format(**locals()), ["bytea", "boolean", "bytea"])
 
     # Define the state for the model and loss/metric storage lists
     training_loss, training_metrics, metrics_elapsed_time = [], [], []
@@ -182,7 +196,7 @@ def fit(schema_madlib, source_table, model, model_arch_table,
         start_iteration = time.time()
         is_final_iteration = (i == num_iterations)
         serialized_weights = plpy.execute(run_training_iteration,
-                                        [serialized_weights, is_final_iteration]
+                                        [serialized_weights, is_final_iteration, custom_function_map]
                                         )[0]['iteration_result']
         end_iteration = time.time()
         info_str = "\tTime for training in iteration {0}: {1} sec".format(i,
@@ -194,7 +208,8 @@ def fit(schema_madlib, source_table, model, model_arch_table,
             compute_out = compute_loss_and_metrics(
                 schema_madlib, source_table, compile_params_to_pass, model_arch,
                 serialized_weights, use_gpus, accessible_gpus_for_seg, dist_key_mapping,
-                images_per_seg_train, training_metrics, training_loss, i, is_final_iteration)
+                images_per_seg_train, training_metrics, training_loss, i, is_final_iteration,
+                custom_function_map)
             metrics_iters.append(i)
             compute_time, compute_metrics, compute_loss = compute_out
 
@@ -211,7 +226,7 @@ def fit(schema_madlib, source_table, model, model_arch_table,
                     schema_madlib, validation_table, compile_params_to_pass,
                     model_arch, serialized_weights, use_gpus, accessible_gpus_for_seg,
                     seg_ids_val, images_per_seg_val, validation_metrics,
-                    validation_loss, i, is_final_iteration)
+                    validation_loss, i, is_final_iteration, custom_function_map)
                 val_compute_time, val_compute_metrics, val_compute_loss = val_compute_out
 
                 info_str += "\n\tTime for evaluating validation dataset in "\
@@ -238,7 +253,6 @@ def fit(schema_madlib, source_table, model, model_arch_table,
     independent_varname = src_summary_dict['independent_varname_in_source_table']
     # Define some constants to be inserted into the summary table.
     model_type = "madlib_keras"
-    compile_params_dict = convert_string_of_args_to_dict(compile_params)
     metrics_list = get_metrics_from_compile_param(compile_params)
     is_metrics_specified = True if metrics_list else False
     metrics_type = 'ARRAY{0}'.format(metrics_list) if is_metrics_specified else 'NULL'
@@ -264,6 +278,7 @@ def fit(schema_madlib, source_table, model, model_arch_table,
         validation_metrics_final = validation_loss_final = 'NULL'
         validation_table = 'NULL'
 
+    object_table = "$MAD${0}$MAD$".format(object_table) if object_table is not None else 'NULL'
     if warm_start:
         plpy.execute("DROP TABLE {0}, {1}".format
                      (model, fit_validator.output_summary_model_table))
@@ -280,6 +295,7 @@ def fit(schema_madlib, source_table, model, model_arch_table,
             $2 AS fit_params,
             {num_iterations}::INTEGER AS num_iterations,
             {validation_table}::TEXT AS validation_table,
+            {object_table}::TEXT AS object_table,
             {metrics_compute_frequency}::INTEGER AS metrics_compute_frequency,
             $3 AS name,
             $4 AS description,
@@ -398,7 +414,8 @@ def get_metrics_sql_string(metrics_list, is_metrics_specified):
 def compute_loss_and_metrics(schema_madlib, table, compile_params, model_arch,
                              serialized_weights, use_gpus, accessible_gpus_for_seg,
                              dist_key_mapping, images_per_seg_val, metrics_list, loss_list,
-                             curr_iter, is_final_iteration, model_table=None, mst_key=None):
+                             curr_iter, is_final_iteration, custom_fn_name,
+                             model_table=None, mst_key=None):
     """
     Compute the loss and metric using a given model (serialized_weights) on the
     given dataset (table.)
@@ -414,6 +431,7 @@ def compute_loss_and_metrics(schema_madlib, table, compile_params, model_arch,
                                                    dist_key_mapping,
                                                    images_per_seg_val,
                                                    is_final_iteration,
+                                                   custom_fn_name,
                                                    model_table,
                                                    mst_key)
     end_val = time.time()
@@ -444,12 +462,12 @@ def should_compute_metrics_this_iter(curr_iter, metrics_compute_frequency,
     return (curr_iter)%metrics_compute_frequency == 0 or \
            curr_iter == num_iterations
 
-def init_model(model_architecture, compile_params):
+def init_model(model_architecture, compile_params, custom_function_map):
     """
         Should only be called at the first row of first iteration.
     """
     segment_model = model_from_json(model_architecture)
-    compile_model(segment_model, compile_params)
+    compile_model(segment_model, compile_params, custom_function_map)
     return segment_model
 
 def update_model(segment_model, prev_serialized_weights):
@@ -466,7 +484,7 @@ def fit_transition(state, dependent_var, independent_var, dependent_var_shape,
                    compile_params, fit_params, dist_key, dist_key_mapping,
                    current_seg_id, segments_per_host, images_per_seg, use_gpus,
                    accessible_gpus_for_seg, prev_serialized_weights, is_final_iteration=True,
-                   is_multiple_model=False, **kwargs):
+                   is_multiple_model=False, custom_function_map=None, **kwargs):
     """
     This transition function is common for madlib_keras_fit() and
     madlib_keras_fit_multiple_model(). The important difference between
@@ -491,7 +509,8 @@ def fit_transition(state, dependent_var, independent_var, dependent_var_shape,
     segment_model, sess = get_init_model_and_sess(SD, device_name,
                                                   accessible_gpus_for_seg[current_seg_id],
                                                   segments_per_host,
-                                                  model_architecture, compile_params)
+                                                  model_architecture, compile_params,
+                                                  custom_function_map)
     if not state:
         agg_image_count = 0
         set_model_weights(segment_model, prev_serialized_weights)
@@ -623,10 +642,16 @@ def evaluate(schema_madlib, model_table, test_table, output_table,
     InputValidator.validate_input_shape(
         test_table, MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL, input_shape, 2, True)
 
-    compile_params_query = "SELECT compile_params, metrics_type FROM {0}".format(model_summary_table)
+    compile_params_query = "SELECT compile_params, metrics_type, object_table FROM {0}".format(model_summary_table)
     res = plpy.execute(compile_params_query)[0]
     metrics_type = res['metrics_type']
     compile_params = "$madlib$" + res['compile_params'] + "$madlib$"
+    object_table = res['object_table']
+    loss_type = get_loss_from_compile_param(res['compile_params'])
+    custom_function_map = None
+    if object_table is not None:
+        custom_fn_list = get_custom_functions_list(res['compile_params'])
+        custom_function_map = query_custom_functions_map(object_table, custom_fn_list)
 
     dist_key_mapping, images_per_seg = get_image_count_per_seg_for_minibatched_data_from_db(test_table)
 
@@ -634,7 +659,7 @@ def evaluate(schema_madlib, model_table, test_table, output_table,
         get_loss_metric_from_keras_eval(
             schema_madlib, test_table, compile_params, model_arch,
             model_weights, use_gpus, accessible_gpus_for_seg, dist_key_mapping,
-            images_per_seg)
+            images_per_seg, custom_function_map=custom_function_map)
 
     if not metrics_type:
         metrics_type = None
@@ -643,8 +668,8 @@ def evaluate(schema_madlib, model_table, test_table, output_table,
     with MinWarning("error"):
         create_output_table = plpy.prepare("""
             CREATE TABLE {0} AS
-            SELECT $1 as loss, $2 as metric, $3 as metrics_type""".format(output_table), ["FLOAT", "FLOAT", "TEXT[]"])
-        plpy.execute(create_output_table, [loss, metric, metrics_type])
+            SELECT $1 as loss, $2 as metric, $3 as metrics_type, $4 as loss_type""".format(output_table), ["FLOAT", "FLOAT", "TEXT[]", "TEXT"])
+        plpy.execute(create_output_table, [loss, metric, metrics_type, loss_type])
 
     if is_mult_model:
         plpy.execute("DROP VIEW IF EXISTS {0}".format(model_summary_table))
@@ -674,7 +699,8 @@ def validate_evaluate(module_name, model_table, model_summary_table, test_table,
 def get_loss_metric_from_keras_eval(schema_madlib, table, compile_params,
                                     model_arch, serialized_weights, use_gpus,
                                     accessible_gpus_for_seg, dist_key_mapping, images_per_seg,
-                                    is_final_iteration=True, model_table=None, mst_key=None):
+                                    is_final_iteration=True, custom_function_map=None,
+                                    model_table=None, mst_key=None):
 
     dist_key_col = '0' if is_platform_pg() else DISTRIBUTION_KEY_COLNAME
     gp_segment_id_col = '0' if is_platform_pg() else '__table__.{0}'.format(GP_SEGMENT_ID_COLNAME)
@@ -709,7 +735,8 @@ def get_loss_metric_from_keras_eval(schema_madlib, table, compile_params,
                                             ARRAY{images_per_seg},
                                             {use_gpus}::BOOLEAN,
                                             ARRAY{accessible_gpus_for_seg},
-                                            {is_final_iteration}
+                                            {is_final_iteration},
+                                            {custom_map_var}
                                             )) as loss_metric
         from {table} AS __table__ {mult_sql}
         """
@@ -718,12 +745,15 @@ def get_loss_metric_from_keras_eval(schema_madlib, table, compile_params,
         weights = '__mt__.{0}'.format(MODEL_WEIGHTS_COLNAME)
         mst_key_col = ModelSelectionSchema.MST_KEY
         mult_sql = ', {model_table} AS __mt__ WHERE {mst_key_col} = {mst_key}'.format(**locals())
-        res = plpy.execute(eval_sql.format(**locals()))
+        custom_map_var = '$1'
+        evaluate_query = plpy.prepare(eval_sql.format(**locals()), ["bytea"])
+        res = plpy.execute(evaluate_query, [custom_function_map])
     else:
         weights = '$1'
         mult_sql = ''
-        evaluate_query = plpy.prepare(eval_sql.format(**locals()), ["bytea"])
-        res = plpy.execute(evaluate_query, [serialized_weights])
+        custom_map_var = '$2'
+        evaluate_query = plpy.prepare(eval_sql.format(**locals()), ["bytea", "bytea"])
+        res = plpy.execute(evaluate_query, [serialized_weights, custom_function_map])
 
     loss_metric = res[0]['loss_metric']
     return loss_metric
@@ -735,7 +765,7 @@ def internal_keras_eval_transition(state, dependent_var, independent_var,
                                    dist_key, dist_key_mapping, current_seg_id,
                                    segments_per_host, images_per_seg,
                                    use_gpus, accessible_gpus_for_seg,
-                                   is_final_iteration, **kwargs):
+                                   is_final_iteration, custom_function_map=None, **kwargs):
     SD = kwargs['SD']
     device_name = get_device_name_and_set_cuda_env(accessible_gpus_for_seg[current_seg_id], current_seg_id)
     agg_loss, agg_metric, agg_image_count = state
@@ -755,7 +785,7 @@ def internal_keras_eval_transition(state, dependent_var, independent_var,
                                                   accessible_gpus_for_seg[current_seg_id],
                                                   segments_per_host,
                                                   model_architecture,
-                                                  compile_params)
+                                                  compile_params, custom_function_map)
     if not agg_image_count:
         # These should already be 0, but just in case make sure
         agg_metric = 0

@@ -56,6 +56,7 @@ SELECT assert(
         pg_typeof(normalizing_const) = 'real'::regtype AND
         name is NULL AND
         description is NULL AND
+        object_table is NULL AND
         model_size > 0 AND
         madlib_version is NOT NULL AND
         compile_params = $$ optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['mae']$$::text AND
@@ -417,3 +418,15 @@ SELECT madlib_keras_fit(
     $$ optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['accuracy']$$::text,
     $$ batch_size=2, epochs=1, verbose=0 $$::text,
     3);
+
+-- Test invalid loss function in compile_param
+DROP TABLE IF EXISTS keras_saved_out, keras_saved_out_summary;
+SELECT assert(trap_error($TRAP$SELECT madlib_keras_fit(
+    'cifar_10_sample_test_shape_batched',
+    'keras_saved_out',
+    'model_arch',
+    3,
+    $$ optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='custom_fn', metrics=['accuracy']$$::text,
+    $$ batch_size=2, epochs=1, verbose=0 $$::text,
+    3);$TRAP$) = 1,
+    'Object table not specified for custom function in compile_params.');

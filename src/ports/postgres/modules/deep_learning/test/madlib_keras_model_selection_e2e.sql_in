@@ -161,5 +161,115 @@ SELECT assert(loss >= 0 AND
         metrics_type = '{accuracy}', 'Evaluate output validation failed.  Actual:' || __to_char(evaluate_out))
 FROM evaluate_out;
 
+-- TEST custom loss function
+-- Custom loss function returns 0 as the loss
+CREATE OR REPLACE FUNCTION custom_function_zero_object()
+RETURNS BYTEA AS
+$$
+import dill
+def test_custom_fn(a, b):
+  c = a*b*0
+  return c
+
+pb=dill.dumps(test_custom_fn)
+return pb
+$$ language plpythonu;
+
+
+DROP TABLE IF EXISTS test_custom_function_table;
+SELECT load_custom_function('test_custom_function_table', custom_function_zero_object(), 'test_custom_fn', 'returns test_custom_fn');
+
+-- Prepare model selection table with four rows
+DROP TABLE IF EXISTS mst_object_table, mst_object_table_summary;
+SELECT load_model_selection_table(
+    'iris_model_arch',
+    'mst_object_table',
+    ARRAY[1],
+    ARRAY[
+        $$loss='categorical_crossentropy', optimizer='Adam(lr=0.01)', metrics=['accuracy']$$,
+        $$loss='test_custom_fn', optimizer='Adam(lr=0.001)', metrics=['accuracy']$$
+    ],
+    ARRAY[
+        $$batch_size=16, epochs=1$$
+    ],
+    'test_custom_function_table'
+);
+
+DROP TABLE if exists iris_multiple_model_custom_fn, iris_multiple_model_custom_fn_summary, iris_multiple_model_custom_fn_info;
+SELECT madlib_keras_fit_multiple_model(
+	'iris_data_packed',
+	'iris_multiple_model_custom_fn',
+	'mst_object_table',
+	3,
+	FALSE,
+	'iris_data_one_hot_encoded_packed',
+	1
+);
+
+SELECT assert(
+        model_arch_table = 'iris_model_arch' AND
+        validation_table = 'iris_data_one_hot_encoded_packed' AND
+        model_info = 'iris_multiple_model_custom_fn_info' AND
+        source_table = 'iris_data_packed' AND
+        model = 'iris_multiple_model_custom_fn' AND
+        dependent_varname = 'class_text' AND
+        independent_varname = 'attributes' AND
+        madlib_version is NOT NULL AND
+        num_iterations = 3 AND
+        start_training_time < now() AND
+        end_training_time < now() AND
+        num_classes = 3 AND
+        class_values = '{Iris-setosa,Iris-versicolor,Iris-virginica}' AND
+        dependent_vartype LIKE '%char%' AND
+        normalizing_const = 1,
+        'Keras Fit Multiple Output Summary Validation failed. Actual:' || __to_char(summary))
+FROM (SELECT * FROM iris_multiple_model_custom_fn_summary) summary;
+
+SELECT assert(
+        model_type = 'madlib_keras' AND
+        model_size > 0 AND
+        fit_params = $MAD$batch_size=16, epochs=1$MAD$::text AND
+        metrics_type = '{accuracy}' AND
+        training_metrics_final >= 0  AND
+        training_loss_final  = 0  AND
+        training_loss = '{0,0,0}' AND
+        array_upper(training_metrics, 1) = 3 AND
+        array_upper(training_loss, 1) = 3 AND
+        validation_metrics_final >= 0  AND
+        validation_loss_final  = 0  AND
+        array_upper(validation_metrics, 1) = 3 AND
+        array_upper(validation_loss, 1) = 3 AND
+        array_upper(metrics_elapsed_time, 1) = 3,
+        'Keras Fit Multiple Output Info Validation failed. Actual:' || __to_char(info))
+FROM (SELECT * FROM iris_multiple_model_custom_fn_info where compile_params like '%test_custom_fn%') info;
+
+-- Run Predict
+DROP TABLE IF EXISTS iris_predict;
+SELECT madlib_keras_predict(
+    'iris_multiple_model_custom_fn',
+    'iris_data',
+    'id',
+    'attributes',
+    'pg_temp.iris_predict',
+    'prob',
+    NULL,
+    1);
+
+-- Run Evaluate
+DROP TABLE IF EXISTS evaluate_out;
+SELECT madlib_keras_evaluate(
+    'iris_multiple_model_custom_fn',
+    'iris_data_val',
+    'evaluate_out',
+    NULL,
+    2);
+
+SELECT assert(loss = 0 AND
+        metric >= 0 AND
+        metrics_type = '{accuracy}' AND
+        loss_type = 'test_custom_fn', 'Evaluate output validation failed.  Actual:' || __to_char(evaluate_out))
+FROM evaluate_out;
+
+
 DROP SCHEMA __MADLIB__DEEP_LEARNING_SCHEMA__MADLIB__ CASCADE;
 !>)
