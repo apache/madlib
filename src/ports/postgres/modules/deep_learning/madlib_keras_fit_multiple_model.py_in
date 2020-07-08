@@ -153,7 +153,11 @@ class FitMultipleModel():
 
         self.msts = self.fit_validator_train.msts
         self.model_arch_table = self.fit_validator_train.model_arch_table
+        self.object_table = self.fit_validator_train.object_table
         self.metrics_iters = []
+        self.object_map_col = 'object_map'
+        if self.object_table is not None:
+            self.populate_object_map()
 
         original_cuda_env = None
         if CUDA_VISIBLE_DEVICES_KEY in os.environ:
@@ -272,6 +276,7 @@ class FitMultipleModel():
                 seg_ids,
                 images_per_seg,
                 [], [], epoch, True,
+                mst[self.object_map_col],
                 self.model_output_table,
                 mst[self.mst_key_col])
             mst_metric_eval_time[mst[self.mst_key_col]] \
@@ -287,6 +292,31 @@ class FitMultipleModel():
             grand_schedule[dist_key] = rotate(msts, index)
         return grand_schedule
 
+    def populate_object_map(self):
+        builtin_losses = dir(losses)
+        # Track distinct custom functions in compile_params
+        custom_fn_names = []
+        # Track their corresponding mst_keys to pass along the custom function
+        # definition read from the object table.
+        # For compile_params calling builtin functions the object_map is set to
+        # None.
+        custom_fn_mst_idx = []
+        for mst, mst_idx in zip(self.msts, range(len(self.msts))):
+            compile_params = mst[self.compile_params_col]
+            # We assume that the compile_param is validated as part
+            # of the loading mst_table and thus not validating here
+            # Also, it is validated later when we compile the model
+            # on the segments
+            compile_dict = convert_string_of_args_to_dict(compile_params)
+            if (compile_dict['loss'] not in builtin_losses):
+                custom_fn_names.append(compile_dict['loss'])
+                custom_fn_mst_idx.append(mst_idx)
+        if len(custom_fn_names) > 0:
+            # Pass only unique custom_fn_names to query from object table
+            custom_fn_object_map = query_custom_functions_map(self.object_table, list(set(custom_fn_names)))
+            for mst_idx in custom_fn_mst_idx:
+                self.msts[mst_idx][self.object_map_col] = custom_fn_object_map
+
     def create_mst_schedule_table(self, mst_row):
         mst_temp_query = """
                          CREATE {self.unlogged_table} TABLE {self.mst_current_schedule_tbl}
@@ -294,7 +324,8 @@ class FitMultipleModel():
                                  {self.compile_params_col} VARCHAR,
                                  {self.fit_params_col} VARCHAR,
                                  {dist_key_col} INTEGER,
-                                 {self.mst_key_col} INTEGER)
+                                 {self.mst_key_col} INTEGER,
+                                 {self.object_map_col} BYTEA)
                          """.format(dist_key_col=dist_key_col, **locals())
         plpy.execute(mst_temp_query)
         for mst, dist_key in zip(mst_row, self.dist_keys):
@@ -303,21 +334,24 @@ class FitMultipleModel():
                 compile_params = mst[self.compile_params_col]
                 fit_params = mst[self.fit_params_col]
                 mst_key = mst[self.mst_key_col]
+                object_map = mst[self.object_map_col]
             else:
                 model_id = "NULL"
                 compile_params = "NULL"
                 fit_params = "NULL"
                 mst_key = "NULL"
-            mst_insert_query = """
+                object_map = None
+            mst_insert_query = plpy.prepare(
+                               """
                                INSERT INTO {self.mst_current_schedule_tbl}
                                    VALUES ({model_id},
                                            $madlib${compile_params}$madlib$,
                                            $madlib${fit_params}$madlib$,
                                            {dist_key},
-                                           {mst_key})
-                                """.format(**locals())
-            plpy.execute(mst_insert_query)
-
+                                           {mst_key},
+                                           $1)
+                                """.format(**locals()), ["BYTEA"])
+            plpy.execute(mst_insert_query, [object_map])
 
     def create_model_output_table(self):
         output_table_create_query = """
@@ -464,6 +498,8 @@ class FitMultipleModel():
             num_classes = len(class_values)
         name = 'NULL' if self.name is None else '$MAD${0}$MAD$'.format(self.name)
         descr = 'NULL' if self.description is None else '$MAD${0}$MAD$'.format(self.description)
+        object_table = 'NULL' if self.object_table is None \
+            else '$MAD${0}$MAD$'.format(self.object_table)
         metrics_iters = self.metrics_iters if self.metrics_iters else 'NULL'
         class_values_colname = CLASS_VALUES_COLNAME
         dependent_vartype_colname = DEPENDENT_VARTYPE_COLNAME
@@ -479,6 +515,8 @@ class FitMultipleModel():
                     $MAD${dependent_varname}$MAD$::TEXT AS dependent_varname,
                     $MAD${independent_varname}$MAD$::TEXT AS independent_varname,
                     $MAD${self.model_arch_table}$MAD$::TEXT AS model_arch_table,
+                    $MAD${self.model_selection_table}$MAD$::TEXT AS model_selection_table,
+                    {object_table}::TEXT AS object_table,
                     {self.num_iterations}::INTEGER AS num_iterations,
                     {self.metrics_compute_frequency}::INTEGER AS metrics_compute_frequency,
                     {self.warm_start} AS warm_start,
@@ -590,7 +628,8 @@ class FitMultipleModel():
                 {use_gpus}::BOOLEAN,
                 ARRAY{self.accessible_gpus_for_seg},
                 {self.mst_weights_tbl}.{self.model_weights_col}::BYTEA,
-                {is_final_iteration}::BOOLEAN
+                {is_final_iteration}::BOOLEAN,
+                {self.mst_weights_tbl}.{self.object_map_col}::BYTEA
                 )::BYTEA AS {self.model_weights_col},
                 {self.mst_weights_tbl}.{self.mst_key_col} AS {self.mst_key_col}
                 ,src.{dist_key_col} AS {dist_key_col}
