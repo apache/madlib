@@ -11,6 +11,8 @@ import time
 import plpy
 from utilities.validate_args import columns_exist_in_table
 from utilities.validate_args import table_exists
+from utilities.validate_args import output_tbl_valid
+from utilities.utilities import unique_string
 from utilities.control import MinWarning
 
 
@@ -123,7 +125,7 @@ def assoc_rules(madlib_schema, support, confidence, tid_col,
         plpy.info("finished checking parameters");
 
     # create the result table for keeping the generated rules
-    plpy.execute("DROP TABLE IF EXISTS {0}.assoc_rules".format(output_schema));
+    output_tbl_valid("{0}.assoc_rules".format(output_schema), 'assoc rules')
     plpy.execute("""
         CREATE TABLE {0}.assoc_rules
             (
@@ -140,9 +142,9 @@ def assoc_rules(madlib_schema, support, confidence, tid_col,
         );
 
     # the auxiliary table for keeping the association rules
-    plpy.execute("DROP TABLE IF EXISTS assoc_rules_aux_tmp");
+    assoc_rules_aux_tmp = unique_string('assoc_rules_aux_tmp')
     plpy.execute("""
-        CREATE TEMP TABLE assoc_rules_aux_tmp
+        CREATE TEMP TABLE {0}
             (
             ruleId      SERIAL,
             pre         TEXT,
@@ -152,18 +154,19 @@ def assoc_rules(madlib_schema, support, confidence, tid_col,
             lift        FLOAT8,
             conviction  FLOAT8
             )
-        m4_ifdef(`__POSTGRESQL__', `', `DISTRIBUTED BY (ruleId)')""");
+        m4_ifdef(`__POSTGRESQL__', `', `DISTRIBUTED BY (ruleId)')
+        """.format(assoc_rules_aux_tmp));
 
     # if the tid in the input table doesn't start with 1 and the IDs are not
     # continuous, then we will make the IDs start with 1 and continuous.
     # note: duplicated records will be removed.
-    plpy.execute("DROP TABLE IF EXISTS assoc_input_unique");
     rv = plpy.execute("""
         SELECT max({0}) as x, min({1}) as i, count({2}) as c
         FROM {3}""".format(tid_col, tid_col, tid_col, input_table));
     if rv[0]["i"] != 1 or rv[0]["x"] - rv[0]["i"] != rv[0]["c"] :
+        assoc_input_unique = unique_string('assoc_input_unique')
         plpy.execute("""
-             CREATE TEMP TABLE assoc_input_unique AS
+             CREATE TEMP TABLE {5} AS
              SELECT
                 dense_rank() OVER (ORDER BY tid)::BIGINT as tid,
                 item
@@ -176,7 +179,8 @@ def assoc_rules(madlib_schema, support, confidence, tid_col,
                 GROUP BY 1,2
              ) t
              m4_ifdef(`__POSTGRESQL__', `', `DISTRIBUTED BY (tid)')
-             """.format(tid_col, item_col, input_table, tid_col, item_col)
+             """.format(tid_col, item_col, input_table, tid_col, item_col,
+                        assoc_input_unique)
              );
 
     if verbose :
@@ -184,8 +188,8 @@ def assoc_rules(madlib_schema, support, confidence, tid_col,
 
     rv = plpy.execute("""
         SELECT count(DISTINCT tid) as c1, count(DISTINCT item) as c2
-        FROM assoc_input_unique
-        """);
+        FROM {assoc_input_unique}
+        """.format(**locals()));
     num_tranx = rv[0]["c1"];
     num_prod = rv[0]["c2"];
     min_supp_tranx = float(num_tranx) * support;
@@ -196,35 +200,35 @@ def assoc_rules(madlib_schema, support, confidence, tid_col,
 
     # get the items whose counts are greater than the given
     # support counts. Each item will be given a continuous number.
-    plpy.execute("DROP TABLE IF EXISTS assoc_item_uniq");
+    assoc_item_uniq = unique_string('assoc_item_uniq')
     plpy.execute("""
-        CREATE TEMP TABLE assoc_item_uniq (item_id, item_text, cnt) AS
+        CREATE TEMP TABLE {assoc_item_uniq} (item_id, item_text, cnt) AS
         SELECT row_number() OVER (ORDER BY cnt DESC)::BIGINT,
            item::TEXT,
            cnt::FLOAT8
         FROM (
            SELECT item AS item, count(tid) as cnt
-           FROM assoc_input_unique
+           FROM {assoc_input_unique}
            GROUP BY item
         ) t
-        WHERE cnt::FLOAT8 >= {0}
+        WHERE cnt::FLOAT8 >= {min_supp_tranx}
         m4_ifdef(`__POSTGRESQL__', `', `DISTRIBUTED BY (item_id)')
-        """.format(min_supp_tranx));
+        """.format(**locals()));
 
     if verbose :
         plpy.info("finished encoding items");
 
-    rv = plpy.execute("SELECT count(item_id) as c FROM assoc_item_uniq");
+    rv = plpy.execute("SELECT count(item_id) as c FROM {assoc_item_uniq}".format(**locals()));
     num_supp_prod = rv[0]["c"];
 
-    plpy.execute("DROP TABLE IF EXISTS assoc_enc_input");
+    assoc_enc_input = unique_string('assoc_enc_input')
     plpy.execute("""
-         CREATE TEMP TABLE assoc_enc_input (tid, item, cnt) AS
+         CREATE TEMP TABLE {assoc_enc_input} (tid, item, cnt) AS
          SELECT t1.tid, t2.item_id, t2.cnt
-         FROM assoc_input_unique t1, assoc_item_uniq t2
+         FROM {assoc_input_unique} t1, {assoc_item_uniq} t2
          WHERE t1.item = t2.item_text
          m4_ifdef(`__POSTGRESQL__', `', `DISTRIBUTED BY (tid)')
-         """);
+         """.format(**locals()));
 
     if verbose :
         plpy.info("finished encoding input table: {0}".format(
@@ -234,71 +238,68 @@ def assoc_rules(madlib_schema, support, confidence, tid_col,
     begin_step_exec = time.time();
 
     # this table keeps the patterns in each iteration.
-    plpy.execute("DROP TABLE IF EXISTS assoc_rule_sets");
+    assoc_rule_sets = unique_string('assoc_rule_sets')
     plpy.execute("""
-        CREATE TEMP TABLE assoc_rule_sets
+        CREATE TEMP TABLE {assoc_rule_sets}
             (
             text_svec   TEXT,
-            set_list    {0}.svec,
+            set_list    {madlib_schema}.svec,
             support     FLOAT8,
             iteration   INT
             )
         m4_ifdef(`__POSTGRESQL__', `', `DISTRIBUTED BY (text_svec)')
-        """.format(madlib_schema));
+        """.format(**locals()));
 
     # this table keeps the patterns in the current iteration.
-    plpy.execute("DROP TABLE IF EXISTS assoc_rule_sets_loop");
+    assoc_rule_sets_loop = unique_string('assoc_rule_sets_loop')
     plpy.execute("""
-        CREATE TEMP TABLE assoc_rule_sets_loop
+        CREATE TEMP TABLE {assoc_rule_sets_loop}
             (
             id          BIGINT,
-            set_list    {0}.svec,
+            set_list    {madlib_schema}.svec,
             support     FLOAT8,
-            tids        {1}.svec
+            tids        {madlib_schema}.svec
             )
         m4_ifdef(`__POSTGRESQL__', `', `DISTRIBUTED BY (id)')
-        """.format(madlib_schema, madlib_schema));
+        """.format(**locals()));
 
     # this table adds a new column to order the table by its setlist
-    plpy.execute("DROP TABLE IF EXISTS assoc_rule_sets_loop_ordered");
+    assoc_rule_sets_loop_ordered = unique_string('assoc_rule_sets_loop_ordered')
     plpy.execute("""
-        CREATE TEMP TABLE assoc_rule_sets_loop_ordered
+        CREATE TEMP TABLE {assoc_rule_sets_loop_ordered}
             (
             id          BIGINT,
-            set_list    {0}.svec,
+            set_list    {madlib_schema}.svec,
             support     FLOAT8,
-            tids        {1}.svec,
+            tids        {madlib_schema}.svec,
             newrownum   BIGINT
             )
         m4_ifdef(`__POSTGRESQL__', `', `DISTRIBUTED BY (newrownum)')
-        """.format(madlib_schema, madlib_schema));
+        """.format(**locals()));
 
     plpy.execute("""
-         INSERT INTO assoc_rule_sets_loop (id, set_list, support, tids)
+         INSERT INTO {assoc_rule_sets_loop} (id, set_list, support, tids)
          SELECT
              t.item,
-            {0}.svec_cast_positions_float8arr
-              (ARRAY[t.item], ARRAY[1], {1}, 0),
-            t.cnt::FLOAT8 / {2},
-            {3}.svec_cast_positions_float8arr
-                (array_agg(t.tid), array_agg(1), {4}, 0)
-         FROM assoc_enc_input t
+            {madlib_schema}.svec_cast_positions_float8arr
+              (ARRAY[t.item], ARRAY[1], {num_supp_prod}, 0),
+            t.cnt::FLOAT8 / {num_tranx},
+            {madlib_schema}.svec_cast_positions_float8arr
+                (array_agg(t.tid), array_agg(1), {num_tranx}, 0)
+         FROM {assoc_enc_input} t
          GROUP BY t.item, t.cnt
-         """.format(madlib_schema, num_supp_prod, num_tranx, madlib_schema,
-                    num_tranx)
-         );
+         """.format(**locals()));
 
     plpy.execute("""
-            INSERT INTO assoc_rule_sets_loop_ordered(id, set_list, support,
+            INSERT INTO {assoc_rule_sets_loop_ordered}(id, set_list, support,
                                                      tids, newrownum)
             SELECT *, row_number() over (order by set_list) as newrownum
-            FROM assoc_rule_sets_loop
-            """
-            );
+            FROM {assoc_rule_sets_loop}
+            """.format(**locals()));
     rv = plpy.execute("""
         SELECT count(id) as c1, max(id) as c2
-        FROM assoc_rule_sets_loop
-        """);
+        FROM {assoc_rule_sets_loop}
+        """.format(**locals()));
     num_item_loop = rv[0]["c1"];
     max_item_loop = rv[0]["c2"];
 
@@ -310,17 +311,17 @@ def assoc_rules(madlib_schema, support, confidence, tid_col,
 
     # As two different svecs may have the same hash key,
     # we use this table to assign a unique ID for each svec.
-    plpy.execute("DROP TABLE IF EXISTS assoc_loop_aux");
+    assoc_loop_aux = unique_string('al_aux')
     plpy.execute("""
-         CREATE TEMP TABLE assoc_loop_aux
+         CREATE TEMP TABLE {assoc_loop_aux}
             (
             id              BIGSERIAL,
-            set_list        {0}.svec,
+            set_list        {madlib_schema}.svec,
             support         FLOAT8,
-            tids            {1}.svec
+            tids            {madlib_schema}.svec
             )
          m4_ifdef(`__POSTGRESQL__', `', `DISTRIBUTED BY (id)')
-         """.format(madlib_schema, madlib_schema));
+         """.format(**locals()));
 
     if verbose  :
         plpy.info("{0} Frequent itemsets found in this iteration".format(
@@ -328,24 +329,23 @@ def assoc_rules(madlib_schema, support, confidence, tid_col,
         plpy.info("Completed iteration # 1. Time: {0}".format(
             time.time() - begin_step_exec));
 
-    iter = 0;
+    curr_iter = 0;
     num_products_threshold = num_supp_prod
-    while num_item_loop > 0 and iter < max_itemset_size:
+    while num_item_loop > 0 and curr_iter < max_itemset_size:
         begin_step_exec = time.time();
-        iter = iter + 1;
+        curr_iter = curr_iter + 1;
 
         if verbose  :
-            plpy.info("Beginning iteration # {0}".format(iter + 1));
+            plpy.info("Beginning iteration # {0}".format(curr_iter + 1));
 
         plpy.execute("""
-             INSERT INTO assoc_rule_sets
+             INSERT INTO {assoc_rule_sets}
                 (text_svec, set_list, support, iteration)
              SELECT array_to_string(
-                    {0}.svec_nonbase_positions(set_list, 0), ','),
+                    {madlib_schema}.svec_nonbase_positions(set_list, 0), ','),
                     set_list,
-                    support, {1}
-             FROM assoc_rule_sets_loop""".format(madlib_schema, iter)
-             );
+                    support, {curr_iter}
+             FROM {assoc_rule_sets_loop}""".format(**locals()));
 
         if verbose  :
             plpy.info("time of preparing data: {0}".format(
@@ -366,7 +366,7 @@ def assoc_rules(madlib_schema, support, confidence, tid_col,
         # (a,b,c) combined with (a,b,d) will give (a,b,c,d)
         # (a,b,c) combined with (c,d,e) will give (a,b,c,d,e)
 
-        # The assoc_rule_sets_loop_ordered table is ordered by the setlist.
+        # The {assoc_rule_sets_loop_ordered} table is ordered by the setlist.
         # This ensures that the sets (a,b,c) and (a,b,d) are close to each other.
         # t3.newrownum-t1.newrownum <= {num_products_threshold} check ensures that we are
         # looking at a subset of pairs of itemsets instead of all pairs.
@@ -380,10 +380,10 @@ def assoc_rules(madlib_schema, support, confidence, tid_col,
         # The iterp1 check ensures that the new itemset is of a certain size.
         # At every iteration, we increase the target itemset size by one.
 
-        plpy.execute("ALTER SEQUENCE assoc_loop_aux_id_seq RESTART WITH 1");
-        plpy.execute("TRUNCATE TABLE assoc_loop_aux");
+        plpy.execute("ALTER SEQUENCE {assoc_loop_aux}_id_seq RESTART WITH 1".format(**locals()));
+        plpy.execute("TRUNCATE TABLE {assoc_loop_aux}".format(**locals()));
         plpy.execute("""
-           INSERT INTO assoc_loop_aux(set_list, support, tids)
+           INSERT INTO {assoc_loop_aux}(set_list, support, tids)
            SELECT DISTINCT ON({madlib_schema}.svec_to_string(set_list)) set_list,
                    {madlib_schema}.svec_l1norm(tids)::FLOAT8 / {num_tranx},
                    tids
@@ -394,34 +394,32 @@ def assoc_rules(madlib_schema, support, confidence, tid_col,
                     {madlib_schema}.svec_mult(t1.set_list, t3.set_list)
                 ) as set_list,
                 {madlib_schema}.svec_mult(t1.tids, t3.tids) as tids
-             FROM assoc_rule_sets_loop_ordered t1,
-                  assoc_rule_sets_loop_ordered t3
+             FROM {assoc_rule_sets_loop_ordered} t1,
+                  {assoc_rule_sets_loop_ordered} t3
              WHERE t1.newrownum < t3.newrownum AND
                    t3.newrownum-t1.newrownum <= {num_products_threshold}
            ) t
            WHERE {madlib_schema}.svec_l1norm(set_list)::INT = {iterp1} AND
                  {madlib_schema}.svec_l1norm(tids)::FLOAT8 >= {min_supp_tranx}
-           """.format(iterp1=iter + 1, **locals())
+           """.format(iterp1=curr_iter + 1, **locals())
            );
 
-        plpy.execute("TRUNCATE TABLE assoc_rule_sets_loop");
+        plpy.execute("TRUNCATE TABLE {assoc_rule_sets_loop}".format(**locals()));
         plpy.execute("""
-            INSERT INTO assoc_rule_sets_loop(id, set_list, support, tids)
-            SELECT * FROM assoc_loop_aux
-            """
-            );
-        plpy.execute("TRUNCATE TABLE assoc_rule_sets_loop_ordered");
+            INSERT INTO {assoc_rule_sets_loop}(id, set_list, support, tids)
+            SELECT * FROM {assoc_loop_aux}
+            """.format(**locals()));
+        plpy.execute("TRUNCATE TABLE {assoc_rule_sets_loop_ordered}".format(**locals()));
         plpy.execute("""
-            INSERT INTO assoc_rule_sets_loop_ordered(id, set_list, support, tids, newrownum)
+            INSERT INTO {assoc_rule_sets_loop_ordered}(id, set_list, support, tids, newrownum)
             SELECT *, row_number() over (order by set_list) as newrownum
-            FROM assoc_rule_sets_loop
-            """
-            );
+            FROM {assoc_rule_sets_loop}
+            """.format(**locals()));
 
         rv = plpy.execute("""
             SELECT count(id) as c1, max(id) as c2
-            FROM assoc_rule_sets_loop
-            """);
+            FROM {assoc_rule_sets_loop}
+            """.format(**locals()));
         num_item_loop = rv[0]["c1"];
         max_item_loop = rv[0]["c2"];
         __assert(
@@ -435,19 +433,19 @@ def assoc_rules(madlib_schema, support, confidence, tid_col,
         # We can ideally do away with the if condition, but it's a trade-off:
         # The query in the if condition might be a considerable overhead when
         # the original number of products is very low compared to the number
-        # of rows in assoc_rule_sets_loop in a given iteration. On the other
+        # of rows in {assoc_rule_sets_loop} in a given iteration. On the other
         # hand, it can be a considerable improvement if we have a lot of
         # distinct products and only a small number of them are present in
         # frequent itemsets. But this is specific to datasets and parameters
         # (such as support), so the following if statment is a compromise.
         if num_item_loop < num_supp_prod:
-            # Get number of 1's from all set_lists in assoc_rule_sets_loop
+            # Get number of 1's from all set_lists in {assoc_rule_sets_loop}
             num_products_threshold = plpy.execute("""
                 SELECT {madlib_schema}.svec_l1norm(
                     {madlib_schema}.svec_count_nonzero(a)) AS cnt
                 FROM (
                     SELECT {madlib_schema}.svec_sum(set_list) AS a
-                    FROM assoc_rule_sets_loop
+                    FROM {assoc_rule_sets_loop}
                     ) t
                 """.format(**locals()))[0]['cnt']
 
@@ -455,11 +453,11 @@ def assoc_rules(madlib_schema, support, confidence, tid_col,
             plpy.info("{0} Frequent itemsets found in this iteration".format(
                 num_item_loop));
             plpy.info("Completed iteration # {0}. Time: {1}".format(
-                    iter + 1, time.time() - begin_step_exec));
+                    curr_iter + 1, time.time() - begin_step_exec));
 
         cal_itemsets_time = cal_itemsets_time + (time.time() - begin_step_exec);
 
-    if (num_item_loop == 0) and (iter < 2) and verbose :
+    if (num_item_loop == 0) and (curr_iter < 2) and verbose :
         plpy.info("No association rules found that meet given criteria");
         plpy.info("finished itemsets finding. Time: {0}".format(
             cal_itemsets_time));
@@ -471,7 +469,7 @@ def assoc_rules(madlib_schema, support, confidence, tid_col,
         begin_step_exec = time.time();
         # generate all the final rules
         plpy.execute("""
-             INSERT INTO assoc_rules_aux_tmp
+             INSERT INTO {assoc_rules_aux_tmp}
                 (pre, post, support, confidence, lift, conviction)
              SELECT
                 t.item[1],
@@ -491,77 +489,73 @@ def assoc_rules(madlib_schema, support, confidence, tid_col,
                                                        {max_lhs_size},
                                                        {max_rhs_size}) as item,
                     support as support_xy
-                FROM assoc_rule_sets
+                FROM {assoc_rule_sets}
                 WHERE iteration > 1
-            ) t, assoc_rule_sets x, assoc_rule_sets y
+            ) t, {assoc_rule_sets} x, {assoc_rule_sets} y
             WHERE t.item[1] = x.text_svec AND
                   t.item[2] = y.text_svec AND
                   (t.support_xy / x.support) >= {confidence}
-            """.format(**locals())
-            );
+            """.format(**locals()));
 
         # generate the readable rules
-        plpy.execute("DROP TABLE IF EXISTS pre_tmp_table");
+        pre_tmp_table = unique_string('pre_tmp_table')
         plpy.execute("""
-             CREATE TEMP TABLE pre_tmp_table AS
+             CREATE TEMP TABLE {pre_tmp_table} AS
              SELECT ruleId, array_agg(item_text) as pre
              FROM
                 (
                     SELECT
                         ruleId,
                         unnest(string_to_array(pre, ','))::BIGINT as pre_id
-                    FROM assoc_rules_aux_tmp
-                ) s1, assoc_item_uniq s2
+                    FROM {assoc_rules_aux_tmp}
+                ) s1, {assoc_item_uniq} s2
              WHERE s1.pre_id = s2.item_id
              GROUP BY ruleId
              m4_ifdef(`__POSTGRESQL__', `', `DISTRIBUTED BY (ruleId)')
-             """);
+             """.format(**locals()));
 
-        plpy.execute("DROP TABLE IF EXISTS post_tmp_table");
+        post_tmp_table = unique_string('post_tmp_table')
         plpy.execute("""
-             CREATE TEMP TABLE post_tmp_table AS
+             CREATE TEMP TABLE {post_tmp_table} AS
              SELECT ruleId, array_agg(item_text) as post
              FROM
                 (
                     SELECT
                         ruleId,
                         unnest(string_to_array(post, ','))::BIGINT as post_id
-                    FROM assoc_rules_aux_tmp
-                ) s1, assoc_item_uniq s2
+                    FROM {assoc_rules_aux_tmp}
+                ) s1, {assoc_item_uniq} s2
              WHERE s1.post_id = s2.item_id
              GROUP BY ruleId
              m4_ifdef(`__POSTGRESQL__', `', `DISTRIBUTED BY (ruleId)')
-             """);
+             """.format(**locals()));
 
         plpy.execute("""
-             INSERT INTO {0}.assoc_rules
-             SELECT t1.ruleId, t2.pre, t3.post, t1.support*{1}::INT AS count, support,
+             INSERT INTO {output_schema}.assoc_rules
+             SELECT t1.ruleId, t2.pre, t3.post, t1.support*{num_tranx}::INT AS count, support,
                     confidence, lift, conviction
              FROM
-                assoc_rules_aux_tmp t1,
-                pre_tmp_table t2,
-                post_tmp_table t3
+                {assoc_rules_aux_tmp} t1,
+                {pre_tmp_table} t2,
+                {post_tmp_table} t3
              WHERE t1.ruleId = t2.ruleId AND t1.ruleId = t3.ruleId
-             """.format(output_schema, num_tranx)
-             );
+             """.format(**locals()));
 
 
         # if in verbose mode, we will keep all the intermediate tables
         if not verbose :
             plpy.execute("""
-                DROP TABLE IF EXISTS post_tmp_table;
-                DROP TABLE IF EXISTS pre_tmp_table;
-                DROP TABLE IF EXISTS assoc_rules_aux_tmp;
-                DROP TABLE IF EXISTS assoc_input_unique;
-                DROP TABLE IF EXISTS assoc_item_uniq;
-                DROP TABLE IF EXISTS assoc_item_svec;
-                DROP TABLE IF EXISTS assoc_enc_input;
-                DROP TABLE IF EXISTS assoc_rule_sets;
-                DROP TABLE IF EXISTS assoc_rule_sets_loop;
-                DROP TABLE IF EXISTS assoc_rule_sets_loop_ordered;
-                DROP TABLE IF EXISTS assoc_loop_aux;
-                """);
-
+                DROP TABLE IF EXISTS {post_tmp_table};
+                DROP TABLE IF EXISTS {pre_tmp_table};
+                DROP TABLE IF EXISTS {assoc_rules_aux_tmp};
+                DROP TABLE IF EXISTS {assoc_input_unique};
+                DROP TABLE IF EXISTS {assoc_item_uniq};
+                DROP TABLE IF EXISTS {assoc_enc_input};
+                DROP TABLE IF EXISTS {assoc_rule_sets};
+                DROP TABLE IF EXISTS {assoc_rule_sets_loop};
+                DROP TABLE IF EXISTS {assoc_rule_sets_loop_ordered};
+                DROP TABLE IF EXISTS {assoc_loop_aux};
+                """.format(**locals()));
         if verbose :
             rv = plpy.execute("""
                 SELECT count(*) as c FROM {0}.assoc_rules
