@@ -30,6 +30,302 @@ import keras
 import unittest
 from mock import *
 import plpy_mock as plpy
+import numpy as np
+
+class GenerateModelSelectionConfigsTestCase(unittest.TestCase):
+    def setUp(self):
+        # The side effects of this class(writing to the output table) are not
+        # tested here. They are tested in dev-check.
+        self.plpy_mock = Mock(spec='error')
+        patches = {
+            'plpy': plpy
+        }
+
+        self.plpy_mock_execute = MagicMock()
+        plpy.execute = self.plpy_mock_execute
+
+        self.module_patcher = patch.dict('sys.modules', patches)
+        self.module_patcher.start()
+        import deep_learning.madlib_keras_model_selection
+        self.module = deep_learning.madlib_keras_model_selection
+        self.module.MstLoaderInputValidator = MagicMock()
+
+        self.subject = self.module.MstSearch
+        self.model_selection_table = 'mst_table'
+        self.model_arch_table = 'model_arch_library'
+        self.model_id_list = [1, 2]
+        self.compile_params_grid = """
+            {'loss': ['categorical_crossentropy'], 
+            'optimizer_params_list': [ {'optimizer': ['Adam', 'SGD'], 'lr': [0.0001, 0.1]} ], 
+            'metrics': ['accuracy']}
+        """
+        self.fit_params_grid = """
+        {'batch_size': [8, 32], 'epochs': [1, 2]}
+        """
+        self.search_type = 'grid'
+        self.num_configs = None
+        self.random_state = None
+        self.object_table = 'custom_function_table'
+
+    def test_mst_table_dimension(self):
+        generate_mst = self.subject(
+            self.model_selection_table,
+            self.model_arch_table,
+            self.model_id_list,
+            self.compile_params_grid,
+            self.fit_params_grid
+        )
+        self.assertEqual(32, len(generate_mst.msts))
+
+        generate_mst = self.subject(
+            self.model_selection_table,
+            self.model_arch_table,
+            self.model_id_list,
+            self.compile_params_grid,
+            self.fit_params_grid,
+            'random',
+            9,
+            42
+        )
+        self.assertEqual(9, len(generate_mst.msts))
+
+        generate_mst = self.subject(
+            self.model_selection_table,
+            self.model_arch_table,
+            self.model_id_list,
+            self.compile_params_grid,
+            self.fit_params_grid,
+            'random',
+            9,
+            None
+        )
+        self.assertEqual(9, len(generate_mst.msts))
+
+        self.compile_params_grid = """
+            {'loss': ['categorical_crossentropy'],   
+            'optimizer_params_list': [ {'optimizer': ['Adam', 'SGD'], 'lr': [0.0001, 0.1]} ],
+            'metrics': ['accuracy']}
+        """
+        generate_mst = self.subject(
+            self.model_selection_table,
+            self.model_arch_table,
+            self.model_id_list,
+            self.compile_params_grid,
+            self.fit_params_grid,
+            'random',
+            9,
+            None
+        )
+        self.assertEqual(9, len(generate_mst.msts))
+
+    def test_invalid_input_args(self):
+        with self.assertRaises(plpy.PLPYException):
+            generate_mst = self.subject(
+                self.model_selection_table,
+                self.model_arch_table,
+                self.model_id_list,
+                self.compile_params_grid,
+                self.fit_params_grid,
+                self.search_type,
+                8
+            )
+        with self.assertRaises(plpy.PLPYException):
+            generate_mst = self.subject(
+                self.model_selection_table,
+                self.model_arch_table,
+                self.model_id_list,
+                self.compile_params_grid,
+                self.fit_params_grid,
+                self.search_type,
+                8,
+                42,
+                self.object_table
+            )
+        with self.assertRaises(plpy.PLPYException):
+            generate_mst = self.subject(
+                self.model_selection_table,
+                self.model_arch_table,
+                self.model_id_list,
+                self.compile_params_grid,
+                self.fit_params_grid,
+                'random'
+            )
+        with self.assertRaises(plpy.PLPYException):
+            generate_mst = self.subject(
+                self.model_selection_table,
+                self.model_arch_table,
+                self.model_id_list,
+                self.compile_params_grid,
+                self.fit_params_grid,
+                'random',
+                None,
+                19
+            )
+        with self.assertRaises(plpy.PLPYException):
+            generate_mst = self.subject(
+                self.model_selection_table,
+                self.model_arch_table,
+                [-3],
+                self.compile_params_grid,
+                self.fit_params_grid,
+                'random',
+                None,
+                19
+            )
+
+        self.compile_params_grid = """
+            {'losss': ['categorical_crossentropy'],
+            'optimizer_params_list': [ {'optimizer': ['Adam', 'SGD'], 'lr': [0.0001, 0.1]} ],
+            'metrics': ['accuracy']}
+        """
+        self.fit_params_grid = """
+        {'batch_size': [8, 32], 'epchs': [1, 2]}
+        """
+
+        with self.assertRaises(plpy.PLPYException):
+            generate_mst = self.subject(
+                self.model_selection_table,
+                self.model_arch_table,
+                self.model_id_list,
+                self.compile_params_grid,
+                self.fit_params_grid
+            )
+
+    def test_duplicate_params(self):
+        self.model_id_list = [1, 1, 2]
+        generate_mst = self.subject(
+            self.model_selection_table,
+            self.model_arch_table,
+            self.model_id_list,
+            self.compile_params_grid,
+            self.fit_params_grid
+        )
+        self.assertEqual(32, len(generate_mst.msts))
+        generate_mst = self.subject(
+            self.model_selection_table,
+            self.model_arch_table,
+            self.model_id_list,
+            self.compile_params_grid,
+            self.fit_params_grid,
+            'random',
+            17
+        )
+        self.assertEqual(17, len(generate_mst.msts))
+
+    def test_array_inference(self):
+        # as literal_eval can only parse python datatypes
+        lr_lst = repr(list(np.random.uniform(0.001, 0.1, 3)))
+
+        self.compile_params_grid = "{'loss': ['categorical_crossentropy'], " \
+                                   "'optimizer_params_list': [ {'optimizer': ['Adam', 'SGD'], " \
+                                   "'lr': " + str(lr_lst) + "} ], " \
+                                   "'metrics': ['accuracy']}"
+
+        generate_mst1 = self.subject(
+            self.model_selection_table,
+            self.model_arch_table,
+            self.model_id_list,
+            self.compile_params_grid,
+            self.fit_params_grid
+        )
+        self.assertEqual(48, len(generate_mst1.msts))
+
+    def test_output_types(self):
+        generate_mst1 = self.subject(
+            self.model_selection_table,
+            self.model_arch_table,
+            self.model_id_list,
+            self.compile_params_grid,
+            self.fit_params_grid,
+            'grid'
+        )
+        for d1 in generate_mst1.msts:
+            self.assertEqual("loss='categorical_crossentropy'" in d1['compile_params'], True)
+
+        generate_mst2 = self.subject(
+            self.model_selection_table,
+            self.model_arch_table,
+            self.model_id_list,
+            self.compile_params_grid,
+            self.fit_params_grid,
+            'random',
+            6,
+            47
+        )
+        for d2 in generate_mst2.msts:
+            self.assertEqual("loss='categorical_crossentropy'" in d2['compile_params'], True)
+
+    def test_seed_result_reproducibility(self):
+        generate_mst1 = self.subject(
+            self.model_selection_table,
+            self.model_arch_table,
+            self.model_id_list,
+            self.compile_params_grid,
+            self.fit_params_grid,
+            'random',
+            6,
+            47
+        )
+        generate_mst2 = self.subject(
+            self.model_selection_table,
+            self.model_arch_table,
+            self.model_id_list,
+            self.compile_params_grid,
+            self.fit_params_grid,
+            'random',
+            6,
+            47
+        )
+        generate_mst3 = self.subject(
+            self.model_selection_table,
+            self.model_arch_table,
+            self.model_id_list,
+            self.compile_params_grid,
+            self.fit_params_grid,
+            'random',
+            6,
+            47
+        )
+        self.assertEqual(generate_mst1.msts, generate_mst2.msts, generate_mst3.msts)
+
+    def test_multiple_optimizer_configs(self):
+        self.compile_params_grid = """
+            {'loss': ['categorical_crossentropy'],
+            'optimizer_params_list': [ {'optimizer': ['Adagrad', 'Adam'], 'lr': [0.9, 0.95]},
+            {'optimizer': ['Adam', 'SGD']} ],
+            'metrics': ['accuracy']}
+        """
+        generate_mst1 = self.subject(
+            self.model_selection_table,
+            self.model_arch_table,
+            self.model_id_list,
+            self.compile_params_grid,
+            self.fit_params_grid,
+            'gr'
+        )
+        self.assertEqual(48, len(generate_mst1.msts))
+
+        self.compile_params_grid = """
+            {'loss': ['categorical_crossentropy'],
+            'optimizer_params_list': [ {'optimizer': ['Adagrad', 'Adam'], 'lr': [0.9, 0.95, 'log'],
+            'epsilon': [0.3, 0.5, 'log_near_one']},
+            {'optimizer': ['Adam', 'SGD'], 'lr': [0.6, 0.65, 'log']} ],
+            'metrics': ['accuracy']}
+        """
+        generate_mst2 = self.subject(
+            self.model_selection_table,
+            self.model_arch_table,
+            self.model_id_list,
+            self.compile_params_grid,
+            self.fit_params_grid,
+            'rand',
+            6,
+            6
+        )
+        self.assertEqual(6, len(generate_mst2.msts))
+
+    def tearDown(self):
+            self.module_patcher.stop()
 
 class LoadModelSelectionTableTestCase(unittest.TestCase):
     def setUp(self):
