@@ -31,6 +31,164 @@ m4_include(`SQLCommon.m4')
              `\1../../modules/deep_learning/test/madlib_keras_custom_function.setup.sql_in'
 )
 
+------------------------------------------------------------------------------------------------------
+-- Generate Model Selection Configs tests
+
+-- Valid inputs should pass and yield 24 msts in the table
+DROP TABLE IF EXISTS mst_table, mst_table_summary;
+SELECT generate_model_configs(
+    'iris_model_arch',
+    'mst_table',
+    ARRAY[1,2],
+    $$
+    {'loss': ['categorical_crossentropy'],
+    'optimizer_params_list': [ {'optimizer': ['Adam', 'SGD'], 'lr': [0.0001, 0.1, 1]} ],
+    'metrics': ['accuracy']}
+    $$,
+    $$
+    {'batch_size': [8, 32], 'epochs': [4]}
+    $$
+);
+
+SELECT assert(
+    COUNT(*)=24,
+    'The length of mst table does not match with the inputs'
+)
+FROM mst_table;
+
+-- Test summary table output
+SELECT assert(
+    model_arch_table = 'iris_model_arch',
+    'Model selection output Summary Validation failed. Actual:' || __to_char(summary))
+FROM (SELECT * FROM mst_table_summary) summary;
+
+-- Invalid arguments must be errored out
+
+DROP TABLE IF EXISTS mst_table, mst_table_summary;
+SELECT assert(trap_error($TRAP$
+    SELECT generate_model_configs(
+        'iris_model_arch',
+        'mst_table',
+        ARRAY[-1, 2],
+        $$
+        {'loss': ['categorical_crossentropy'],
+        'optimizer_params_list': [ {'optimizer': ['Adam', 'SGD'], 'lr': [0.0001, 0.1, 1]} ],
+        'metrics': ['accuracy']}
+        $$,
+        $$
+        {'batch_size': [8, 32], 'epochs': [4]}
+        $$
+    );
+$TRAP$)=1, 'Should error out if model_id is not in the model arch table');
+
+DROP TABLE IF EXISTS mst_table, mst_table_summary;
+SELECT assert(trap_error($TRAP$
+    SELECT generate_model_configs(
+        'iris_model_arch',
+        'mst_table',
+        ARRAY[1],
+        $${foo='bar'}$$,
+        $${batch_size='bar'}$$
+    );
+$TRAP$)=1, 'Should error out if the provided parameters are not valid');
+
+-- Incremental Loading for appending
+DROP TABLE IF EXISTS mst_table, mst_table_summary;
+SELECT generate_model_configs(
+    'iris_model_arch',
+    'mst_table',
+    ARRAY[1],
+    $$
+    {'loss': ['categorical_crossentropy'],
+    'optimizer_params_list': [ {'optimizer': ['Adam', 'SGD'], 'lr': [0.0001, 0.1, 'log']} ],
+    'metrics': ['accuracy']}
+    $$,
+    $$
+    {'batch_size': [8, 32], 'epochs': [4]}
+    $$,
+    'random',
+    8
+);
+SELECT assert(
+    COUNT(*)=8,
+    'The length of mst table does not match with the inputs'
+)
+FROM mst_table;
+
+-- purposely dropping summary table to ensure same incremental loading workflow
+DROP TABLE IF EXISTS mst_table_summary;
+SELECT generate_model_configs(
+    'iris_model_arch',
+    'mst_table',
+    ARRAY[2],
+    $$
+    {'loss': ['categorical_crossentropy'],
+    'optimizer_params_list': [ {'optimizer': ['Adam', 'SGD'], 'lr': [0.0001, 0.1, 'log']} ],
+    'metrics': ['accuracy']}
+    $$,
+    $$
+    {'batch_size': [8, 32], 'epochs': [4]}
+    $$,
+    'random',
+    7
+);
+select assert(
+ model_arch_table='iris_model_arch', 'Fail')
+  from (select model_arch_table from mst_table_summary) t;
+
+
+SELECT assert(
+    COUNT(*)=15,
+    'The length of mst table does not match with the inputs'
+)
+FROM mst_table;
+
+-- not dropping summary table to ensure assertion
+SELECT generate_model_configs(
+    'iris_model_arch',
+    'mst_table',
+    ARRAY[1,2],
+    $$
+    {'loss': ['categorical_crossentropy'],
+    'optimizer_params_list': [ {'optimizer': ['Adam', 'SGD'], 'lr': [0.0001, 0.1, 'linear']} ],
+    'metrics': ['accuracy']}
+    $$,
+    $$
+    {'batch_size': [8, 32], 'epochs': [4]}
+    $$,
+    'random',
+    12
+);
+
+select assert(
+ model_arch_table='iris_model_arch', 'Fail')
+  from (select model_arch_table from mst_table_summary) t;
+
+SELECT assert(
+    COUNT(*)=27,
+    'The length of mst table does not match with the inputs'
+)
+FROM mst_table;
+
+SELECT assert(trap_error($TRAP$
+    SELECT generate_model_configs(
+        'invalid_model_arch',
+        'mst_table',
+        ARRAY[1, 2],
+        $$
+        {'loss': ['categorical_crossentropy'],
+        'optimizer_params_list': [ {'optimizer': ['Adam', 'SGD'], 'lr': [0.0001, 0.1, 'log']} ],
+        'metrics': ['accuracy']}
+        $$,
+        $$
+        {'batch_size': [8, 32], 'epochs': [4]}
+        $$,
+        'random',
+        14
+    );
+$TRAP$)=1, 'Should error out if previous summary table does not have the same model arch table');
+------------------------------------------------------------------------------------------------------
+
 -- MST table generation tests
 -- Valid inputs should pass and yield 6 msts in the table
 DROP TABLE IF EXISTS mst_table, mst_table_summary;

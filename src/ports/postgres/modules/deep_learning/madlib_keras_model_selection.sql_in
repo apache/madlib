@@ -20,8 +20,8 @@
  *
  * @file madlib_keras_model_selection.sql_in
  *
- * @brief SQL functions for model hopper distributed training
- * @date August 2019
+ * @brief Generate configurations for model selection (hyperparams, architectures)
+ * @date August 2020
  *
  *
  *//* ----------------------------------------------------------------------- */
@@ -30,36 +30,44 @@ m4_include(`SQLCommon.m4')
 /**
 @addtogroup grp_keras_setup_model_selection
 
-@brief Utility function to set up a model selection table for model architecture search
+@brief Utility function to generate configurations for model architecture search
 and hyperparameter tuning.
 
 \warning <em> This MADlib method is still in early stage development.
 Interface and implementation are subject to change. </em>
 
 <div class="toc"><b>Contents</b><ul>
-<li class="level1"><a href="#load_mst_table">Load Model Selection Table</a></li>
+<li class="level1"><a href="#gen_mst_configs">Generate Model Configurations</a></li>
+<li class="level1"><a href="#load_mst_table">Load Model Selection Table [Deprecated]</a></li>
 <li class="level1"><a href="#example">Examples</a></li>
 <li class="level1"><a href="#notes">Notes</a></li>
 <li class="level1"><a href="#related">Related Topics</a></li>
 </ul></div>
 
-This utility function sets up a model selection table
-for use by the multiple model Keras fit feature of MADlib.
-By model selection we mean both hyperparameter tuning and
-model architecture search.  The table defines the unique combinations
-of model architectures, compile and fit parameters
-to run on a massively parallel processing database cluster.
+This module generates model configurations 
+for training multiple models at the same time
+using <a href="group__grp__keras__run__model__selection.html">Run Model Selection</a>.
+By model configurations we mean both hyperparameters and
+model architectures. Grid search or random search 
+can be used to generate the configurations. 
+The output table from this module
+defines the combinations of model architectures, 
+compile and fit parameters to be trained in parallel.
 
-@anchor load_mst_table
-@par Load Model Selection Table
+<!-- --------------------------------------START-------------------------------------------------------------- -->
+@anchor gen_mst_configs
+@par Generate Model Configurations
 
 <pre class="syntax">
-load_model_selection_table(
+generate_model_configs(
     model_arch_table,
     model_selection_table,
     model_id_list,
-    compile_params_list,
-    fit_params_list,
+    compile_params_grid,
+    fit_params_grid,
+    search_type,
+    num_configs,
+    random_state,
     object_table
     )
 </pre>
@@ -69,11 +77,11 @@ load_model_selection_table(
   <dt>model_arch_table</dt>
   <dd>VARCHAR. Table containing model architectures and weights.
   For more information on this table
-  refer to <a href="group__grp__keras__model__arch.html">Load Model</a>.
+  refer to the module <a href="group__grp__keras__model__arch.html">Load Models</a>.
   </dd>
 
   <dt>model_selection_table</dt>
-  <dd>VARCHAR. Model selection table created by this utility.  A summary table
+  <dd>VARCHAR. Model selection table created by this module.  A summary table
   named <model_selection_table>_summary is also created.  Contents of both output
   tables are described below.
   </dd>
@@ -82,28 +90,85 @@ load_model_selection_table(
   <dd>INTEGER[]. Array of model IDs from the 'model_arch_table' to be included
   in the run combinations.  For hyperparameter search, this will typically be
   one model ID.  For model architecture search, this will be the different model IDs
-  that you want to test.
+  that you want to compare.
   </dd>
 
-  <dt>compile_params_list</dt>
-  <dd>VARCHAR[]. Array of compile parameters to be tested.  Each element
-  of the array should consist of a string of compile parameters
-  exactly as it is to be passed to Keras. For custom loss functions or custom metrics,
-  list the custom function name in the usual way, and also provide the name of the
-  table where the serialized objects reside in the parameter 'object_table'
-  below.
+  <dt>compile_params_grid</dt>
+  <dd>VARCHAR. String representation of a Python dictionary 
+  of compile parameters to be tested. Each entry
+  of the dictionary should consist of keys as compile parameter names, 
+  and values as a Python list of compile parameter values to be passed to Keras.
+  Also, optimizer parameters are a nested dictionary to allow different
+  optimizer types to have different parameters or ranges of parameters.
+  Here is an example:
+
+  <pre class="example">
+  $$
+    {'loss': ['categorical_crossentropy'], 
+     'optimizer_params_list': [ 
+        {'optimizer': ['SGD'], 'lr': [0.0001, 0.001, 'log'], 'momentum': [0.95, 0.99, 'log_near_one']}, 
+        {'optimizer': ['Adam'], 'lr': [0.01, 0.1, 'log'], 'decay': [1e-6, 1e-4, 'log']}], 
+     'metrics': ['accuracy']
+    }
+  $$
+  </pre>
+
+  The following types of sampling are supported:  'linear', 'log' and 'log_near_one'.
+  The 'log_near_one' sampling is useful for exponentially weighted average types of parameters like momentum, 
+  which are very sensitive to changes near 1.  It has the effect of producing more values near 1 
+  than regular log-based sampling. 
+  
+  In the case of grid search, omit the sample type and just put the grid points in the list.
+  For custom loss functions or custom metrics,
+  list the custom function name in the usual way, and provide the name of the
+  table where the serialized Python objects reside using the 
+  parameter 'object_table' below. See the examples section later on this page for more examples. 
   </dd>
 
-  <dt>fit_params_list</dt>
-  <dd>VARCHAR[].  Array of fit parameters to be tested.  Each element
-  of the array should consist of a string of fit parameters
-  exactly as it is to be passed to Keras.
+  <dt>fit_params_grid</dt>
+  <dd>VARCHAR.  String representation of a Python dictionary 
+  of fit parameters to be tested. Each entry
+  of the dictionary should consist of keys as fit parameter names, 
+  and values as a Python list of fit parameter values
+  to be passed to Keras. Here is an example:
+
+  <pre class="example">
+  $$ 
+    {'batch_size': [32, 64, 128, 256],
+     'epochs': [10, 20, 30] 
+    } 
+  $$
+  </pre>
+  See the examples section later on this page for more examples.
+  </dd>
+
+  <dt>search_type</dt>
+  <dd>VARCHAR, 'grid' or 'random'. Search strategy
+  for generating model configurations.  For grid search, will generate
+  all combinations of model IDs + compile params + fit params.  For
+  random search, specify the number of configs you want to 
+  generate using the 'num_configs' parameter below. 
+  Note that you can also use short forms
+  for the 'grid' or 'random' keywords, e.g.,'rand' or 'r' instead 
+  of writing out 'random' in full.  
+  </dd>
+
+  <dt>num_configs (optional)</dt>
+  <dd>INTEGER, default: NULL. Number of model configs to generate.
+  Only applies when search_type='random'.
+  </dd>
+
+  <dt>random_state (optional)</dt>
+  <dd>INTEGER, default: NULL.  Pseudo random number generator 
+  state used for random uniform sampling from lists of possible 
+  values. Pass an integer for reproducible output across multiple
+  function calls.  Only applies when search_type='random'.
   </dd>
 
   <dt>object_table (optional)</dt>
-  <dd>VARCHAR, default: NULL. Name of the table containing Python objects in the case that
-  custom loss functions or custom metrics are specified in the
-  parameter 'compile_params_list'.
+  <dd>VARCHAR, default: NULL. Name of the table containing 
+  Python objects in the case that custom loss functions or 
+  custom metrics are specified in the 'compile_params_grid'.
   </dd>
 
 </dl>
@@ -152,6 +217,68 @@ load_model_selection_table(
       </tr>
     </table>
 </br>
+
+<!-- --------------------------------------END-------------------------------------------------------------- -->
+
+@anchor load_mst_table
+@par Load Model Selection Table [Deprecated]
+
+This method is deprecated and replaced by the method 'generate_model_configs()' described above.
+
+<pre class="syntax">
+load_model_selection_table(
+    model_arch_table,
+    model_selection_table,
+    model_id_list,
+    compile_params_list,
+    fit_params_list,
+    object_table
+    )
+</pre>
+
+\b Arguments
+<dl class="arglist">
+  <dt>model_arch_table</dt>
+  <dd>VARCHAR. Table containing model architectures and weights.
+  For more information on this table
+  refer to <a href="group__grp__keras__model__arch.html">Load Model</a>.
+  </dd>
+
+  <dt>model_selection_table</dt>
+  <dd>VARCHAR. Model selection table created by this utility.  A summary table
+  named <model_selection_table>_summary is also created.  Contents of both output
+  tables are the same as described above for the method 'generate_model_configs()'.
+  </dd>
+
+  <dt>model_id_list</dt>
+  <dd>INTEGER[]. Array of model IDs from the 'model_arch_table' to be included
+  in the run combinations.  For hyperparameter search, this will typically be
+  one model ID.  For model architecture search, this will be the different model IDs
+  that you want to test.
+  </dd>
+
+  <dt>compile_params_list</dt>
+  <dd>VARCHAR[]. Array of compile parameters to be tested.  Each element
+  of the array should consist of a string of compile parameters
+  exactly as it is to be passed to Keras. For custom loss functions or custom metrics,
+  list the custom function name in the usual way, and also provide the name of the
+  table where the serialized objects reside in the parameter 'object_table'
+  below.
+  </dd>
+
+  <dt>fit_params_list</dt>
+  <dd>VARCHAR[].  Array of fit parameters to be tested.  Each element
+  of the array should consist of a string of fit parameters
+  exactly as it is to be passed to Keras.
+  </dd>
+
+  <dt>object_table (optional)</dt>
+  <dd>VARCHAR, default: NULL. Name of the table containing Python objects in the case that
+  custom loss functions or custom metrics are specified in the
+  parameter 'compile_params_list'.
+  </dd>
+
+</dl>
 
 @anchor example
 @par Examples
@@ -256,7 +383,300 @@ SELECT model_id, name, description FROM model_arch_library ORDER BY model_id;
 (2 rows)
 </pre>
 
--# Load model selection table.  Select the model(s) from the model
+-# Generate model configurations using grid search. The output table for grid search 
+contains the unique combinations of model architectures, compile and fit parameters.
+<pre class="example">
+DROP TABLE IF EXISTS mst_table, mst_table_summary;
+SELECT madlib.generate_model_configs(
+                                        'model_arch_library', -- model architecture table
+                                        'mst_table',          -- model selection table output
+                                         ARRAY[1,2],          -- model ids from model architecture table
+                                         $$
+                                            {'loss': ['categorical_crossentropy'], 
+                                             'optimizer_params_list': [ {'optimizer': ['Adam', 'SGD'], 'lr': [0.001, 0.01]} ], 
+                                             'metrics': ['accuracy']}
+                                         $$,                  -- compile_param_grid    
+                                         $$ 
+                                         { 'batch_size': [64, 128],
+                                           'epochs': [10] 
+                                         } 
+                                         $$,                  -- fit_param_grid                                          
+                                         'grid'               -- search_type 
+                                         );
+SELECT * FROM mst_table ORDER BY mst_key;
+</pre>
+<pre class="result">
+ mst_key | model_id |                                 compile_params                                  |        fit_params        
+---------+----------+---------------------------------------------------------------------------------+--------------------------
+       1 |        1 | optimizer='Adam(lr=0.001)',metrics=['accuracy'],loss='categorical_crossentropy' | epochs=10,batch_size=64
+       2 |        1 | optimizer='Adam(lr=0.001)',metrics=['accuracy'],loss='categorical_crossentropy' | epochs=10,batch_size=128
+       3 |        1 | optimizer='SGD(lr=0.001)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=64
+       4 |        1 | optimizer='SGD(lr=0.001)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=128
+       5 |        1 | optimizer='Adam(lr=0.01)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=64
+       6 |        1 | optimizer='Adam(lr=0.01)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=128
+       7 |        1 | optimizer='SGD(lr=0.01)',metrics=['accuracy'],loss='categorical_crossentropy'   | epochs=10,batch_size=64
+       8 |        1 | optimizer='SGD(lr=0.01)',metrics=['accuracy'],loss='categorical_crossentropy'   | epochs=10,batch_size=128
+       9 |        2 | optimizer='Adam(lr=0.001)',metrics=['accuracy'],loss='categorical_crossentropy' | epochs=10,batch_size=64
+      10 |        2 | optimizer='Adam(lr=0.001)',metrics=['accuracy'],loss='categorical_crossentropy' | epochs=10,batch_size=128
+      11 |        2 | optimizer='SGD(lr=0.001)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=64
+      12 |        2 | optimizer='SGD(lr=0.001)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=128
+      13 |        2 | optimizer='Adam(lr=0.01)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=64
+      14 |        2 | optimizer='Adam(lr=0.01)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=128
+      15 |        2 | optimizer='SGD(lr=0.01)',metrics=['accuracy'],loss='categorical_crossentropy'   | epochs=10,batch_size=64
+      16 |        2 | optimizer='SGD(lr=0.01)',metrics=['accuracy'],loss='categorical_crossentropy'   | epochs=10,batch_size=128
+(16 rows)
+</pre>
+Note that above uses the same learning rate for the two optimizers. If you wanted to 
+use different learning rates and different parameters for different optimizers (common):
+<pre class="example">
+DROP TABLE IF EXISTS mst_table, mst_table_summary;
+SELECT madlib.generate_model_configs(
+                                        'model_arch_library', -- model architecture table
+                                        'mst_table',          -- model selection table output
+                                         ARRAY[1,2],          -- model ids from model architecture table
+                                         $$
+                                            {'loss': ['categorical_crossentropy'], 
+                                             'optimizer_params_list': [
+                                                 {'optimizer': ['SGD']}, 
+                                                 {'optimizer': ['SGD'], 'lr': [0.0001, 0.001], 'momentum': [0.95]}, 
+                                                 {'optimizer': ['Adam'], 'lr': [0.01, 0.1], 'decay': [1e-4]}], 
+                                             'metrics': ['accuracy']}
+                                         $$,                  -- compile_param_grid    
+                                         $$ 
+                                         { 'batch_size': [64, 128],
+                                           'epochs': [10] 
+                                         } 
+                                         $$,                  -- fit_param_grid                                          
+                                         'grid'               -- search_type 
+                                         );
+SELECT * FROM mst_table ORDER BY mst_key;
+</pre>
+<pre class="result">
+ mst_key | model_id |                                        compile_params                                         |        fit_params        
+---------+----------+-----------------------------------------------------------------------------------------------+--------------------------
+       1 |        1 | optimizer='SGD()',metrics=['accuracy'],loss='categorical_crossentropy'                        | epochs=10,batch_size=64
+       2 |        1 | optimizer='SGD()',metrics=['accuracy'],loss='categorical_crossentropy'                        | epochs=10,batch_size=128
+       3 |        2 | optimizer='SGD()',metrics=['accuracy'],loss='categorical_crossentropy'                        | epochs=10,batch_size=64
+       4 |        2 | optimizer='SGD()',metrics=['accuracy'],loss='categorical_crossentropy'                        | epochs=10,batch_size=128
+       5 |        1 | optimizer='SGD(lr=0.0001,momentum=0.95)',metrics=['accuracy'],loss='categorical_crossentropy' | epochs=10,batch_size=64
+       6 |        1 | optimizer='SGD(lr=0.0001,momentum=0.95)',metrics=['accuracy'],loss='categorical_crossentropy' | epochs=10,batch_size=128
+       7 |        1 | optimizer='SGD(lr=0.001,momentum=0.95)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=64
+       8 |        1 | optimizer='SGD(lr=0.001,momentum=0.95)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=128
+       9 |        2 | optimizer='SGD(lr=0.0001,momentum=0.95)',metrics=['accuracy'],loss='categorical_crossentropy' | epochs=10,batch_size=64
+      10 |        2 | optimizer='SGD(lr=0.0001,momentum=0.95)',metrics=['accuracy'],loss='categorical_crossentropy' | epochs=10,batch_size=128
+      11 |        2 | optimizer='SGD(lr=0.001,momentum=0.95)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=64
+      12 |        2 | optimizer='SGD(lr=0.001,momentum=0.95)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=128
+      13 |        1 | optimizer='Adam(lr=0.01,decay=0.0001)',metrics=['accuracy'],loss='categorical_crossentropy'   | epochs=10,batch_size=64
+      14 |        1 | optimizer='Adam(lr=0.01,decay=0.0001)',metrics=['accuracy'],loss='categorical_crossentropy'   | epochs=10,batch_size=128
+      15 |        1 | optimizer='Adam(lr=0.1,decay=0.0001)',metrics=['accuracy'],loss='categorical_crossentropy'    | epochs=10,batch_size=64
+      16 |        1 | optimizer='Adam(lr=0.1,decay=0.0001)',metrics=['accuracy'],loss='categorical_crossentropy'    | epochs=10,batch_size=128
+      17 |        2 | optimizer='Adam(lr=0.01,decay=0.0001)',metrics=['accuracy'],loss='categorical_crossentropy'   | epochs=10,batch_size=64
+      18 |        2 | optimizer='Adam(lr=0.01,decay=0.0001)',metrics=['accuracy'],loss='categorical_crossentropy'   | epochs=10,batch_size=128
+      19 |        2 | optimizer='Adam(lr=0.1,decay=0.0001)',metrics=['accuracy'],loss='categorical_crossentropy'    | epochs=10,batch_size=64
+      20 |        2 | optimizer='Adam(lr=0.1,decay=0.0001)',metrics=['accuracy'],loss='categorical_crossentropy'    | epochs=10,batch_size=128
+(20 rows)
+</pre>
+
+-# Generate model configurations using random search. The output table for random search 
+contains the specified number of model architectures, compile and fit parameters, 
+sampled from the specified distributions.
+<pre class="example">
+DROP TABLE IF EXISTS mst_table, mst_table_summary;
+SELECT madlib.generate_model_configs(
+                                        'model_arch_library', -- model architecture table
+                                        'mst_table',          -- model selection table output
+                                         ARRAY[1,2],          -- model ids from model architecture table
+                                         $$
+                                            {'loss': ['categorical_crossentropy'], 
+                                             'optimizer_params_list': [ 
+                                                 {'optimizer': ['SGD'], 'lr': [0.0001, 0.001, 'log'], 'momentum': [0.95, 0.99, 'log_near_one']}, 
+                                                 {'optimizer': ['Adam'], 'lr': [0.01, 0.1, 'log'], 'decay': [1e-6, 1e-4, 'log']}], 
+                                             'metrics': ['accuracy']}
+                                         $$,                  -- compile_param_grid    
+                                         $$ 
+                                         { 'batch_size': [64, 128],
+                                           'epochs': [10] 
+                                         } 
+                                         $$,                  -- fit_param_grid                                          
+                                         'random',            -- search_type
+                                         20
+                                         );
+SELECT * FROM mst_table ORDER BY mst_key;
+</pre>
+<pre class="result">
+ mst_key | model_id |                                                       compile_params                                                        |        fit_params        
+---------+----------+-----------------------------------------------------------------------------------------------------------------------------+--------------------------
+       1 |        1 | optimizer='SGD(lr=0.000195784477708685,momentum=0.9768159513291526)',metrics=['accuracy'],loss='categorical_crossentropy'   | epochs=10,batch_size=128
+       2 |        2 | optimizer='SGD(lr=0.0002499200066875511,momentum=0.9807877269510826)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=64
+       3 |        1 | optimizer='SGD(lr=0.0009097798285407916,momentum=0.9706029152411938)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=64
+       4 |        1 | optimizer='SGD(lr=0.0001272842475986666,momentum=0.9858583458057799)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=128
+       5 |        1 | optimizer='SGD(lr=0.0001367874444015989,momentum=0.9772674033475668)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=128
+       6 |        2 | optimizer='SGD(lr=0.0002233708561319785,momentum=0.9743315606145182)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=128
+       7 |        1 | optimizer='SGD(lr=0.0009066689970530365,momentum=0.9835897505288803)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=128
+       8 |        1 | optimizer='SGD(lr=0.0007589416356572876,momentum=0.958751411608181)',metrics=['accuracy'],loss='categorical_crossentropy'   | epochs=10,batch_size=64
+       9 |        2 | optimizer='Adam(lr=0.057814228170084386,decay=1.0641718595377929e-06)',metrics=['accuracy'],loss='categorical_crossentropy' | epochs=10,batch_size=128
+      10 |        1 | optimizer='Adam(lr=0.01927466297833838,decay=1.039476442716842e-06)',metrics=['accuracy'],loss='categorical_crossentropy'   | epochs=10,batch_size=128
+      11 |        2 | optimizer='Adam(lr=0.014718555287257804,decay=9.947768661882175e-05)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=64
+      12 |        1 | optimizer='Adam(lr=0.010397686133595378,decay=2.5730580994358942e-05)',metrics=['accuracy'],loss='categorical_crossentropy' | epochs=10,batch_size=128
+      13 |        1 | optimizer='SGD(lr=0.0008624562426613621,momentum=0.989134963527059)',metrics=['accuracy'],loss='categorical_crossentropy'   | epochs=10,batch_size=64
+      14 |        2 | optimizer='SGD(lr=0.00010555974470031461,momentum=0.980489419269402)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=128
+      15 |        2 | optimizer='Adam(lr=0.05041699703418617,decay=4.685540619995589e-05)',metrics=['accuracy'],loss='categorical_crossentropy'   | epochs=10,batch_size=128
+      16 |        1 | optimizer='Adam(lr=0.034295140601304126,decay=1.6034699865163222e-06)',metrics=['accuracy'],loss='categorical_crossentropy' | epochs=10,batch_size=64
+      17 |        1 | optimizer='Adam(lr=0.06888969005355218,decay=1.6318109152382423e-05)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=64
+      18 |        2 | optimizer='SGD(lr=0.0008225712651952847,momentum=0.9819748008695103)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=128
+      19 |        1 | optimizer='Adam(lr=0.0819110285922332,decay=1.6912312124827899e-06)',metrics=['accuracy'],loss='categorical_crossentropy'   | epochs=10,batch_size=64
+      20 |        1 | optimizer='Adam(lr=0.011688026325555774,decay=2.9315437856404027e-05)',metrics=['accuracy'],loss='categorical_crossentropy' | epochs=10,batch_size=128
+(20 rows)
+</pre>
+
+-# Incremental loading for more complex combinations.  If it is easier to generate the model configurations 
+incrementally rather than all at once, you can do that by not dropping the model selection table and associated 
+summary table, in which case the new model configurations will be appended to the existing table.  Here we combine two 
+of the previous examples in to a single output table:
+<pre class="example">
+DROP TABLE IF EXISTS mst_table, mst_table_summary;
+SELECT madlib.generate_model_configs(
+                                        'model_arch_library', -- model architecture table
+                                        'mst_table',          -- model selection table output
+                                         ARRAY[1,2],          -- model ids from model architecture table
+                                         $$
+                                            {'loss': ['categorical_crossentropy'], 
+                                             'optimizer_params_list': [ {'optimizer': ['Adam', 'SGD'], 'lr': [0.001, 0.01]} ], 
+                                             'metrics': ['accuracy']}
+                                         $$,                  -- compile_param_grid    
+                                         $$ 
+                                         { 'batch_size': [64, 128],
+                                           'epochs': [10] 
+                                         } 
+                                         $$,                  -- fit_param_grid                                          
+                                         'grid'               -- search_type 
+                                         );
+</pre>
+Now add to the existing table and note that mst_key continues where it left off:
+<pre class="example">
+SELECT madlib.generate_model_configs(
+                                        'model_arch_library', -- model architecture table
+                                        'mst_table',          -- model selection table output
+                                         ARRAY[1,2],          -- model ids from model architecture table
+                                         $$
+                                            {'loss': ['categorical_crossentropy'], 
+                                             'optimizer_params_list': [ 
+                                                 {'optimizer': ['SGD'], 'lr': [0.0001, 0.001, 'log'], 'momentum': [0.95, 0.99, 'log_near_one']}, 
+                                                 {'optimizer': ['Adam'], 'lr': [0.01, 0.1, 'log'], 'decay': [1e-6, 1e-4, 'log']}], 
+                                             'metrics': ['accuracy']}
+                                         $$,                  -- compile_param_grid    
+                                         $$ 
+                                         { 'batch_size': [64, 128],
+                                           'epochs': [10] 
+                                         } 
+                                         $$,                  -- fit_param_grid                                          
+                                         'random',            -- search_type
+                                          20
+                                         );
+SELECT * FROM mst_table ORDER BY mst_key;
+</pre>
+<pre class="result">
+ mst_key | model_id |                                                       compile_params                                                        |        fit_params        
+---------+----------+-----------------------------------------------------------------------------------------------------------------------------+--------------------------
+       1 |        1 | optimizer='Adam(lr=0.001)',metrics=['accuracy'],loss='categorical_crossentropy'                                             | epochs=10,batch_size=64
+       2 |        1 | optimizer='Adam(lr=0.001)',metrics=['accuracy'],loss='categorical_crossentropy'                                             | epochs=10,batch_size=128
+       3 |        1 | optimizer='SGD(lr=0.001)',metrics=['accuracy'],loss='categorical_crossentropy'                                              | epochs=10,batch_size=64
+       4 |        1 | optimizer='SGD(lr=0.001)',metrics=['accuracy'],loss='categorical_crossentropy'                                              | epochs=10,batch_size=128
+       5 |        1 | optimizer='Adam(lr=0.01)',metrics=['accuracy'],loss='categorical_crossentropy'                                              | epochs=10,batch_size=64
+       6 |        1 | optimizer='Adam(lr=0.01)',metrics=['accuracy'],loss='categorical_crossentropy'                                              | epochs=10,batch_size=128
+       7 |        1 | optimizer='SGD(lr=0.01)',metrics=['accuracy'],loss='categorical_crossentropy'                                               | epochs=10,batch_size=64
+       8 |        1 | optimizer='SGD(lr=0.01)',metrics=['accuracy'],loss='categorical_crossentropy'                                               | epochs=10,batch_size=128
+       9 |        2 | optimizer='Adam(lr=0.001)',metrics=['accuracy'],loss='categorical_crossentropy'                                             | epochs=10,batch_size=64
+      10 |        2 | optimizer='Adam(lr=0.001)',metrics=['accuracy'],loss='categorical_crossentropy'                                             | epochs=10,batch_size=128
+      11 |        2 | optimizer='SGD(lr=0.001)',metrics=['accuracy'],loss='categorical_crossentropy'                                              | epochs=10,batch_size=64
+      12 |        2 | optimizer='SGD(lr=0.001)',metrics=['accuracy'],loss='categorical_crossentropy'                                              | epochs=10,batch_size=128
+      13 |        2 | optimizer='Adam(lr=0.01)',metrics=['accuracy'],loss='categorical_crossentropy'                                              | epochs=10,batch_size=64
+      14 |        2 | optimizer='Adam(lr=0.01)',metrics=['accuracy'],loss='categorical_crossentropy'                                              | epochs=10,batch_size=128
+      15 |        2 | optimizer='SGD(lr=0.01)',metrics=['accuracy'],loss='categorical_crossentropy'                                               | epochs=10,batch_size=64
+      16 |        2 | optimizer='SGD(lr=0.01)',metrics=['accuracy'],loss='categorical_crossentropy'                                               | epochs=10,batch_size=128
+      17 |        2 | optimizer='SGD(lr=0.00013996842804647915,momentum=0.9677072493281305)',metrics=['accuracy'],loss='categorical_crossentropy' | epochs=10,batch_size=64
+      18 |        1 | optimizer='Adam(lr=0.04252873277972123,decay=9.503983307511243e-05)',metrics=['accuracy'],loss='categorical_crossentropy'   | epochs=10,batch_size=64
+      19 |        2 | optimizer='Adam(lr=0.06666969394323848,decay=1.5626668941131748e-05)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=128
+      20 |        2 | optimizer='SGD(lr=0.00016137313867804707,momentum=0.954293112127019)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=64
+      21 |        2 | optimizer='Adam(lr=0.019443570245321506,decay=1.2882524497407873e-06)',metrics=['accuracy'],loss='categorical_crossentropy' | epochs=10,batch_size=64
+      22 |        2 | optimizer='Adam(lr=0.06302317748060839,decay=6.238009849562074e-05)',metrics=['accuracy'],loss='categorical_crossentropy'   | epochs=10,batch_size=128
+      23 |        2 | optimizer='SGD(lr=0.00010890482493011119,momentum=0.9826239169968034)',metrics=['accuracy'],loss='categorical_crossentropy' | epochs=10,batch_size=128
+      24 |        1 | optimizer='SGD(lr=0.0009201966766121783,momentum=0.9896730563556151)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=128
+      25 |        2 | optimizer='SGD(lr=0.00028961522836420906,momentum=0.9859394149216544)',metrics=['accuracy'],loss='categorical_crossentropy' | epochs=10,batch_size=128
+      26 |        1 | optimizer='SGD(lr=0.0001503249757866609,momentum=0.9777816636354879)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=64
+      27 |        2 | optimizer='SGD(lr=0.0008405326172626768,momentum=0.9538686498263182)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=64
+      28 |        1 | optimizer='SGD(lr=0.00011926989091387571,momentum=0.9876746918399469)',metrics=['accuracy'],loss='categorical_crossentropy' | epochs=10,batch_size=128
+      29 |        1 | optimizer='Adam(lr=0.018794361633022855,decay=9.387826286694454e-06)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=128
+      30 |        2 | optimizer='SGD(lr=0.0009692977025027591,momentum=0.9878758592330659)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=64
+      31 |        2 | optimizer='SGD(lr=0.0006671929498585603,momentum=0.9786502962872058)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=64
+      32 |        2 | optimizer='Adam(lr=0.03948766165185474,decay=3.056584635386748e-06)',metrics=['accuracy'],loss='categorical_crossentropy'   | epochs=10,batch_size=64
+      33 |        2 | optimizer='Adam(lr=0.020343961099103417,decay=1.183810228780669e-05)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=128
+      34 |        1 | optimizer='Adam(lr=0.016854644990148417,decay=3.561117893117444e-06)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=64
+      35 |        2 | optimizer='SGD(lr=0.0004620089560788749,momentum=0.9887310587871919)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=128
+      36 |        1 | optimizer='SGD(lr=0.0002493912675066962,momentum=0.9892077270385708)',metrics=['accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=128
+(36 rows)
+</pre>
+
+-# Create model selection table manually.  
+If you want more control over the content of the model selection table, 
+you could use grid or random search to generate a large number of combinations, 
+then SELECT a subset of rows for training.  Alternatively, you could manually 
+create the model selection table and the associated summary table. Both must be 
+created since they are needed by the multiple model fit module.
+For example, let's say we don't want all combinations but only want 
+batch_size=4 for model_id=1 and batch_size=8 for model_id=2:
+<pre class="example">
+DROP TABLE IF EXISTS mst_table_manual;
+CREATE TABLE mst_table_manual(
+    mst_key serial,
+    model_id integer,
+    compile_params varchar,
+    fit_params varchar
+);
+INSERT INTO mst_table_manual(model_id, compile_params, fit_params) VALUES
+(1, $$loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']$$, 'batch_size=4,epochs=1'),
+(1, $$loss='categorical_crossentropy',optimizer='Adam(lr=0.01)',metrics=['accuracy']$$, 'batch_size=4,epochs=1'),
+(1, $$loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy']$$, 'batch_size=4,epochs=1'),
+(2, $$loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']$$, 'batch_size=8,epochs=1'),
+(2, $$loss='categorical_crossentropy',optimizer='Adam(lr=0.01)',metrics=['accuracy']$$, 'batch_size=8,epochs=1'),
+(2, $$loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy']$$, 'batch_size=8,epochs=1');
+SELECT * FROM mst_table_manual ORDER BY mst_key;
+</pre>
+<pre class="result">
+ mst_key | model_id      |                                 compile_params                                  |      fit_params
+---------+---------------+---------------------------------------------------------------------------------+-----------------------
+       1 |             1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']   | batch_size=4,epochs=1
+       2 |             1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.01)',metrics=['accuracy']  | batch_size=4,epochs=1
+       3 |             1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy'] | batch_size=4,epochs=1
+       4 |             2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']   | batch_size=8,epochs=1
+       5 |             2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.01)',metrics=['accuracy']  | batch_size=8,epochs=1
+       6 |             2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy'] | batch_size=8,epochs=1
+(6 rows)
+</pre>
+Create the summary table which must be named
+with the model selection output table appended by "_summary":
+<pre class="example">
+DROP TABLE IF EXISTS mst_table_manual_summary;
+CREATE TABLE mst_table_manual_summary (
+    model_arch_table varchar
+);
+INSERT INTO mst_table_manual_summary(model_arch_table) VALUES
+('model_arch_library');
+SELECT * FROM mst_table_manual_summary;
+</pre>
+<pre class="result">
+  model_arch_table
+--------------------+
+ model_arch_library
+(1 row)
+</pre>
+
+-# Custom loss functions and custom metrics.
+TBD
+
+-# <b>[Deprecated]</b> Load model selection table.  This method is replaced 
+by the 'generate_model_configs()' method described above.
+Select the model(s) from the model
 architecture table that you want to run, along with the compile and
 fit parameters.  Unique combinations will be created:
 <pre class="example">
@@ -304,132 +724,10 @@ SELECT * FROM mst_table_summary;
 (1 row)
 </pre>
 
--# Create model selection table manually.  If you would like to
-have more control over the set of model selection parameters
-to run, you can manually create the model selection table and
-the associated summary table. Both must be created since
-they are needed by the multiple model fit module.
-For example, let's say we don't want all combinations
-but only want batch_size=4 for model_id=1 and batch_size=8 for model_id=2:
-<pre class="example">
-DROP TABLE IF EXISTS mst_table_manual;
-CREATE TABLE mst_table_manual(
-    mst_key serial,
-    model_id integer,
-    compile_params varchar,
-    fit_params varchar
-);
-INSERT INTO mst_table_manual(model_id, compile_params, fit_params) VALUES
-(1, $$loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']$$, 'batch_size=4,epochs=1'),
-(1, $$loss='categorical_crossentropy',optimizer='Adam(lr=0.01)',metrics=['accuracy']$$, 'batch_size=4,epochs=1'),
-(1, $$loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy']$$, 'batch_size=4,epochs=1'),
-(2, $$loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']$$, 'batch_size=8,epochs=1'),
-(2, $$loss='categorical_crossentropy',optimizer='Adam(lr=0.01)',metrics=['accuracy']$$, 'batch_size=8,epochs=1'),
-(2, $$loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy']$$, 'batch_size=8,epochs=1');
-SELECT * FROM mst_table_manual ORDER BY mst_key;
-</pre>
-<pre class="result">
- mst_key | model_id      |                                 compile_params                                  |      fit_params
----------+---------------+---------------------------------------------------------------------------------+-----------------------
-       1 |             1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']   | batch_size=4,epochs=1
-       2 |             1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.01)',metrics=['accuracy']  | batch_size=4,epochs=1
-       3 |             1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy'] | batch_size=4,epochs=1
-       4 |             2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']   | batch_size=8,epochs=1
-       5 |             2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.01)',metrics=['accuracy']  | batch_size=8,epochs=1
-       6 |             2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy'] | batch_size=8,epochs=1
-(6 rows)
-</pre>
-Create the summary table which must be named
-with the model selection output table appended by "_summary":
-<pre class="example">
-DROP TABLE IF EXISTS mst_table_manual_summary;
-CREATE TABLE mst_table_manual_summary (
-    model_arch_table varchar
-);
-INSERT INTO mst_table_manual_summary(model_arch_table) VALUES
-('model_arch_library');
-SELECT * FROM mst_table_manual_summary;
-</pre>
-<pre class="result">
-  model_arch_table
---------------------+
- model_arch_library
-(1 row)
-</pre>
-
--# Generate hyperparameters automatically.  You can use other
-libraries or methods to generate hyperparameters according
-to the tests that you want to run. For example, let's randomly
-generate batch size from powers of 2 and learning
-rate on a log scale.
-We use psycopg which is a PostgreSQL database adapter
-for the Python programming language.
-<pre class="example">
-import numpy as np
-import psycopg2 as p2
-conn = p2.connect('postgresql://gpadmin@35.239.240.26:5432/madlib')
-#conn = p2.connect('postgresql://fmcquillan@localhost:5432/madlib')
-cur = conn.cursor()
-\#
-%sql DROP TABLE IF EXISTS mst_table_auto, mst_table_auto_summary;
-\#
-\#compile params
-learning_rate = np.random.permutation([0.1,0.01,0.001,0.0001])[:3]
-compile_param1 = "loss='categorical_crossentropy',optimizer='Adam(lr=" + str(learning_rate[0]) + ")',metrics=['accuracy']"
-compile_param2 = "loss='categorical_crossentropy',optimizer='Adam(lr=" + str(learning_rate[1]) + ")',metrics=['accuracy']"
-compile_param3 = "loss='categorical_crossentropy',optimizer='Adam(lr=" + str(learning_rate[2]) + ")',metrics=['accuracy']"
-compile_params = [compile_param1,compile_param2,compile_param3]
-\#
-\#fit params
-batch_size = np.random.permutation([4,8,16,32,64])[:2]
-fit_param1 = "batch_size=" + str(batch_size[0]) + ",epochs=1"
-fit_param2 = "batch_size=" + str(batch_size[1]) + ",epochs=1"
-fit_params = [fit_param1,fit_param2]
-\#
-query = "SELECT madlib.load_model_selection_table('model_arch_library', 'mst_table_auto', ARRAY[1,2], %s, %s);"
-\#
-cur.execute(query,[compile_params, fit_params])
-conn.commit()
-\#
-\# review model selection table
-%sql SELECT * FROM mst_table_auto ORDER BY mst_key;
-</pre>
-<pre class="result">
- mst_key | model_id      |                                  compile_params                                  |      fit_params
----------+---------------+----------------------------------------------------------------------------------+-----------------------
-       1 |             1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.0001)',metrics=['accuracy'] | batch_size=4,epochs=1
-       2 |             1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.0001)',metrics=['accuracy'] | batch_size=8,epochs=1
-       3 |             1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']    | batch_size=4,epochs=1
-       4 |             1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']    | batch_size=8,epochs=1
-       5 |             1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy']  | batch_size=4,epochs=1
-       6 |             1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy']  | batch_size=8,epochs=1
-       7 |             2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.0001)',metrics=['accuracy'] | batch_size=4,epochs=1
-       8 |             2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.0001)',metrics=['accuracy'] | batch_size=8,epochs=1
-       9 |             2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']    | batch_size=4,epochs=1
-      10 |             2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']    | batch_size=8,epochs=1
-      11 |             2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy']  | batch_size=4,epochs=1
-      12 |             2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy']  | batch_size=8,epochs=1
-(12 rows)
-</pre>
-The name of the model architecture table is stored in the summary table:
-<pre class="example">
-SELECT * FROM mst_table_auto_summary;
-</pre>
-<pre class="result">
-  model_arch_table
---------------------+
- model_arch_library
-(1 row)
-</pre>
-
 @anchor notes
 @par Notes
 
-1. In this method, the same compile and fit parameters are applied to all model architectures
-when generating combinations.  However, you may wish to have different compile and fit parameters
-for each model.  To do so, call 'load_model_selection_table'
-multiple times - once for each model.  Then you can combine the resulting tables using UNION or other means.
-Note that the 'mst_key' must be unique so you will need to regenerate it in your final combined table.
+1. TBD
 
 @anchor related
 @par Related Topics
@@ -462,4 +760,25 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.load_model_selection_table(
 ) RETURNS VOID AS $$
   SELECT MADLIB_SCHEMA.load_model_selection_table($1, $2, $3, $4, $5, NULL);
 $$ LANGUAGE sql VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+/*
+--------------------------------------------------------------------------
+*/
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.generate_model_configs(
+    model_arch_table        VARCHAR,
+    model_selection_table   VARCHAR,
+    model_id_list           INTEGER[],
+    compile_params_grid     VARCHAR,
+    fit_params_grid         VARCHAR,
+    search_type             VARCHAR DEFAULT 'grid',
+    num_configs             INTEGER DEFAULT NULL,
+    random_state            INTEGER DEFAULT NULL,
+    object_table            VARCHAR DEFAULT NULL
+) RETURNS VOID AS $$
+    PythonFunctionBodyOnly(`deep_learning', `madlib_keras_model_selection')
+    with AOControl(False):
+        mst_loader = madlib_keras_model_selection.MstSearch(**globals())
+        mst_loader.load()
+$$ LANGUAGE plpythonu VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
