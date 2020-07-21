@@ -68,6 +68,7 @@ def validate_pagerank_args(schema_madlib, vertex_table, vertex_id, edge_table,
             "PageRank: Invalid damping factor value ({0}), must be between 0 and 1.".
             format(damping_factor))
 
+
     # Validate against the given set of nodes for Personalized Page Rank
     if personalization_vertices:
         grouping_cols = get_table_qualified_col_str(
@@ -76,6 +77,9 @@ def validate_pagerank_args(schema_madlib, vertex_table, vertex_id, edge_table,
             if grouping_cols_list else ''
         src = edge_params["src"]
         dest = edge_params["dest"]
+        input_personalization_vertices_length = len(personalization_vertices)
+
+        personalization_vertices_str = ','.join([str(i) for i in personalization_vertices])
 
         # Get a list which has the number of personalization nodes of each group
         vertices_count_list_by_group = plpy.execute("""
@@ -84,11 +88,10 @@ def validate_pagerank_args(schema_madlib, vertex_table, vertex_id, edge_table,
                 RIGHT JOIN {edge_table}
                 ON ({vertex_table}.{vertex_id} = {edge_table}.{src}
                 OR {vertex_table}.{vertex_id} = {edge_table}.{dest})
-                AND {vertex_table}.{vertex_id} = ANY(ARRAY{personalization_vertices})
+                AND {vertex_table}.{vertex_id} = ANY(ARRAY[{personalization_vertices_str}])
                 {group_by_clause}
             """.format(**locals()))
 
-        input_personalization_vertices_length = len(personalization_vertices)
 
         # The number of personalization nodes for every group should be equal to
         # the number given by input personalization_vertices list. Otherwise,
@@ -277,12 +280,15 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args, out_
                 # factor for computing the random_prob
                 where_clause_ppr = ''
                 if personalization_vertices:
+                    personalization_vertices_str = ','.join(
+                        [str(i) for i in personalization_vertices])
                     where_clause_ppr = """
-                        where __vertices__ = ANY(ARRAY{personalization_vertices})
+                        where __vertices__ = ANY(ARRAY[{personalization_vertices_str}])
                     """.format(**locals())
                     random_prob_grp = 1.0 - damping_factor
                     init_prob_grp = 1.0 / total_ppr_nodes
                 else:
+                    personalization_vertices_str = ''
                     random_prob_grp = """
                             {rand_damp}/COUNT(__vertices__)::DOUBLE PRECISION
                         """.format(**locals())
@@ -315,7 +321,7 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args, out_
                 if personalization_vertices:
                     init_prob_grp_ppr = 1.0 / total_ppr_nodes
                     init_pr = """
-                            CASE when __vertices__ = ANY(ARRAY{personalization_vertices})
+                            CASE when __vertices__ = ANY(ARRAY[{personalization_vertices_str}])
                             THEN {init_prob_grp_ppr} ELSE 0 END
                         """.format(**locals())
 
@@ -387,7 +393,7 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args, out_
                 plpy.execute("""
                         CREATE TABLE {out_table} (
                             {grouping_cols_clause},
-                            {vertex_id} INTEGER,
+                            {vertex_id} BIGINT,
                             pagerank DOUBLE PRECISION
                         )
                     """.format(**locals()))
@@ -716,15 +722,18 @@ def get_query_params_for_ppr(personalization_vertices, damping_factor,
         ppr_init_value = 1.0 / total_ppr_nodes
         prob_value = 1.0 - damping_factor
         dest = edge_params["dest"]
+
+        personalization_vertices_str = ','.join([str(i) for i in personalization_vertices])
+
         # In case of PPR, Assign the Random jump probability to the personalization_vertices only.
         # For rest of the nodes, Random jump probability  will be zero.
         ppr_random_prob_clause = """
-                CASE WHEN {edge_temp_table}.{dest} = ANY(ARRAY{personalization_vertices})
+                CASE WHEN {edge_temp_table}.{dest} = ANY(ARRAY[{personalization_vertices_str}])
                 THEN {prob_value} ELSE 0 END
             """.format(**locals())
 
         ppr_init_prob_clause = """
-                CASE WHEN {vertex_id} = ANY(ARRAY{personalization_vertices})
+                CASE WHEN {vertex_id} = ANY(ARRAY[{personalization_vertices_str}])
                 THEN {ppr_init_value} ELSE 0 END
             """.format(**locals())
     return(total_ppr_nodes, ppr_random_prob_clause, ppr_init_prob_clause)
@@ -754,7 +763,7 @@ def pagerank_help(schema_madlib, message, **kwargs):
                                          -- N is number of vertices in the graph)
         grouping_col  TEXT,              -- Comma separated column names to group on
                                          -- (DEFAULT = NULL, no grouping)
-        personalization_vertices ARRAY OF INTEGER, -- A comma seperated list of vertices
+        personalization_vertices ARRAY OF BIGINT, -- A comma seperated list of vertices
                                                       or nodes for personalized page rank.
 """) + """
 
