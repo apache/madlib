@@ -50,14 +50,14 @@ docker pull madlib/postgres_10:jenkins
 # Launch docker container with volume mounted from workdir
 echo "-------------------------------"
 cat <<EOF
-docker run -d --name madlib -v "${workdir}/${reponame}":/madlib madlib/postgres_10:jenkins | tee logs/docker_setup.log
+docker run -d -e POSTGRES_PASSWORD=postgres --name madlib -v "${workdir}/${reponame}":/madlib madlib/postgres_10:jenkins | tee logs/docker_setup.log
 EOF
-docker run -d --name madlib -v "${workdir}/${reponame}":/madlib madlib/postgres_10:jenkins | tee logs/docker_setup.log
+docker run -d -e POSTGRES_PASSWORD=postgres --name madlib -v "${workdir}/${reponame}":/madlib madlib/postgres_10:jenkins | tee logs/docker_setup.log
 echo "-------------------------------"
 
 ## This sleep is required since it takes a couple of seconds for the docker
 ## container to come up, which is required by the docker exec command that follows.
-sleep 5
+sleep 15
 
 echo "---------- Install pip, and mock -----------"
 # cmake, make, make install, and make package
