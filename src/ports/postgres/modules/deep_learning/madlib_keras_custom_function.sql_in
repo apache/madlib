@@ -159,18 +159,22 @@ psycopg2.Binary() method to pass as bytes.
 import psycopg2 as p2
 conn = p2.connect('postgresql://gpadmin@localhost:8000/madlib')
 cur = conn.cursor()
-\# import Dill and define 2 functions
+\# import Dill and define functions
 import dill
-def test_sum_fn(a, b):
-    return a+b
-pb_sum=dill.dumps(test_sum_fn)
-def test_mult_fn(a, b):
-    return a*b
-pb_mult=dill.dumps(test_mult_fn)
+\# custom loss
+def squared_error(y_true, y_pred):
+    import keras.backend as K 
+    return K.square(y_pred - y_true)
+pb_squared_error=dill.dumps(squared_error)
+\# custom metric
+def rmse(y_true, y_pred):
+    import keras.backend as K 
+    return K.sqrt(K.mean(K.square(y_pred - y_true), axis=-1))
+pb_rmse=dill.dumps(rmse)
 \# call load function
-cur.execute("DROP TABLE IF EXISTS test_custom_function_table")
-cur.execute("SELECT madlib.load_custom_function('test_custom_function_table',  %s,'sum_fn', 'returns sum')", [p2.Binary(pb_sum)])
-cur.execute("SELECT madlib.load_custom_function('test_custom_function_table',  %s,'mult_fn', 'returns mult')", [p2.Binary(pb_mult)])
+cur.execute("DROP TABLE IF EXISTS custom_function_table")
+cur.execute("SELECT madlib.load_custom_function('custom_function_table',  %s,'squared_error', 'squared error')", [p2.Binary(pb_squared_error)])
+cur.execute("SELECT madlib.load_custom_function('custom_function_table',  %s,'rmse', 'root mean square error')", [p2.Binary(pb_rmse)])
 conn.commit()
 </pre>
 List table to see objects:
@@ -178,59 +182,59 @@ List table to see objects:
 SELECT id, name, description FROM test_custom_function_table ORDER BY id;
 </pre>
 <pre class="result">
- id |  name   | description  
-----+---------+--------------
-  1 | sum_fn  | returns sum
-  2 | mult_fn | returns mult
+ id |     name      |      description       
+----+---------------+------------------------
+  1 | squared_error | squared error
+  2 | rmse          | root mean square error
 </pre>
 -# Load object using a PL/Python function.  First define the objects:
 <pre class="example">
-CREATE OR REPLACE FUNCTION custom_function_object_sum()
+CREATE OR REPLACE FUNCTION custom_function_squared_error()
 RETURNS BYTEA AS
 $$
 import dill
-def test_sum_fn(a, b):
-    return a+b
-pb_sum=dill.dumps(test_sum_fn)
-return pb_sum
+def squared_error(y_true, y_pred):
+    import keras.backend as K 
+    return K.square(y_pred - y_true)
+pb_squared_error=dill.dumps(squared_error)
+return pb_squared_error
 $$ language plpythonu;
-CREATE OR REPLACE FUNCTION custom_function_object_mult()
+CREATE OR REPLACE FUNCTION custom_function_rmse()
 RETURNS BYTEA AS
 $$
 import dill
-def test_mult_fn(a, b):
-    return a*b
-pb_mult=dill.dumps(test_mult_fn)
-return pb_mult
+def rmse(y_true, y_pred):
+    import keras.backend as K 
+    return K.sqrt(K.mean(K.square(y_pred - y_true), axis=-1))
+pb_rmse=dill.dumps(rmse)
+return pb_rmse
 $$ language plpythonu;
 </pre>
 Now call loader:
 <pre class="result">
-DROP TABLE IF EXISTS test_custom_function_table;
-SELECT madlib.load_custom_function('test_custom_function_table', 
-                                   custom_function_object_sum(), 
-                                   'sum_fn', 
-                                   'returns sum'
-                                   );
-SELECT madlib.load_custom_function('test_custom_function_table', 
-                                   custom_function_object_mult(), 
-                                   'mult_fn', 
-                                   'returns mult'
-                                   );
+DROP TABLE IF EXISTS custom_function_table;
+SELECT madlib.load_custom_function('custom_function_table', 
+                                   custom_function_squared_error(), 
+                                   'squared_error', 
+                                   'squared error');
+SELECT madlib.load_custom_function('custom_function_table', 
+                                   custom_function_rmse(), 
+                                   'rmse', 
+                                   'root mean square error');
 </pre>
 -# Delete an object by id:
 <pre class="example">
-SELECT madlib.delete_custom_function( 'test_custom_function_table', 1);
-SELECT id, name, description FROM test_custom_function_table ORDER BY id;
+SELECT madlib.delete_custom_function( 'custom_function_table', 1);
+SELECT id, name, description FROM custom_function_table ORDER BY id;
 </pre>
 <pre class="result">
- id |  name   | description  
-----+---------+--------------
-  2 | mult_fn | returns mult
+ id | name |      description       
+----+------+------------------------
+  2 | rmse | root mean square error
 </pre>
 Delete an object by name:
 <pre class="example">
-SELECT madlib.delete_custom_function( 'test_custom_function_table', 'mult_fn');
+SELECT madlib.delete_custom_function( 'custom_function_table', 'rmse');
 </pre>
 If all objects are deleted from the table using this function, the table itself will be dropped.
 
