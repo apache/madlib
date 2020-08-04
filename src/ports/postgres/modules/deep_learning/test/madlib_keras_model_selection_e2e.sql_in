@@ -26,6 +26,11 @@ m4_include(`SQLCommon.m4')
              `\1../../modules/deep_learning/test/madlib_keras_iris.setup.sql_in'
 )
 
+\i m4_regexp(MODULE_PATHNAME,
+             `\(.*\)libmadlib\.so',
+             `\1../../modules/deep_learning/test/madlib_keras_custom_function.setup.sql_in'
+)
+
 m4_changequote(`<!', `!>')
 m4_ifdef(<!__POSTGRESQL__!>, <!!>, <!
 -- Multiple models End-to-End test
@@ -162,22 +167,10 @@ SELECT assert(loss >= 0 AND
 FROM evaluate_out;
 
 -- TEST custom loss function
--- Custom loss function returns 0 as the loss
-CREATE OR REPLACE FUNCTION custom_function_zero_object()
-RETURNS BYTEA AS
-$$
-import dill
-def test_custom_fn(a, b):
-  c = a*b*0
-  return c
-
-pb=dill.dumps(test_custom_fn)
-return pb
-$$ language plpythonu;
-
 
 DROP TABLE IF EXISTS test_custom_function_table;
 SELECT load_custom_function('test_custom_function_table', custom_function_zero_object(), 'test_custom_fn', 'returns test_custom_fn');
+SELECT load_custom_function('test_custom_function_table', custom_function_one_object(), 'test_custom_fn1', 'returns test_custom_fn1');
 
 -- Prepare model selection table with four rows
 DROP TABLE IF EXISTS mst_object_table, mst_object_table_summary;
@@ -187,7 +180,7 @@ SELECT load_model_selection_table(
     ARRAY[1],
     ARRAY[
         $$loss='categorical_crossentropy', optimizer='Adam(lr=0.01)', metrics=['accuracy']$$,
-        $$loss='test_custom_fn', optimizer='Adam(lr=0.001)', metrics=['accuracy']$$
+        $$loss='test_custom_fn', optimizer='Adam(lr=0.001)', metrics=['test_custom_fn1']$$
     ],
     ARRAY[
         $$batch_size=16, epochs=1$$
@@ -229,7 +222,7 @@ SELECT assert(
         model_type = 'madlib_keras' AND
         model_size > 0 AND
         fit_params = $MAD$batch_size=16, epochs=1$MAD$::text AND
-        metrics_type = '{accuracy}' AND
+        metrics_type = '{test_custom_fn1}' AND
         training_metrics_final >= 0  AND
         training_loss_final  = 0  AND
         training_loss = '{0,0,0}' AND
@@ -266,7 +259,7 @@ SELECT madlib_keras_evaluate(
 
 SELECT assert(loss = 0 AND
         metric >= 0 AND
-        metrics_type = '{accuracy}' AND
+        metrics_type = '{test_custom_fn1}' AND
         loss_type = 'test_custom_fn', 'Evaluate output validation failed.  Actual:' || __to_char(evaluate_out))
 FROM evaluate_out;
 

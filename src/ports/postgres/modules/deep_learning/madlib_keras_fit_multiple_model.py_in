@@ -294,6 +294,8 @@ class FitMultipleModel():
 
     def populate_object_map(self):
         builtin_losses = dir(losses)
+        builtin_metrics = update_builtin_metrics(dir(metrics))
+
         # Track distinct custom functions in compile_params
         custom_fn_names = []
         # Track their corresponding mst_keys to pass along the custom function
@@ -308,9 +310,16 @@ class FitMultipleModel():
             # Also, it is validated later when we compile the model
             # on the segments
             compile_dict = convert_string_of_args_to_dict(compile_params)
-            if (compile_dict['loss'] not in builtin_losses):
-                custom_fn_names.append(compile_dict['loss'])
+
+            local_loss = compile_dict['loss'].lower() if 'loss' in compile_dict else None
+            local_metric = compile_dict['metrics'].lower()[2:-2] if 'metrics' in compile_dict else None
+            if local_loss and (local_loss not in [a.lower() for a in builtin_losses]):
+                custom_fn_names.append(local_loss)
                 custom_fn_mst_idx.append(mst_idx)
+            if local_metric and (local_metric not in [a.lower() for a in builtin_metrics]):
+                custom_fn_names.append(local_metric)
+                custom_fn_mst_idx.append(mst_idx)
+
         if len(custom_fn_names) > 0:
             # Pass only unique custom_fn_names to query from object table
             custom_fn_object_map = query_custom_functions_map(self.object_table, list(set(custom_fn_names)))
@@ -400,6 +409,7 @@ class FitMultipleModel():
                                    model_size DOUBLE PRECISION,
                                    metrics_elapsed_time DOUBLE PRECISION[],
                                    metrics_type TEXT[],
+                                   loss_type TEXT,
                                    training_metrics_final DOUBLE PRECISION,
                                    training_loss_final DOUBLE PRECISION,
                                    training_metrics DOUBLE PRECISION[],
@@ -446,15 +456,18 @@ class FitMultipleModel():
             metrics_type = 'ARRAY{0}'.format(
                 metrics_list) if is_metrics_specified else 'NULL'
 
+            loss_type = get_loss_from_compile_param(mst[self.compile_params_col])
+            loss_type = loss_type if loss_type else 'NULL'
+
             info_table_insert_query = """
                             INSERT INTO {self.model_info_table}({self.mst_key_col},
                                         {self.model_id_col}, {self.compile_params_col},
                                         {self.fit_params_col}, model_type, model_size,
-                                        metrics_type)
+                                        metrics_type, loss_type)
                                 VALUES ({mst_key_val}, {model_id},
                                         $madlib${compile_params}$madlib$,
                                         $madlib${fit_params}$madlib$, '{model_type}',
-                                        {model_size}, {metrics_type})
+                                        {model_size}, {metrics_type}, '{loss_type}')
                         """.format(self=self,
                                    mst_key_val=mst[self.mst_key_col],
                                    model_id=mst[self.model_id_col],
@@ -462,7 +475,8 @@ class FitMultipleModel():
                                    fit_params=mst[self.fit_params_col],
                                    model_type='madlib_keras',
                                    model_size=model_size,
-                                   metrics_type=metrics_type)
+                                   metrics_type=metrics_type,
+                                   loss_type=loss_type)
             plpy.execute(info_table_insert_query)
 
             if not mst['mst_key'] in self.warm_start_msts:

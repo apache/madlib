@@ -30,10 +30,12 @@ from keras.optimizers import *
 
 import keras.optimizers as opt
 import keras.losses as losses
+import keras.metrics as metrics
 
 import madlib_keras_serializer
 import madlib_keras_gpu_info
 from madlib_keras_custom_function import CustomFunctionSchema
+from madlib_keras_custom_function import update_builtin_metrics
 
 from utilities.utilities import _assert
 from utilities.utilities import is_platform_pg
@@ -327,8 +329,19 @@ def compile_model(model, compile_params, custom_function_map=None):
     optimizers = get_optimizers()
     (opt_name,final_args,compile_dict) = parse_and_validate_compile_params(compile_params)
     if custom_function_map is not None:
-        map=dill.loads(custom_function_map)
-        compile_dict['loss']=map[compile_dict['loss']]
+        local_map=dill.loads(custom_function_map)
+
+        compile_dict['loss']=local_map[compile_dict['loss']] \
+            if compile_dict['loss'] in local_map else compile_dict['loss']
+
+        new_metrics = []
+        for i in compile_dict['metrics']:
+            if i in local_map:
+                new_metrics.append(local_map[i])
+            else:
+                new_metrics.append(i)
+        compile_dict['metrics'] = new_metrics
+
     compile_dict['optimizer'] = optimizers[opt_name](**final_args) if final_args else opt_name
     model.compile(**compile_dict)
 
@@ -371,6 +384,10 @@ def query_custom_functions_map(object_table, custom_fn_names):
     """
     if len(custom_fn_names) < 1:
         return None
+
+    fn_set = set(custom_fn_names)
+    unique_fn_list = (list(fn_set))
+
     custom_obj_col_name = '{0}'.format(CustomFunctionSchema.FN_OBJ)
     # Dictionary map of name:object
     # {custom_fn1 : function_def_obj1, custom_fn2 : function_def_obj2}
@@ -378,13 +395,13 @@ def query_custom_functions_map(object_table, custom_fn_names):
     # Query the custom function if not yet loaded from table
     res = plpy.execute("""
                         SELECT {custom_fn_col_name}, {custom_obj_col_name} FROM {object_table}
-                        WHERE {custom_fn_col_name} = ANY(ARRAY{custom_fn_names})
+                        WHERE {custom_fn_col_name} = ANY(ARRAY{unique_fn_list})
                        """.format(custom_obj_col_name=custom_obj_col_name,
                                   object_table=object_table,
                                   custom_fn_col_name=CustomFunctionSchema.FN_NAME,
-                                  custom_fn_names=custom_fn_names))
-    if res.nrows() < len(custom_fn_names):
-        plpy.error("Custom function {0} not defined in object table '{1}'".format(custom_fn_names, object_table))
+                                  unique_fn_list=unique_fn_list))
+    if res.nrows() < len(unique_fn_list):
+        plpy.error("Custom function {0} not defined in object table '{1}'".format(unique_fn_list, object_table))
     for r in res:
         custom_fn_map[r[CustomFunctionSchema.FN_NAME]] = dill.loads(r[custom_obj_col_name])
     custom_fn_map_obj = dill.dumps(custom_fn_map)
@@ -409,7 +426,14 @@ def get_custom_functions_list(compile_params):
     """
     compile_dict = convert_string_of_args_to_dict(compile_params)
     builtin_losses = dir(losses)
+    builtin_metrics = update_builtin_metrics(dir(metrics))
+
     custom_fn_list = []
-    if compile_dict['loss'] not in builtin_losses:
-        custom_fn_list.append(compile_dict['loss'])
+    local_loss = compile_dict['loss'].lower() if 'loss' in compile_dict else None
+    local_metric = compile_dict['metrics'].lower()[2:-2] if 'metrics' in compile_dict else None
+    if local_loss and (local_loss not in [a.lower() for a in builtin_losses]):
+        custom_fn_list.append(local_loss)
+    if local_metric and (local_metric not in [a.lower() for a in builtin_metrics]):
+        custom_fn_list.append(local_metric)
+
     return custom_fn_list
