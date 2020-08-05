@@ -392,21 +392,21 @@ SELECT madlib.generate_model_configs(
                                         'mst_table',          -- model selection table output
                                          ARRAY[1,2],          -- model ids from model architecture table
                                          $$
-                                            {'loss': ['categorical_crossentropy'], 
-                                             'optimizer_params_list': [ {'optimizer': ['Adam', 'SGD'], 'lr': [0.001, 0.01]} ], 
+                                            {'loss': ['categorical_crossentropy'],
+                                             'optimizer_params_list': [ {'optimizer': ['Adam', 'SGD'], 'lr': [0.001, 0.01]} ],
                                              'metrics': ['accuracy']}
-                                         $$,                  -- compile_param_grid    
-                                         $$ 
+                                         $$,                  -- compile_param_grid
+                                         $$
                                          { 'batch_size': [64, 128],
-                                           'epochs': [10] 
-                                         } 
-                                         $$,                  -- fit_param_grid                                          
-                                         'grid'               -- search_type 
+                                           'epochs': [10]
+                                         }
+                                         $$,                  -- fit_param_grid
+                                         'grid'               -- search_type
                                          );
 SELECT * FROM mst_table ORDER BY mst_key;
 </pre>
 <pre class="result">
- mst_key | model_id |                                 compile_params                                  |        fit_params        
+ mst_key | model_id |                                 compile_params                                  |        fit_params
 ---------+----------+---------------------------------------------------------------------------------+--------------------------
        1 |        1 | optimizer='Adam(lr=0.001)',metrics=['accuracy'],loss='categorical_crossentropy' | epochs=10,batch_size=64
        2 |        1 | optimizer='Adam(lr=0.001)',metrics=['accuracy'],loss='categorical_crossentropy' | epochs=10,batch_size=128
@@ -426,7 +426,7 @@ SELECT * FROM mst_table ORDER BY mst_key;
       16 |        2 | optimizer='SGD(lr=0.01)',metrics=['accuracy'],loss='categorical_crossentropy'   | epochs=10,batch_size=128
 (16 rows)
 </pre>
-Note that above uses the same learning rate for the two optimizers. If you wanted to 
+Note that above uses the same learning rate for the two optimizers. If you wanted to
 use different learning rates and different parameters for different optimizers (common):
 <pre class="example">
 DROP TABLE IF EXISTS mst_table, mst_table_summary;
@@ -487,17 +487,17 @@ SELECT madlib.generate_model_configs(
                                         'mst_table',          -- model selection table output
                                          ARRAY[1,2],          -- model ids from model architecture table
                                          $$
-                                            {'loss': ['categorical_crossentropy'], 
-                                             'optimizer_params_list': [ 
-                                                 {'optimizer': ['SGD'], 'lr': [0.0001, 0.001, 'log'], 'momentum': [0.95, 0.99, 'log_near_one']}, 
-                                                 {'optimizer': ['Adam'], 'lr': [0.01, 0.1, 'log'], 'decay': [1e-6, 1e-4, 'log']}], 
+                                            {'loss': ['categorical_crossentropy'],
+                                             'optimizer_params_list': [
+                                                 {'optimizer': ['SGD'], 'lr': [0.0001, 0.001, 'log'], 'momentum': [0.95, 0.99, 'log_near_one']},
+                                                 {'optimizer': ['Adam'], 'lr': [0.01, 0.1, 'log'], 'decay': [1e-6, 1e-4, 'log']}],
                                              'metrics': ['accuracy']}
-                                         $$,                  -- compile_param_grid    
-                                         $$ 
+                                         $$,                  -- compile_param_grid
+                                         $$
                                          { 'batch_size': [64, 128],
-                                           'epochs': [10] 
-                                         } 
-                                         $$,                  -- fit_param_grid                                          
+                                           'epochs': [10]
+                                         }
+                                         $$,                  -- fit_param_grid
                                          'random',            -- search_type
                                          20
                                          );
@@ -529,9 +529,9 @@ SELECT * FROM mst_table ORDER BY mst_key;
 (20 rows)
 </pre>
 
--# Incremental loading for more complex combinations.  If it is easier to generate the model configurations 
-incrementally rather than all at once, you can do that by not dropping the model selection table and associated 
-summary table, in which case the new model configurations will be appended to the existing table.  Here we combine two 
+-# Incremental loading for more complex combinations.  If it is easier to generate the model configurations
+incrementally rather than all at once, you can do that by not dropping the model selection table and associated
+summary table, in which case the new model configurations will be appended to the existing table.  Here we combine two
 of the previous examples in to a single output table:
 <pre class="example">
 DROP TABLE IF EXISTS mst_table, mst_table_summary;
@@ -758,8 +758,29 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.load_model_selection_table(
     compile_params_list     VARCHAR[],
     fit_params_list         VARCHAR[]
 ) RETURNS VOID AS $$
-  SELECT MADLIB_SCHEMA.load_model_selection_table($1, $2, $3, $4, $5, NULL);
+SELECT MADLIB_SCHEMA.load_model_selection_table($1, $2, $3, $4, $5, NULL);
 $$ LANGUAGE sql VOLATILE
+    m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+/*
+--------------------------------------------------------------------------
+*/
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.generate_model_configs(
+    model_arch_table        VARCHAR,
+    model_selection_table   VARCHAR,
+    model_id_list           INTEGER[],
+    compile_params_grid     VARCHAR,
+    fit_params_grid         VARCHAR,
+    search_type             VARCHAR DEFAULT 'grid',
+    num_configs             INTEGER DEFAULT NULL,
+    random_state            INTEGER DEFAULT NULL,
+    object_table            VARCHAR DEFAULT NULL
+) RETURNS VOID AS $$
+    PythonFunctionBodyOnly(`deep_learning', `madlib_keras_model_selection')
+    with AOControl(False):
+        mst_loader = madlib_keras_model_selection.MstSearch(**globals())
+        mst_loader.load()
+$$ LANGUAGE plpythonu VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
 /*

@@ -117,8 +117,8 @@ class MstLoader():
         dict_dedup = {}
         for string in list_strs:
             d = convert_string_of_args_to_dict(string)
-            hash_tuple = tuple( '{0} = {1}'\
-            .format(x, d[x]) for x in sorted(d.keys()))
+            hash_tuple = tuple( '{0} = {1}' \
+                                .format(x, d[x]) for x in sorted(d.keys()))
             dict_dedup[hash_tuple] = string
 
         return dict_dedup.values()
@@ -281,8 +281,14 @@ class MstSearch():
         self.accepted_distributions = ['linear', 'log', 'log_near_one']
 
         # extracting python dict
-        self.compile_params_dict = literal_eval(compile_params_grid)
-        self.fit_params_dict = literal_eval(fit_params_grid)
+        try:
+            self.compile_params_dict = literal_eval(compile_params_grid)
+        except:
+            plpy.error("Invalid syntax in 'compile_params_dict'")
+        try:
+            self.fit_params_dict = literal_eval(fit_params_grid)
+        except:
+            plpy.error("Invalid syntax in 'fit_params_dict'")
         self.validate_inputs(compile_params_grid, fit_params_grid)
 
         self.msts = []
@@ -293,7 +299,7 @@ class MstSearch():
             # else should also suffice as random search is established.
             self.find_random_combinations()
 
-        #################
+        # param checks and validation
         compile_params_lst, fit_params_lst = [], []
         for i in self.msts:
             compile_params_lst.append(i[ModelSelectionSchema.COMPILE_PARAMS])
@@ -328,6 +334,11 @@ class MstSearch():
         :param fit_params_grid: The input string repr of fit params choices.
         """
 
+        for c in self.compile_params_dict:
+            _assert_equal(type(self.compile_params_dict[c]), list, "DL: compile param values must be specified in a list")
+        for f in self.fit_params_dict:
+            _assert_equal(type(self.fit_params_dict[f]), list, "DL: fit param values must be specified in a list")
+
         if ModelSelectionSchema.GRID_SEARCH.startswith(self.search_type.lower()):
             _assert(self.num_configs is None and self.random_state is None,
                     "DL: 'num_configs' and 'random_state' must be NULL for grid search")
@@ -335,7 +346,9 @@ class MstSearch():
                 _assert(distribution_type not in compile_params_grid and distribution_type not in fit_params_grid,
                         "DL: Cannot search from a distribution with grid search")
         elif ModelSelectionSchema.RANDOM_SEARCH.startswith(self.search_type.lower()):
-            _assert(self.num_configs is not None, "DL: 'num_configs' cannot be NULL for random search")
+            _assert(self.num_configs is not None and self.num_configs > 0, "DL: 'num_configs' cannot be NULL and "
+                                                                           "needs to be a natural number "
+                                                                           "for random search")
         else:
             plpy.error("DL: 'search_type' must be either 'grid' or 'random'")
 
@@ -375,7 +388,8 @@ class MstSearch():
                 custom_fn_name.append(r[CustomFunctionSchema.FN_NAME])
         for compile_params in compile_params_lst:
             try:
-                _, _, res = parse_and_validate_compile_params(compile_params, [ModelSelectionSchema.OPTIMIZER_PARAMS_LIST])
+                _, _, res = parse_and_validate_compile_params(compile_params,
+                                                              [ModelSelectionSchema.OPTIMIZER_PARAMS_LIST])
                 # Validating if loss/metrics function called in compile_params
                 # is either defined in object table or is a built_in keras
                 # loss/metrics function
@@ -448,15 +462,13 @@ class MstSearch():
                 np.random.seed(self.random_state+seed_changes)
                 seed_changes += 1
             combination[ModelSelectionSchema.MODEL_ID] = np.random.choice(self.model_id_list)
-            compile_d = {}
-            compile_d, seed_changes = self.generate_param_config(self.compile_params_dict, compile_d, seed_changes)
-            combination[ModelSelectionSchema.COMPILE_PARAMS] = self.generate_row_string(compile_d)
-            fit_d = {}
-            fit_d, seed_changes = self.generate_param_config(self.fit_params_dict, fit_d, seed_changes)
-            combination[ModelSelectionSchema.FIT_PARAMS] = self.generate_row_string(fit_d)
+            compile_dict, seed_changes = self.generate_param_config(self.compile_params_dict, seed_changes)
+            combination[ModelSelectionSchema.COMPILE_PARAMS] = self.generate_row_string(compile_dict)
+            fit_dict, seed_changes = self.generate_param_config(self.fit_params_dict, seed_changes)
+            combination[ModelSelectionSchema.FIT_PARAMS] = self.generate_row_string(fit_dict)
             self.msts.append(combination)
 
-    def generate_param_config(self, params_dict, config_dict, seed_changes):
+    def generate_param_config(self, params_dict, seed_changes):
         """
         Generating a parameter configuration for random search.
         :param params_dict: Dictionary of params choices.
@@ -464,6 +476,7 @@ class MstSearch():
         :param seed_changes: Changes in seed for random sampling + reproducibility.
         :return: config_dict, seed_changes.
         """
+        config_dict = {}
         for cp in params_dict:
             if self.random_state:
                 np.random.seed(self.random_state+seed_changes)
@@ -477,7 +490,7 @@ class MstSearch():
                     if self.random_state:
                         np.random.seed(self.random_state+seed_changes)
                         seed_changes += 1
-                    opt_combination[i] = self.sample_val(cp, opt_values)
+                    opt_combination[i] = self.sample_val(i, opt_values)
                 config_dict[cp] = opt_combination
             else:
                 config_dict[cp] = self.sample_val(cp, param_values)
@@ -492,22 +505,23 @@ class MstSearch():
         :return: sampled value
         """
         # check if need to sample from a distribution
-        if param_value_list[-1] in self.accepted_distributions:
+        if type(param_value_list[-1]) == str and all([type(i) != str and not callable(i) for i in param_value_list[:-1]]) \
+                and len(param_value_list) > 1:
             _assert_equal(len(param_value_list), 3,
-                          "DL: {0} should have exactly 3 elements if picking from a distribution".format(cp))
+                          "DL: '{0}' should have exactly 3 elements if picking from a distribution".format(cp))
             _assert(param_value_list[1] > param_value_list[0],
-                    "DL: {0} should be of the format [lower_bound, upper_bound, distribution_type]".format(cp))
+                    "DL: '{0}' should be of the format [lower_bound, upper_bound, distribution_type]".format(cp))
             if param_value_list[-1] == 'linear':
                 return np.random.uniform(param_value_list[0], param_value_list[1])
             elif param_value_list[-1] == 'log':
                 return np.power(10, np.random.uniform(np.log10(param_value_list[0]),
-                                                                 np.log10(param_value_list[1])))
+                                                      np.log10(param_value_list[1])))
             elif param_value_list[-1] == 'log_near_one':
                 return 1.0 - np.power(10, np.random.uniform(np.log10(1.0-param_value_list[1]),
-                                                                       np.log10(1.0-param_value_list[0])))
+                                                            np.log10(1.0-param_value_list[0])))
             else:
-                plpy.error("DL: Please choose a valid distribution type {0}".format(
-                    tuple(self.accepted_distributions)))
+                plpy.error("DL: Please choose a valid distribution type for '{0}': {1}".format(
+                    cp, self.accepted_distributions))
         else:
             # random sampling
             return np.random.choice(param_value_list)

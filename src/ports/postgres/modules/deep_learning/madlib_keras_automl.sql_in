@@ -27,28 +27,511 @@
  *//* ----------------------------------------------------------------------- */
 
 m4_include(`SQLCommon.m4')
+
+
 /**
 @addtogroup grp_automl
 
-@brief Utility function to set up a model selection table for model architecture search
-and hyperparameter tuning.
+
+@brief Functions to run automated machine learning (AutoML) algorithms to automate
+and speed-up the model selection and training processes for model architecture search,
+hyperparameter tuning, and model evaluation.
 
 \warning <em> This MADlib method is still in early stage development.
 Interface and implementation are subject to change. </em>
 
 <div class="toc"><b>Contents</b><ul>
+<li class="level1"><a href="#madlib_keras_automl">AutoML Function</a></li>
 <li class="level1"><a href="#hyperband_schedule">Hyperband Schedule</a></li>
 <li class="level1"><a href="#example">Examples</a></li>
 <li class="level1"><a href="#notes">Notes</a></li>
 <li class="level1"><a href="#related">Related Topics</a></li>
 </ul></div>
 
-This module sets up the Hyperband schedule of evaluating configurations
-for use by the Keras AutoML of MADlib.
+This module sets up the AutoML algorithms to automate and accelerate
+the model selection and training processes, involving hyperparameter optimization,
+model architecture search, and model training.
+
+The module also has a a utility function for viewing the Hyperband schedule of
+evaluating configurations for use by the Keras AutoML of MADlib.
 By configuration we mean both hyperparameter tuning and
-model architecture search.  The table defines the unique combinations
-of model architectures, compile and fit parameters
-to run on a massively parallel processing database cluster.
+model architecture search.
+
+@anchor madlib_keras_automl
+@par AutoML
+
+<pre class="syntax">
+madlib_keras_automl(
+    source_table,
+    model_output_table,
+    model_arch_table,
+    model_selection_table,
+    model_id_list,
+    compile_params_grid,
+    fit_params_grid,
+    automl_method,
+    automl_params,
+    random_state,
+    object_table,
+    use_gpus,
+    validation_table,
+    metrics_compute_frequency,
+    name,
+    description
+    )
+</pre>
+
+\b Arguments
+<dl class="arglist">
+  <dt>source_table</dt>
+  <dd>TEXT. Name of the table containing the training data.
+  This is the name of the output table from the image preprocessor. Independent
+  and dependent variables are specified in the preprocessor
+  step which is why you do not need to explictly state
+  them here as part of the fit function. The configurations would be evaluated on the basis the training loss,
+  unless a validation table is specified below.
+  </dd>
+
+  <dt>model_output_table</dt>
+  <dd>TEXT. Name of the output table containing the
+  multiple models created.
+  @note pg_temp is not allowed as an output table schema for fit multiple.
+  Details of output tables are shown below.
+  </dd>
+
+  <dt>model_arch_table</dt>
+  <dd>VARCHAR. Table containing model architectures and weights.
+  For more information on this table
+  refer to <a href="group__grp__keras__model__arch.html">Load Model</a>.
+  </dd>
+
+  <dt>model_selection_table</dt>
+  <dd>VARCHAR. Model selection table created by this utility.  A summary table
+  named <model_selection_table>_summary is also created.  Contents of both output
+  tables are described below.
+  </dd>
+
+  <dt>model_id_list</dt>
+  <dd>INTEGER[]. Array of model IDs from the 'model_arch_table' to be included
+  in the run combinations.  For hyperparameter search, this will typically be
+  one model ID.  For model architecture search, this will be the different model IDs
+  that you want to test.
+  </dd>
+
+  <dt>compile_params_grid</dt>
+  <dd>VARCHAR. String representation of a Python dictionary
+  of compile parameters to be tested. Each entry
+  of the dictionary should consist of keys as compile parameter names,
+  and values as a Python list of compile parameter values to be passed to Keras.
+  Also, optimizer parameters are a nested dictionary to allow different
+  optimizer types to have different parameters or ranges of parameters.
+  Here is an example:
+
+  <pre class="example">
+  $$
+    {'loss': ['categorical_crossentropy'],
+     'optimizer_params_list': [
+        {'optimizer': ['SGD'], 'lr': [0.0001, 0.001, 'log'], 'momentum': [0.95, 0.99, 'log_near_one']},
+        {'optimizer': ['Adam'], 'lr': [0.01, 0.1, 'log'], 'decay': [1e-6, 1e-4, 'log']}],
+     'metrics': ['accuracy']
+    }
+  $$
+  </pre>
+
+  The following types of sampling are supported:  'linear', 'log' and 'log_near_one'.
+  The 'log_near_one' sampling is useful for exponentially weighted average types of parameters like momentum,
+  which are very sensitive to changes near 1.  It has the effect of producing more values near 1
+  than regular log-based sampling.
+
+  In the case of grid search, omit the sample type and just put the grid points in the list.
+  For custom loss functions or custom metrics,
+  list the custom function name in the usual way, and provide the name of the
+  table where the serialized Python objects reside using the
+  parameter 'object_table' below. See the examples section later on this page for more examples.
+  </dd>
+
+  <dt>fit_params_grid</dt>
+  <dd>VARCHAR.  String representation of a Python dictionary
+  of fit parameters to be tested. Each entry
+  of the dictionary should consist of keys as fit parameter names,
+  and values as a Python list of fit parameter values
+  to be passed to Keras. Here is an example:
+
+  <pre class="example">
+  $$
+    {'batch_size': [32, 64, 128, 256],
+     'epochs': [10, 20, 30]
+    }
+  $$
+  </pre>
+  See the examples section later on this page for more examples.
+  </dd>
+
+  <dt>automl_method (optional)</dt>
+  <dd>VARCHAR, default 'hyperband'. Name of the automl algorithm to run.
+  Currently only support hyperband. Note that you can also use short prefixes
+  for the 'hyperband' keyword, e.g.,'hyper' or 'hyp' instead
+  of writing out 'hyperband' in full.
+  </dd>
+
+  <dt>automl_params (optional)</dt>
+  <dd>VARCHAR, default 'R=6, eta=3, skip_last=0'. Parameters for the chosen automl
+  method in a comma-separated string of key-value pairs. Hyperband params are:
+  R - the maximum amount of resources/iterations allocated to a single configuration
+  in a round of hyperband, eta - factor controlling the proportion of configurations discarded in each
+  round of successive halving, skip_last - number of last diagonal brackets to skip running
+  in the algorithm.
+  We encourage setting an low R value (i.e. 2 to 10), or a high R value and a high skip_last value to evaluate
+  a variety of configurations with decent number of iterations. See the description below for details.
+  </dd>
+
+  <dt>random_state (optional)</dt>
+  <dd>INTEGER, default: NULL.  Pseudo random number generator
+  state used for random uniform sampling from lists of possible
+  values. Pass an integer to evaluate a fixed set of configurations.
+
+  @note
+    Specifying a random state doesn't not guarantee result reproducibility of the best configuration or the best
+    train/validation accuracy/loss. It guarantees that the same set of configurations will be chosen for evaluation.
+
+  </dd>
+
+  <dt>object_table (optional)</dt>
+  <dd>VARCHAR, default: NULL. Name of the table containing
+  Python objects in the case that custom loss functions or
+  custom metrics are specified in the 'compile_params_grid'.
+  </dd>
+
+  <dt>validation_table (optional)</dt>
+  <dd>TEXT, default: none. Name of the table containing
+  the validation dataset.
+  Note that the validation dataset must be preprocessed
+  in the same way as the training dataset, so this
+  is the name of the output
+  table from running the image preprocessor on the validation dataset.
+  Using a validation dataset can mean a
+  longer training time depending on its size, and the configurations would be evaluated on the basis of validation
+  loss instead of training loss.
+  This can be controlled using the 'metrics_compute_frequency'
+  parameter described below.</dd>
+
+  <DT>metrics_compute_frequency (optional)</DT>
+  <DD>INTEGER, default: once at the end of training
+  after 'num_iterations'.  Frequency to compute per-iteration
+  metrics for the training dataset and validation dataset
+  (if specified).  There can be considerable cost to
+  computing metrics every iteration, especially if the
+  training dataset is large.  This parameter is a way of
+  controlling the frequency of those computations.
+  For example, if you specify 5, then metrics will be computed
+  every 5 iterations as well as at the end of training
+  after 'num_iterations'.  If you use the default,
+  metrics will be computed only
+  once after 'num_iterations' have completed.
+  </DD>
+
+  <DT>name (optional)</DT>
+  <DD>TEXT, default: NULL.
+    Free text string to identify a name, if desired.
+  </DD>
+
+  <DT>description (optional)</DT>
+  <DD>TEXT, default: NULL.
+    Free text string to provide a description, if desired.
+  </DD>
+
+</dl>
+
+<b>Output tables</b>
+<br>
+
+    The model selection output table has exactly 1 row of the best model configuration based on the
+    training/validation loss and contains the following columns:
+    <table class="output">
+      <tr>
+        <th>mst_key</th>
+        <td>INTEGER. ID that defines a unique tuple for
+        model architecture-compile parameters-fit parameters.
+        </td>
+      </tr>
+      <tr>
+        <th>model_id</th>
+        <td>VARCHAR. Model architecture ID from the 'model_arch_table'.
+        </td>
+      </tr>
+      <tr>
+        <th>compile_params</th>
+        <td>VARCHAR. Keras compile parameters.
+        </td>
+      </tr>
+      <tr>
+        <th>fit_params</th>
+        <td>VARCHAR. Keras fit parameters.
+        </td>
+      </tr>
+    </table>
+    A summary table named <model_selection_table>_summary is
+    also created, which contains the following column:
+    <table class="output">
+      <tr>
+        <th>model_arch_table</th>
+        <td>VARCHAR. Name of the model architecture table containing the
+        model architecture IDs.
+        </td>
+      </tr>
+      <tr>
+        <th>object_table</th>
+        <td>VARCHAR. Name of the object table containing the serialized
+        Python objects for custom loss functions and custom metrics.
+        If there are none, this field will be blank.
+        </td>
+      </tr>
+    </table>
+
+    The model output table produced by fit contains the following columns.
+    There is one row per model configuration generated:
+    <table class="output">
+      <tr>
+        <th>mst_key</th>
+        <td>INTEGER. ID that defines a unique tuple for model architecture-compile parameters-fit parameters,
+        as defined in the 'model_selection_table'.</td>
+      </tr>
+      <tr>
+        <th>model_weights</th>
+        <td>BYTEA8. Byte array containing the weights of the neural net.</td>
+      </tr>
+      <tr>
+        <th>model_arch</th>
+        <td>TEXT. A JSON representation of the model architecture
+        used in training.</td>
+      </tr>
+    </table>
+
+    An info table named \<model_output_table\>_info is also created, which has the following columns.
+    There is one row per model as per the rows in the 'model_selection_table':
+    <table class="output">
+      <tr>
+        <th>mst_key</th>
+        <td>INTEGER. ID that defines a unique tuple for model architecture-compile parameters-fit parameters,
+        as defined in the 'model_selection_table'.</td>
+      </tr>
+      <tr>
+        <th>model_id</th>
+        <td>INTEGER. ID that defines model in the 'model_arch_table'.</td>
+      </tr>
+      <tr>
+        <th>compile_params</th>
+        <td>Compile parameters passed to Keras.</td>
+    </tr>
+    <tr>
+        <th>fit_params</th>
+        <td>Fit parameters passed to Keras.</td>
+    </tr>
+    <tr>
+        <th>model_type</th>
+        <td>General identifier for type of model trained.
+        Currently says 'madlib_keras'.</td>
+    </tr>
+    <tr>
+        <th>model_size</th>
+        <td>Size of the model in KB.  Models are stored in
+        'bytea' data format which is used for binary strings
+        in PostgreSQL type databases.</td>
+    </tr>
+    <tr>
+        <th>metrics_elapsed_time</th>
+        <td> Array of elapsed time for metric computations as
+        per the 'metrics_compute_frequency' parameter.
+        Useful for drawing a curve showing loss, accuracy or
+        other metrics as a function of time.
+        For example, if 'metrics_compute_frequency=5'
+        this would be an array of elapsed time for every 5th
+        iteration, plus the last iteration.</td>
+    </tr>
+    <tr>
+        <th>metrics_type</th>
+        <td>Metric specified in the 'compile_params'.</td>
+    </tr>
+    <tr>
+        <th>training_metrics_final</th>
+        <td>Final value of the training
+        metric after all iterations have completed.
+        The metric reported is the one
+        specified in the 'metrics_type' parameter.</td>
+    </tr>
+    <tr>
+        <th>training_loss_final</th>
+        <td>Final value of the training loss after all
+        iterations have completed.</td>
+    </tr>
+    <tr>
+        <th>training_metrics</th>
+        <td>Array of training metrics as
+        per the 'metrics_compute_frequency' parameter.
+        For example, if 'metrics_compute_frequency=5'
+        this would be an array of metrics for every 5th
+        iteration, plus the last iteration.</td>
+    </tr>
+    <tr>
+        <th>training_loss</th>
+        <td>Array of training losses as
+        per the 'metrics_compute_frequency' parameter.
+        For example, if 'metrics_compute_frequency=5'
+        this would be an array of losses for every 5th
+        iteration, plus the last iteration.</td>
+    </tr>
+    <tr>
+        <th>validation_metrics_final</th>
+        <td>Final value of the validation
+        metric after all iterations have completed.
+        The metric reported is the one
+        specified in the 'metrics_type' parameter.</td>
+    </tr>
+    <tr>
+        <th>validation_loss_final</th>
+        <td>Final value of the validation loss after all
+        iterations have completed.</td>
+    </tr>
+    <tr>
+        <th>validation_metrics</th>
+        <td>Array of validation metrics as
+        per the 'metrics_compute_frequency' parameter.
+        For example, if 'metrics_compute_frequency=5'
+        this would be an array of metrics for every 5th
+        iteration, plus the last iteration.</td>
+    </tr>
+    <tr>
+        <th>validation_loss</th>
+        <td>Array of validation losses as
+        per the 'metrics_compute_frequency' parameter.
+        For example, if 'metrics_compute_frequency=5'
+        this would be an array of losses for every 5th
+        iteration, plus the last iteration.</td>
+    </tr>
+    <tr>
+        <th>metrics_iters</th>
+        <td>Array indicating the iterations for which
+        metrics are calculated, as derived from the
+        parameters 'metrics_compute_frequency' and iterations decided by the automl algorithm.
+        For example, if 'num_iterations=5'
+        and 'metrics_compute_frequency=2', then 'metrics_iters' value
+        would be {2,4,5} indicating that metrics were computed
+        at iterations 2, 4 and 5 (at the end).
+        If 'num_iterations=5'
+        and 'metrics_compute_frequency=1', then 'metrics_iters' value
+        would be {1,2,3,4,5} indicating that metrics were computed
+        at every iteration.</td>
+    </tr>
+    <tr>
+        <th>s</th>
+        <td>Bracket number</td>
+    </tr>
+    <tr>
+        <th>i</th>
+        <td>Latest evaluated round number</td>
+    </tr>
+
+    </table>
+
+    A summary table named \<model_output_table\>_summary is also created, which has the following columns:
+    <table class="output">
+    <tr>
+        <th>source_table</th>
+        <td>Source table used for training.</td>
+    </tr>
+    <tr>
+        <th>validation_table</th>
+        <td>Name of the table containing
+        the validation dataset (if specified).</td>
+    </tr>
+    <tr>
+        <th>model</th>
+        <td>Name of the output table containing
+        the model for each model selection tuple.</td>
+    </tr>
+    <tr>
+        <th>model_info</th>
+        <td>Name of the output table containing
+        the model performance and other info for
+        each model selection tuple.</td>
+    </tr>
+    <tr>
+        <th>dependent_varname</th>
+        <td>Dependent variable column from the original
+        source table in the image preprocessing step.</td>
+    </tr>
+    <tr>
+        <th>independent_varname</th>
+        <td>Independent variables column from the original
+        source table in the image preprocessing step.</td>
+    </tr>
+    <tr>
+        <th>model_arch_table</th>
+        <td>Name of the table containing
+        the model architecture and (optionally) the
+        initial model weights.</td>
+    </tr>
+    <tr>
+        <th>model selection table</th>
+        <td>Name of the mst table containing
+        the best configuration.</td>
+    </tr>
+    <tr>
+        <th>automl_method</th>
+        <td>Name of the automl method</td>
+    </tr>
+    <tr>
+        <th>automl_params</th>
+        <td>AutoML param values</td>
+    </tr>
+    <tr>
+        <th>random_state</th>
+        <td>Chosen random seed</td>
+    </tr>
+    <tr>
+        <th>metrics_compute_frequency</th>
+        <td>Frequency that per-iteration metrics are computed
+        for the training dataset and validation
+        datasets.</td>
+    </tr>
+    <tr>
+        <th>name</th>
+        <td>Name of the training run (free text).</td>
+    </tr>
+    <tr>
+        <th>description</th>
+        <td>Description of the training run (free text).</td>
+    </tr>
+    <tr>
+        <th>start_training_time</th>
+        <td>Timestamp for start of training.</td>
+    </tr>
+    <tr>
+        <th>end_training_time</th>
+        <td>Timestamp for end of training.</td>
+    </tr>
+    <tr>
+        <th>madlib_version</th>
+        <td>Version of MADlib used.</td>
+    </tr>
+    <tr>
+        <th>num_classes</th>
+        <td>Count of distinct classes values used.</td>
+    </tr>
+    <tr>
+        <th>class_values</th>
+        <td>Array of actual class values used.</td>
+    </tr>
+    <tr>
+        <th>dependent_vartype</th>
+        <td>Data type of the dependent variable.</td>
+    </tr>
+    <tr>
+        <th>normalizing_constant</th>
+        <td>Normalizing constant used from the
+        image preprocessing step.</td>
+    </tr>
+   </table>
 
 @anchor hyperband_schedule
 @par Hyperband Schedule
@@ -143,3 +626,28 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.hyperband_schedule(
         schedule_loader.load()
 $$ LANGUAGE plpythonu VOLATILE
               m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.madlib_keras_automl(
+    source_table                   VARCHAR,
+    model_output_table             VARCHAR,
+    model_arch_table               VARCHAR,
+    model_selection_table          VARCHAR,
+    model_id_list                  INTEGER[],
+    compile_params_grid            VARCHAR,
+    fit_params_grid                VARCHAR,
+    automl_method                  VARCHAR DEFAULT 'hyperband',
+    automl_params                  VARCHAR DEFAULT 'R=6, eta=3, skip_last=0',
+    random_state                   INTEGER DEFAULT NULL,
+    object_table                   VARCHAR DEFAULT NULL,
+    use_gpus                       BOOLEAN DEFAULT FALSE,
+    validation_table               VARCHAR DEFAULT NULL,
+    metrics_compute_frequency      INTEGER DEFAULT NULL,
+    name                           VARCHAR DEFAULT NULL,
+    description                    VARCHAR DEFAULT NULL
+) RETURNS VOID AS $$
+    PythonFunctionBodyOnly(`deep_learning', `madlib_keras_automl')
+    with AOControl(False):
+        schedule_loader = madlib_keras_automl.KerasAutoML(**globals())
+$$ LANGUAGE plpythonu VOLATILE
+    m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
