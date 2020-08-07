@@ -19,17 +19,17 @@
 
 import sys
 import numpy as np
+from collections import Counter
 from os import path
-
-# Add modules to the pythonpath.
-sys.path.append(path.dirname(path.dirname(path.dirname(path.dirname(path.abspath(__file__))))))
-sys.path.append(path.dirname(path.dirname(path.dirname(path.abspath(__file__)))))
-
 import unittest
 from mock import *
 import plpy_mock as plpy
 
 m4_changequote(`<!', `!>')
+
+# Add modules to the pythonpath.
+sys.path.append(path.join(path.dirname(path.abspath(__file__)), '../../..'))
+sys.path.append(path.join(path.dirname(path.abspath(__file__)), '../..'))
 
 class DBSCANTestCase(unittest.TestCase):
 
@@ -52,27 +52,343 @@ class DBSCANTestCase(unittest.TestCase):
             'output_table' : "output",
             'id_column' : "id_in",
             'expr_point' : "data",
-            'eps' : 20,
-            'min_samples' : 4,
-            'metric' : 'squared_dist_norm2',
+            'eps' : 3.0,
+            'min_samples' : 1,
+            'metric' : 'dist_norm2',
             'algorithm' : 'brute',
-            'depth': 2
+            'max_segmentation_depth': 5
         }
         import dbscan.dbscan
         self.module = dbscan.dbscan
+        self.module.pstats = self.module.dbscan_perfstats()
+
+        dbscan_record = self.module.dbscan_record
+        dbscan_internal_record = self.module.dbscan_internal_record
+        dbscan_external_record = self.module.dbscan_external_record
+
+        test_ids = [ 5555, 0, 66, 21, 43, 11 ]
+        points = [ [ 5.2, 8.9, -6.1, 0.0 ], [ 0.0, -1.9, 5.6, 1.4 ],
+                   [ 0.0, 0.0, 0.0, 0.0  ], [-1.8,  0.0, 2.0, -1.3],
+                   [ 0.1, -0.1, 0.0, 0.5  ], [-1.0,  2.0, 2.1, -1.4] ]
+        # For reference, here is the table of distances between these test points:
+        #
+        # In [0]: for i in range(len(points)):
+        # ...:     print(np.linalg.norm(points - points [i], ord=2, axis=1))
+        # ...:
+        # [ 0.         16.80862874 11.97747887 13.98248905 12.01956738 12.45993579]
+        # [16.80862874  0.          6.07700584  5.20576603  5.95147041  6.02494813]
+        # [11.97747887  6.07700584  0.          2.98831056  0.51961524  3.37194306]
+        # [13.98248905  5.20576603  2.98831056  0.          3.29545141  2.15870331]
+        # [12.01956738  5.95147041  0.51961524  3.29545141  0.          3.69323706]
+        # [12.45993579  6.02494813  3.37194306  2.15870331  3.69323706  0.        ]
+        #
+        #   By choosing eps=3.0, that means the first 2 points have 0 neighbors:
+        #      id=5555 and id=0
+        #   The last two points each have 1 neighbor:
+        #      id=66 is the sole neighbor of id=43
+        #      id=21 is the sole neighbor of id=11
+        #   And the middle two each have 2 neighbors:
+        #      id=66 and id=21 each neighbor each other, plus the neighbor listed
+        #      above
+        #  If min_samples <= 3, then 66, 21, 43, and 11 form a cluster of 4 points,
+        #      where all 4 should be labelled as core for min_samples = 2, but only
+        #      points 66 and 21 are core for min_samples=3.
+        #  For min_samples = 1, all 6 points are core, so there are 3 clusters
+        #      adding the 2 isolated single-point clusters to the 4-point cluster
+        #  For min_samples > 3 there are no core points, so all points are noise
+        #  
+
+        # Now we assign each point to one of 3 leaves:
+        leaf_ids = [ 1, 2, 6, 6, 1, 2 ]
+
+        # And also add it as an external point to a different leaf:
+        dist_ids = [ 6, 1, 1, 2, 2, 1 ]  # only used for external recs
+
+        # row_counts metadata for each dist_id:
+        #   dist_id=1: 2 internal points, 3 external ( from leaf_ids 2,6,2 )
+        #   dist id=2: 2 internal points, 2 external ( from leaf_ids 1,6 )
+        #   dist id=6: 2 internal points, 1 external ( from leaf_id 1 )
+        self.internal_rowcounts = Counter(leaf_ids)
+        self.external_rowcounts = Counter(dist_ids)
+
+        self.eps = 3.0
+        self.metric = 'dist_norm2'
+
+        db_recs = []
+        db_dicts = []
+        for i in range(len(test_ids)):
+            internal_rec = { 'id' : test_ids[i], 'point' : points[i], 'leaf_id' : leaf_ids[i], 'dist_id' : leaf_ids[i] }
+            db_dicts.append(internal_rec)
+            db_recs.append(dbscan_record.from_dict(internal_rec, self.eps))
+            external_rec = { 'id' : test_ids[i], 'point' : points[i], 'leaf_id' : leaf_ids[i] , 'dist_id' : dist_ids[i] }
+            db_dicts.append(external_rec)
+            db_recs.append(dbscan_record.from_dict(external_rec, self.eps))
+
+        self.test_ids = test_ids
+        self.points = points
+        self.leaf_ids = leaf_ids
+        self.dist_ids = dist_ids
+        self.db_dicts = db_dicts
+        self.db_recs = db_recs
 
     def tearDown(self):
         self.module_patcher.stop()
 
-    def test_validate_dbscan(self):
+    def test_dbscan_record(self):
+        dbscan_record = self.module.dbscan_record
+        dbscan_internal_record = self.module.dbscan_internal_record
+        dbscan_external_record = self.module.dbscan_external_record
+        label = self.module.label
+        db_recs = self.db_recs
+        db_dicts = self.db_dicts
+        test_ids = self.test_ids
+        points = self.points
+        leaf_ids = self.leaf_ids
+        dist_ids = self.dist_ids
+        eps = self.eps
+        n = len(test_ids)
 
-        self.module.input_tbl_valid = Mock()
-        self.module.output_tbl_valid = Mock()
-        self.module.cols_in_tbl_valid = Mock()
-        self.module.is_var_valid = Mock(return_value = True)
-        self.module.get_expr_type = Mock(return_value = 'double precision[]')
+        # Test creating dbscan_records from dict input
+        j = 0
+        for i in range(n):
+            for t in ['internal', 'external']:
+                db_rec = db_recs[j]
+                self.assertEqual( db_rec.id, test_ids[i] )
+                self.assertEqual( db_rec.point, points[i] )
+                self.assertEqual( db_rec.leaf_id, leaf_ids[i] )
+                self.assertEqual( db_rec.cluster_id, label.UNLABELLED )
+                self.assertFalse( db_rec.is_core_point )
+                if isinstance(db_rec, dbscan_internal_record):
+                    self.assertEqual( db_rec.dist_id, leaf_ids[i] )
+                elif isinstance(db_rec, dbscan_external_record):
+                    self.assertEqual( db_rec.dist_id, dist_ids[i] )
+                else:
+                    assertEqual(0, 1 , "dbscan_record.from_dict() returned instance of unrecognized class {}".format(type(db_rec) ) )
+                j += 1
 
-        self.module._validate_dbscan(**self.default_dict)
+        db_rec = dbscan_record.from_dict(db_recs[0].__dict__, eps)     # 0 neighbors + 1 self
+        min_samples = 1                 #  For min_samples = 1, every point is a core point
+        self.assertFalse(db_rec.not_core_point(min_samples), "This should be a core point")
+        min_samples = 2                 #  For min_samples = 2, need at least 1 neighbor to be core
+        self.assertTrue(db_rec.not_core_point(min_samples), "This should NOT be a core point")
+
+        min_samples = 6
+        db_rec._internal_neighbor_count = 4
+        db_rec._external_neighbors = []   #  4 + 0 neighbors + 1 self < min_samples=6
+        self.assertTrue(db_rec.not_core_point(min_samples), "This should be NOT be a core point")
+        db_rec._internal_neighbor_count = 2
+        db_rec._external_neighbors = [5, 8, 9]  # 2 + 3 = 5 neighbors + 1 for self >= min_samples=6
+        self.assertFalse(db_rec.not_core_point(min_samples), "This should be a core point")
+
+        # Test cloning of an internal record
+        #   (extra fields added should all have been deleted)
+        db_rec = dbscan_record(db_rec)
+        actual = db_dicts[0]
+        actual['cluster_id'] = 0
+        actual['is_core_point'] = True  # verify cloned as core point
+        self.assertEqual(db_rec.__dict__, actual)
+
+        # Test cloning of an external record
+        db_rec = dbscan_record(db_recs[1])
+        actual = db_dicts[1]
+        actual['cluster_id'] = 0
+        actual['is_core_point'] = False  # verify cloned as non-core point
+        self.assertEqual(db_rec.__dict__, actual)
+
+    def test_leaf_storage(self):
+        # Add some internal and external points, mark some as part of
+        #  clusters, test range queries and assert that:
+        #    1. the right points are returned
+        #    2. neighbor counts and possible_border_points are updated properly
+        #    3. search point has been removed from rtree
+        #
+        # For the purposes of testing LeafStorage, we ignore leaf_id &
+        #  dist_id, adding all 8 records to the same leaf.
+
+        eps = self.eps
+        min_samples = 3
+        metric = self.metric
+        db_recs = self.db_recs
+
+        db_rec = db_recs[0]
+        LeafStorage = self.module.LeafStorage
+
+        leaf = LeafStorage( 4,
+                            np.float64,
+                            eps,
+                            metric,
+                            min_samples
+                          )
+
+        for db_rec in db_recs:
+            leaf.add_point(db_rec)
+       
+        neighbor_counts = [ 1, 1, 3, 3, 2, 2 ]  # Number of neighbors (including self) of each of the
+                                                # 6 points for eps=3.0
+
+        returned_neighbors = [ [], [], [43, 21], [11], [], [] ]
+
+        core_points = { 21, 66, 43, 11 }     # Points expected to be marked core, with min_samples = 3
+                                             # Each point should be counted twice (1 internal + 1 external),
+                                             # so min_samples = 4 in this case means it has at least 1 actual
+                                             # neighbor plus itself
+
+        # Test calling range_query() on external points
+        #   External points must be queried first, so that all of the
+        #   _ext_neighbors lists get updated before we test the internal
+        #   points
+        for i in range(len(neighbor_counts)):
+            db_rec = db_recs[2*i+1]
+            neighbors = leaf.range_query(db_rec)
+            self.assertEqual( len(neighbors), neighbor_counts[i])
+
+        # Test calling range_query() on internal points
+        for i in range(len(neighbor_counts)):
+            db_rec = db_recs[2*i]
+            neighbors = leaf.range_query(db_rec)
+            self.assertEqual( len(db_rec._external_neighbors), neighbor_counts[i] )
+            self.assertEqual( db_rec._internal_neighbor_count, neighbor_counts[i] - 1 )
+            self.assertItemsEqual( neighbors, returned_neighbors[i],
+                "Expected range_query({}) to return neighbors {}, but returned {}".format(
+                    db_rec.id, returned_neighbors[i], neighbors
+                )
+            )
+            self.assertEqual( db_rec.is_core_point, db_rec.id in core_points,
+                "Unexpected is_core_point={} for internal point id={} after range_query()".format(
+                    db_rec.is_core_point, db_rec.id
+                )
+            )
+
+    # Helper function for test_dbscan_leaf()
+    #   Builds a dictionary of expected dbscan output records
+    #
+    #   Inputs:
+    #     ret_ids:      list of expected ids to be returned
+    #     cluster_ids:  list of expected cluster labels, in same order
+    #     external_flags: list of booleans indicating which records are external
+    #     core_points:  set of ids expected to be labeled as core points
+    #
+    #   Output:  A nested dictionary of output results indexed at first
+    #            level by point ids, and second level by 'internal' vs 'external'
+    #
+    #            There should be at most 1 internal row returned for each internal id,
+    #            so expected_res[id]['internal'] is a single dbscan_record
+    #
+    #            Since dbscan_record should return multiple rows for some external points,
+    #            expected_res[id]['external'] is a list (stack) of the expected external
+    #            dbscan_records for each id, in reverse order of how they are expected
+    #            to be returned.  The 0th element of the list for each id will be None,
+    #            so that if the number of rows returned for any id exceeds the expected
+    #            number, the first unexpected row will be printed properly assertEquals,
+    #            instead of causing an Exception while trying to access an empty list
+    #            (after all other elements have been popped from the stack, as they are
+    #            compared).
+    #
+    def build_expected_dbscan_leaf_output(self, ret_ids, cluster_ids,
+                                          external_flags, core_points):
+        test_ids = self.test_ids
+        db_recs = self.db_recs
+        dbscan_record = self.module.dbscan_record
+        expected_res = {}
+        id_lookup = { test_ids[i] : i for i in range(len(test_ids)) }
+
+        for i, id in enumerate(ret_ids):
+            j = id_lookup[id]
+            if not id in expected_res:
+                entry = dict()
+                entry['external'] = [ None ]
+                entry['internal'] = None
+                expected_res[id] = entry
+
+            if external_flags[i]:
+                rec = dbscan_record(db_recs[2*j+1])  # start with original external rec
+                # Modify record with expected cluster_id
+                rec.cluster_id = cluster_ids[i]
+                rec.is_core_point = False  # external records should never be marked as core
+                entry['external'].append(rec)
+            else:
+                rec = dbscan_record(db_recs[2*j])  # start with original internal rec
+                # Modify record with expected cluster_id & is_core_point flag
+                rec.cluster_id = cluster_ids[i]
+                rec.is_core_point = id in core_points
+                entry['internal'] = rec
+
+        return expected_res
+
+    def test_dbscan_leaf(self):
+        # Test dbscan_leaf() by calling it with some simple test
+        # data.  Ensure that:
+        #     1. 1 record is returned for each non-noise point (especially, non-core points)
+        #        and a record for each cluster each external point is near.
+        #        eg. if 1 external point is near 2 clusters, and another is
+        #        near 1 cluster, then 3 records should be returned (+ internal records)
+        #     2. SD is properly removed if an exception is hit, or if last row
+        #     3. External neighbors are included in deciding whether each internal point
+        #        is a core_point.  ie. If an external neighbor brings the total # of
+        #        neighbors (including self) for an internal point up to min_samples, it
+        #        should be marked a core point.
+        #     4. cluster_id's are assigned correctly, and leaf_id's & dist_id's are unchanged
+
+        self.maxDiff = 2000
+        dbscan_record = self.module.dbscan_record
+        eps = self.eps
+        metric = self.metric
+        min_samples = 1
+
+        db_recs = self.db_recs
+        SD = dict()
+
+        # Call dbscan_leaf() with eps=3.0
+        res = []
+        for db_rec in db_recs:
+            num_internal_points = self.internal_rowcounts[db_rec.dist_id]
+            num_external_points = self.external_rowcounts[db_rec.dist_id]
+            state = self.module._dbscan_leaf(db_rec.__dict__, eps, min_samples, metric, num_internal_points,
+                                             num_external_points, SD)
+            res += list(state)
+
+        self.assertEqual(SD, {}, "SD was not properly cleaned up after calls to dbscan_leaf() complete")
+
+        # Expected results for eps=3.0, min_samples=1
+        ret_ids =        [ 5555, 0, 66, 66, 21, 21, 43, 11 ]
+        cluster_ids =    [    2, 1,  1,  1,  1,  2, 1,  2 ]
+        external_flags = [ False, False, False, True, False, True, False, False ]
+        core_points = { 5555, 0, 66, 21, 43, 11 } #  All internal points should be marked core
+        expected_res = self.build_expected_dbscan_leaf_output(ret_ids, cluster_ids, external_flags,
+                                                              core_points)
+        for output_rec in res:
+            if output_rec.leaf_id == output_rec.dist_id:
+                self.assertEqual(output_rec, expected_res[output_rec.id]['internal'])
+            else:
+                self.assertEqual(output_rec, expected_res[output_rec.id]['external'].pop())
+
+        self.assertEqual(len(res), len(ret_ids),
+            "All {} expected rows match rows returned by dbscan_leaf(), but also got {} unexpected rows!".
+            format(len(ret_ids), len(res)))
+
+        eps=5.5  # Call dbscan_leaf() again with different eps
+        res = []
+        for db_rec in db_recs:
+            num_internal_points = self.internal_rowcounts[db_rec.dist_id]
+            num_external_points = self.external_rowcounts[db_rec.dist_id]
+            state = self.module._dbscan_leaf(db_rec.__dict__, eps, min_samples, metric, num_internal_points,
+                                             num_external_points, SD)
+            res += list(state)
+
+        self.assertEqual(SD, {}, "SD was not properly cleaned up after calls to dbscan_leaf() complete")
+
+        # Expected results for eps=5.5, min_samples=1
+        ret_ids =  [ 5555, 0, 66, 66, 21, 21, 21, 43, 43, 11, 11 ]
+        cluster_ids = [ 2, 1,  1,  1,  1,  2,  1,  1,  2,  2,  1 ]
+        external_flags = [ False, False, False, True, False, True, True, False, True, False, True ]
+        core_points = { 5555, 0, 66, 21, 43, 11 }
+        expected_res = self.build_expected_dbscan_leaf_output(ret_ids, cluster_ids, external_flags,
+                                                              core_points)
+        for output_rec in res:
+            if output_rec.leaf_id == output_rec.dist_id:
+                self.assertEqual(output_rec, expected_res[output_rec.id]['internal'])
+            else:
+                self.assertEqual(output_rec, expected_res[output_rec.id]['external'].pop())
 
 if __name__ == '__main__':
     unittest.main()
