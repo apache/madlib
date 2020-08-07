@@ -43,18 +43,20 @@ copy dbscan_train_data (id_in, data) FROM stdin delimiter '|';
 DROP TABLE IF EXISTS out1, out1_summary, out1_predict;
 SELECT dbscan('dbscan_train_data','out1','id_in','data',20,4,'squared_dist_norm2','brute');
 
-SELECT assert(count(DISTINCT id_in) = 5, 'Incorrect cluster 0') FROM out1 WHERE cluster_id = 0 and id_in=ANY(ARRAY[1,2,3,4,5]);
+SELECT assert(count(DISTINCT id) = 5, 'Incorrect cluster 0') FROM out1 WHERE cluster_id = 0 and id=ANY(ARRAY[1,2,3,4,5]);
 
-SELECT assert(count(DISTINCT id_in) = 4, 'Incorrect cluster 1') FROM out1 WHERE cluster_id = 1 and id_in=ANY(ARRAY[6,7,8,9]);
+SELECT assert(count(DISTINCT id) = 4, 'Incorrect cluster 1') FROM out1 WHERE cluster_id = 1 and id=ANY(ARRAY[6,7,8,9]);
+
+SELECT assert(id_column = 'id_in', 'id_column field in summary table should have been ''id_in''') FROM out1_summary;
 
 SELECT dbscan_predict('out1', 'dbscan_train_data', 'id_in', 'data', 'out1_predict');
 
 SELECT assert(count(DISTINCT cluster_id) = 2, 'Incorrect cluster count') FROM out1_predict;
 
-DROP TABLE IF EXISTS out1, out1_summary, out1_predict;
+DROP TABLE IF EXISTS out1, out1_summary;
 SELECT dbscan('dbscan_train_data','out1','id_in','data',20,4,'dist_norm2','brute');
 
-DROP TABLE IF EXISTS out1, out1_summary, out1_predict;
+DROP TABLE IF EXISTS out1, out1_summary;
 SELECT dbscan('dbscan_train_data','out1','id_in','data',20,4,'dist_norm1','brute');
 
 DROP TABLE IF EXISTS dbscan_train_data2;
@@ -97,16 +99,16 @@ INSERT INTO dbscan_test_data2 VALUES
 
 DROP TABLE IF EXISTS dbscan_result, dbscan_result_summary, dbscan_predict_out;
 SELECT dbscan(
-'dbscan_train_data2',    -- source table
+'dbscan_train_data2',   -- source table
 'dbscan_result',        -- output table
 'pid',                  -- point id column
-'points',             -- data point
+'points',               -- data point
  1.75,                  -- epsilon
  4,                     -- min samples
 'dist_norm2',           -- metric
-'brute_force');               -- algorithm
+'brute_force');         -- algorithm
 
-SELECT * FROM dbscan_result ORDER BY pid;
+SELECT * FROM dbscan_result ORDER BY id;
 
 SELECT assert(count(DISTINCT cluster_id) = 3, 'Incorrect cluster count') FROM dbscan_result;
 
@@ -114,42 +116,69 @@ SELECT dbscan_predict('dbscan_result', 'dbscan_test_data2', 'pid', 'points', 'db
 
 SELECT assert(count(DISTINCT cluster_id) = 3, 'Incorrect cluster count') FROM dbscan_predict_out;
 
-DROP TABLE IF EXISTS dbscan_train_data3;
-CREATE TABLE dbscan_train_data3 (
-id_in integer,
-data0 integer,
-data1 integer);
-copy dbscan_train_data3 (id_in, data0, data1) FROM stdin delimiter '|';
-1|1|1
-2|2|2
-3|3|3
-4|4|4
-5|4|8
-6|17|8
-7|19|8
-8|19|9
-9|19|10
-10|3|111
-11|3|112
-12|3|113
-13|8|113
+DROP TABLE IF EXISTS dbscan_cities;
+CREATE TABLE dbscan_cities (
+	city TEXT,
+	country TEXT,
+	lat DOUBLE PRECISION,
+	lon DOUBLE PRECISION,
+	PRIMARY KEY (city, country)
+);
+COPY dbscan_cities (city, country, lat, lon) FROM stdin csv header;
+city,country,lat,lon
+Bangkok,Thailand,13.7563,100.5018
+Athens,Greece,37.9838,23.7275
+Beijing,China,39.9042,116.4074
+St. Petersburg,Russia,59.9311,30.3609
+Barcelona,Spain,41.3874,2.1686
+Tehran,Iran,35.6892,51.3890
+Bristol,England,51.4545,-2.5879
+São Paulo,Brazil,-23.5558,-46.6396
+Berlin,Germany,52.5200,13.4050
+New Dehli,India,28.6139,77.2090
+Sydney,Australia,-34,151
+Bogotá,Colombia,4,-74
+Kingston,Jamaica,17,-76
+Rome,Italy,41,12
+Bombay,India,19,72
+Cape Town,South Africa,-33,22
+Cairo,Egypt,30,31
+Guayaquil,Ecuador,-2,-79
+Jakarta,Indonesia,-6,106
+Hamburg,Germany,53.5511,9.9937
+Hong Kong,China,22,114
+Bordeux,France,44,0
+Nairobi,Kenya,-1.2921,36.8219
+Osaka,Japan,34,135
 \.
 
-DROP TABLE IF EXISTS out1, out1_summary;
-SELECT dbscan('dbscan_train_data3','out1','id_in','ARRAY[data0,data1]',20,4,'squared_dist_norm2','brute');
+\set unit_3d_point_expr ARRAY[COS(radians(lat))*COS(radians(lon)), COS(radians(lat))*SIN(radians(lon)), SIN(radians(lat))]
+\set id_expr '(''x'' || substr(md5(city || '','' || country),1,16))::BIT(64)::BIGINT'
 
-DROP TABLE IF EXISTS dbscan_result, dbscan_result_summary, dbscan_predict_out;
-SELECT dbscan(
-'dbscan_train_data2',    -- source table
-'dbscan_result',        -- output table
-'pid',                  -- point id column
-'points',             -- data point
- 1.75,                  -- epsilon
- 4,                     -- min samples
-'dist_norm2',           -- metric
-'brute_force');               -- algorithm
+-- Test that id and point params may be passed in as expressions
+DROP TABLE IF EXISTS dbscan_cities_out, dbscan_cities_out_summary;
+SELECT dbscan('dbscan_cities',
+	'dbscan_cities_out',
+	:'id_expr',
+	:'unit_3d_point_expr',
+	radians(22), -- eps = 35 degrees
+	3,          -- min_samples = 3
+	'dist_angle',
+	'brute'
+);
 
--- Test kd-tree
+SELECT assert(
+	id_column = $$('x' || substr(md5(city || ',' || country),1,16))::BIT(64)::BIGINT$$,
+	'id expression passed in does not match expression saved in summary table: ' || id_column
+) FROM dbscan_cities_out_summary;
+SELECT assert(
+	expr_point = :'unit_3d_point_expr',
+	'point expression passed in does not match expression saved in summary table: ' || expr_point
+) FROM dbscan_cities_out_summary; -- verify point expression saved in summary
+SELECT assert(COUNT(*) = 18, 'Wrong number of rows returned.  Expeted: 7, Actual: ' || COUNT(*)) FROM dbscan_cities_out;
+SELECT assert(COUNT(DISTINCT cluster_id) = 3, 'Wrong number of clusters found.  Expected: ' || 3 || ', Actual: ' || COUNT(DISTINCT cluster_id)) FROM dbscan_cities_out;
+SELECT assert(COUNT(*) = 15, 'Wrong number of core points found.  Expected: ' || 15 || ', Actual: ' || COUNT(*)) FROM dbscan_cities_out WHERE is_core_point;
+SELECT assert(ARRAY(SELECT city FROM dbscan_cities JOIN (SELECT id FROM dbscan_cities_out WHERE cluster_id IN (SELECT cluster_id FROM dbscan_cities_out b GROUP BY cluster_id HAVING (COUNT(*)) < 5)) x ON id = :id_expr ORDER BY id) = ARRAY['Bogotá','Kingston','Guayaquil'], 'Wrong cities in smallest cluster, expected: Bogotá, Kingston, Guayaquil');
 
 DROP TABLE IF EXISTS dbscan_result, dbscan_result_summary;
 SELECT dbscan(
@@ -160,17 +189,29 @@ SELECT dbscan(
  1.75,                  -- epsilon
  4,                     -- min samples
 'dist_norm2',           -- metric
-'kd_tree',              -- algorithm
+'brute_force');         -- algorithm
+
+-- Test optimized dbscan
+
+DROP TABLE IF EXISTS dbscan_result, dbscan_result_summary;
+SELECT dbscan(
+'dbscan_train_data2',   -- source table
+'dbscan_result',        -- output table
+'pid',                  -- point id column
+'points',               -- data point
+ 1.75,                  -- epsilon
+ 4,                     -- min samples
+'dist_norm2',           -- metric
+'optimized',            -- algorithm
 2);                     -- depth
 
-SELECT * FROM dbscan_result ORDER BY pid;
+SELECT * FROM dbscan_result ORDER BY id;
 
-
-CREATE TABLE dbscan_kd_test_data (
+CREATE TABLE dbscan_opt_test_data (
     row_id integer,
     row_vec double precision[]
 );
-COPY dbscan_kd_test_data (row_id, row_vec) FROM stdin DELIMITER '|';
+COPY dbscan_opt_test_data (row_id, row_vec) FROM stdin DELIMITER '|';
 1 | {-123.932588658681,312.674262022751,24.5140517556683}
 2 | {-1011.71837586596,294.857038270306,-596.339561040807}
 3 | {51.8496080463916,-392.173152861615,188.5097494329}
@@ -1174,23 +1215,24 @@ COPY dbscan_kd_test_data (row_id, row_vec) FROM stdin DELIMITER '|';
 \.
 
 DROP TABLE IF EXISTS dbscan_result, dbscan_result_summary;
-SELECT dbscan('dbscan_kd_test_data','dbscan_result','row_id','row_vec',50, 3, 'dist_norm2', 'br');
+SELECT dbscan('dbscan_opt_test_data','dbscan_result','row_id','row_vec',50, 3, 'dist_norm2', 'br');
 
-DROP TABLE IF EXISTS dbscan_result_kd, dbscan_result_kd_summary;
-SELECT dbscan('dbscan_kd_test_data','dbscan_result_kd','row_id','row_vec',50, 3, 'dist_norm2', 'kd', 2);
+DROP TABLE IF EXISTS dbscan_result_opt, dbscan_result_opt_summary;
+SELECT dbscan('dbscan_opt_test_data','dbscan_result_opt','row_id','row_vec',50, 3, 'dist_norm2', 'optimized', 2);
 
-SELECT assert(count(row_id) = 50 AND count(distinct cluster_id) = 11, 'Incorrect cluster counts for brute')
+SELECT assert(count(id) = 50 AND count(distinct cluster_id) = 11, 'Incorrect cluster counts for brute')
 FROM dbscan_result;
 
-SELECT assert(count(row_id) = 50 AND count(distinct cluster_id) = 11, 'Incorrect cluster counts for kd')
-FROM dbscan_result_kd;
+SELECT assert(count(id) = 50 AND count(distinct cluster_id) = 11, 'Incorrect cluster counts for optimized dbscan')
+FROM dbscan_result_opt;
 
 CREATE TABLE temp_result AS
-SELECT row_id
+SELECT id
 FROM dbscan_result
-WHERE cluster_id = (SELECT cluster_id FROM dbscan_result WHERE row_id = 4);
+WHERE cluster_id = (SELECT cluster_id FROM dbscan_result WHERE id = 4);
 
 SELECT assert(count(*) = 6, 'Clusters do not match')
-FROM dbscan_result_kd
-WHERE cluster_id = (SELECT cluster_id FROM dbscan_result_kd WHERE row_id = 4)
-      AND row_id IN (SELECT row_id FROM temp_result);
+FROM dbscan_result_opt
+WHERE cluster_id = (SELECT cluster_id FROM dbscan_result_opt WHERE id = 4)
+      AND id IN (SELECT id FROM temp_result);
+
