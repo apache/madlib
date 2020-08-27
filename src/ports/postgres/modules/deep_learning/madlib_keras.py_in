@@ -251,24 +251,26 @@ def fit(schema_madlib, source_table, model, model_arch_table,
     dep_vartype = src_summary_dict['dep_vartype']
     dependent_varname = src_summary_dict['dependent_varname_in_source_table']
     independent_varname = src_summary_dict['independent_varname_in_source_table']
+
     # Define some constants to be inserted into the summary table.
     model_type = "madlib_keras"
     metrics_list = get_metrics_from_compile_param(compile_params)
     is_metrics_specified = True if metrics_list else False
     metrics_type = 'ARRAY{0}'.format(metrics_list) if is_metrics_specified else 'NULL'
     metrics_iters = metrics_iters if metrics_iters else 'NULL'
+
     # We always compute the training loss and metrics, at least once.
-    training_loss_final = training_loss[-1]
-    training_loss = 'ARRAY{0}'.format(training_loss) if training_loss else 'NULL'
     training_metrics_final, training_metrics = get_metrics_sql_string(
         training_metrics, is_metrics_specified)
+    training_loss_final, training_loss = get_metrics_sql_string(
+        training_loss, True)
+
     # Validation loss and metrics are computed only if validation_table
     # is provided.
     if validation_set_provided:
         validation_metrics_final, validation_metrics = get_metrics_sql_string(
             validation_metrics, is_metrics_specified)
-        validation_loss_final = validation_loss[-1]
-        validation_loss = 'ARRAY{0}'.format(validation_loss)
+        validation_loss_final, validation_loss = get_metrics_sql_string(validation_loss)
         # Must quote the string before inserting to table. Explicitly
         # quoting it here since this can also take a NULL value, done
         # in the else part.
@@ -399,17 +401,6 @@ def get_source_summary_table_dict(fit_validator):
     source_summary['norm_const_type'] = get_expr_type(
         NORMALIZING_CONST_COLNAME, fit_validator.source_summary_table)
     return source_summary
-
-def get_metrics_sql_string(metrics_list, is_metrics_specified):
-    """
-        Return the SQL string to use for creating metrics SQL values.
-    """
-    if is_metrics_specified:
-        metrics_final = metrics_list[-1]
-        metrics_all = 'ARRAY{0}'.format(metrics_list)
-    else:
-        metrics_final = metrics_all = 'NULL'
-    return metrics_final, metrics_all
 
 def compute_loss_and_metrics(schema_madlib, table, compile_params, model_arch,
                              serialized_weights, use_gpus, accessible_gpus_for_seg,

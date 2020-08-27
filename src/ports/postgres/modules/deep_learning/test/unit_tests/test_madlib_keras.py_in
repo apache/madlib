@@ -22,6 +22,7 @@ m4_changequote(`<!', `!>')
 import sys
 import numpy as np
 import os
+import re
 from os import path
 # Add convex module to the pythonpath.
 sys.path.append(path.dirname(path.dirname(path.dirname(path.dirname(path.abspath(__file__))))))
@@ -33,6 +34,14 @@ from keras.layers import *
 import unittest
 from mock import *
 import plpy_mock as plpy
+try:
+    from pgsanity.pgsanity import check_string as pglint
+    pglint("SELECT 1;")
+except:
+    # Just skip this test if "pip install pgsanity" hasn't been run
+    #  or isn't functioning (eg. ecpg isn't in path)
+    def pglint(q, s=False):
+        return (True, '')
 
 # helper for multiplying array by int
 def mult(k,arr):
@@ -1336,6 +1345,38 @@ class MadlibKerasHelperTestCase(unittest.TestCase):
         with self.assertRaises(plpy.PLPYException) as error:
             self.subject.get_accessible_gpus_for_seg('schema_madlib', 2, 'foo')
         self.assertIn('no gpus configured on hosts', str(error.exception).lower())
+
+    def test_get_metrics_sql_string(self):
+        NaN = float('nan')
+        test_metrics = [ 3.2, NaN, 0.0, None, 8.94, -6.8, 1.2, NaN, NaN ]
+
+        py2sql = { x : str(x) for x in test_metrics if type(x) == float }
+        py2sql[NaN] = "'NaN'::DOUBLE PRECISION"
+        py2sql[None] = 'NULL'
+        correct = [ py2sql[x] for x in test_metrics ]
+
+        final, metrics = self.subject.get_metrics_sql_string(test_metrics)
+
+        m = re.match("\(ARRAY\[(.*)\]\)", metrics)
+        answers = m.group(1).split(', ')
+        self.assertListEqual(answers, correct)
+        self.assertEqual(final, '(' + correct[-1] + ')')
+
+        # Check that postgresql parser sees this as a valid sql data type
+        res = pglint('SELECT ' + final, True)
+        self.assertEqual(
+            res,
+            (True, ''),
+            "This is not valid PostgresSQL: {}".format('SELECT' + final)
+        )
+
+        # Check that postgresql parser sees this as a valid array
+        res = pglint('SELECT {}[1]'.format(metrics), True)
+        self.assertEqual(
+            res,
+            (True, ''),
+            "This is not valid PostgresSQL: SELECT {}[1]".format(metrics)
+        )
 
 class MadlibKerasEvaluationTestCase(unittest.TestCase):
     def setUp(self):

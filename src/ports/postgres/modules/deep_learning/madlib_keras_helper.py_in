@@ -25,7 +25,7 @@ from utilities.utilities import is_platform_pg
 from utilities.validate_args import table_exists
 from madlib_keras_gpu_info import GPUInfoFunctions
 import plpy
-
+from math import isnan
 
 ############### Constants used in other deep learning files #########
 # Name of columns in model summary table.
@@ -308,3 +308,48 @@ def get_accessible_gpus_for_seg(schema_madlib, segments_per_host, module_name):
                     'recommended configuration is to have 1 GPU available per segment.')
                 warning_flag = False
         return accessible_gpus_for_seg
+
+class sqlnull:
+    def __repr__(self):
+        return 'NULL'
+
+class sqlfloat(float):
+    """
+        Same as a python float, but with a SQL-friendly
+        string representation for printing or formatting
+    """
+    def __repr__(self):
+        if isnan(self):
+            return "'NaN'::DOUBLE PRECISION"
+        else:
+            return float.__repr__(self)
+    def __str__(self):
+        return self.__repr__()
+
+def py_to_sql(x):
+    """
+        Converts a float, list of floats, or multi-dimensional
+        nested list of floats into corresponding lists of sqlfloat's
+    """
+
+    if type(x) == float:
+        return sqlfloat(x)
+    elif type(x) == list:
+        return map(py_to_sql, x)
+    elif x is None:
+        return sqlnull()
+    else:
+        return x
+
+def get_metrics_sql_string(metrics_list, is_metrics_specified=True):
+    """
+        Return the SQL string to use for creating metrics SQL values.
+    """
+    if is_metrics_specified:
+        metrics_list = py_to_sql(metrics_list)
+        metrics_final = '({0})'.format(metrics_list[-1])
+        metrics_all = '(ARRAY{0})'.format(metrics_list)
+    else:
+        metrics_final = metrics_all = 'NULL'
+    return metrics_final, metrics_all
+
