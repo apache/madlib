@@ -38,7 +38,8 @@ SELECT madlib_keras_predict('iris_model', -- model
                             'iris_test',  -- test_table
                             'id',  -- id column
                             'attributes', -- independent var
-                            'iris_predict'  -- output table
+                            'iris_predict',  -- output table
+                            'response'
                             );
 
 -- Copy weights that were learnt from the previous run, for transfer
@@ -61,14 +62,10 @@ SELECT madlib_keras_predict_byom(
                                  );
 
 SELECT assert(
-  p0.estimated_class_text = p1.estimated_dependent_var,
+  p0.class_text = p1.dependent_var,
   'Predict byom failure for non null class value and response pred_type.')
 FROM iris_predict AS p0,  iris_predict_byom AS p1
 WHERE p0.id=p1.id;
-SELECT assert(UPPER(pg_typeof(estimated_dependent_var)::TEXT) = 'TEXT',
-	'Predict byom failure for non null class value and response pred_type.
-	 Expeceted estimated_dependent_var to be of type TEXT')
-FROM  iris_predict_byom LIMIT 1;
 
 -- class_values NULL, pred_type is NULL (response)
 DROP TABLE IF EXISTS iris_predict_byom;
@@ -81,13 +78,9 @@ SELECT madlib_keras_predict_byom(
                                  'iris_predict_byom'
                                  );
 SELECT assert(
-  p1.estimated_dependent_var IN ('0', '1', '2'),
+  p1.dependent_var IN ('0', '1', '2'),
   'Predict byom failure for null class value and null pred_type.')
 FROM iris_predict_byom AS p1;
-SELECT assert(UPPER(pg_typeof(estimated_dependent_var)::TEXT) = 'TEXT',
-	'Predict byom failure for non null class value and response pred_type.
-	 Expeceted estimated_dependent_var to be of type TEXT')
-FROM  iris_predict_byom LIMIT 1;
 
 -- class_values not NULL, pred_type is prob
 DROP TABLE IF EXISTS iris_predict_byom;
@@ -106,13 +99,9 @@ SELECT madlib_keras_predict_byom(
                                  );
 
 SELECT assert(
-  (p1."prob_Iris-setosa" + p1."prob_Iris-virginica" + p1."prob_Iris-versicolor") - 1 < 1e-6,
+  sum(prob) - 1 < 1e-6,
     'Predict byom failure for non null class value and prob pred_type.')
-FROM iris_predict_byom AS p1;
-SELECT assert(UPPER(pg_typeof("prob_Iris-setosa")::TEXT) = 'DOUBLE PRECISION',
-	'Predict byom failure for non null class value and prob pred_type.
-	Expeceted "prob_Iris-setosa" to be of type DOUBLE PRECISION')
-FROM  iris_predict_byom LIMIT 1;
+FROM iris_predict_byom AS p1 GROUP BY id;
 
 -- class_values NULL, pred_type is prob
 DROP TABLE IF EXISTS iris_predict_byom;
@@ -128,10 +117,6 @@ SELECT madlib_keras_predict_byom(
                                  NULL
                                  );
 SELECT assert(
-  (prob[1] + prob[2] + prob[3]) - 1 < 1e-6,
+  sum(prob) - 1 < 1e-6,
     'Predict byom failure for null class value and prob pred_type.')
-FROM iris_predict_byom;
-SELECT assert(UPPER(pg_typeof(prob)::TEXT) = 'DOUBLE PRECISION[]',
-	'Predict byom failure for null class value and prob pred_type. Expeceted prob to
-	be of type DOUBLE PRECISION[]')
-FROM  iris_predict_byom LIMIT 1;
+FROM iris_predict_byom GROUP BY id;
