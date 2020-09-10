@@ -145,7 +145,7 @@ class MadlibKerasFitTestCase(unittest.TestCase):
         self.assertEqual(0, self.subject.K.clear_session.call_count)
         self.assertTrue(k['SD']['segment_model'])
 
-    def test_fit_transition_multiple_model_first_buffer_pass(self):
+    def test_fit_transition_multiple_model_no_cache_first_buffer_pass(self):
         #TODO should we mock tensorflow's close_session and keras'
         # clear_session instead of mocking the function `K.clear_session`
         self.subject.K.set_session = Mock()
@@ -171,6 +171,36 @@ class MadlibKerasFitTestCase(unittest.TestCase):
         # Clear session must not be called for the first buffer
         self.assertEqual(0, self.subject.K.clear_session.call_count)
         self.assertTrue(k['SD']['segment_model'])
+
+    def test_fit_transition_multiple_model_cache_first_buffer_pass(self):
+        #TODO should we mock tensorflow's close_session and keras'
+        # clear_session instead of mocking the function `K.clear_session`
+        self.subject.K.set_session = Mock()
+        self.subject.K.clear_session = Mock()
+        starting_image_count = 0
+        ending_image_count = len(self.dependent_var_int)
+
+        previous_weights = np.array(self.model_weights, dtype=np.float32)
+
+        k = {'SD': {}}
+
+        new_state = self.subject.fit_multiple_transition(
+            None, self.dependent_var, self.independent_var,
+            self.dependent_var_shape, self.independent_var_shape,
+            self.model.to_json(), self.compile_params, self.fit_params, 0,
+            self.dist_key_mapping, 0, 4, self.total_images_per_seg, False,
+            self.accessible_gpus_for_seg, previous_weights.tostring(), True, **k)
+
+        image_count = new_state
+        self.assertEqual(ending_image_count, image_count)
+        # set_session should only be called for the last row
+        self.assertEqual(0, self.subject.K.set_session.call_count)
+        # Clear session must not be called for the first buffer
+        self.assertEqual(0, self.subject.K.clear_session.call_count)
+        self.assertTrue('segment_model' not in k['SD'])
+        self.assertTrue('cache_set' not in k['SD'])
+        self.assertTrue(k['SD']['x_train'])
+        self.assertTrue(k['SD']['y_train'])
 
     def _test_fit_transition_middle_buffer_pass(self, is_platform_pg):
         #TODO should we mock tensorflow's close_session and keras'
@@ -228,7 +258,7 @@ class MadlibKerasFitTestCase(unittest.TestCase):
         # Clear session and sess.close must not get called for the middle buffer
         self.assertEqual(0, self.subject.K.clear_session.call_count)
 
-    def test_fit_transition_multiple_model_middle_buffer_pass(self):
+    def test_fit_transition_multiple_model_no_cache_middle_buffer_pass(self):
         #TODO should we mock tensorflow's close_session and keras'
         # clear_session instead of mocking the function `K.clear_session`
         self.subject.K.set_session = Mock()
@@ -258,6 +288,41 @@ class MadlibKerasFitTestCase(unittest.TestCase):
         self.assertEqual(1, self.subject.K.set_session.call_count)
         # Clear session and sess.close must not get called for the middle buffer
         self.assertEqual(0, self.subject.K.clear_session.call_count)
+
+    def test_fit_transition_multiple_model_cache_middle_buffer_pass(self):
+        #TODO should we mock tensorflow's close_session and keras'
+        # clear_session instead of mocking the function `K.clear_session`
+        self.subject.K.set_session = Mock()
+        self.subject.K.clear_session = Mock()
+
+        starting_image_count = len(self.dependent_var_int)
+        ending_image_count = starting_image_count + len(self.dependent_var_int)
+
+        previous_weights = np.array(self.model_weights, dtype=np.float32)
+        x_train = list()
+        y_train = list()
+        x_train.append(self.subject.np_array_float32(self.independent_var, self.independent_var_shape))
+        y_train.append(self.subject.np_array_int16(self.dependent_var, self.dependent_var_shape))
+
+        k = {'SD': {'x_train': x_train, 'y_train': y_train}}
+
+        state = starting_image_count
+        new_state = self.subject.fit_multiple_transition(
+            state, self.dependent_var, self.independent_var,
+            self.dependent_var_shape, self.independent_var_shape,
+            self.model.to_json(), self.compile_params, self.fit_params, 0,
+            self.dist_key_mapping, 0, 4, self.total_images_per_seg, False,
+            self.accessible_gpus_for_seg, previous_weights.tostring(), True, **k)
+        image_count = new_state
+        self.assertEqual(ending_image_count, image_count)
+        # set_session is only called for the last buffer
+        self.assertEqual(0, self.subject.K.set_session.call_count)
+        # Clear session and sess.close must not get called for the middle buffer
+        self.assertEqual(0, self.subject.K.clear_session.call_count)
+        self.assertTrue('segment_model' not in k['SD'])
+        self.assertTrue('cache_set' not in k['SD'])
+        self.assertTrue(k['SD']['x_train'])
+        self.assertTrue(k['SD']['y_train'])
 
     def _test_fit_transition_last_buffer_pass(self, is_platform_pg):
         #TODO should we mock tensorflow's close_session and keras'
@@ -327,7 +392,7 @@ class MadlibKerasFitTestCase(unittest.TestCase):
         #  but not in postgres
         self.assertEqual(0, self.subject.K.clear_session.call_count)
 
-    def test_fit_transition_multiple_model_last_buffer_pass(self):
+    def test_fit_transition_multiple_model_no_cache_last_buffer_pass(self):
         #TODO should we mock tensorflow's close_session and keras'
         # clear_session instead of mocking the function `K.clear_session`
         self.subject.K.set_session = Mock()
@@ -361,6 +426,137 @@ class MadlibKerasFitTestCase(unittest.TestCase):
         # Clear session and sess.close must get called for the last buffer in gpdb,
         #  but not in postgres
         self.assertEqual(1, self.subject.K.clear_session.call_count)
+
+    def test_fit_transition_multiple_model_cache_last_buffer_pass(self):
+        #TODO should we mock tensorflow's close_session and keras'
+        # clear_session instead of mocking the function `K.clear_session`
+        self.subject.K.set_session = Mock()
+        self.subject.K.clear_session = Mock()
+
+        starting_image_count = 2*len(self.dependent_var_int)
+        ending_image_count = starting_image_count + len(self.dependent_var_int)
+
+        previous_weights = np.array(self.model_weights, dtype=np.float32)
+        x_train = list()
+        y_train = list()
+        x_train.append(self.subject.np_array_float32(self.independent_var, self.independent_var_shape))
+        y_train.append(self.subject.np_array_int16(self.dependent_var, self.dependent_var_shape))
+        x_train.append(self.subject.np_array_float32(self.independent_var, self.independent_var_shape))
+        y_train.append(self.subject.np_array_int16(self.dependent_var, self.dependent_var_shape))
+
+        k = {'SD': {'x_train': x_train, 'y_train': y_train}}
+
+        state = starting_image_count
+        new_state = self.subject.fit_multiple_transition(
+            state, self.dependent_var, self.independent_var,
+            self.dependent_var_shape, self.independent_var_shape,
+            self.model.to_json(), self.compile_params, self.fit_params, 0,
+            self.dist_key_mapping, 0, 4, self.total_images_per_seg, False,
+            self.accessible_gpus_for_seg, previous_weights.tostring(), False, **k)
+
+        state = np.fromstring(new_state, dtype=np.float32)
+        weights = np.rint(state[0:]).astype(np.int)
+
+        ## image count should not be added to the final state of
+        # fit multiple
+        self.assertEqual(len(self.model_weights), len(weights))
+
+        # set_session is only called for the last buffer
+        self.assertEqual(1, self.subject.K.set_session.call_count)
+        # Clear session and sess.close must get called for the last buffer
+        self.assertEqual(1, self.subject.K.clear_session.call_count)
+        self.assertTrue('segment_model' not in k['SD'])
+        self.assertTrue(k['SD']['cache_set'])
+        self.assertTrue(k['SD']['x_train'])
+        self.assertTrue(k['SD']['y_train'])
+
+    def test_fit_transition_multiple_model_cache_filled_pass(self):
+        #TODO should we mock tensorflow's close_session and keras'
+        # clear_session instead of mocking the function `K.clear_session`
+        self.subject.K.set_session = Mock()
+        self.subject.K.clear_session = Mock()
+
+        starting_image_count = 2*len(self.dependent_var_int)
+        ending_image_count = starting_image_count + len(self.dependent_var_int)
+
+        previous_weights = np.array(self.model_weights, dtype=np.float32)
+        x_train = list()
+        y_train = list()
+        x_train.append(self.subject.np_array_float32(self.independent_var, self.independent_var_shape))
+        y_train.append(self.subject.np_array_int16(self.dependent_var, self.dependent_var_shape))
+        x_train.append(self.subject.np_array_float32(self.independent_var, self.independent_var_shape))
+        y_train.append(self.subject.np_array_int16(self.dependent_var, self.dependent_var_shape))
+        x_train.append(self.subject.np_array_float32(self.independent_var, self.independent_var_shape))
+        y_train.append(self.subject.np_array_int16(self.dependent_var, self.dependent_var_shape))
+
+        k = {'SD': {'x_train': x_train, 'y_train': y_train, 'cache_set': True}}
+
+        new_state = self.subject.fit_multiple_transition(
+            None, self.dependent_var, self.independent_var,
+            self.dependent_var_shape, self.independent_var_shape,
+            self.model.to_json(), self.compile_params, self.fit_params, 0,
+            self.dist_key_mapping, 0, 4, self.total_images_per_seg, False,
+            self.accessible_gpus_for_seg, previous_weights.tostring(), False, **k)
+
+        state = np.fromstring(new_state, dtype=np.float32)
+        weights = np.rint(state[0:]).astype(np.int)
+
+        ## image count should not be added to the final state of
+        # fit multiple
+        self.assertEqual(len(self.model_weights), len(weights))
+
+        # set_session is only called for the last buffer
+        self.assertEqual(1, self.subject.K.set_session.call_count)
+        # Clear session and sess.close must get called for the last buffer
+        self.assertEqual(1, self.subject.K.clear_session.call_count)
+        self.assertTrue('segment_model' not in k['SD'])
+        self.assertTrue(k['SD']['cache_set'])
+        self.assertTrue(k['SD']['x_train'])
+        self.assertTrue(k['SD']['y_train'])
+
+    def test_fit_transition_multiple_model_cache_filled_final_training_pass(self):
+        #TODO should we mock tensorflow's close_session and keras'
+        # clear_session instead of mocking the function `K.clear_session`
+        self.subject.K.set_session = Mock()
+        self.subject.K.clear_session = Mock()
+
+        starting_image_count = 2*len(self.dependent_var_int)
+        ending_image_count = starting_image_count + len(self.dependent_var_int)
+
+        previous_weights = np.array(self.model_weights, dtype=np.float32)
+        x_train = list()
+        y_train = list()
+        x_train.append(self.subject.np_array_float32(self.independent_var, self.independent_var_shape))
+        y_train.append(self.subject.np_array_int16(self.dependent_var, self.dependent_var_shape))
+        x_train.append(self.subject.np_array_float32(self.independent_var, self.independent_var_shape))
+        y_train.append(self.subject.np_array_int16(self.dependent_var, self.dependent_var_shape))
+        x_train.append(self.subject.np_array_float32(self.independent_var, self.independent_var_shape))
+        y_train.append(self.subject.np_array_int16(self.dependent_var, self.dependent_var_shape))
+
+        k = {'SD': {'x_train': x_train, 'y_train': y_train, 'cache_set': True}}
+
+        new_state = self.subject.fit_multiple_transition(
+            None, self.dependent_var, self.independent_var,
+            self.dependent_var_shape, self.independent_var_shape,
+            self.model.to_json(), self.compile_params, self.fit_params, 0,
+            self.dist_key_mapping, 0, 4, self.total_images_per_seg, False,
+            self.accessible_gpus_for_seg, previous_weights.tostring(), True, **k)
+
+        state = np.fromstring(new_state, dtype=np.float32)
+        weights = np.rint(state[0:]).astype(np.int)
+
+        ## image count should not be added to the final state of
+        # fit multiple
+        self.assertEqual(len(self.model_weights), len(weights))
+
+        # set_session is only called for the last buffer
+        self.assertEqual(1, self.subject.K.set_session.call_count)
+        # Clear session and sess.close must get called for the last buffer
+        self.assertEqual(1, self.subject.K.clear_session.call_count)
+        self.assertTrue('segment_model' not in k['SD'])
+        self.assertTrue('cache_set' not in k['SD'])
+        self.assertTrue('x_train' not in k['SD'])
+        self.assertTrue('y_train' not in k['SD'])
 
     def test_fit_transition_first_buffer_pass_pg(self):
         self._test_fit_transition_first_buffer_pass(True)

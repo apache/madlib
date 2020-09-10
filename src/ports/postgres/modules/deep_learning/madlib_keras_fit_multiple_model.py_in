@@ -81,7 +81,7 @@ class FitMultipleModel():
                  model_selection_table, num_iterations,
                  use_gpus=False, validation_table=None,
                  metrics_compute_frequency=None, warm_start=False, name="",
-                 description="", **kwargs):
+                 description="", use_caching=False, **kwargs):
         # set the random seed for visit order/scheduling
         random.seed(1)
         if is_platform_pg():
@@ -97,6 +97,7 @@ class FitMultipleModel():
         self.metrics_compute_frequency = metrics_compute_frequency
         self.name = name
         self.description = description
+        self.use_caching = use_caching if use_caching is not None else False
         self.module_name = 'madlib_keras_fit_multiple_model'
         self.schema_madlib = schema_madlib
         self.version = madlib_version(self.schema_madlib)
@@ -115,6 +116,7 @@ class FitMultipleModel():
         self.ind_shape_col = add_postfix(mb_indep_var_col, "_shape")
         self.use_gpus = use_gpus
         self.segments_per_host = get_segments_per_host()
+        self.cached_source_table = unique_string('cached_source_table')
         if self.use_gpus:
             self.accessible_gpus_for_seg = get_accessible_gpus_for_seg(
                 self.schema_madlib, self.segments_per_host, self.module_name)
@@ -233,7 +235,7 @@ class FitMultipleModel():
                 self.is_final_training_call = (iter == self.num_iterations and mst_idx == total_msts-1)
                 if mst_idx == 0:
                     start_iteration = time.time()
-                self.run_training(mst_idx)
+                self.run_training(mst_idx, mst_idx==0 and iter==1)
                 if mst_idx == (total_msts - 1):
                     end_iteration = time.time()
                     self.info_str = "\tTime for training in iteration " \
@@ -249,6 +251,7 @@ class FitMultipleModel():
                 if self.validation_table:
                     self.evaluate_model(iter, self.validation_table, False)
             plpy.info("\n"+self.info_str)
+        plpy.execute("DROP TABLE IF EXISTS {self.cached_source_table};".format(self=self))
 
     def evaluate_model(self, epoch, table, is_train):
         if is_train:
@@ -594,7 +597,7 @@ class FitMultipleModel():
             if self.validation_table:
                 self.update_info_table(mst, False)
 
-    def run_training(self, mst_idx):
+    def run_training(self, mst_idx, is_very_first_hop):
         # NOTE: In the DL module, we want to avoid CREATING TEMP tables
         # (creates a slice which stays until the session is disconnected)
         # or minimize writing queries that generate plans with Motions (creating
@@ -622,12 +625,39 @@ class FitMultipleModel():
                    **locals())
         plpy.execute(mst_weights_query)
         use_gpus = self.use_gpus if self.use_gpus else False
+        dep_shape_col = self.dep_shape_col
+        ind_shape_col = self.ind_shape_col
+        dep_var = mb_dep_var_col
+        indep_var = mb_indep_var_col
+        source_table = self.source_table
+        where_clause = "WHERE {self.mst_weights_tbl}.{self.mst_key_col} IS NOT NULL".format(self=self)
+        if self.use_caching:
+            # Caching populates the independent_var and dependent_var into the cache on the very first hop
+            # For the very_first_hop, we want to run the transition function on all segments, including
+            # the one's where the mst_key is NULL (for #mst < #seg), therefore we remove the NOT NULL check
+            # on mst_key. Once the cache is populated, with the independent_var and dependent_var values
+            # for all subsequent hops pass independent_var and dependent_var as NULL's and use a dummy src
+            # table to join for referencing the dist_key
+            if is_very_first_hop:
+                plpy.execute("""
+                    DROP TABLE IF EXISTS {self.cached_source_table};
+                    CREATE TABLE {self.cached_source_table} AS SELECT {dist_key_col} FROM {self.source_table} GROUP BY {dist_key_col} DISTRIBUTED BY({dist_key_col});
+                    """.format(self=self, dist_key_col=dist_key_col))
+            else:
+                dep_shape_col = 'ARRAY[0]'
+                ind_shape_col = 'ARRAY[0]'
+                dep_var = 'NULL'
+                indep_var = 'NULL'
+                source_table = self.cached_source_table
+            if is_very_first_hop or self.is_final_training_call:
+                where_clause = ""
+
         uda_query = """
             CREATE {self.unlogged_table} TABLE {self.weights_to_update_tbl} AS
             SELECT {self.schema_madlib}.fit_step_multiple_model({mb_dep_var_col},
                 {mb_indep_var_col},
-                {self.dep_shape_col},
-                {self.ind_shape_col},
+                {dep_shape_col},
+                {ind_shape_col},
                 {self.mst_weights_tbl}.{self.model_arch_col}::TEXT,
                 {self.mst_weights_tbl}.{self.compile_params_col}::TEXT,
                 {self.mst_weights_tbl}.{self.fit_params_col}::TEXT,
@@ -639,21 +669,27 @@ class FitMultipleModel():
                 {use_gpus}::BOOLEAN,
                 ARRAY{self.accessible_gpus_for_seg},
                 {self.mst_weights_tbl}.{self.model_weights_col}::BYTEA,
-                {is_final_iteration}::BOOLEAN,
+                {is_final_training_call}::BOOLEAN,
+                {use_caching}::BOOLEAN,
                 {self.mst_weights_tbl}.{self.object_map_col}::BYTEA
                 )::BYTEA AS {self.model_weights_col},
                 {self.mst_weights_tbl}.{self.mst_key_col} AS {self.mst_key_col}
                 ,src.{dist_key_col} AS {dist_key_col}
-            FROM {self.source_table} src JOIN {self.mst_weights_tbl}
+            FROM {source_table} src JOIN {self.mst_weights_tbl}
                 USING ({dist_key_col})
-            WHERE {self.mst_weights_tbl}.{self.mst_key_col} IS NOT NULL
+            {where_clause}
             GROUP BY src.{dist_key_col}, {self.mst_weights_tbl}.{self.mst_key_col}
             DISTRIBUTED BY({dist_key_col})
-            """.format(mb_dep_var_col=mb_dep_var_col,
-                       mb_indep_var_col=mb_indep_var_col,
-                       is_final_iteration=True,
+            """.format(mb_dep_var_col=dep_var,
+                       mb_indep_var_col=indep_var,
+                       dep_shape_col=dep_shape_col,
+                       ind_shape_col=ind_shape_col,
+                       is_final_training_call=self.is_final_training_call,
+                       use_caching=self.use_caching,
                        dist_key_col=dist_key_col,
                        use_gpus=use_gpus,
+                       source_table=source_table,
+                       where_clause=where_clause,
                        self=self
                        )
         plpy.execute(uda_query)
