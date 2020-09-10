@@ -344,16 +344,20 @@ SELECT load_model_selection_table(
 );
 
 -- Test for one-hot encoded input data
-DROP TABLE if exists iris_multiple_model, iris_multiple_model_summary, iris_multiple_model_info;
-SELECT madlib_keras_fit_multiple_model(
-	'iris_data_one_hot_encoded_packed',
-	'iris_multiple_model',
-	'mst_table_4row',
-	3,
-	FALSE
+CREATE OR REPLACE FUNCTION test_fit_multiple_one_hot_encoded_input(caching boolean)
+RETURNS VOID AS
+$$
+BEGIN
+PERFORM madlib_keras_fit_multiple_model(
+        'iris_data_one_hot_encoded_packed'::VARCHAR,
+        'iris_multiple_model'::VARCHAR,
+        'mst_table_4row'::VARCHAR,
+        3,
+        FALSE, NULL, NULL, NULL, NULL, NULL,
+        caching
 );
 
-SELECT assert(
+PERFORM assert(
         model_arch_table = 'iris_model_arch' AND
         validation_table is NULL AND
         model_info = 'iris_multiple_model_info' AND
@@ -365,8 +369,7 @@ SELECT assert(
         independent_varname = 'attributes' AND
         madlib_version is NOT NULL AND
         num_iterations = 3 AND
-        start_training_time < now() AND
-        end_training_time < now() AND
+        start_training_time < end_training_time AND
         dependent_vartype = 'integer[]' AND
         num_classes = NULL AND
         class_values = NULL AND
@@ -374,6 +377,15 @@ SELECT assert(
         metrics_iters = ARRAY[3],
         'Keras Fit Multiple Output Summary Validation failed when user passes in 1-hot encoded label vector. Actual:' || __to_char(summary))
 FROM (SELECT * FROM iris_multiple_model_summary) summary;
+END;
+$$ language plpgsql VOLATILE;
+
+DROP TABLE if exists iris_multiple_model, iris_multiple_model_summary, iris_multiple_model_info;
+SELECT test_fit_multiple_one_hot_encoded_input(FALSE);
+
+-- Testing with caching
+DROP TABLE if exists iris_multiple_model, iris_multiple_model_summary, iris_multiple_model_info;
+SELECT test_fit_multiple_one_hot_encoded_input(TRUE);
 
 -- Test the output table created are all persistent(not unlogged)
 SELECT assert(MADLIB_SCHEMA.is_table_unlogged('iris_multiple_model') = false, 'Model output table is unlogged');
@@ -418,18 +430,23 @@ SELECT assert(
 FROM (SELECT * FROM mst_object_table_summary) summary;
 
 -- Test when number of configs(3) equals number of segments(3)
-DROP TABLE IF EXISTS iris_multiple_model, iris_multiple_model_summary, iris_multiple_model_info;
-SELECT setseed(0);
-SELECT madlib_keras_fit_multiple_model(
+CREATE OR REPLACE FUNCTION test_fit_multiple_equal_configs(caching boolean)
+RETURNS VOID AS
+$$
+BEGIN
+
+PERFORM setseed(0);
+PERFORM madlib_keras_fit_multiple_model(
 	'iris_data_packed',
 	'iris_multiple_model',
 	'mst_table',
 	6,
 	FALSE,
-	'iris_data_one_hot_encoded_packed'
+	'iris_data_one_hot_encoded_packed', NULL, NULL, NULL, NULL,
+	caching
 );
 
-SELECT assert(
+PERFORM assert(
         source_table = 'iris_data_packed' AND
         validation_table = 'iris_data_one_hot_encoded_packed' AND
         model = 'iris_multiple_model' AND
@@ -438,8 +455,7 @@ SELECT assert(
         independent_varname = 'attributes' AND
         model_arch_table = 'iris_model_arch' AND
         num_iterations = 6 AND
-        start_training_time < now() AND
-        end_training_time < now() AND
+        start_training_time < end_training_time AND
         madlib_version is NOT NULL AND
         num_classes = 3 AND
         class_values = '{Iris-setosa,Iris-versicolor,Iris-virginica}' AND
@@ -451,10 +467,10 @@ SELECT assert(
         'Keras Fit Multiple Output Summary Validation failed. Actual:' || __to_char(summary))
 FROM (SELECT * FROM iris_multiple_model_summary) summary;
 
-SELECT assert(COUNT(*)=3, 'Info table must have exactly same rows as the number of msts.')
+PERFORM assert(COUNT(*)=3, 'Info table must have exactly same rows as the number of msts.')
 FROM iris_multiple_model_info;
 
-SELECT assert(
+PERFORM assert(
         model_id = 1 AND
         model_type = 'madlib_keras' AND
         model_size > 0 AND
@@ -470,34 +486,47 @@ SELECT assert(
         array_upper(validation_loss, 1) = 1 AND
         array_upper(metrics_elapsed_time, 1) = 1,
         'Keras Fit Multiple Output Info Validation failed. Actual:' || __to_char(info))
-FROM (SELECT * FROM iris_multiple_model_info) info;
+FROM (SELECT * FROM iris_multiple_model_info limit 1) info;
 
-SELECT assert(cnt = 1,
+PERFORM assert(cnt = 1,
 	'Keras Fit Multiple Output Info compile params validation failed. Actual:' || __to_char(info))
 FROM (SELECT count(*) cnt FROM iris_multiple_model_info
 WHERE compile_params = $MAD$loss='categorical_crossentropy', optimizer='Adam(lr=0.01)', metrics=['accuracy']$MAD$::text) info;
 
-SELECT assert(cnt = 1,
+PERFORM assert(cnt = 1,
 	'Keras Fit Multiple Output Info compile params validation failed. Actual:' || __to_char(info))
 FROM (SELECT count(*) cnt FROM iris_multiple_model_info
 WHERE compile_params = $MAD$loss='categorical_crossentropy', optimizer='Adam(lr=0.001)', metrics=['accuracy']$MAD$::text) info;
 
-SELECT assert(cnt = 1,
+PERFORM assert(cnt = 1,
 	'Keras Fit Multiple Output Info compile params validation failed. Actual:' || __to_char(info))
 FROM (SELECT count(*) cnt FROM iris_multiple_model_info
 WHERE compile_params = $MAD$loss='categorical_crossentropy', optimizer='Adam(lr=0.0001)', metrics=['accuracy']$MAD$::text) info;
 
-SELECT assert(
+PERFORM assert(
   training_loss[6]-training_loss[1] < 0.1 AND
   training_metrics[6]-training_metrics[1] > -0.1,
     'The loss and accuracy should have improved with more iterations.'
 )
 FROM iris_multiple_model_info
 WHERE compile_params like '%lr=0.001%';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TABLE IF EXISTS iris_multiple_model, iris_multiple_model_summary, iris_multiple_model_info;
+SELECT test_fit_multiple_equal_configs(FALSE);
+
+-- Testing with caching
+DROP TABLE IF EXISTS iris_multiple_model, iris_multiple_model_summary, iris_multiple_model_info;
+SELECT test_fit_multiple_equal_configs(TRUE);
 
 -- Test when number of configs(1) is less than number of segments(3)
-DROP TABLE if exists iris_multiple_model, iris_multiple_model_summary, iris_multiple_model_info;
-SELECT madlib_keras_fit_multiple_model(
+CREATE OR REPLACE FUNCTION test_fit_multiple_less_configs(caching boolean)
+RETURNS VOID AS
+$$
+BEGIN
+
+PERFORM madlib_keras_fit_multiple_model(
 	'iris_data_packed',
 	'iris_multiple_model',
 	'mst_table_1row',
@@ -507,13 +536,14 @@ SELECT madlib_keras_fit_multiple_model(
 	1,
 	FALSE,
 	'multi_model_name',
-	'multi_model_descr'
+	'multi_model_descr',
+	caching
 );
 
-SELECT assert(COUNT(*)=1, 'Info table must have exactly same rows as the number of msts.')
+PERFORM assert(COUNT(*)=1, 'Info table must have exactly same rows as the number of msts.')
 FROM iris_multiple_model_info;
 
-SELECT assert(
+PERFORM assert(
         model_id = 1 AND
         model_type = 'madlib_keras' AND
         model_size > 0 AND
@@ -527,41 +557,55 @@ SELECT assert(
         'Keras Fit Multiple Output Info Validation failed. Actual:' || __to_char(info))
 FROM (SELECT * FROM iris_multiple_model_info) info;
 
-SELECT assert(metrics_elapsed_time[3] - metrics_elapsed_time[1] > 0,
+PERFORM assert(metrics_elapsed_time[3] - metrics_elapsed_time[1] > 0,
         'Keras Fit Multiple invalid elapsed time calculation.')
 FROM (SELECT * FROM iris_multiple_model_info) info;
 
-SELECT assert(
+PERFORM assert(
         name = 'multi_model_name' AND
         description = 'multi_model_descr' AND
         metrics_compute_frequency = 1,
         'Keras Fit Multiple Output Summary Validation failed. Actual:' || __to_char(summary))
 FROM (SELECT * FROM iris_multiple_model_summary) summary;
 
-SELECT assert(cnt = 1,
+PERFORM assert(cnt = 1,
 	'Keras Fit Multiple Output Info compile params validation failed. Actual:' || __to_char(info))
 FROM (SELECT count(*) cnt FROM iris_multiple_model_info
 WHERE compile_params = $MAD$loss='categorical_crossentropy', optimizer='Adam(lr=0.01)', metrics=['accuracy']$MAD$::text) info;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TABLE if exists iris_multiple_model, iris_multiple_model_summary, iris_multiple_model_info;
+SELECT test_fit_multiple_less_configs(FALSE);
+
+-- Testing with caching configs(1) is less than number of segments(3)
+DROP TABLE if exists iris_multiple_model, iris_multiple_model_summary, iris_multiple_model_info;
+SELECT test_fit_multiple_less_configs(TRUE);
 
 -- Test when number of configs(4) larger than number of segments(3)
-DROP TABLE if exists iris_multiple_model, iris_multiple_model_summary, iris_multiple_model_info;
-SELECT madlib_keras_fit_multiple_model(
+CREATE OR REPLACE FUNCTION test_fit_multiple_more_configs(caching boolean)
+RETURNS VOID AS
+$$
+BEGIN
+
+PERFORM madlib_keras_fit_multiple_model(
 	'iris_data_packed',
 	'iris_multiple_model',
 	'mst_table_4row',
 	3,
-	FALSE
+	FALSE, NULL, NULL, NULL, NULL, NULL,
+	caching
 );
 
 -- The default value of the guc 'dev_opt_unsafe_truncate_in_subtransaction' is 'off'
 -- but we change it to 'on' in fit_multiple.py. Assert that the value is
 -- reset after calling fit_multiple
-SELECT CASE WHEN is_ver_greater_than_gp_640_or_pg_11() is TRUE THEN assert_guc_value('dev_opt_unsafe_truncate_in_subtransaction', 'off') END;
+PERFORM CASE WHEN is_ver_greater_than_gp_640_or_pg_11() is TRUE THEN assert_guc_value('dev_opt_unsafe_truncate_in_subtransaction', 'off') END;
 
-SELECT assert(COUNT(*)=4, 'Info table must have exactly same rows as the number of msts.')
+PERFORM assert(COUNT(*)=4, 'Info table must have exactly same rows as the number of msts.')
 FROM iris_multiple_model_info;
 
-SELECT assert(
+PERFORM assert(
         model_id = 1 AND
         model_type = 'madlib_keras' AND
         model_size > 0 AND
@@ -574,11 +618,20 @@ SELECT assert(
         'Keras Fit Multiple Output Info Validation failed. Actual:' || __to_char(info))
 FROM (SELECT * FROM iris_multiple_model_info) info;
 
-SELECT assert(cnt = 1,
+PERFORM assert(cnt = 1,
 	'Keras Fit Multiple Output Info compile params validation failed. Actual:' || __to_char(info))
 FROM (SELECT count(*) cnt FROM iris_multiple_model_info
 WHERE compile_params = $MAD$loss='categorical_crossentropy', optimizer='Adam(lr=0.01)', metrics=['accuracy']$MAD$::text
 AND fit_params = $MAD$batch_size=32, epochs=1$MAD$::text) info;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TABLE if exists iris_multiple_model, iris_multiple_model_summary, iris_multiple_model_info;
+SELECT test_fit_multiple_more_configs(FALSE);
+
+-- Test with caching when number of configs(4) larger than number of segments(3)
+DROP TABLE if exists iris_multiple_model, iris_multiple_model_summary, iris_multiple_model_info;
+SELECT test_fit_multiple_more_configs(TRUE);
 
 -- Test when class values have NULL values
 UPDATE iris_data_packed_summary SET class_values = ARRAY['Iris-setosa','Iris-versicolor',NULL];
@@ -606,7 +659,6 @@ CREATE TABLE __MADLIB__DEEP_LEARNING_SCHEMA__MADLIB__.iris_data_packed as select
 CREATE TABLE __MADLIB__DEEP_LEARNING_SCHEMA__MADLIB__.iris_data_packed_summary as select * from iris_data_packed_summary;
 
 -- do not drop the output table created in the previous test
-SELECT count(*) from iris_multiple_model;
 SELECT madlib_keras_fit_multiple_model(
 	'__MADLIB__DEEP_LEARNING_SCHEMA__MADLIB__.iris_data_packed',
 	'__MADLIB__DEEP_LEARNING_SCHEMA__MADLIB__.iris_multiple_model',
