@@ -206,5 +206,79 @@ class HyperbandScheduleTestCase(unittest.TestCase):
     def tearDown(self):
         self.module_patcher.stop()
 
+
+
+class AutoMLHyperoptTestCase(unittest.TestCase):
+    def setUp(self):
+        # The side effects of this class(writing to the output table) are not
+        # tested here. They are tested in dev-check.
+        self.plpy_mock = Mock(spec='error')
+        patches = {
+            'plpy': plpy
+        }
+
+        self.plpy_mock_execute = MagicMock()
+        plpy.execute = self.plpy_mock_execute
+
+        self.module_patcher = patch.dict('sys.modules', patches)
+        self.module_patcher.start()
+        import deep_learning.madlib_keras_automl
+        self.module = deep_learning.madlib_keras_automl
+
+        from deep_learning.madlib_keras_automl import AutoMLHyperopt
+        self.seg_num_mock = Mock()
+
+        class FakeAutoMLHyperopt(AutoMLHyperopt):
+            def __init__(self, *args):
+                pass
+            self.module.get_seg_number = self.seg_num_mock
+
+        self.subject = FakeAutoMLHyperopt
+
+    def test_get_configs_list_models_less_than_segments(self):
+        automl_hyperopt = self.subject()
+        configs = automl_hyperopt.get_configs_list(1,3)
+        self.assertEquals([(1,1)], configs)
+
+    def test_get_configs_list_models_equal_segments(self):
+        automl_hyperopt = self.subject()
+        configs = automl_hyperopt.get_configs_list(3,3)
+        self.assertEquals([(1,3)], configs)
+
+    def test_get_configs_list_last_bucket_models_less_than_half_segments(self):
+        automl_hyperopt = self.subject()
+        # Last bucket num models < 1/2 num workers
+        configs = automl_hyperopt.get_configs_list(81,20)
+        self.assertEquals([(1, 20), (21, 40), (41, 60), (61, 81)], configs)
+
+    def test_get_configs_list_last_bucket_models_greater_than_half_segments(self):
+        automl_hyperopt = self.subject()
+        # Last bucket num models > 1/2 num workers
+        configs = automl_hyperopt.get_configs_list(20,3)
+        self.assertEquals([(1, 3), (4, 6), (7, 9), (10, 12), (13, 15), (16, 18),(19, 20)], configs)
+
+    def test_get_configs_list_last_bucket_models_equal_half_segments(self):
+        automl_hyperopt = self.subject()
+        # Last bucket num models = 1/2 num workers
+        configs = automl_hyperopt.get_configs_list(90,20)
+        self.assertEquals([(1, 20), (21, 40), (41, 60), (61, 80),(81,90)], configs)
+
+    def test_get_num_segments_all_segments(self):
+        automl_hyperopt = self.subject()
+        automl_hyperopt.source_table = 'dummy_table'
+        self.plpy_mock_execute.return_value = [{'distribution_rules': 'all_segments'}]
+        self.seg_num_mock.return_value = 3
+        self.assertEquals(3, automl_hyperopt.get_num_segments())
+
+    def test_get_num_segments_array_value(self):
+        automl_hyperopt = self.subject()
+        automl_hyperopt.source_table = 'dummy_table'
+        # return list of segment ids as distribution_rules
+        self.plpy_mock_execute.return_value = [{'distribution_rules': [3,1]}]
+        self.assertEquals(2, automl_hyperopt.get_num_segments())
+
+    def tearDown(self):
+        self.module_patcher.stop()
+
 if __name__ == '__main__':
     unittest.main()
