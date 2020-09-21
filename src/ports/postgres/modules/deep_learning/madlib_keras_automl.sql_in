@@ -169,20 +169,25 @@ madlib_keras_automl(
 
   <dt>automl_method (optional)</dt>
   <dd>VARCHAR, default 'hyperband'. Name of the automl algorithm to run.
-  Currently only support hyperband. Note that you can also use short prefixes
-  for the 'hyperband' keyword, e.g.,'hyper' or 'hyp' instead
-  of writing out 'hyperband' in full.
+  Can be either 'hyperband' or hyperopt'. Prefixing is not supported but arg value can be case insensitive.
   </dd>
 
   <dt>automl_params (optional)</dt>
-  <dd>VARCHAR, default 'R=6, eta=3, skip_last=0'. Parameters for the chosen automl
-  method in a comma-separated string of key-value pairs. Hyperband params are:
+  <dd>VARCHAR, default 'R=6, eta=3, skip_last=0' (for Hyperband). Parameters for the chosen automl method in a
+  comma-separated string of key-value pairs. For eg - 'num_configs=20, num_iterations=5, algorithm=tpe' for Hyperopt
+  Hyperband params are:
   R - the maximum amount of resources/iterations allocated to a single configuration
-  in a round of hyperband, eta - factor controlling the proportion of configurations discarded in each
-  round of successive halving, skip_last - number of last diagonal brackets to skip running
+  in a round of hyperband,
+  eta - factor controlling the proportion of configurations discarded in each
+  round of successive halving,
+  skip_last - number of last diagonal brackets to skip running
   in the algorithm.
   We encourage setting an low R value (i.e. 2 to 10), or a high R value and a high skip_last value to evaluate
   a variety of configurations with decent number of iterations. See the description below for details.
+  Hyperopt params are:
+  num_configs - total number of model configurations to evaluate,
+  num_iterations - fixed number of iterations for evaluating each model configurations,
+  algorithm - name of algorithm to explore search space in hyperopt ('rand', 'tpe', 'atpe').
   </dd>
 
   <dt>random_state (optional)</dt>
@@ -627,7 +632,6 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.hyperband_schedule(
 $$ LANGUAGE plpythonu VOLATILE
               m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
-
 CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.madlib_keras_automl(
     source_table                   VARCHAR,
     model_output_table             VARCHAR,
@@ -637,7 +641,7 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.madlib_keras_automl(
     compile_params_grid            VARCHAR,
     fit_params_grid                VARCHAR,
     automl_method                  VARCHAR DEFAULT 'hyperband',
-    automl_params                  VARCHAR DEFAULT 'R=6, eta=3, skip_last=0',
+    automl_params                  VARCHAR DEFAULT NULL,
     random_state                   INTEGER DEFAULT NULL,
     object_table                   VARCHAR DEFAULT NULL,
     use_gpus                       BOOLEAN DEFAULT FALSE,
@@ -648,6 +652,11 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.madlib_keras_automl(
 ) RETURNS VOID AS $$
     PythonFunctionBodyOnly(`deep_learning', `madlib_keras_automl')
     with AOControl(False):
-        schedule_loader = madlib_keras_automl.KerasAutoML(**globals())
+        if automl_method is None or automl_method.lower() == 'hyperband':
+            schedule_loader = madlib_keras_automl.AutoMLHyperband(**globals())
+        elif automl_method.lower() == 'hyperopt':
+            schedule_loader = madlib_keras_automl.AutoMLHyperopt(**globals())
+        else:
+            plpy.error("madlib_keras_automl: The chosen automl method must be 'hyperband' or 'hyperopt'")
 $$ LANGUAGE plpythonu VOLATILE
     m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');

@@ -27,12 +27,13 @@ import plpy
 from copy import deepcopy
 
 from madlib_keras_custom_function import CustomFunctionSchema
+from madlib_keras_helper import generate_row_string
 from madlib_keras_validator import MstLoaderInputValidator
 from madlib_keras_wrapper import convert_string_of_args_to_dict
 from madlib_keras_wrapper import parse_and_validate_fit_params
 from madlib_keras_wrapper import parse_and_validate_compile_params
 from utilities.control import MinWarning
-from utilities.utilities import add_postfix, extract_keyvalue_params, _assert, _assert_equal
+from utilities.utilities import add_postfix, _assert, _assert_equal, extract_keyvalue_params
 from utilities.utilities import quote_ident, get_schema
 from utilities.validate_args import table_exists, drop_tables
 
@@ -462,8 +463,8 @@ class MstSearch():
                     fit_configs[k] = config[k]
                 else:
                     plpy.error("DL: {0} is an unidentified key".format(k))
-            combination[ModelSelectionSchema.COMPILE_PARAMS] = self.generate_row_string(compile_configs)
-            combination[ModelSelectionSchema.FIT_PARAMS] = self.generate_row_string(fit_configs)
+            combination[ModelSelectionSchema.COMPILE_PARAMS] = generate_row_string(compile_configs)
+            combination[ModelSelectionSchema.FIT_PARAMS] = generate_row_string(fit_configs)
             self.msts.append(combination)
 
     def find_random_combinations(self):
@@ -479,9 +480,9 @@ class MstSearch():
                 seed_changes += 1
             combination[ModelSelectionSchema.MODEL_ID] = np.random.choice(self.model_id_list)
             compile_dict, seed_changes = self.generate_param_config(self.compile_params_dict, seed_changes)
-            combination[ModelSelectionSchema.COMPILE_PARAMS] = self.generate_row_string(compile_dict)
+            combination[ModelSelectionSchema.COMPILE_PARAMS] = generate_row_string(compile_dict)
             fit_dict, seed_changes = self.generate_param_config(self.fit_params_dict, seed_changes)
-            combination[ModelSelectionSchema.FIT_PARAMS] = self.generate_row_string(fit_dict)
+            combination[ModelSelectionSchema.FIT_PARAMS] = generate_row_string(fit_dict)
             self.msts.append(combination)
 
     def generate_param_config(self, params_dict, seed_changes):
@@ -541,58 +542,6 @@ class MstSearch():
         else:
             # random sampling
             return np.random.choice(param_value_list)
-
-    def generate_row_string(self, configs_dict):
-        """
-        Generate row strings for MST table.
-        :param configs_dict: Dictionary of params config.
-        :return: string to insert as a row in MST table.
-        """
-        result_row_string = ""
-
-        if ModelSelectionSchema.OPTIMIZER_PARAMS_LIST in configs_dict:
-            optimizer_params_dict = configs_dict[ModelSelectionSchema.OPTIMIZER_PARAMS_LIST]
-            if 'optimizer' in optimizer_params_dict:
-                if optimizer_params_dict['optimizer'].lower() == 'sgd':
-                    optimizer_value = "SGD"
-                elif optimizer_params_dict['optimizer'].lower() == 'rmsprop':
-                    optimizer_value = "RMSprop"
-                else:
-                    optimizer_value = optimizer_params_dict['optimizer'].capitalize()
-                opt_string = "optimizer" + "=" + "'" + str(optimizer_value) \
-                             + "()" + "'"
-            else:
-                opt_string = "optimizer='RMSprop()'" # default optimizer
-            opt_param_string = ""
-            for opt_param in optimizer_params_dict:
-                if opt_param == 'optimizer':
-                    continue
-                opt_param_string += opt_param + '=' + str(optimizer_params_dict[opt_param]) + ','
-            if opt_param_string == "":
-                result_row_string += opt_string
-            else:
-                opt_param_string = opt_param_string[:-1] # to exclude the last comma
-                part = opt_string.split('(')
-                result_row_string += part[0] + '(' + opt_param_string + part[1]
-
-        for c in configs_dict:
-            if c == ModelSelectionSchema.OPTIMIZER_PARAMS_LIST:
-                continue
-            elif c == 'metrics':
-                if callable(configs_dict[c]):
-                    result_row_string += "," + str(c) + "=" + "[" + str(configs_dict[c]) + "]"
-                else:
-                    result_row_string += "," + str(c) + "=" + "['" + str(configs_dict[c]) + "']"
-            else:
-                if type(configs_dict[c]) == str or type(configs_dict[c]) == np.string_:
-                    result_row_string += "," + str(c) + "=" + "'" + str(configs_dict[c]) + "'"
-                else:
-                    # ints, floats, none type, booleans
-                    result_row_string += "," + str(c) + "=" + str(configs_dict[c])
-
-        if result_row_string[0] == ',':
-            return result_row_string[1:]
-        return result_row_string
 
     def create_mst_table(self):
         """Initialize the output mst table, if it doesn't exist (for incremental loading).

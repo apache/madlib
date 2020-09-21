@@ -81,7 +81,26 @@ class FitMultipleModel():
                  model_selection_table, num_iterations,
                  use_gpus=False, validation_table=None,
                  metrics_compute_frequency=None, warm_start=False, name="",
-                 description="", use_caching=False, **kwargs):
+                 description="", use_caching=False, metrics_elapsed_time_offset=0, **kwargs):
+        """
+
+        :param schema_madlib: schema name
+        :param source_table: input table containing training dataset
+        :param model_output_table: output table
+        :param model_selection_table: input table containing model configs
+        :param num_iterations: number of iterations to train
+        :param use_gpus: determines whether GPUs are to be used for training
+        :param validation_table: input table containing the validation dataset
+        :param metrics_compute_frequency: Frequency to compute per-iteration metrics
+                                          for the training dataset and validation dataset
+        :param warm_start: indicates whether to initialize weights with the coefficients
+                           from the last call of the fit function
+        :param name: name
+        :param description: description
+        :param metrics_elapsed_time_offset: time elapsed for the previous call to fit_multiple
+                                            (internal param used by automl to accumulate
+                                             metrics_elapsed_time)
+        """
         # set the random seed for visit order/scheduling
         random.seed(1)
         if is_platform_pg():
@@ -117,6 +136,7 @@ class FitMultipleModel():
         self.use_gpus = use_gpus
         self.segments_per_host = get_segments_per_host()
         self.cached_source_table = unique_string('cached_source_table')
+        self.metrics_elapsed_time_offset = metrics_elapsed_time_offset
         if self.use_gpus:
             self.accessible_gpus_for_seg = get_accessible_gpus_for_seg(
                 self.schema_madlib, self.segments_per_host, self.module_name)
@@ -283,7 +303,7 @@ class FitMultipleModel():
                 self.model_output_table,
                 mst[self.mst_key_col])
             mst_metric_eval_time[mst[self.mst_key_col]] \
-                .append(time.time() - self.metrics_elapsed_start_time)
+                .append(self.metrics_elapsed_time_offset + (time.time() - self.metrics_elapsed_start_time))
             mst_loss[mst[self.mst_key_col]].append(loss)
             mst_metric[mst[self.mst_key_col]].append(metric)
             self.info_str += "\n\tmst_key={0}: metric={1}, loss={2}".format(mst[self.mst_key_col], metric, loss)

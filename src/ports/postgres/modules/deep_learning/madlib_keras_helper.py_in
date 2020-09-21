@@ -26,6 +26,7 @@ from utilities.validate_args import table_exists
 from madlib_keras_gpu_info import GPUInfoFunctions
 import plpy
 from math import isnan
+# from madlib_keras_model_selection import ModelSelectionSchema
 
 ############### Constants used in other deep learning files #########
 # Name of columns in model summary table.
@@ -53,7 +54,7 @@ SMALLINT_SQL_TYPE = 'SMALLINT'
 DEFAULT_NORMALIZING_CONST = 1.0
 GP_SEGMENT_ID_COLNAME = "gp_segment_id"
 INTERNAL_GPU_CONFIG = '__internal_gpu_config__'
-
+DISTRIBUTION_RULES = "distribution_rules"
 #####################################################################
 
 # Prepend a dimension to np arrays using expand_dims.
@@ -353,3 +354,57 @@ def get_metrics_sql_string(metrics_list, is_metrics_specified=True):
         metrics_final = metrics_all = 'NULL'
     return metrics_final, metrics_all
 
+
+def generate_row_string(configs_dict):
+    """
+    Generate row strings for MST table.
+    :param configs_dict: Dictionary of params configs (preferably either only compile params
+    or only fit params).
+    :return: string to insert as a row value in MST table.
+    """
+    result_row_string = ""
+    opl = 'optimizer_params_list'
+
+    if opl in configs_dict:
+        optimizer_params_dict = configs_dict[opl]
+        if 'optimizer' in optimizer_params_dict:
+            if optimizer_params_dict['optimizer'].lower() == 'sgd':
+                optimizer_value = "SGD"
+            elif optimizer_params_dict['optimizer'].lower() == 'rmsprop':
+                optimizer_value = "RMSprop"
+            else:
+                optimizer_value = optimizer_params_dict['optimizer'].capitalize()
+            opt_string = "optimizer" + "=" + "'" + str(optimizer_value) \
+                         + "()" + "'"
+        else:
+            opt_string = "optimizer='RMSprop()'" # default optimizer
+        opt_param_string = ""
+        for opt_param in optimizer_params_dict:
+            if opt_param == 'optimizer':
+                continue
+            opt_param_string += opt_param + '=' + str(optimizer_params_dict[opt_param]) + ','
+        if opt_param_string == "":
+            result_row_string += opt_string
+        else:
+            opt_param_string = opt_param_string[:-1] # to exclude the last comma
+            part = opt_string.split('(')
+            result_row_string += part[0] + '(' + opt_param_string + part[1]
+
+    for c in configs_dict:
+        if c == opl:
+            continue
+        elif c == 'metrics':
+            if callable(configs_dict[c]):
+                result_row_string += "," + str(c) + "=" + "[" + str(configs_dict[c]) + "]"
+            else:
+                result_row_string += "," + str(c) + "=" + "['" + str(configs_dict[c]) + "']"
+        else:
+            if type(configs_dict[c]) == str or type(configs_dict[c]) == np.string_:
+                result_row_string += "," + str(c) + "=" + "'" + str(configs_dict[c]) + "'"
+            else:
+                # ints, floats, none type, booleans
+                result_row_string += "," + str(c) + "=" + str(configs_dict[c])
+
+    if result_row_string[0] == ',':
+        return result_row_string[1:]
+    return result_row_string
