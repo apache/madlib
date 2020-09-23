@@ -60,7 +60,6 @@ def _validate_object(object, **kwargs):
     except Exception as e:
         plpy.error("{0}: Invalid function object".format(module_name, e))
 
-@MinWarning("error")
 def load_custom_function(object_table, object, name, description=None, **kwargs):
     object_table = quote_ident(object_table)
     _validate_object(object)
@@ -74,7 +73,19 @@ def load_custom_function(object_table, object, name, description=None, **kwargs)
             .format(object_table, col_defs, CustomFunctionSchema.FN_NAME)
 
         plpy.execute(sql, 0)
-        plpy.info("{0}: Created new custom function table {1}." \
+        # Using plpy.notice here as this function can be called:
+        # 1. Directly by the user, we do want to display to the user
+        #    if we create a new table or later the function name that
+        #    is added to the table
+        # 2. From load_top_k_accuracy_function, since plpy.info
+        #    displays the query context when called from the function
+        #    there is a very verbose output and cannot be suppressed with
+        #    MinWarning decorator as INFO is always displayed irrespective
+        #    of what the decorator sets the client_min_messages to.
+        #    Therefore, instead we print this information as a NOTICE
+        #    when called directly by the user and suppress it by setting
+        #    MinWarning decorator to 'error' level in the calling function.
+        plpy.notice("{0}: Created new custom function table {1}." \
                   .format(module_name, object_table))
     else:
         missing_cols = columns_missing_from_table(object_table,
@@ -98,10 +109,9 @@ def load_custom_function(object_table, object, name, description=None, **kwargs)
             plpy.error("Function '{0}' already exists in {1}".format(name, object_table))
         plpy.error(e)
 
-    plpy.info("{0}: Added function {1} to {2} table".
+    plpy.notice("{0}: Added function {1} to {2} table".
               format(module_name, name, object_table))
 
-@MinWarning("error")
 def delete_custom_function(object_table, id=None, name=None, **kwargs):
     object_table = quote_ident(object_table)
     input_tbl_valid(object_table, "Keras Custom Funtion")
@@ -126,7 +136,7 @@ def delete_custom_function(object_table, id=None, name=None, **kwargs):
     res = plpy.execute(sql, 0)
 
     if res.nrows() > 0:
-        plpy.info("{0}: Object id {1} has been deleted from {2}.".
+        plpy.notice("{0}: Object id {1} has been deleted from {2}.".
                   format(module_name, id, object_table))
     else:
         plpy.error("{0}: Object id {1} not found".format(module_name, id))
@@ -134,7 +144,7 @@ def delete_custom_function(object_table, id=None, name=None, **kwargs):
     sql = "SELECT {0} FROM {1}".format(CustomFunctionSchema.FN_ID, object_table)
     res = plpy.execute(sql, 0)
     if not res:
-        plpy.info("{0}: Dropping empty custom keras function table " \
+        plpy.notice("{0}: Dropping empty custom keras function table " \
                   "table {1}".format(module_name, object_table))
         sql = "DROP TABLE {0}".format(object_table)
         plpy.execute(sql, 0)
@@ -146,6 +156,27 @@ def update_builtin_metrics(builtin_metrics):
     builtin_metrics.append('ce')
     return builtin_metrics
 
+@MinWarning("error")
+def load_top_k_accuracy_function(schema_madlib, object_table, k, **kwargs):
+
+    object_table = quote_ident(object_table)
+    _assert(k > 0,
+        "{0}: For top k accuracy functions k has to be a positive integer.".format(module_name))
+    fn_name = "top_{k}_accuracy".format(**locals())
+
+    sql = """
+        SELECT  {schema_madlib}.load_custom_function(\'{object_table}\',
+                {schema_madlib}.top_k_categorical_acc_pickled({k}, \'{fn_name}\'),
+                \'{fn_name}\',
+                \'returns {fn_name}\');
+        """.format(**locals())
+    plpy.execute(sql)
+    # As this function allocates the name for the top_k_accuracy function,
+    # printing it out here so the user doesn't need to lookup for the
+    # newly added custom function name in the object_table
+    plpy.info("{0}: Added function \'{1}\' to \'{2}\' table".
+                format(module_name, fn_name, object_table))
+    return
 
 class KerasCustomFunctionDocumentation:
     @staticmethod
@@ -250,3 +281,45 @@ class KerasCustomFunctionDocumentation:
 
         return KerasCustomFunctionDocumentation._returnHelpMsg(
             schema_madlib, message, summary, usage, method)
+
+    @staticmethod
+    def load_top_k_accuracy_function_help(schema_madlib, message):
+        method = "load_top_k_accuracy_function"
+        summary = """
+        ----------------------------------------------------------------
+                            SUMMARY
+        ----------------------------------------------------------------
+        The user can specify a custom n value for top_n_accuracy metric.
+        If the output table already exists, the custom function specified
+        will be added as a new row into the table. The output table could
+        thus act as a repository of Keras custom functions.
+
+        For more details on function usage:
+        SELECT {schema_madlib}.{method}('usage')
+        """.format(**locals())
+
+        usage = """
+        ---------------------------------------------------------------------------
+                                        USAGE
+        ---------------------------------------------------------------------------
+        SELECT {schema_madlib}.{method}(
+            object_table,       --  VARCHAR. Output table to load custom function.
+            k                   --  INTEGER. The number of samples for top n accuracy
+        );
+
+
+        ---------------------------------------------------------------------------
+                                        OUTPUT
+        ---------------------------------------------------------------------------
+        The output table produced by load_top_k_accuracy_function contains the following columns:
+
+        'id'                    -- SERIAL. Function ID.
+        'name'                  -- TEXT PRIMARY KEY. unique function name.
+        'description'           -- TEXT. function description.
+        'object'                -- BYTEA. dill pickled function object.
+
+        """.format(**locals())
+
+        return KerasCustomFunctionDocumentation._returnHelpMsg(
+            schema_madlib, message, summary, usage, method)
+    # ---------------------------------------------------------------------
