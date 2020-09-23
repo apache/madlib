@@ -38,6 +38,7 @@ Interface and implementation are subject to change. </em>
 <div class="toc"><b>Contents</b><ul>
 <li class="level1"><a href="#load_function">Load Function</a></li>
 <li class="level1"><a href="#delete_function">Delete Function</a></li>
+<li class="level1"><a href="#top_n_function">Top n Function</a></li>
 <li class="level1"><a href="#example">Examples</a></li>
 <li class="level1"><a href="#literature">Literature</a></li>
 <li class="level1"><a href="#related">Related Topics</a></li>
@@ -45,10 +46,10 @@ Interface and implementation are subject to change. </em>
 
 This utility function loads custom Python functions
 into a table for use by deep learning algorithms.
-Custom functions can be useful if, for example, you need loss functions 
+Custom functions can be useful if, for example, you need loss functions
 or metrics that are not built into the standard libraries.
-The functions to be loaded must be in the form of serialized Python objects 
-created using Dill, which extends Python's pickle module to the majority 
+The functions to be loaded must be in the form of serialized Python objects
+created using Dill, which extends Python's pickle module to the majority
 of the built-in Python types [1].
 
 There is also a utility function to delete a function
@@ -69,8 +70,8 @@ load_custom_function(
 <dl class="arglist">
   <dt>object table</dt>
   <dd>VARCHAR. Table to load serialized Python objects.  If this table
-  does not exist, it will be created.  If this table already 
-  exists, a new row is inserted into the existing table. 
+  does not exist, it will be created.  If this table already
+  exists, a new row is inserted into the existing table.
   </dd>
 
   <dt>object</dt>
@@ -149,10 +150,63 @@ delete_custom_function(
   </dd>
 </dl>
 
+@anchor top_n_function
+@par Top n Function
+
+Load a top n function with a specific n to the custom functions table.
+
+<pre class="syntax">
+load_top_k_accuracy_function(
+    object table,
+    k
+    )
+</pre>
+\b Arguments
+<dl class="arglist">
+  <dt>object table</dt>
+  <dd>VARCHAR. Table to load serialized Python objects.  If this table
+  does not exist, it will be created.  If this table already
+  exists, a new row is inserted into the existing table.
+  </dd>
+
+  <dt>k</dt>
+  <dd>INTEGER. k value for the top k accuracy function.
+  </dd>
+
+</dl>
+
+<b>Output table</b>
+<br>
+    The output table contains the following columns:
+    <table class="output">
+      <tr>
+        <th>id</th>
+        <td>SERIAL. Object ID.
+        </td>
+      </tr>
+      <tr>
+        <th>name</th>
+        <td>TEXT PRIMARY KEY. Name of the object.
+        Generated with the following pattern: (sparse_,)top_(n)_accuracy.
+        </td>
+      </tr>
+      <tr>
+        <th>description</th>
+        <td>TEXT. Description of the object (free text).
+        </td>
+      </tr>
+      <tr>
+        <th>object</th>
+        <td>BYTEA. Serialized Python object stored as a PostgreSQL binary data type.
+        </td>
+      </tr>
+    </table>
+</br>
+
 @anchor example
 @par Examples
--# Load object using psycopg2. Psycopg is a PostgreSQL database 
-adapter for the Python programming language.  Note need to use the 
+-# Load object using psycopg2. Psycopg is a PostgreSQL database
+adapter for the Python programming language.  Note need to use the
 psycopg2.Binary() method to pass as bytes.
 <pre class="example">
 \# import database connector psycopg2 and create connection cursor
@@ -163,12 +217,12 @@ cur = conn.cursor()
 import dill
 \# custom loss
 def squared_error(y_true, y_pred):
-    import keras.backend as K 
+    import keras.backend as K
     return K.square(y_pred - y_true)
 pb_squared_error=dill.dumps(squared_error)
 \# custom metric
 def rmse(y_true, y_pred):
-    import keras.backend as K 
+    import keras.backend as K
     return K.sqrt(K.mean(K.square(y_pred - y_true), axis=-1))
 pb_rmse=dill.dumps(rmse)
 \# call load function
@@ -182,7 +236,7 @@ List table to see objects:
 SELECT id, name, description FROM test_custom_function_table ORDER BY id;
 </pre>
 <pre class="result">
- id |     name      |      description       
+ id |     name      |      description
 ----+---------------+------------------------
   1 | squared_error | squared error
   2 | rmse          | root mean square error
@@ -194,7 +248,7 @@ RETURNS BYTEA AS
 $$
 import dill
 def squared_error(y_true, y_pred):
-    import keras.backend as K 
+    import keras.backend as K
     return K.square(y_pred - y_true)
 pb_squared_error=dill.dumps(squared_error)
 return pb_squared_error
@@ -204,7 +258,7 @@ RETURNS BYTEA AS
 $$
 import dill
 def rmse(y_true, y_pred):
-    import keras.backend as K 
+    import keras.backend as K
     return K.sqrt(K.mean(K.square(y_pred - y_true), axis=-1))
 pb_rmse=dill.dumps(rmse)
 return pb_rmse
@@ -213,13 +267,13 @@ $$ language plpythonu;
 Now call loader:
 <pre class="result">
 DROP TABLE IF EXISTS custom_function_table;
-SELECT madlib.load_custom_function('custom_function_table', 
-                                   custom_function_squared_error(), 
-                                   'squared_error', 
+SELECT madlib.load_custom_function('custom_function_table',
+                                   custom_function_squared_error(),
+                                   'squared_error',
                                    'squared error');
-SELECT madlib.load_custom_function('custom_function_table', 
-                                   custom_function_rmse(), 
-                                   'rmse', 
+SELECT madlib.load_custom_function('custom_function_table',
+                                   custom_function_rmse(),
+                                   'rmse',
                                    'root mean square error');
 </pre>
 -# Delete an object by id:
@@ -228,7 +282,7 @@ SELECT madlib.delete_custom_function( 'custom_function_table', 1);
 SELECT id, name, description FROM custom_function_table ORDER BY id;
 </pre>
 <pre class="result">
- id | name |      description       
+ id | name |      description
 ----+------+------------------------
   2 | rmse | root mean square error
 </pre>
@@ -237,7 +291,19 @@ Delete an object by name:
 SELECT madlib.delete_custom_function( 'custom_function_table', 'rmse');
 </pre>
 If all objects are deleted from the table using this function, the table itself will be dropped.
-
+</pre>
+Load top 3 accuracy function:
+<pre class="example">
+DROP TABLE IF EXISTS custom_function_table;
+SELECT madlib.load_top_k_accuracy_function('custom_function_table',
+                                           3);
+SELECT id, name, description FROM custom_function_table ORDER BY id;
+</pre>
+<pre class="result">
+ id |      name      |      description
+----+----------------+------------------------
+  1 | top_3_accuracy | returns top_3_accuracy
+</pre>
 @anchor literature
 @literature
 
@@ -322,4 +388,47 @@ RETURNS VARCHAR AS $$
     PythonFunctionBodyOnly(deep_learning, madlib_keras_custom_function)
     return madlib_keras_custom_function.KerasCustomFunctionDocumentation.delete_custom_function_help(schema_madlib, '')
 $$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+-- Top n accuracy function
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.load_top_k_accuracy_function(
+    object_table            VARCHAR,
+    k                       INTEGER
+) RETURNS VOID AS $$
+    PythonFunctionBodyOnly(`deep_learning', `madlib_keras_custom_function')
+    with AOControl(False):
+        madlib_keras_custom_function.load_top_k_accuracy_function(**globals())
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.load_top_k_accuracy_function(
+    message VARCHAR
+) RETURNS VARCHAR AS $$
+    PythonFunctionBodyOnly(deep_learning, madlib_keras_custom_function)
+    return madlib_keras_custom_function.KerasCustomFunctionDocumentation.load_top_k_accuracy_function_help(schema_madlib, message)
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.load_top_k_accuracy_function()
+RETURNS VARCHAR AS $$
+    PythonFunctionBodyOnly(deep_learning, madlib_keras_custom_function)
+    return madlib_keras_custom_function.KerasCustomFunctionDocumentation.load_top_k_accuracy_function_help(schema_madlib, '')
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.top_k_categorical_acc_pickled(
+n INTEGER,
+fn_name VARCHAR
+) RETURNS BYTEA AS $$
+    import dill
+    from keras.metrics import top_k_categorical_accuracy
+
+    def fn(Y_true, Y_pred):
+        return top_k_categorical_accuracy(Y_true,
+                                          Y_pred,
+                                          k = n)
+    fn.__name__= fn_name
+    pb=dill.dumps(fn)
+    return pb
+$$ language plpythonu
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
