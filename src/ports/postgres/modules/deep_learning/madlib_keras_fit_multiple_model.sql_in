@@ -88,14 +88,14 @@ You can set up the models and hyperparameters to try with the
 Model Selection</a> utility to define the unique combinations
 of model architectures, compile and fit parameters.
 
-@note If 'madlib_keras_fit_multiple_model()' is running on GPDB 5 and some versions
+@note 1. If 'madlib_keras_fit_multiple_model()' is running on GPDB 5 and some versions
 of GPDB 6, the database will
 keep adding to the disk space (in proportion to model size) and will only
 release the disk space once the fit multiple query has completed execution.
 This is not the case for GPDB 6.5.0+ where disk space is released during the
 fit multiple query.
 
-@note CUDA GPU memory cannot be released until the process holding it is terminated.
+@note 2. CUDA GPU memory cannot be released until the process holding it is terminated.
 When a MADlib deep learning function is called with GPUs, Greenplum internally
 creates a process (called a slice) which calls TensorFlow to do the computation.
 This process holds the GPU memory until one of the following two things happen:
@@ -121,7 +121,8 @@ madlib_keras_fit_multiple_model(
     metrics_compute_frequency,
     warm_start,
     name,
-    description
+    description,
+    use_caching
     )
 </pre>
 
@@ -231,6 +232,17 @@ madlib_keras_fit_multiple_model(
   <DD>TEXT, default: NULL.
     Free text string to provide a description, if desired.
   </DD>
+
+  <DT>use_caching (optional)</DT>
+  <DD>BOOLEAN, default: FALSE. Use caching of images in memory on the 
+  segment in order to speed up processing. 
+
+  @note
+  When set to TRUE, image byte arrays on each segment are maintained 
+  in cache (SD). This can speed up training significantly, however the 
+  memory usage per segment increases.  In effect, it 
+  requires enough available memory on a segment so that all images 
+  residing on that segment can be read into memory.
 </dl>
 
 <b>Output tables</b>
@@ -1155,7 +1167,7 @@ WHERE q.actual=q.estimated;
 and compute metrics every 3rd iteration using
 the 'metrics_compute_frequency' parameter. This can
 help reduce run time if you do not need metrics
-computed at every iteration.
+computed at every iteration.  Also turn on image caching.
 <pre class="example">
 DROP TABLE IF EXISTS iris_multi_model, iris_multi_model_summary, iris_multi_model_info;
 SELECT madlib.madlib_keras_fit_multiple_model('iris_train_packed',    -- source_table
@@ -1167,7 +1179,8 @@ SELECT madlib.madlib_keras_fit_multiple_model('iris_train_packed',    -- source_
                                                3,                     -- metrics compute frequency
                                                FALSE,                 -- warm start
                                               'Sophie L.',            -- name
-                                              'Model selection for iris dataset'  -- description
+                                              'Model selection for iris dataset',  -- description
+                                               TRUE                   -- use caching
                                              );
 </pre>
 View the model summary:
@@ -1282,7 +1295,8 @@ SELECT madlib.madlib_keras_fit_multiple_model('iris_train_packed',    -- source_
                                                1,                     -- metrics compute frequency
                                                TRUE,                  -- warm start
                                               'Sophie L.',            -- name
-                                              'Simple MLP for iris dataset'  -- description
+                                              'Simple MLP for iris dataset',  -- description
+                                               TRUE                   -- use caching
                                              );
 SELECT * FROM iris_multi_model_summary;
 </pre>
@@ -1380,10 +1394,9 @@ inference runtimes will be proportionally faster as the number of segments incre
 Supun Nakandala, Yuhao Zhang, and Arun Kumar, ACM SIGMOD 2019 DEEM Workshop,
 https://adalabucsd.github.io/papers/2019_Cerebro_DEEM.pdf
 
-[2] "Resource-Efficient and Reproducible Model Selection on Deep Learning Systems,"
-Supun Nakandala, Yuhao Zhang, and Arun Kumar, Technical Report, Computer Science and
-Engineering, University of California, San Diego
-https://adalabucsd.github.io/papers/TR_2019_Cerebro.pdf
+[2] "Cerebro: A Data System for Optimized Deep Learning Model Selection,"
+Supun Nakandala, Yuhao Zhang, and Arun Kumar, Proceedings of the VLDB Endowment (2020), Vol. 13, No. 11
+https://adalabucsd.github.io/papers/2020_Cerebro_VLDB.pdf
 
 [3] https://keras.io/
 
