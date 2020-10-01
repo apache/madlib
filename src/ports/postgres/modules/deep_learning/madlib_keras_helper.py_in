@@ -139,7 +139,7 @@ def get_image_count_per_seg_for_minibatched_data_from_db(table_name):
                 FROM {1}
             """.format(shape_col, table_name))
         images_per_seg = [sum(r['shape'][0] for r in res)]
-        seg_ids = [0]
+        dist_keys = [0]
     else:
         # The number of images in the buffer is the first dimension in the shape.
         # Using __dist_key__ instead of gp_segment_id: Since gp_segment_id is
@@ -159,12 +159,12 @@ def get_image_count_per_seg_for_minibatched_data_from_db(table_name):
                 FROM {2}
                 GROUP BY {0}
             """.format(DISTRIBUTION_KEY_COLNAME, shape_col, table_name))
-        seg_ids = [int(each_segment[DISTRIBUTION_KEY_COLNAME])
+        dist_keys = [int(each_segment[DISTRIBUTION_KEY_COLNAME])
                    for each_segment in images_per_seg]
         images_per_seg = [int(each_segment["images_per_seg"])
                           for each_segment in images_per_seg]
 
-    return seg_ids, images_per_seg
+    return dist_keys, images_per_seg
 
 def get_image_count_per_seg_for_non_minibatched_data_from_db(table_name):
     """
@@ -234,6 +234,17 @@ def query_dist_keys(source_table, dist_key_col):
     res = list(plpy.execute(dist_key_query))
     res = [x[dist_key_col] for x in res]
     return res
+
+def query_weights(model_output_table, model_weights_col, mst_key_col, mst_key):
+    mlp_weights_query = """
+                        SELECT {model_weights_col}, {mst_key_col}
+                        FROM {model_output_table}
+                        WHERE {mst_key_col} = {mst_key}
+                        """.format(**locals())
+    res = plpy.execute(mlp_weights_query)
+    if not res:
+        plpy.error("query_weights:  No weights in model output table for mst={}".format(mst_key))
+    return res[0][model_weights_col]
 
 def create_summary_view(module_name, model_table, mst_key):
     tmp_view_summary = unique_string('tmp_view_summary')
