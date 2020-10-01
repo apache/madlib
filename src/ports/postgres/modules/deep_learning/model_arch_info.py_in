@@ -85,8 +85,31 @@ def get_model_arch_layers_str(model_arch):
             layers += "{1}\n".format(class_name)
     return layers
 
-def get_model_arch_weights(model_arch_table, model_id):
+def get_model_arch(model_arch_table, model_id):
+    """
+    For fit_multiple, we don't want to keep sending weights back and
+    forth between the main host and the segment hosts.  weights can be
+    up to 1GB in size, whereas the model arch in JSON is usually very
+    small.
+    """
+    s = ModelArchSchema
+    model_arch_query = """
+        SELECT {s.MODEL_ARCH} FROM {model_arch_table}
+            WHERE {s.MODEL_ID} = {model_id}
+    """.format(**locals())
 
+    model_arch_result = plpy.execute(model_arch_query)
+    if not model_arch_result or len(model_arch_result) != 1:
+        plpy.error("no model arch found in table {0} with id {1}".format(
+            model_arch_table, model_id))
+
+    model_arch = model_arch_result[0][ModelArchSchema.MODEL_ARCH]
+    return model_arch
+
+def get_model_arch_weights(model_arch_table, model_id):
+    """
+    For fit, we need both the model arch & model weights
+    """
     #assume validation is already called
     model_arch_query = "SELECT {0}, {1} FROM {2} WHERE {3} = {4}".format(
         ModelArchSchema.MODEL_ARCH, ModelArchSchema.MODEL_WEIGHTS,

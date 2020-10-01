@@ -1420,23 +1420,24 @@ File madlib_keras_fit_multiple_model.sql_in documents training, evaluate and pre
 */
 
 CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.madlib_keras_fit_multiple_model(
-    source_table            VARCHAR,
-    model_output_table      VARCHAR,
-    model_selection_table   VARCHAR,
-    num_iterations          INTEGER,
-    use_gpus                BOOLEAN,
-    validation_table        VARCHAR,
-    metrics_compute_frequency  INTEGER,
-    warm_start              BOOLEAN,
-    name                    VARCHAR,
-    description             VARCHAR,
-    use_caching             BOOLEAN DEFAULT FALSE
+    source_table                VARCHAR,
+    model_output_table          VARCHAR,
+    model_selection_table       VARCHAR,
+    num_iterations              INTEGER,
+    use_gpus                    BOOLEAN,
+    validation_table            VARCHAR,
+    metrics_compute_frequency   INTEGER,
+    warm_start                  BOOLEAN,
+    name                        VARCHAR,
+    description                 VARCHAR,
+    use_caching                 BOOLEAN DEFAULT FALSE
 ) RETURNS VOID AS $$
     PythonFunctionBodyOnly(`deep_learning', `madlib_keras_fit_multiple_model')
     from utilities.control import SetGUC
     with AOControl(False):
         with SetGUC("plan_cache_mode", "force_generic_plan"):
-            fit_obj = madlib_keras_fit_multiple_model.FitMultipleModel(**globals())
+                fit_obj = madlib_keras_fit_multiple_model.FitMultipleModel(**globals())
+                fit_obj.fit_multiple_model()
 $$ LANGUAGE plpythonu VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
 
@@ -1506,7 +1507,6 @@ $$ LANGUAGE sql VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA');
 
 CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.fit_transition_multiple_model(
-    state                      BYTEA,
     dependent_var              BYTEA,
     independent_var            BYTEA,
     dependent_var_shape        INTEGER[],
@@ -1520,7 +1520,7 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.fit_transition_multiple_model(
     segments_per_host          INTEGER,
     images_per_seg             INTEGER[],
     accessible_gpus_for_seg    INTEGER[],
-    prev_serialized_weights    BYTEA,
+    serialized_weights         BYTEA,
     is_final_training_call     BOOLEAN,
     use_caching                BOOLEAN,
     custom_function_map        BYTEA
@@ -1529,48 +1529,7 @@ PythonFunctionBodyOnlyNoSchema(`deep_learning', `madlib_keras')
     if use_caching:
         return madlib_keras.fit_multiple_transition_caching(**globals())
     else:
-        return madlib_keras.fit_transition(is_multiple_model = True, **globals())
+        return madlib_keras.fit_transition(state=None, prev_serialized_weights=serialized_weights,
+                                           is_multiple_model=True, **globals())
 $$ LANGUAGE plpythonu
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
-
-DROP AGGREGATE IF EXISTS MADLIB_SCHEMA.fit_step_multiple_model(
-    BYTEA,
-    BYTEA,
-    INTEGER[],
-    INTEGER[],
-    TEXT,
-    TEXT,
-    TEXT,
-    INTEGER,
-    INTEGER[],
-    INTEGER,
-    INTEGER,
-    INTEGER[],
-    BOOLEAN,
-    INTEGER[],
-    BYTEA,
-    BOOLEAN,
-    BOOLEAN,
-    BYTEA);
-CREATE AGGREGATE MADLIB_SCHEMA.fit_step_multiple_model(
-    /* dependent_var */              BYTEA,
-    /* independent_var */            BYTEA,
-    /* dependent_var_shape */        INTEGER[],
-    /* independent_var_shape */      INTEGER[],
-    /* model_architecture */         TEXT,
-    /* compile_params */             TEXT,
-    /* fit_params */                 TEXT,
-    /* dist_key */                   INTEGER,
-    /* dist_key_mapping */           INTEGER[],
-    /* current_seg_id */             INTEGER,
-    /* segments_per_host */          INTEGER,
-    /* images_per_seg */             INTEGER[],
-    /* accessible_gpus_for_seg */    INTEGER[],
-    /* prev_serialized_weights */    BYTEA,
-    /* is_final_training_call */     BOOLEAN,
-    /* use_caching */                BOOLEAN,
-    /* custom_function_obj_map */    BYTEA
-)(
-    STYPE=BYTEA,
-    SFUNC=MADLIB_SCHEMA.fit_transition_multiple_model
-);

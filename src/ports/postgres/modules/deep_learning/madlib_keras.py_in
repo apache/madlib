@@ -27,6 +27,7 @@ from madlib_keras_helper import *
 from madlib_keras_validator import *
 from madlib_keras_wrapper import *
 from model_arch_info import *
+import tensorflow as tf
 
 from madlib_keras_model_selection import ModelSelectionSchema
 
@@ -42,6 +43,10 @@ from utilities.validate_args import quote_ident
 from utilities.control import MinWarning
 
 import tensorflow as tf
+import utilities.debug as DEBUG
+
+DEBUG.timings_enabled = False
+DEBUG.plpy_info_enabled = False
 
 from tensorflow.keras import backend as K
 from tensorflow.keras.layers import *
@@ -52,6 +57,7 @@ from tensorflow.keras.regularizers import *
 class GD_STORE:
     SESS = 'sess'
     SEGMENT_MODEL = 'segment_model'
+    AGG_IMAGE_COUNT = 'agg_image_count'
 
     @staticmethod
     def init(GD, sess, segment_model):
@@ -62,23 +68,29 @@ class GD_STORE:
     def clear(GD):
         del GD[GD_STORE.SEGMENT_MODEL]
         del GD[GD_STORE.SESS]
+        if GD_STORE.AGG_IMAGE_COUNT in GD:
+            del GD[GD_STORE.AGG_IMAGE_COUNT]
 
 def get_init_model_and_sess(GD, device_name, gpu_count, segments_per_host,
                                model_architecture, compile_params, custom_function_map):
     # If a live session is present, re-use it. Otherwise, recreate it.
-    if GD_STORE.SESS in GD:
+
+    if GD_STORE.SESS in GD :
+        if GD_STORE.AGG_IMAGE_COUNT not in GD:
+            GD[GD_STORE.AGG_IMAGE_COUNT] = 0
         if GD_STORE.SEGMENT_MODEL not in GD:
             plpy.error("Session and model should exist in GD after the first row"
-                       " of the first iteration")
-        sess = GD[GD_STORE.SESS]
-        segment_model = GD[GD_STORE.SEGMENT_MODEL]
-        K.set_session(sess)
+                       "of the first iteration")
+        with tf.device(device_name):
+            sess = GD[GD_STORE.SESS]
+            segment_model = GD[GD_STORE.SEGMENT_MODEL]
+            K.set_session(sess)
     else:
-        sess = get_keras_session(device_name, gpu_count, segments_per_host)
-        K.set_session(sess)
-        segment_model = init_model(model_architecture, compile_params, custom_function_map)
+        with tf.device(device_name):
+            sess = get_keras_session(device_name, gpu_count, segments_per_host)
+            K.set_session(sess)
+            segment_model = init_model(model_architecture, compile_params, custom_function_map)
         GD_STORE.init(GD, sess, segment_model)
-
     return segment_model, sess
 
 @MinWarning("warning")
@@ -118,7 +130,6 @@ def fit(schema_madlib, source_table, model, model_arch_table,
     if metrics_compute_frequency is None:
         metrics_compute_frequency = num_iterations
 
-
     warm_start = bool(warm_start)
 
     # The following two times must be recorded together.
@@ -140,7 +151,7 @@ def fit(schema_madlib, source_table, model, model_arch_table,
     gp_segment_id_col = '0' if is_platform_pg() else GP_SEGMENT_ID_COLNAME
 
     serialized_weights = get_initial_weights(model, model_arch, model_weights,
-                                             warm_start, use_gpus, accessible_gpus_for_seg)
+                                             warm_start, accessible_gpus_for_seg)
     # Compute total images on each segment
     dist_key_mapping, images_per_seg_train = get_image_count_per_seg_for_minibatched_data_from_db(source_table)
 
@@ -240,7 +251,7 @@ def fit(schema_madlib, source_table, model, model_arch_table,
                                                            serialized_weights,
                                                            use_gpus,
                                                            accessible_gpus_for_seg,
-                                                           seg_ids_val,
+                                                           dist_key_mapping_val,
                                                            images_per_seg_val,
                                                            validation_metrics,
                                                            validation_loss,
@@ -376,7 +387,7 @@ def get_evaluate_info_msg(i, info_str, compute_out, is_train):
 
 
 def get_initial_weights(model_table, model_arch, serialized_weights, warm_start,
-                        use_gpus, accessible_gpus_for_seg, mst_filter=''):
+                        accessible_gpus_for_seg, mst_filter=''):
     """
         If warm_start is True, return back initial weights from model table.
         If warm_start is False, first try to get the weights from model_arch
@@ -391,12 +402,14 @@ def get_initial_weights(model_table, model_arch, serialized_weights, warm_start,
         will only be used for segment nodes.
         @args:
             @param model_table: Output model table passed in to fit.
-            @param model_arch_result: Dict containing model architecture info.
+            @param model_arch: Dict containing model architecture info.
             @param warm_start: Boolean flag indicating warm start or not.
     """
     if is_platform_pg():
+        # Use GPU's if they are enabled
         _ = get_device_name_and_set_cuda_env(accessible_gpus_for_seg[0], None)
     else:
+        # We are on master, so never use GPU's
         _ = get_device_name_and_set_cuda_env(0, None)
 
     if warm_start:
@@ -435,7 +448,7 @@ def compute_loss_and_metrics(schema_madlib, table, compile_params, model_arch,
                              serialized_weights, use_gpus,
                              accessible_gpus_for_seg, dist_key_mapping,
                              images_per_seg_val, metrics_list, loss_list,
-                             should_clear_session, custom_fn_name,
+                             should_clear_session, custom_fn_map,
                              model_table=None, mst_key=None):
     """
     Compute the loss and metric using a given model (serialized_weights) on the
@@ -452,7 +465,7 @@ def compute_loss_and_metrics(schema_madlib, table, compile_params, model_arch,
                                                    dist_key_mapping,
                                                    images_per_seg_val,
                                                    should_clear_session,
-                                                   custom_fn_name,
+                                                   custom_fn_map,
                                                    model_table,
                                                    mst_key)
     end_val = time.time()
@@ -491,15 +504,6 @@ def init_model(model_architecture, compile_params, custom_function_map):
     compile_model(segment_model, compile_params, custom_function_map)
     return segment_model
 
-def update_model(segment_model, prev_serialized_weights):
-    """
-        Happens at first row of each iteration.
-    """
-    model_shapes = get_model_shapes(segment_model)
-    model_weights = madlib_keras_serializer.deserialize_as_nd_weights(
-        prev_serialized_weights, model_shapes)
-    segment_model.set_weights(model_weights)
-
 def fit_transition(state, dependent_var, independent_var, dependent_var_shape,
                    independent_var_shape, model_architecture,
                    compile_params, fit_params, dist_key, dist_key_mapping,
@@ -520,21 +524,36 @@ def fit_transition(state, dependent_var, independent_var, dependent_var_shape,
         and only gets cleared in eval transition at the last row of the last iteration.
 
     """
-    if not independent_var or not dependent_var:
+    if not dependent_var_shape:
+        plpy.error("fit_transition called with no data")
+
+    if not prev_serialized_weights or not model_architecture:
         return state
+
     GD = kwargs['GD']
+
+    trans_enter_time = time.time()
+
     device_name = get_device_name_and_set_cuda_env(accessible_gpus_for_seg[current_seg_id], current_seg_id)
 
-    segment_model, sess = get_init_model_and_sess(GD, device_name,
-                                                  accessible_gpus_for_seg[current_seg_id],
-                                                  segments_per_host,
-                                                  model_architecture, compile_params,
-                                                  custom_function_map)
-    if not state:
-        agg_image_count = 0
-        set_model_weights(segment_model, prev_serialized_weights)
+    with tf.device(device_name):
+        segment_model, sess = get_init_model_and_sess(GD, device_name,
+            accessible_gpus_for_seg[current_seg_id],
+            segments_per_host,
+            model_architecture, compile_params,
+            custom_function_map)
+
+    if GD_STORE.AGG_IMAGE_COUNT in GD:
+        agg_image_count = GD[GD_STORE.AGG_IMAGE_COUNT]
     else:
-        agg_image_count = float(state)
+        agg_image_count = 0
+        GD[GD_STORE.AGG_IMAGE_COUNT] = agg_image_count
+
+    DEBUG.plpy_info("agg_image_count={}".format(agg_image_count))
+
+    if agg_image_count == 0:
+        with tf.device(device_name):
+            set_model_weights(segment_model, prev_serialized_weights)
 
     # Prepare the data
     x_train = np_array_float32(independent_var, independent_var_shape)
@@ -543,65 +562,74 @@ def fit_transition(state, dependent_var, independent_var, dependent_var_shape,
     # Fit segment model on data
     #TODO consider not doing this every time
     fit_params = parse_and_validate_fit_params(fit_params)
-    segment_model.fit(x_train, y_train, **fit_params)
+    with tf.device(device_name):
+        segment_model.fit(x_train, y_train, **fit_params)
 
     # Aggregating number of images, loss and accuracy
     agg_image_count += len(x_train)
+    GD[GD_STORE.AGG_IMAGE_COUNT] = agg_image_count
     total_images = get_image_count_per_seg_from_array(dist_key_mapping.index(dist_key),
                                                       images_per_seg)
     is_last_row = agg_image_count == total_images
     return_state = get_state_to_return(segment_model, is_last_row, is_multiple_model,
                                        agg_image_count, total_images)
-    if is_multiple_model and is_last_row:
-        GD_STORE.clear(GD)
-        clear_keras_session(sess)
+
+    if is_last_row:
+        del GD[GD_STORE.AGG_IMAGE_COUNT]  # Must be reset after each pass through images
+        if is_multiple_model:
+            GD_STORE.clear(GD)
+            clear_keras_session(sess)
+
+    trans_exit_time = time.time()
+    DEBUG.plpy.info("|_fit_transition_time_|{}|".format(trans_exit_time - trans_enter_time))
 
     return return_state
 
-def fit_multiple_transition_caching(state, dependent_var, independent_var, dependent_var_shape,
+def fit_multiple_transition_caching(dependent_var, independent_var, dependent_var_shape,
                              independent_var_shape, model_architecture,
                              compile_params, fit_params, dist_key, dist_key_mapping,
                              current_seg_id, segments_per_host, images_per_seg,
-                             accessible_gpus_for_seg, prev_serialized_weights,
+                             accessible_gpus_for_seg, serialized_weights,
                              is_final_training_call, custom_function_map=None, **kwargs):
     """
     This transition function is called when caching is called for
     madlib_keras_fit_multiple_model().
-    The input params: dependent_var, independent_var are passed in
-    as None and dependent_var_shape, independent_var_shape as [0]
-    for all hops except the very first hop
+    The input params: dependent_var, independent_var,
+    dependent_var_shape and independent_var_shape are passed
+    in as None for all hops except the very first hop
     Some things to note in this function are:
-    - prev_serialized_weights can be passed in as None for the
+    - weights can be passed in as None for the
       very first hop and the final training call
     - x_train, y_train and cache_set is cleared from GD for
-      final_training_call = TRUE
+      is_final_training_call = True
     """
-    if not state:
-        agg_image_count = 0
-    else:
-        agg_image_count = float(state)
-
     GD = kwargs['GD']
-    is_cache_set = 'cache_set' in GD
+
+    trans_enter_time = time.time()
+
+    if GD_STORE.AGG_IMAGE_COUNT in GD:
+        agg_image_count = GD[GD_STORE.AGG_IMAGE_COUNT]
+    else:
+        agg_image_count = 0
+        GD[GD_STORE.AGG_IMAGE_COUNT] = agg_image_count
 
     # Prepare the data
-    if is_cache_set:
+    if dependent_var_shape is None:
         if 'x_train' not in GD or 'y_train' not in GD:
             plpy.error("cache not populated properly.")
-        total_images = None
         is_last_row = True
+        total_images = None
     else:
-        if not independent_var or not dependent_var:
-            return state
-        if 'x_train' not in GD:
+        if 'x_train' not in GD or 'y_train' not in GD:
             GD['x_train'] = list()
             GD['y_train'] = list()
+
         agg_image_count += independent_var_shape[0]
-        total_images = get_image_count_per_seg_from_array(dist_key_mapping.index(dist_key),
-                                                          images_per_seg)
+        GD[GD_STORE.AGG_IMAGE_COUNT] = agg_image_count
+        total_images = get_image_count_per_seg_from_array(
+            dist_key_mapping.index(dist_key), images_per_seg
+        )
         is_last_row = agg_image_count == total_images
-        if is_last_row:
-            GD['cache_set'] = True
         x_train_current = np_array_float32(independent_var, independent_var_shape)
         y_train_current = np_array_int16(dependent_var, dependent_var_shape)
         GD['x_train'].append(x_train_current)
@@ -609,45 +637,53 @@ def fit_multiple_transition_caching(state, dependent_var, independent_var, depen
 
     # Passed in weights can be None. Irrespective of the weights, we want to populate the cache for the very first hop.
     # But if the weights are None, we do not want to set any model. So early return in that case
-    if prev_serialized_weights is None:
+    if serialized_weights is None:
         if is_final_training_call:
+            del GD[GD_STORE.AGG_IMAGE_COUNT]
             del GD['x_train']
             del GD['y_train']
-            del GD['cache_set']
-        return float(agg_image_count)
+        return None
 
     segment_model = None
     sess = None
     if is_last_row:
         device_name = get_device_name_and_set_cuda_env(accessible_gpus_for_seg[current_seg_id], current_seg_id)
-        segment_model, sess = get_init_model_and_sess(GD, device_name,
-                                                      accessible_gpus_for_seg[current_seg_id],
-                                                      segments_per_host,
-                                                      model_architecture, compile_params,
-                                                      custom_function_map)
-        set_model_weights(segment_model, prev_serialized_weights)
 
-        fit_params = parse_and_validate_fit_params(fit_params)
-        for i in range(len(GD['x_train'])):
-            # Fit segment model on data
-            segment_model.fit(GD['x_train'][i], GD['y_train'][i], **fit_params)
+        with tf.device(device_name):
+            segment_model, sess = get_init_model_and_sess(GD, device_name,
+                                                          accessible_gpus_for_seg[current_seg_id],
+                                                          segments_per_host,
+                                                          model_architecture, compile_params,
+                                                          custom_function_map)
 
+        with tf.device(device_name):
+            set_model_weights(segment_model, serialized_weights)
+            fit_params = parse_and_validate_fit_params(fit_params)
+
+            with tf.device(device_name):
+                for i in range(len(GD['x_train'])):
+                    # Fit segment model on data
+                    segment_model.fit(GD['x_train'][i], GD['y_train'][i], **fit_params)
 
     return_state = get_state_to_return(segment_model, is_last_row, True,
-                                       agg_image_count, total_images)
+                                       agg_image_count)
 
     if is_last_row:
         GD_STORE.clear(GD)
         clear_keras_session(sess)
         if is_final_training_call:
+            if GD_STORE.AGG_IMAGE_COUNT in GD:
+                del GD[GD_STORE.AGG_IMAGE_COUNT]
             del GD['x_train']
             del GD['y_train']
-            del GD['cache_set']
+
+    trans_exit_time = time.time()
+    DEBUG.plpy.info("|_fit_multiple_transition_caching_time_|{}|".format(trans_exit_time - trans_enter_time))
 
     return return_state
 
 def get_state_to_return(segment_model, is_last_row, is_multiple_model, agg_image_count,
-                        total_images):
+                        total_images=None):
     """
     1. For both model averaging fit_transition and fit multiple transition, the
     state only needs to have the image count except for the last row.
@@ -663,17 +699,20 @@ def get_state_to_return(segment_model, is_last_row, is_multiple_model, agg_image
     :param is_last_row: boolean to indicate if last row for that hop
     :param is_multiple_model: boolean
     :param agg_image_count: aggregated image count per hop
-    :param total_images: total images per segment
+    :param total_images: total images per segment (only used for madlib_keras_fit() )
     :return:
     """
-    if is_last_row:
-        updated_model_weights = segment_model.get_weights()
-        if is_multiple_model:
+    if is_multiple_model:
+        if is_last_row:
+            updated_model_weights = segment_model.get_weights()
             new_state = madlib_keras_serializer.serialize_nd_weights(updated_model_weights)
         else:
-            updated_model_weights = [total_images * w for w in updated_model_weights]
-            new_state = madlib_keras_serializer.serialize_state_with_nd_weights(
-                agg_image_count, updated_model_weights)
+            new_state = None
+    elif is_last_row:
+        updated_model_weights = segment_model.get_weights()
+        updated_model_weights = [total_images * w for w in updated_model_weights]
+        new_state = madlib_keras_serializer.serialize_state_with_nd_weights(
+            agg_image_count, updated_model_weights)
     else:
         new_state = float(agg_image_count)
 
@@ -808,8 +847,12 @@ def get_loss_metric_from_keras_eval(schema_madlib, table, compile_params,
                                     accessible_gpus_for_seg, dist_key_mapping, images_per_seg,
                                     should_clear_session=True, custom_function_map=None,
                                     model_table=None, mst_key=None):
+    """
+    This function will call the internal keras evaluate function to get the loss
+    and accuracy of each tuple which then gets averaged to get the final result.
+    """
 
-    dist_key_col = '0' if is_platform_pg() else DISTRIBUTION_KEY_COLNAME
+    dist_key_col = '0' if is_platform_pg() else '__table__.{0}'.format(DISTRIBUTION_KEY_COLNAME)
     gp_segment_id_col = '0' if is_platform_pg() else '__table__.{0}'.format(GP_SEGMENT_ID_COLNAME)
     segments_per_host = get_segments_per_host()
 
@@ -820,10 +863,7 @@ def get_loss_metric_from_keras_eval(schema_madlib, table, compile_params,
         MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL, "_shape")
     ind_shape_col = add_postfix(
         MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL, "_shape")
-    """
-    This function will call the internal keras evaluate function to get the loss
-    and accuracy of each tuple which then gets averaged to get the final result.
-    """
+
     use_gpus = use_gpus if use_gpus else False
 
     eval_sql = """
@@ -861,9 +901,12 @@ def get_loss_metric_from_keras_eval(schema_madlib, table, compile_params,
         evaluate_query = plpy.prepare(eval_sql.format(**locals()), ["bytea", "bytea"])
         res = plpy.execute(evaluate_query, [serialized_weights, custom_function_map])
 
-    loss_metric = res[0]['loss_metric']
-    return loss_metric
 
+    if res is None:
+        plpy.error("Zero rows returned from evaluate query: {}".format(evaluate_query))
+    else:
+        loss_metric = res[0]['loss_metric']
+    return loss_metric
 
 def internal_keras_eval_transition(state, dependent_var, independent_var,
                                    dependent_var_shape, independent_var_shape,
