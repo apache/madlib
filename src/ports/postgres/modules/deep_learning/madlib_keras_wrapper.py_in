@@ -24,14 +24,6 @@ import plpy
 from collections import defaultdict
 from math import ceil
 
-from keras import backend as K
-from keras import utils as keras_utils
-from keras.optimizers import *
-
-import keras.optimizers as opt
-import keras.losses as losses
-import keras.metrics as metrics
-
 import madlib_keras_serializer
 import madlib_keras_gpu_info
 from madlib_keras_custom_function import CustomFunctionSchema
@@ -39,6 +31,15 @@ from madlib_keras_custom_function import update_builtin_metrics
 
 from utilities.utilities import _assert
 from utilities.utilities import is_platform_pg
+
+import tensorflow as tf
+from tensorflow.keras import backend as K
+from tensorflow.keras import utils as keras_utils
+from tensorflow.keras.optimizers import *
+
+import tensorflow.keras.optimizers as opt
+import tensorflow.keras.losses as losses
+import tensorflow.keras.metrics as metrics
 
 CUDA_VISIBLE_DEVICES_KEY = 'CUDA_VISIBLE_DEVICES'
 #######################################################################
@@ -79,12 +80,12 @@ def get_device_name_and_set_cuda_env(gpu_count, seg):
     return device_name
 
 def set_keras_session(device_name, gpu_count, segments_per_host):
-    with K.tf.device(device_name):
+    with tf.device(device_name):
         session = get_keras_session(device_name, gpu_count, segments_per_host)
         K.set_session(session)
 
 def get_keras_session(device_name, gpu_count, segments_per_host):
-    config = K.tf.ConfigProto()
+    config = tf.ConfigProto()
     if gpu_count > 0:
         memory_fraction = get_gpu_memory_fraction(gpu_count, segments_per_host)
         config.gpu_options.allow_growth = False
@@ -251,7 +252,7 @@ def parse_optimizer(compile_dict):
     opt_split = compile_dict['optimizer'].split('(')
     opt_name = opt_split[0]
     optimizers = get_optimizers()
-    _assert(opt_name in optimizers,
+    _assert(opt_name.lower() in [o.lower() for o in optimizers.keys()],
             "model_keras error: invalid optimizer name: {0}".format(opt_name))
 
     # If we use only the optimizer name
@@ -325,7 +326,9 @@ def get_optimizers():
     names = dir(opt)
     for n in names:
         optimizer = eval('opt.' + n)
-        if optimizer.__class__ == type and optimizer.__base__ == opt.Optimizer:
+        if isinstance(optimizer.__class__,type) and \
+            '__module__' in dir(optimizer) and \
+            'tensorflow.python.keras.optimizer' in optimizer.__module__:
             optimizers[n] = optimizer
     return optimizers
 
