@@ -81,7 +81,8 @@ generate_model_configs(
   </dd>
 
   <dt>model_selection_table</dt>
-  <dd>VARCHAR. Model selection table created by this module.  A summary table
+  <dd>VARCHAR. Model selection table created by this module.  If this table already
+  exists, it will be appended to.  A summary table
   named <model_selection_table>_summary is also created.  Contents of both output
   tables are described below.
   </dd>
@@ -119,10 +120,12 @@ generate_model_configs(
   than regular log-based sampling. 
   
   In the case of grid search, omit the sample type and just put the grid points in the list.
-  For custom loss functions or custom metrics,
-  list the custom function name in the usual way, and provide the name of the
+  For custom loss functions, custom metrics, and custom top k categorical accuracy,
+  list the custom function name and provide the name of the
   table where the serialized Python objects reside using the 
-  parameter 'object_table' below. See the examples section later on this page for more examples. 
+  parameter 'object_table' below. See the examples section later on this page.
+  For more information on custom functions, please
+  see <a href="group__grp__custom__function.html">Load Custom Functions</a>. 
   </dd>
 
   <dt>fit_params_grid</dt>
@@ -139,7 +142,6 @@ generate_model_configs(
     } 
   $$
   </pre>
-  See the examples section later on this page for more examples.
   </dd>
 
   <dt>search_type</dt>
@@ -223,7 +225,7 @@ generate_model_configs(
 @anchor load_mst_table
 @par Load Model Selection Table [Deprecated]
 
-This method is deprecated and replaced by the method 'generate_model_configs()' described above.
+This method is deprecated and replaced by the method 'generate_model_configs' described above.
 
 <pre class="syntax">
 load_model_selection_table(
@@ -247,7 +249,7 @@ load_model_selection_table(
   <dt>model_selection_table</dt>
   <dd>VARCHAR. Model selection table created by this utility.  A summary table
   named <model_selection_table>_summary is also created.  Contents of both output
-  tables are the same as described above for the method 'generate_model_configs()'.
+  tables are the same as described above for the method 'generate_model_configs'.
   </dd>
 
   <dt>model_id_list</dt>
@@ -672,10 +674,104 @@ SELECT * FROM mst_table_manual_summary;
 </pre>
 
 -# Custom loss functions and custom metrics.
-TBD
-
+Let's say we have a table 'custom_function_table' that contains a custom loss
+function called 'my_custom_loss' and a custom accuracy function
+called 'my_custom_accuracy' based
+on <a href="group__grp__custom__function.html">Load Custom Functions.</a>
+Generate the model configurations with:
+<pre class="example">
+DROP TABLE IF EXISTS mst_table, mst_table_summary;
+SELECT madlib.generate_model_configs(
+                                        'model_arch_library', -- model architecture table
+                                        'mst_table',          -- model selection table output
+                                         ARRAY[1,2],          -- model ids from model architecture table
+                                         $$
+                                            {'loss': ['my_custom_loss'],
+                                             'optimizer_params_list': [ {'optimizer': ['Adam', 'SGD'], 'lr': [0.001, 0.01]} ],
+                                             'metrics': ['my_custom_accuracy']}
+                                         $$,                  -- compile_param_grid
+                                         $$
+                                         { 'batch_size': [64, 128],
+                                           'epochs': [10]
+                                         }
+                                         $$,                  -- fit_param_grid
+                                         'grid',              -- search_type
+                                         NULL,                -- num_configs
+                                         NULL,                -- random_state
+                                         'custom_function_table'  -- table with custom functions
+                                         );
+SELECT * FROM mst_table ORDER BY mst_key;
+</pre>
+<pre class="result">
+ mst_key | model_id |                                 compile_params                                  |        fit_params
+---------+----------+---------------------------------------------------------------------------------+--------------------------
+       1 |        1 | optimizer='Adam(lr=0.001)',metrics=['my_custom_accuracy'],loss='my_custom_loss' | epochs=10,batch_size=64
+       2 |        1 | optimizer='Adam(lr=0.001)',metrics=['my_custom_accuracy'],loss='my_custom_loss' | epochs=10,batch_size=128
+       3 |        1 | optimizer='SGD(lr=0.001)',metrics=['my_custom_accuracy'],loss='my_custom_loss'  | epochs=10,batch_size=64
+       4 |        1 | optimizer='SGD(lr=0.001)',metrics=['my_custom_accuracy'],loss='my_custom_loss'  | epochs=10,batch_size=128
+       5 |        1 | optimizer='Adam(lr=0.01)',metrics=['my_custom_accuracy'],loss='my_custom_loss'  | epochs=10,batch_size=64
+       6 |        1 | optimizer='Adam(lr=0.01)',metrics=['my_custom_accuracy'],loss='my_custom_loss'  | epochs=10,batch_size=128
+       7 |        1 | optimizer='SGD(lr=0.01)',metrics=['my_custom_accuracy'],loss='my_custom_loss'   | epochs=10,batch_size=64
+       8 |        1 | optimizer='SGD(lr=0.01)',metrics=['my_custom_accuracy'],loss='my_custom_loss'   | epochs=10,batch_size=128
+       9 |        2 | optimizer='Adam(lr=0.001)',metrics=['my_custom_accuracy'],loss='my_custom_loss' | epochs=10,batch_size=64
+      10 |        2 | optimizer='Adam(lr=0.001)',metrics=['my_custom_accuracy'],loss='my_custom_loss' | epochs=10,batch_size=128
+      11 |        2 | optimizer='SGD(lr=0.001)',metrics=['my_custom_accuracy'],loss='my_custom_loss'  | epochs=10,batch_size=64
+      12 |        2 | optimizer='SGD(lr=0.001)',metrics=['my_custom_accuracy'],loss='my_custom_loss'  | epochs=10,batch_size=128
+      13 |        2 | optimizer='Adam(lr=0.01)',metrics=['my_custom_accuracy'],loss='my_custom_loss'  | epochs=10,batch_size=64
+      14 |        2 | optimizer='Adam(lr=0.01)',metrics=['my_custom_accuracy'],loss='my_custom_loss'  | epochs=10,batch_size=128
+      15 |        2 | optimizer='SGD(lr=0.01)',metrics=['my_custom_accuracy'],loss='my_custom_loss'   | epochs=10,batch_size=64
+      16 |        2 | optimizer='SGD(lr=0.01)',metrics=['my_custom_accuracy'],loss='my_custom_loss'   | epochs=10,batch_size=128
+(16 rows)
+</pre>
+Similarly, if you created a custom top k categorical accuracy function 'top_3_accuracy'
+in <a href="group__grp__custom__function.html">Load Custom Functions</a>
+you can generate the model configurations as:
+<pre class="example">
+DROP TABLE IF EXISTS mst_table, mst_table_summary;
+SELECT madlib.generate_model_configs(
+                                        'model_arch_library', -- model architecture table
+                                        'mst_table',          -- model selection table output
+                                         ARRAY[1,2],          -- model ids from model architecture table
+                                         $$
+                                            {'loss': ['categorical_crossentropy'],
+                                             'optimizer_params_list': [ {'optimizer': ['Adam', 'SGD'], 'lr': [0.001, 0.01]} ],
+                                             'metrics': ['top_3_accuracy']}
+                                         $$,                  -- compile_param_grid
+                                         $$
+                                         { 'batch_size': [64, 128],
+                                           'epochs': [10]
+                                         }
+                                         $$,                  -- fit_param_grid
+                                         'grid',              -- search_type
+                                         NULL,                -- num_configs
+                                         NULL,                -- random_state
+                                         'custom_function_table'  -- table with custom functions
+                                         );
+SELECT * FROM mst_table ORDER BY mst_key;
+</pre>
+<pre class="result">
+ mst_key | model_id |                                 compile_params                                  |        fit_params
+---------+----------+---------------------------------------------------------------------------------+--------------------------
+       1 |        1 | optimizer='Adam(lr=0.001)',metrics=['top_3_accuracy'],loss='categorical_crossentropy' | epochs=10,batch_size=64
+       2 |        1 | optimizer='Adam(lr=0.001)',metrics=['top_3_accuracy'],loss='categorical_crossentropy' | epochs=10,batch_size=128
+       3 |        1 | optimizer='SGD(lr=0.001)',metrics=['top_3_accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=64
+       4 |        1 | optimizer='SGD(lr=0.001)',metrics=['top_3_accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=128
+       5 |        1 | optimizer='Adam(lr=0.01)',metrics=['top_3_accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=64
+       6 |        1 | optimizer='Adam(lr=0.01)',metrics=['top_3_accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=128
+       7 |        1 | optimizer='SGD(lr=0.01)',metrics=['top_3_accuracy'],loss='categorical_crossentropy'   | epochs=10,batch_size=64
+       8 |        1 | optimizer='SGD(lr=0.01)',metrics=['top_3_accuracy'],loss='categorical_crossentropy'   | epochs=10,batch_size=128
+       9 |        2 | optimizer='Adam(lr=0.001)',metrics=['top_3_accuracy'],loss='categorical_crossentropy' | epochs=10,batch_size=64
+      10 |        2 | optimizer='Adam(lr=0.001)',metrics=['top_3_accuracy'],loss='categorical_crossentropy' | epochs=10,batch_size=128
+      11 |        2 | optimizer='SGD(lr=0.001)',metrics=['top_3_accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=64
+      12 |        2 | optimizer='SGD(lr=0.001)',metrics=['top_3_accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=128
+      13 |        2 | optimizer='Adam(lr=0.01)',metrics=['top_3_accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=64
+      14 |        2 | optimizer='Adam(lr=0.01)',metrics=['top_3_accuracy'],loss='categorical_crossentropy'  | epochs=10,batch_size=128
+      15 |        2 | optimizer='SGD(lr=0.01)',metrics=['top_3_accuracy'],loss='categorical_crossentropy'   | epochs=10,batch_size=64
+      16 |        2 | optimizer='SGD(lr=0.01)',metrics=['top_3_accuracy'],loss='categorical_crossentropy'   | epochs=10,batch_size=128
+(16 rows)
+</pre>
 -# <b>[Deprecated]</b> Load model selection table.  This method is replaced 
-by the 'generate_model_configs()' method described above.
+by the 'generate_model_configs' method described above.
 Select the model(s) from the model
 architecture table that you want to run, along with the compile and
 fit parameters.  Unique combinations will be created:
