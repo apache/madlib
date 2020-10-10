@@ -51,6 +51,9 @@ from madlib_keras_helper import *
 import time
 
 NUM_CLASSES_COLNAME = "num_classes"
+class DistributionRulesOptions:
+    ALL_SEGMENTS = 'all_segments'
+    GPU_SEGMENTS = 'gpu_segments'
 
 class InputDataPreprocessorDL(object):
     def __init__(self, schema_madlib, source_table, output_table,
@@ -64,12 +67,12 @@ class InputDataPreprocessorDL(object):
         self.buffer_size = buffer_size
         self.normalizing_const = normalizing_const
         self.num_classes = num_classes
-        self.distribution_rules = distribution_rules if distribution_rules else 'all_segments'
+        self.distribution_rules = distribution_rules.lower() if distribution_rules else DistributionRulesOptions.ALL_SEGMENTS
         self.module_name = module_name
         self.output_summary_table = None
         self.dependent_vartype = None
         self.independent_vartype = None
-        self.gpu_config = '$__madlib__$all_segments$__madlib__$'
+        self.gpu_config = '$__madlib__${0}$__madlib__$'.format(DistributionRulesOptions.ALL_SEGMENTS)
         if self.output_table:
             self.output_summary_table = add_postfix(self.output_table, "_summary")
 
@@ -269,7 +272,7 @@ class InputDataPreprocessorDL(object):
 
         if is_platform_pg():
             # used later for writing summary table
-            self.distribution_rules = '$__madlib__$all_segments$__madlib__$'
+            self.distribution_rules = '$__madlib__${0}$__madlib__$'.format(DistributionRulesOptions.ALL_SEGMENTS)
 
             #
             # For postgres, we just need 3 simple queries:
@@ -320,14 +323,14 @@ class InputDataPreprocessorDL(object):
         #   it's to be spread evenly across all segments, we still
         #   need to do some extra work to ensure that happens.
 
-        if self.distribution_rules == 'all_segments':
+        if self.distribution_rules == DistributionRulesOptions.ALL_SEGMENTS:
             all_segments = True
-            self.distribution_rules = '$__madlib__$all_segments$__madlib__$'
+            self.distribution_rules = '$__madlib__${0}$__madlib__$'.format(DistributionRulesOptions.ALL_SEGMENTS)
             num_segments = get_seg_number()
         else:
             all_segments = False
 
-        if self.distribution_rules == 'gpu_segments':
+        if self.distribution_rules == DistributionRulesOptions.GPU_SEGMENTS:
             #TODO can we reuse the function `get_accessible_gpus_for_seg` from
             # madlib_keras_helper
             gpu_info_table = unique_string(desp='gpu_info')
@@ -620,7 +623,7 @@ class InputDataPreprocessorDL(object):
                        normalizing_const_colname=NORMALIZING_CONST_COLNAME,
                        num_classes_colname=NUM_CLASSES_COLNAME,
                        internal_gpu_config=INTERNAL_GPU_CONFIG,
-                       distribution_rules=DISTRIBUTION_RULES,
+                       distribution_rules=DISTRIBUTION_RULES_COLNAME,
                        FLOAT32_SQL_TYPE=FLOAT32_SQL_TYPE)
         plpy.execute(query)
 
