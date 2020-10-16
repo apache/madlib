@@ -625,9 +625,9 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.hyperband_schedule(
       eta                   INTEGER DEFAULT 3,
       skip_last             INTEGER DEFAULT 0
 ) RETURNS VOID AS $$
-    PythonFunctionBodyOnly(`deep_learning', `madlib_keras_automl')
+    PythonFunctionBodyOnly(`deep_learning', `madlib_keras_automl_hyperband')
     with AOControl(False) and MinWarning('warning'):
-        schedule_loader = madlib_keras_automl.HyperbandSchedule(schedule_table, r, eta, skip_last)
+        schedule_loader = madlib_keras_automl_hyperband.HyperbandSchedule(schedule_table, r, eta, skip_last)
         schedule_loader.load()
 $$ LANGUAGE plpythonu VOLATILE
               m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
@@ -650,13 +650,15 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.madlib_keras_automl(
     name                           VARCHAR DEFAULT NULL,
     description                    VARCHAR DEFAULT NULL
 ) RETURNS VOID AS $$
-    PythonFunctionBodyOnly(`deep_learning', `madlib_keras_automl')
+if automl_method is None or automl_method.lower() == 'hyperband':
+    PythonFunctionBodyOnly(`deep_learning', `madlib_keras_automl_hyperband')
     with AOControl(False) and MinWarning('warning'):
-        if automl_method is None or automl_method.lower() == 'hyperband':
-            schedule_loader = madlib_keras_automl.AutoMLHyperband(**globals())
-        elif automl_method.lower() == 'hyperopt':
-            schedule_loader = madlib_keras_automl.AutoMLHyperopt(**globals())
-        else:
-            plpy.error("madlib_keras_automl: The chosen automl method must be 'hyperband' or 'hyperopt'")
+        schedule_loader = madlib_keras_automl_hyperband.AutoMLHyperband(**globals())
+elif automl_method.lower() == 'hyperopt':
+    PythonFunctionBodyOnly(`deep_learning', `madlib_keras_automl_hyperopt')
+    with AOControl(False) and MinWarning('warning'):
+        schedule_loader = madlib_keras_automl_hyperopt.AutoMLHyperopt(**globals())
+else:
+    plpy.error("madlib_keras_automl: The chosen automl method must be 'hyperband' or 'hyperopt'")
 $$ LANGUAGE plpythonu VOLATILE
     m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
