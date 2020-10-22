@@ -30,6 +30,7 @@ from madlib_keras_fit_multiple_model import FitMultipleModel
 from madlib_keras_model_selection import MstSearch, ModelSelectionSchema
 from keras_model_arch_table import ModelArchSchema
 from utilities.validate_args import table_exists, drop_tables
+from utilities.validate_args import quote_ident
 
 
 class AutoMLSchema:
@@ -183,7 +184,11 @@ class KerasAutoML():
         self.compile_params_grid = compile_params_grid
         self.fit_params_grid = fit_params_grid
 
+        if object_table is not None:
+            object_table = "{0}.{1}".format(schema_madlib, quote_ident(object_table))
+
         MstLoaderInputValidator(
+            schema_madlib=self.schema_madlib,
             model_arch_table=self.model_arch_table,
             model_selection_table=self.model_selection_table,
             model_selection_summary_table=self.model_selection_summary_table,
@@ -303,9 +308,15 @@ class KerasAutoML():
             r = self.R * math.pow(self.eta, -s) # initial number of iterations to run configurations for
             initial_vals[s] = (n, int(round(r)))
         self.start_training_time = self.get_current_timestamp()
-        random_search = MstSearch(self.model_arch_table, self.model_selection_table, self.model_id_list,
-                                  self.compile_params_grid, self.fit_params_grid, 'random',
-                                  sum([initial_vals[k][0] for k in initial_vals][self.skip_last:]), self.random_state,
+        random_search = MstSearch(self.schema_madlib,
+                                  self.model_arch_table,
+                                  self.model_selection_table,
+                                  self.model_id_list,
+                                  self.compile_params_grid,
+                                  self.fit_params_grid,
+                                  'random',
+                                  sum([initial_vals[k][0] for k in initial_vals][self.skip_last:]),
+                                  self.random_state,
                                   self.object_table)
         random_search.load() # for populating mst tables
 
@@ -535,7 +546,7 @@ class KerasAutoML():
                     $MAD${self.random_state}$MAD$::TEXT AS random_state,
                     $MAD${self.object_table}$MAD$::TEXT AS object_table,
                     {self.use_gpus} AS use_gpus,
-                    (SELECT metrics_compute_frequency FROM {model_training.model_summary_table})::INTEGER 
+                    (SELECT metrics_compute_frequency FROM {model_training.model_summary_table})::INTEGER
                     AS metrics_compute_frequency,
                     $MAD${self.name}$MAD$::TEXT AS name,
                     $MAD${self.description}$MAD$::TEXT AS description,
@@ -544,9 +555,9 @@ class KerasAutoML():
                     (SELECT madlib_version FROM {model_training.model_summary_table}) AS madlib_version,
                     (SELECT num_classes FROM {model_training.model_summary_table})::INTEGER AS num_classes,
                     (SELECT class_values FROM {model_training.model_summary_table}) AS class_values,
-                    (SELECT dependent_vartype FROM {model_training.model_summary_table}) 
+                    (SELECT dependent_vartype FROM {model_training.model_summary_table})
                     AS dependent_vartype,
-                    (SELECT normalizing_const FROM {model_training.model_summary_table}) 
+                    (SELECT normalizing_const FROM {model_training.model_summary_table})
                     AS normalizing_const
             """.format(self=self, model_training=model_training))
 
