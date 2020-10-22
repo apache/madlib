@@ -21,9 +21,13 @@ import plpy
 from utilities.control import MinWarning
 from utilities.utilities import _assert
 from utilities.utilities import get_col_name_type_sql_string
+from utilities.utilities import current_user
+from utilities.utilities import is_superuser
+from utilities.utilities import get_schema
 from utilities.validate_args import columns_missing_from_table
 from utilities.validate_args import input_tbl_valid
 from utilities.validate_args import quote_ident
+from utilities.validate_args import unquote_ident
 from utilities.validate_args import table_exists
 
 module_name = 'Keras Custom Function'
@@ -60,46 +64,54 @@ def _validate_object(object, **kwargs):
     except Exception as e:
         plpy.error("{0}: Invalid function object".format(module_name, e))
 
-def load_custom_function(object_table, object, name, description=None, **kwargs):
-    object_table = quote_ident(object_table)
+@MinWarning("error")
+def load_custom_function(schema_madlib, object_table, object, name, description=None, **kwargs):
+
+    if object_table is not None:
+        object_table = "{0}.{1}".format(schema_madlib, quote_ident(object_table))
     _validate_object(object)
     _assert(name is not None,
             "{0}: function name cannot be NULL!".format(module_name))
-    if not table_exists(object_table):
-        col_defs = get_col_name_type_sql_string(CustomFunctionSchema.col_names,
-                                                CustomFunctionSchema.col_types)
-
-        sql = "CREATE TABLE {0} ({1}, PRIMARY KEY({2}))" \
-            .format(object_table, col_defs, CustomFunctionSchema.FN_NAME)
-
-        plpy.execute(sql, 0)
-        # Using plpy.notice here as this function can be called:
-        # 1. Directly by the user, we do want to display to the user
-        #    if we create a new table or later the function name that
-        #    is added to the table
-        # 2. From load_top_k_accuracy_function, since plpy.info
-        #    displays the query context when called from the function
-        #    there is a very verbose output and cannot be suppressed with
-        #    MinWarning decorator as INFO is always displayed irrespective
-        #    of what the decorator sets the client_min_messages to.
-        #    Therefore, instead we print this information as a NOTICE
-        #    when called directly by the user and suppress it by setting
-        #    MinWarning decorator to 'error' level in the calling function.
-        plpy.notice("{0}: Created new custom function table {1}." \
-                  .format(module_name, object_table))
-    else:
-        missing_cols = columns_missing_from_table(object_table,
-                                                  CustomFunctionSchema.col_names)
-        if len(missing_cols) > 0:
-            plpy.error("{0}: Invalid custom function table {1},"
-                       " missing columns: {2}".format(module_name,
-                                                      object_table,
-                                                      missing_cols))
-
-    insert_query = plpy.prepare("INSERT INTO {0} "
-                                "VALUES(DEFAULT, $1, $2, $3);".format(object_table),
-                                CustomFunctionSchema.col_types[1:])
+    _assert(is_superuser(current_user()), "DL: The user has to have admin "\
+        "privilages to load a custom function")
     try:
+        if not table_exists(object_table):
+            col_defs = get_col_name_type_sql_string(CustomFunctionSchema.col_names,
+                                                    CustomFunctionSchema.col_types)
+
+            sql = """CREATE TABLE {object_table}
+                                  ({col_defs}, PRIMARY KEY({fn_name}))
+                """.format(fn_name=CustomFunctionSchema.FN_NAME,**locals())
+
+            plpy.execute(sql, 0)
+            # Using plpy.notice here as this function can be called:
+            # 1. Directly by the user, we do want to display to the user
+            #    if we create a new table or later the function name that
+            #    is added to the table
+            # 2. From load_top_k_accuracy_function, since plpy.info
+            #    displays the query context when called from the function
+            #    there is a very verbose output and cannot be suppressed with
+            #    MinWarning decorator as INFO is always displayed irrespective
+            #    of what the decorator sets the client_min_messages to.
+            #    Therefore, instead we print this information as a NOTICE
+            #    when called directly by the user and suppress it by setting
+            #    MinWarning decorator to 'error' level in the calling function.
+            plpy.notice("{0}: Created new custom function table {1}." \
+                      .format(module_name, object_table))
+            plpy.execute("GRANT SELECT ON {0} TO PUBLIC".format(object_table))
+        else:
+            missing_cols = columns_missing_from_table(object_table,
+                                                      CustomFunctionSchema.col_names)
+            if len(missing_cols) > 0:
+                plpy.error("{0}: Invalid custom function table {1},"
+                           " missing columns: {2}".format(module_name,
+                                                          object_table,
+                                                          missing_cols))
+
+        insert_query = plpy.prepare("INSERT INTO {object_table} "
+                                    "VALUES(DEFAULT, $1, $2, $3);".format(**locals()),
+                                    CustomFunctionSchema.col_types[1:])
+
         plpy.execute(insert_query,[name, description, object], 0)
     # spiexceptions.UniqueViolation is only supported for PG>=9.2. For
     # GP5(based of PG8.4) it cannot be used. Therefore, checking exception
@@ -112,8 +124,16 @@ def load_custom_function(object_table, object, name, description=None, **kwargs)
     plpy.notice("{0}: Added function {1} to {2} table".
               format(module_name, name, object_table))
 
-def delete_custom_function(object_table, id=None, name=None, **kwargs):
-    object_table = quote_ident(object_table)
+@MinWarning("error")
+def delete_custom_function(schema_madlib, object_table, id=None, name=None, **kwargs):
+
+    if object_table is not None:
+        schema_name = get_schema(object_table)
+        if schema_name is None:
+            object_table = "{0}.{1}".format(schema_madlib, quote_ident(object_table))
+        elif schema_name != schema_madlib:
+            plpy.error("DL: Custom function table has to be in the {0} schema".format(schema_madlib))
+
     input_tbl_valid(object_table, "Keras Custom Funtion")
     _assert(id is not None or name is not None,
             "{0}: function id/name cannot be NULL! " \
@@ -127,12 +147,12 @@ def delete_custom_function(object_table, id=None, name=None, **kwargs):
 
     if id is not None:
         sql = """
-               DELETE FROM {0} WHERE {1}={2}
-              """.format(object_table, CustomFunctionSchema.FN_ID, id)
+               DELETE FROM {object_table} WHERE {fn_id}={id}
+              """.format(fn_id=CustomFunctionSchema.FN_ID,**locals())
     else:
         sql = """
-               DELETE FROM {0} WHERE {1}=$${2}$$
-              """.format(object_table, CustomFunctionSchema.FN_NAME, name)
+               DELETE FROM {object_table} WHERE {fn_name}=$${name}$$
+              """.format(fn_name=CustomFunctionSchema.FN_NAME,**locals())
     res = plpy.execute(sql, 0)
 
     if res.nrows() > 0:
@@ -141,7 +161,8 @@ def delete_custom_function(object_table, id=None, name=None, **kwargs):
     else:
         plpy.error("{0}: Object id {1} not found".format(module_name, id))
 
-    sql = "SELECT {0} FROM {1}".format(CustomFunctionSchema.FN_ID, object_table)
+    sql = "SELECT {0} FROM {1}".format(
+        CustomFunctionSchema.FN_ID, object_table)
     res = plpy.execute(sql, 0)
     if not res:
         plpy.notice("{0}: Dropping empty custom keras function table " \
