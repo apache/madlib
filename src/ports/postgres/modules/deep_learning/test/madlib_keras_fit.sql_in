@@ -24,6 +24,11 @@
              `\1../../modules/deep_learning/test/madlib_keras_cifar.setup.sql_in'
 )
 
+\i m4_regexp(MODULE_PATHNAME,
+             `\(.*\)libmadlib\.so',
+             `\1../../modules/deep_learning/test/madlib_keras_iris.setup.sql_in'
+)
+
 m4_include(`SQLCommon.m4')
 
 -- Please do not break up the compile_params string
@@ -421,3 +426,40 @@ SELECT assert(trap_error($TRAP$SELECT madlib_keras_fit(
     $$ batch_size=2, epochs=1, verbose=0 $$::text,
     3);$TRAP$) = 1,
     'Object table not specified for custom function in compile_params.');
+
+-- Test GD is cleared
+-- Setup
+CREATE OR REPLACE FUNCTION get_gd_keys_len()
+RETURNS INTEGER AS
+$$
+return len(GD.keys())
+$$ LANGUAGE plpythonu;
+
+-- Test GD is cleared after a successful run
+-- This test calls fit with different models which will run in the same segment slice(process).
+-- This test will fail if GD is not cleared properly.
+DROP TABLE IF EXISTS keras_saved_out, keras_saved_out_summary;
+SELECT madlib_keras_fit(
+    'cifar_10_sample_batched',
+    'keras_saved_out',
+    'model_arch',
+    1,
+    $$ optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['mae']$$::text,
+    $$ batch_size=2, epochs=1, verbose=0 $$::text,
+    3,
+    NULL,
+    'cifar_10_sample_val');
+SELECT assert(sum(get_gd_keys_len()) = 0, 'GD was not cleared properly!') m4_ifdef(<!__POSTGRESQL__!>, <!!>, <! FROM gp_dist_random('gp_id') !>);
+
+DROP TABLE if exists iris_model, iris_model_summary;
+SELECT madlib_keras_fit(
+	'iris_data_packed',
+	'iris_model',
+	'iris_model_arch',
+	1,
+	$$loss='categorical_crossentropy', optimizer='Adam(lr=0.01)', metrics=['accuracy']$$,
+  $$batch_size=16, epochs=1$$,
+	3,
+	FALSE
+);
+SELECT assert(sum(get_gd_keys_len()) = 0, 'GD was not cleared properly!') m4_ifdef(<!__POSTGRESQL__!>, <!!>, <! FROM gp_dist_random('gp_id') !>);
