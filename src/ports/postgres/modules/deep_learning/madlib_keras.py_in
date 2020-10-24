@@ -210,9 +210,29 @@ def fit(schema_madlib, source_table, model, model_arch_table,
     for i in range(1, num_iterations+1):
         start_iteration = time.time()
         is_final_iteration = (i == num_iterations)
-        serialized_weights = plpy.execute(run_training_iteration,
-                                        [serialized_weights, custom_function_map]
-                                        )[0]['iteration_result']
+
+        try:
+            serialized_weights = plpy.execute(run_training_iteration,
+                                            [serialized_weights, custom_function_map]
+                                            )[0]['iteration_result']
+        except plpy.SPIError as e:
+            msg = e.message
+            if 'TransAggDetail' in msg:
+                e.message, detail = msg.split('TransAggDetail')
+            elif 'MergeAggDetail' in msg:
+                e.message, detail = msg.split('MergeAggDetail')
+            elif 'FinalAggDetail' in msg:
+                e.message, detail = msg.split('FinalAggDetail')
+            else:
+                raise e
+            # Extract Traceback from segment, add to
+            #  DETAIL of error message on coordinator
+            e.args = (e.message,)
+            spidata = list(e.spidata)
+            spidata[1] = detail
+            e.spidata = tuple(spidata)
+            raise e
+
         end_iteration = time.time()
         info_str = "\tTime for training in iteration {0}: {1} sec".format(i,
             end_iteration - start_iteration)
