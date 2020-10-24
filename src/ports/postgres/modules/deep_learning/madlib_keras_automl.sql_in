@@ -20,7 +20,7 @@
  *
  * @file madlib_keras_automl.sql_in
  *
- * @brief SQL functions for training with AutoML methods
+ * @brief SQL functions for training with autoML methods
  * @date August 2020
  *
  *
@@ -33,29 +33,44 @@ m4_include(`SQLCommon.m4')
 @addtogroup grp_automl
 
 
-@brief Functions to run automated machine learning (AutoML) algorithms to automate
-and speed-up the model selection and training processes for model architecture search,
-hyperparameter tuning, and model evaluation.
+@brief Functions to run automated machine learning (autoML) methods for
+model architecture search and hyperparameter tuning.
 
 \warning <em> This MADlib method is still in early stage development.
 Interface and implementation are subject to change. </em>
 
 <div class="toc"><b>Contents</b><ul>
 <li class="level1"><a href="#madlib_keras_automl">AutoML Function</a></li>
-<li class="level1"><a href="#hyperband_schedule">Hyperband Schedule</a></li>
+<li class="level1"><a href="#hyperband_schedule">Print Hyperband Schedule</a></li>
 <li class="level1"><a href="#example">Examples</a></li>
 <li class="level1"><a href="#notes">Notes</a></li>
+<li class="level1"><a href="#literature">Literature</a></li>
 <li class="level1"><a href="#related">Related Topics</a></li>
 </ul></div>
 
-This module sets up the AutoML algorithms to automate and accelerate
-the model selection and training processes, involving hyperparameter optimization,
-model architecture search, and model training.
+This module contains automated machine learning (autoML) methods for
+model architecture search and hyperparameter tuning.  The goal of autoML when
+training deep nets is to reduce the amount of hand-tuning by data scientists
+to produce a model of acceptable accuracy, compared to manual
+methods like grid or random search.  The two autoML methods implemented
+here are Hyperband and Hyperopt.  If you want to use grid or random search,
+please refer to <a href="group__grp__keras__setup__model__selection.html">Generate
+Model Configurations</a>.
 
-The module also has a a utility function for viewing the Hyperband schedule of
-evaluating configurations for use by the Keras AutoML of MADlib.
-By configuration we mean both hyperparameter tuning and
-model architecture search.
+Hyperband is an effective model selection algorithm that utilizes the idea
+of successive halving. It accelerates random search through adaptive resource allocation
+and early stopping [1].  The implementation here is designed to
+keep MPP database cluster resources as busy as possible when executing
+the Hyperband schedule.
+
+There is also a utility function for printing out the Hyperband schedule
+for a given set of input parameters, to give you
+a sense of how long a run might take before starting.
+
+Hyperopt is meta-modeling approach for automated hyperparameter optimization [2].
+It intelligently explores the search space while narrowing down to the best
+estimated parameters.  Within Hyperopt we support random search and Tree
+of Parzen Estimators (TPE) approach.
 
 @anchor madlib_keras_automl
 @par AutoML
@@ -88,26 +103,26 @@ madlib_keras_automl(
   This is the name of the output table from the image preprocessor. Independent
   and dependent variables are specified in the preprocessor
   step which is why you do not need to explictly state
-  them here as part of the fit function. The configurations would be evaluated on the basis the training loss,
-  unless a validation table is specified below.
+  them here. Configurations will be evaluated by the autoML methods on the basis of training loss,
+  unless a validation table is specified below, in which case validation loss will be used.
   </dd>
 
   <dt>model_output_table</dt>
   <dd>TEXT. Name of the output table containing the
   multiple models created.
-  @note pg_temp is not allowed as an output table schema for fit multiple.
+  @note 'pg_temp' is not allowed as an output table schema.
   Details of output tables are shown below.
   </dd>
 
   <dt>model_arch_table</dt>
   <dd>VARCHAR. Table containing model architectures and weights.
   For more information on this table
-  refer to <a href="group__grp__keras__model__arch.html">Load Model</a>.
+  refer to <a href="group__grp__keras__model__arch.html">Load Models</a>.
   </dd>
 
   <dt>model_selection_table</dt>
-  <dd>VARCHAR. Model selection table created by this utility.  A summary table
-  named <model_selection_table>_summary is also created.  Contents of both output
+  <dd>VARCHAR. Model selection table created by this method.  A summary table
+  named <model_selection_table>_summary is also created.  Contents of both of these
   tables are described below.
   </dd>
 
@@ -115,7 +130,7 @@ madlib_keras_automl(
   <dd>INTEGER[]. Array of model IDs from the 'model_arch_table' to be included
   in the run combinations.  For hyperparameter search, this will typically be
   one model ID.  For model architecture search, this will be the different model IDs
-  that you want to test.
+  that you want to try.
   </dd>
 
   <dt>compile_params_grid</dt>
@@ -141,13 +156,13 @@ madlib_keras_automl(
   The following types of sampling are supported:  'linear', 'log' and 'log_near_one'.
   The 'log_near_one' sampling is useful for exponentially weighted average types of parameters like momentum,
   which are very sensitive to changes near 1.  It has the effect of producing more values near 1
-  than regular log-based sampling.
+  than regular log-based sampling. However, 'log_near_one' is only supported
+  for Hyperband, not for Hyperopt.
 
-  In the case of grid search, omit the sample type and just put the grid points in the list.
-  For custom loss functions or custom metrics,
-  list the custom function name in the usual way, and provide the name of the
+  For custom loss functions, metrics or top k categorical accuracy,
+  list the custom function name and provide the name of the
   table where the serialized Python objects reside using the
-  parameter 'object_table' below. See the examples section later on this page for more examples.
+  parameter 'object_table' below.
   </dd>
 
   <dt>fit_params_grid</dt>
@@ -164,47 +179,61 @@ madlib_keras_automl(
     }
   $$
   </pre>
-  See the examples section later on this page for more examples.
   </dd>
 
   <dt>automl_method (optional)</dt>
-  <dd>VARCHAR, default 'hyperband'. Name of the automl algorithm to run.
-  Can be either 'hyperband' or hyperopt'. Prefixing is not supported but arg value can be case insensitive.
+  <dd>VARCHAR, default 'hyperband'. Name of the autoML algorithm to run.
+  Can be either 'hyperband' or hyperopt' (case insensitive).
   </dd>
 
   <dt>automl_params (optional)</dt>
-  <dd>VARCHAR, default 'R=6, eta=3, skip_last=0' (for Hyperband). Parameters for the chosen automl method in a
-  comma-separated string of key-value pairs. For eg - 'num_configs=20, num_iterations=5, algorithm=tpe' for Hyperopt
-  Hyperband params are:
-  R - the maximum amount of resources/iterations allocated to a single configuration
-  in a round of hyperband,
-  eta - factor controlling the proportion of configurations discarded in each
-  round of successive halving,
-  skip_last - number of last diagonal brackets to skip running
-  in the algorithm.
-  We encourage setting an low R value (i.e. 2 to 10), or a high R value and a high skip_last value to evaluate
-  a variety of configurations with decent number of iterations. See the description below for details.
-  Hyperopt params are:
-  num_configs - total number of model configurations to evaluate,
-  num_iterations - fixed number of iterations for evaluating each model configurations,
-  algorithm - name of algorithm to explore search space in hyperopt ('rand', 'tpe', 'atpe').
-  </dd>
+  <dd>VARCHAR, default depends on the method. Parameters for the chosen autoML method in a
+  comma-separated string of key-value pairs.  Please refer to references [1] and [2] for
+  more details on the definition of these parameters.
+
+  <DL class="arglist">
+  <DT><i>Hyperband params:</i></dt><dd></dd>
+  <DT>R</dt>
+  <DD>Default: 6. Maximum amount of resources (i.e., iterations) to allocate to a single configuration
+  in a round of Hyperband.
+  </DD>
+  <DT>eta</DT>
+  <DD>Default: 3. Controls the proportion of configurations discarded in each
+  round of successive halving. For example, for eta=3 will keep the best 1/3 the
+  configurations for the next round.</DD>
+  <DT>skip_last</DT>
+  <DD>Default: 0. The number of last rounds to skip. For example, 'skip_last=1'
+  will skip the last round (i.e., last entry in each bracket), which is standard random
+  search and can be expensive when run for the total R iterations.</DD>
+  </DL>
+
+  <DL class="arglist">
+  <DT><i>Hyperopt params:</i></dt><dd></dd>
+  <DT>num_configs</dt>
+  <DD>Default: 20. Number of trials to evaluate.
+  </DD>
+  <DT>num_iterations</DT>
+  <DD>Default: 5. Number of iterations to run for each trial.</DD>
+  <DT>algorithm</DT>
+  <DD>Default: 'tpe'. Name of the algorithm to explore the search space in Hyperopt ('rand' or 'tpe').</DD>
+  </DL>
 
   <dt>random_state (optional)</dt>
-  <dd>INTEGER, default: NULL.  Pseudo random number generator
-  state used for random uniform sampling from lists of possible
-  values. Pass an integer to evaluate a fixed set of configurations.
-
+  <dd>INTEGER, default NULL. Pseudo random number generator state used for random
+  uniform sampling from lists of possible values. Pass an integer to evaluate a fixed set of configurations.
+  </dd>
   @note
-    Specifying a random state doesn't not guarantee result reproducibility of the best configuration or the best
-    train/validation accuracy/loss. It guarantees that the same set of configurations will be chosen for evaluation.
-
+    Specifying a random state does not guarantee result reproducibility
+    of the best configuration or the best
+    train/validation accuracy/loss. It only guarantees that
+    the same set of configurations will be chosen for evaluation.
   </dd>
 
   <dt>object_table (optional)</dt>
   <dd>VARCHAR, default: NULL. Name of the table containing
-  Python objects in the case that custom loss functions or
-  custom metrics are specified in the 'compile_params_grid'.
+  Python objects in the case that custom loss functions,
+  metrics or top k categorical accuracy are specified in
+  the 'compile_params_grid'.
   </dd>
 
   <dt>validation_table (optional)</dt>
@@ -215,29 +244,28 @@ madlib_keras_automl(
   is the name of the output
   table from running the image preprocessor on the validation dataset.
   Using a validation dataset can mean a
-  longer training time depending on its size, and the configurations would be evaluated on the basis of validation
-  loss instead of training loss.
-  This can be controlled using the 'metrics_compute_frequency'
-  parameter described below.</dd>
+  longer training time depending on its size, and the configurations in autoML will be
+  evaluated on the basis of validation
+  loss instead of training loss.</dd>
 
   <DT>metrics_compute_frequency (optional)</DT>
-  <DD>INTEGER, default: once at the end of training
-  after 'num_iterations'.  Frequency to compute per-iteration
+  <DD>INTEGER, default: once at the end of training.
+  Frequency to compute per-iteration
   metrics for the training dataset and validation dataset
   (if specified).  There can be considerable cost to
   computing metrics every iteration, especially if the
   training dataset is large.  This parameter is a way of
   controlling the frequency of those computations.
   For example, if you specify 5, then metrics will be computed
-  every 5 iterations as well as at the end of training
-  after 'num_iterations'.  If you use the default,
+  every 5 iterations as well as at the end of training.
+  If you use the default,
   metrics will be computed only
-  once after 'num_iterations' have completed.
+  once after training has completed.
   </DD>
 
   <DT>name (optional)</DT>
   <DD>TEXT, default: NULL.
-    Free text string to identify a name, if desired.
+    Free text string to provide a name, if desired.
   </DD>
 
   <DT>description (optional)</DT>
@@ -249,9 +277,9 @@ madlib_keras_automl(
 
 <b>Output tables</b>
 <br>
-
-    The model selection output table has exactly 1 row of the best model configuration based on the
-    training/validation loss and contains the following columns:
+    The model selection output table <model_selection_table> has only
+    one row containing the best model configuration from autoML, based on the
+    training/validation loss.  It contains the following columns:
     <table class="output">
       <tr>
         <th>mst_key</th>
@@ -275,8 +303,9 @@ madlib_keras_automl(
         </td>
       </tr>
     </table>
+
     A summary table named <model_selection_table>_summary is
-    also created, which contains the following column:
+    also created, which contains the following columns:
     <table class="output">
       <tr>
         <th>model_arch_table</th>
@@ -287,13 +316,14 @@ madlib_keras_automl(
       <tr>
         <th>object_table</th>
         <td>VARCHAR. Name of the object table containing the serialized
-        Python objects for custom loss functions and custom metrics.
+        Python objects for custom loss functions, custom metrics
+        and top k categorical accuracy.
         If there are none, this field will be blank.
         </td>
       </tr>
     </table>
 
-    The model output table produced by fit contains the following columns.
+    The model output table produced by autoML contains columns below.
     There is one row per model configuration generated:
     <table class="output">
       <tr>
@@ -312,13 +342,13 @@ madlib_keras_automl(
       </tr>
     </table>
 
-    An info table named \<model_output_table\>_info is also created, which has the following columns.
-    There is one row per model as per the rows in the 'model_selection_table':
+    An info table named \<model_output_table\>_info is also created, which has the columns below.
+    There is one row per model:
     <table class="output">
       <tr>
         <th>mst_key</th>
         <td>INTEGER. ID that defines a unique tuple for model architecture-compile parameters-fit parameters,
-        as defined in the 'model_selection_table'.</td>
+        for each model configuration generated.</td>
       </tr>
       <tr>
         <th>model_id</th>
@@ -417,7 +447,7 @@ madlib_keras_automl(
         <th>metrics_iters</th>
         <td>Array indicating the iterations for which
         metrics are calculated, as derived from the
-        parameters 'metrics_compute_frequency' and iterations decided by the automl algorithm.
+        parameters 'metrics_compute_frequency' and iterations decided by the autoML algorithm.
         For example, if 'num_iterations=5'
         and 'metrics_compute_frequency=2', then 'metrics_iters' value
         would be {2,4,5} indicating that metrics were computed
@@ -429,13 +459,14 @@ madlib_keras_automl(
     </tr>
     <tr>
         <th>s</th>
-        <td>Bracket number</td>
+        <td>Bracket number from Hyperband schedule.
+        This column is not present for Hyperopt.</td>
     </tr>
     <tr>
         <th>i</th>
-        <td>Latest evaluated round number</td>
+        <td>Latest evaluated round number from Hyperband schedule.
+        This column is not present for Hyperopt.</td>
     </tr>
-
     </table>
 
     A summary table named \<model_output_table\>_summary is also created, which has the following columns:
@@ -483,15 +514,15 @@ madlib_keras_automl(
     </tr>
     <tr>
         <th>automl_method</th>
-        <td>Name of the automl method</td>
+        <td>Name of the autoML method used.</td>
     </tr>
     <tr>
         <th>automl_params</th>
-        <td>AutoML param values</td>
+        <td>AutoML parameter values.</td>
     </tr>
     <tr>
         <th>random_state</th>
-        <td>Chosen random seed</td>
+        <td>Chosen random seed.</td>
     </tr>
     <tr>
         <th>metrics_compute_frequency</th>
@@ -539,8 +570,12 @@ madlib_keras_automl(
    </table>
 
 @anchor hyperband_schedule
-@par Hyperband Schedule
+@par Print Hyperband Schedule
 
+This utility prints out the
+schedule for a set of input parameters.  It does not run the Hyperband method, rather it
+just prints out the schedule so you can see what the brackets look like.
+Refer to [1] for information on Hyperband schedules.
 <pre class="syntax">
 hyperband_schedule(
     schedule_table,
@@ -557,20 +592,20 @@ hyperband_schedule(
   </dd>
 
   <dt>R</dt>
-  <dd>INTEGER. Maximum number of resources (iterations) that can be allocated
-  to a single configuration.
+  <dd>INTEGER. Maximum number of resources (i.e., iterations) to allocate to a single configuration
+  in a round of Hyperband.
   </dd>
 
   <dt>eta</dt>
-  <dd>INTEGER, default 3. Controls the proportion of configurations discarded in
-  each round of successive halving. For example, for eta=3 will keep the best 1/3
-  the configurations for the next round.
+  <dd>INTEGER. Controls the proportion of configurations discarded in each
+  round of successive halving. For example, for eta=3 will keep the best 1/3 the
+  configurations for the next round.
   </dd>
 
   <dt>skip_last</dt>
-  <dd>INTEGER, default 0. The number of last rounds to skip. For example, for skip_last=1 will skip the
-  last round (i.e., last entry in each bracket), which is standard randomized search and can
-  be expensive when run for the total R iterations.
+  <dd>INTEGER. The number of last rounds to skip. For example, 'skip_last=1'
+  will skip the last round (i.e., last entry in each bracket), which is standard random
+  search and can be expensive when run for the total R iterations.
   </dd>
 
 </dl>
@@ -581,22 +616,22 @@ hyperband_schedule(
     <table class="output">
       <tr>
         <th>s</th>
-        <td>INTEGER. Bracket number
+        <td>INTEGER. Bracket number.
         </td>
       </tr>
       <tr>
         <th>i</th>
-        <td>INTEGER. Round (depth) in bracket
+        <td>INTEGER. Round (depth) in bracket.
         </td>
       </tr>
       <tr>
         <th>n_i</th>
-        <td>INTEGER. Number of configurations in this round
+        <td>INTEGER. Number of configurations in this round.
         </td>
       </tr>
       <tr>
         <th>r_i</th>
-        <td>INTEGER. Resources (iterations) in this round
+        <td>INTEGER. Resources (iterations) in this round.
         </td>
       </tr>
     </table>
@@ -605,17 +640,700 @@ hyperband_schedule(
 
 @anchor example
 @par Examples
-TBD.
 
+@note
+Deep learning works best on very large datasets,
+but that is not convenient for a quick introduction
+to the syntax. So in this example we use an MLP on the well
+known iris data set from https://archive.ics.uci.edu/ml/datasets/iris.
+For more realistic examples with images please refer
+to the deep learning notebooks
+at https://github.com/apache/madlib-site/tree/asf-site/community-artifacts.
+
+<h4>Setup</h4>
+
+-# Create an input data set.
+<pre class="example">
+DROP TABLE IF EXISTS iris_data;
+CREATE TABLE iris_data(
+    id serial,
+    attributes numeric[],
+    class_text varchar
+);
+INSERT INTO iris_data(id, attributes, class_text) VALUES
+(1,ARRAY[5.1,3.5,1.4,0.2],'Iris-setosa'),
+(2,ARRAY[4.9,3.0,1.4,0.2],'Iris-setosa'),
+(3,ARRAY[4.7,3.2,1.3,0.2],'Iris-setosa'),
+(4,ARRAY[4.6,3.1,1.5,0.2],'Iris-setosa'),
+(5,ARRAY[5.0,3.6,1.4,0.2],'Iris-setosa'),
+(6,ARRAY[5.4,3.9,1.7,0.4],'Iris-setosa'),
+(7,ARRAY[4.6,3.4,1.4,0.3],'Iris-setosa'),
+(8,ARRAY[5.0,3.4,1.5,0.2],'Iris-setosa'),
+(9,ARRAY[4.4,2.9,1.4,0.2],'Iris-setosa'),
+(10,ARRAY[4.9,3.1,1.5,0.1],'Iris-setosa'),
+(11,ARRAY[5.4,3.7,1.5,0.2],'Iris-setosa'),
+(12,ARRAY[4.8,3.4,1.6,0.2],'Iris-setosa'),
+(13,ARRAY[4.8,3.0,1.4,0.1],'Iris-setosa'),
+(14,ARRAY[4.3,3.0,1.1,0.1],'Iris-setosa'),
+(15,ARRAY[5.8,4.0,1.2,0.2],'Iris-setosa'),
+(16,ARRAY[5.7,4.4,1.5,0.4],'Iris-setosa'),
+(17,ARRAY[5.4,3.9,1.3,0.4],'Iris-setosa'),
+(18,ARRAY[5.1,3.5,1.4,0.3],'Iris-setosa'),
+(19,ARRAY[5.7,3.8,1.7,0.3],'Iris-setosa'),
+(20,ARRAY[5.1,3.8,1.5,0.3],'Iris-setosa'),
+(21,ARRAY[5.4,3.4,1.7,0.2],'Iris-setosa'),
+(22,ARRAY[5.1,3.7,1.5,0.4],'Iris-setosa'),
+(23,ARRAY[4.6,3.6,1.0,0.2],'Iris-setosa'),
+(24,ARRAY[5.1,3.3,1.7,0.5],'Iris-setosa'),
+(25,ARRAY[4.8,3.4,1.9,0.2],'Iris-setosa'),
+(26,ARRAY[5.0,3.0,1.6,0.2],'Iris-setosa'),
+(27,ARRAY[5.0,3.4,1.6,0.4],'Iris-setosa'),
+(28,ARRAY[5.2,3.5,1.5,0.2],'Iris-setosa'),
+(29,ARRAY[5.2,3.4,1.4,0.2],'Iris-setosa'),
+(30,ARRAY[4.7,3.2,1.6,0.2],'Iris-setosa'),
+(31,ARRAY[4.8,3.1,1.6,0.2],'Iris-setosa'),
+(32,ARRAY[5.4,3.4,1.5,0.4],'Iris-setosa'),
+(33,ARRAY[5.2,4.1,1.5,0.1],'Iris-setosa'),
+(34,ARRAY[5.5,4.2,1.4,0.2],'Iris-setosa'),
+(35,ARRAY[4.9,3.1,1.5,0.1],'Iris-setosa'),
+(36,ARRAY[5.0,3.2,1.2,0.2],'Iris-setosa'),
+(37,ARRAY[5.5,3.5,1.3,0.2],'Iris-setosa'),
+(38,ARRAY[4.9,3.1,1.5,0.1],'Iris-setosa'),
+(39,ARRAY[4.4,3.0,1.3,0.2],'Iris-setosa'),
+(40,ARRAY[5.1,3.4,1.5,0.2],'Iris-setosa'),
+(41,ARRAY[5.0,3.5,1.3,0.3],'Iris-setosa'),
+(42,ARRAY[4.5,2.3,1.3,0.3],'Iris-setosa'),
+(43,ARRAY[4.4,3.2,1.3,0.2],'Iris-setosa'),
+(44,ARRAY[5.0,3.5,1.6,0.6],'Iris-setosa'),
+(45,ARRAY[5.1,3.8,1.9,0.4],'Iris-setosa'),
+(46,ARRAY[4.8,3.0,1.4,0.3],'Iris-setosa'),
+(47,ARRAY[5.1,3.8,1.6,0.2],'Iris-setosa'),
+(48,ARRAY[4.6,3.2,1.4,0.2],'Iris-setosa'),
+(49,ARRAY[5.3,3.7,1.5,0.2],'Iris-setosa'),
+(50,ARRAY[5.0,3.3,1.4,0.2],'Iris-setosa'),
+(51,ARRAY[7.0,3.2,4.7,1.4],'Iris-versicolor'),
+(52,ARRAY[6.4,3.2,4.5,1.5],'Iris-versicolor'),
+(53,ARRAY[6.9,3.1,4.9,1.5],'Iris-versicolor'),
+(54,ARRAY[5.5,2.3,4.0,1.3],'Iris-versicolor'),
+(55,ARRAY[6.5,2.8,4.6,1.5],'Iris-versicolor'),
+(56,ARRAY[5.7,2.8,4.5,1.3],'Iris-versicolor'),
+(57,ARRAY[6.3,3.3,4.7,1.6],'Iris-versicolor'),
+(58,ARRAY[4.9,2.4,3.3,1.0],'Iris-versicolor'),
+(59,ARRAY[6.6,2.9,4.6,1.3],'Iris-versicolor'),
+(60,ARRAY[5.2,2.7,3.9,1.4],'Iris-versicolor'),
+(61,ARRAY[5.0,2.0,3.5,1.0],'Iris-versicolor'),
+(62,ARRAY[5.9,3.0,4.2,1.5],'Iris-versicolor'),
+(63,ARRAY[6.0,2.2,4.0,1.0],'Iris-versicolor'),
+(64,ARRAY[6.1,2.9,4.7,1.4],'Iris-versicolor'),
+(65,ARRAY[5.6,2.9,3.6,1.3],'Iris-versicolor'),
+(66,ARRAY[6.7,3.1,4.4,1.4],'Iris-versicolor'),
+(67,ARRAY[5.6,3.0,4.5,1.5],'Iris-versicolor'),
+(68,ARRAY[5.8,2.7,4.1,1.0],'Iris-versicolor'),
+(69,ARRAY[6.2,2.2,4.5,1.5],'Iris-versicolor'),
+(70,ARRAY[5.6,2.5,3.9,1.1],'Iris-versicolor'),
+(71,ARRAY[5.9,3.2,4.8,1.8],'Iris-versicolor'),
+(72,ARRAY[6.1,2.8,4.0,1.3],'Iris-versicolor'),
+(73,ARRAY[6.3,2.5,4.9,1.5],'Iris-versicolor'),
+(74,ARRAY[6.1,2.8,4.7,1.2],'Iris-versicolor'),
+(75,ARRAY[6.4,2.9,4.3,1.3],'Iris-versicolor'),
+(76,ARRAY[6.6,3.0,4.4,1.4],'Iris-versicolor'),
+(77,ARRAY[6.8,2.8,4.8,1.4],'Iris-versicolor'),
+(78,ARRAY[6.7,3.0,5.0,1.7],'Iris-versicolor'),
+(79,ARRAY[6.0,2.9,4.5,1.5],'Iris-versicolor'),
+(80,ARRAY[5.7,2.6,3.5,1.0],'Iris-versicolor'),
+(81,ARRAY[5.5,2.4,3.8,1.1],'Iris-versicolor'),
+(82,ARRAY[5.5,2.4,3.7,1.0],'Iris-versicolor'),
+(83,ARRAY[5.8,2.7,3.9,1.2],'Iris-versicolor'),
+(84,ARRAY[6.0,2.7,5.1,1.6],'Iris-versicolor'),
+(85,ARRAY[5.4,3.0,4.5,1.5],'Iris-versicolor'),
+(86,ARRAY[6.0,3.4,4.5,1.6],'Iris-versicolor'),
+(87,ARRAY[6.7,3.1,4.7,1.5],'Iris-versicolor'),
+(88,ARRAY[6.3,2.3,4.4,1.3],'Iris-versicolor'),
+(89,ARRAY[5.6,3.0,4.1,1.3],'Iris-versicolor'),
+(90,ARRAY[5.5,2.5,4.0,1.3],'Iris-versicolor'),
+(91,ARRAY[5.5,2.6,4.4,1.2],'Iris-versicolor'),
+(92,ARRAY[6.1,3.0,4.6,1.4],'Iris-versicolor'),
+(93,ARRAY[5.8,2.6,4.0,1.2],'Iris-versicolor'),
+(94,ARRAY[5.0,2.3,3.3,1.0],'Iris-versicolor'),
+(95,ARRAY[5.6,2.7,4.2,1.3],'Iris-versicolor'),
+(96,ARRAY[5.7,3.0,4.2,1.2],'Iris-versicolor'),
+(97,ARRAY[5.7,2.9,4.2,1.3],'Iris-versicolor'),
+(98,ARRAY[6.2,2.9,4.3,1.3],'Iris-versicolor'),
+(99,ARRAY[5.1,2.5,3.0,1.1],'Iris-versicolor'),
+(100,ARRAY[5.7,2.8,4.1,1.3],'Iris-versicolor'),
+(101,ARRAY[6.3,3.3,6.0,2.5],'Iris-virginica'),
+(102,ARRAY[5.8,2.7,5.1,1.9],'Iris-virginica'),
+(103,ARRAY[7.1,3.0,5.9,2.1],'Iris-virginica'),
+(104,ARRAY[6.3,2.9,5.6,1.8],'Iris-virginica'),
+(105,ARRAY[6.5,3.0,5.8,2.2],'Iris-virginica'),
+(106,ARRAY[7.6,3.0,6.6,2.1],'Iris-virginica'),
+(107,ARRAY[4.9,2.5,4.5,1.7],'Iris-virginica'),
+(108,ARRAY[7.3,2.9,6.3,1.8],'Iris-virginica'),
+(109,ARRAY[6.7,2.5,5.8,1.8],'Iris-virginica'),
+(110,ARRAY[7.2,3.6,6.1,2.5],'Iris-virginica'),
+(111,ARRAY[6.5,3.2,5.1,2.0],'Iris-virginica'),
+(112,ARRAY[6.4,2.7,5.3,1.9],'Iris-virginica'),
+(113,ARRAY[6.8,3.0,5.5,2.1],'Iris-virginica'),
+(114,ARRAY[5.7,2.5,5.0,2.0],'Iris-virginica'),
+(115,ARRAY[5.8,2.8,5.1,2.4],'Iris-virginica'),
+(116,ARRAY[6.4,3.2,5.3,2.3],'Iris-virginica'),
+(117,ARRAY[6.5,3.0,5.5,1.8],'Iris-virginica'),
+(118,ARRAY[7.7,3.8,6.7,2.2],'Iris-virginica'),
+(119,ARRAY[7.7,2.6,6.9,2.3],'Iris-virginica'),
+(120,ARRAY[6.0,2.2,5.0,1.5],'Iris-virginica'),
+(121,ARRAY[6.9,3.2,5.7,2.3],'Iris-virginica'),
+(122,ARRAY[5.6,2.8,4.9,2.0],'Iris-virginica'),
+(123,ARRAY[7.7,2.8,6.7,2.0],'Iris-virginica'),
+(124,ARRAY[6.3,2.7,4.9,1.8],'Iris-virginica'),
+(125,ARRAY[6.7,3.3,5.7,2.1],'Iris-virginica'),
+(126,ARRAY[7.2,3.2,6.0,1.8],'Iris-virginica'),
+(127,ARRAY[6.2,2.8,4.8,1.8],'Iris-virginica'),
+(128,ARRAY[6.1,3.0,4.9,1.8],'Iris-virginica'),
+(129,ARRAY[6.4,2.8,5.6,2.1],'Iris-virginica'),
+(130,ARRAY[7.2,3.0,5.8,1.6],'Iris-virginica'),
+(131,ARRAY[7.4,2.8,6.1,1.9],'Iris-virginica'),
+(132,ARRAY[7.9,3.8,6.4,2.0],'Iris-virginica'),
+(133,ARRAY[6.4,2.8,5.6,2.2],'Iris-virginica'),
+(134,ARRAY[6.3,2.8,5.1,1.5],'Iris-virginica'),
+(135,ARRAY[6.1,2.6,5.6,1.4],'Iris-virginica'),
+(136,ARRAY[7.7,3.0,6.1,2.3],'Iris-virginica'),
+(137,ARRAY[6.3,3.4,5.6,2.4],'Iris-virginica'),
+(138,ARRAY[6.4,3.1,5.5,1.8],'Iris-virginica'),
+(139,ARRAY[6.0,3.0,4.8,1.8],'Iris-virginica'),
+(140,ARRAY[6.9,3.1,5.4,2.1],'Iris-virginica'),
+(141,ARRAY[6.7,3.1,5.6,2.4],'Iris-virginica'),
+(142,ARRAY[6.9,3.1,5.1,2.3],'Iris-virginica'),
+(143,ARRAY[5.8,2.7,5.1,1.9],'Iris-virginica'),
+(144,ARRAY[6.8,3.2,5.9,2.3],'Iris-virginica'),
+(145,ARRAY[6.7,3.3,5.7,2.5],'Iris-virginica'),
+(146,ARRAY[6.7,3.0,5.2,2.3],'Iris-virginica'),
+(147,ARRAY[6.3,2.5,5.0,1.9],'Iris-virginica'),
+(148,ARRAY[6.5,3.0,5.2,2.0],'Iris-virginica'),
+(149,ARRAY[6.2,3.4,5.4,2.3],'Iris-virginica'),
+(150,ARRAY[5.9,3.0,5.1,1.8],'Iris-virginica');
+</pre>
+Create a test/validation dataset from the training data:
+<pre class="example">
+DROP TABLE IF EXISTS iris_train, iris_test;
+-- Set seed so results are reproducible
+SELECT setseed(0);
+SELECT madlib.train_test_split('iris_data',     -- Source table
+                               'iris',          -- Output table root name
+                                0.8,            -- Train proportion
+                                NULL,           -- Test proportion (0.2)
+                                NULL,           -- Strata definition
+                                NULL,           -- Output all columns
+                                NULL,           -- Sample without replacement
+                                TRUE            -- Separate output tables
+                              );
+SELECT COUNT(*) FROM iris_train;
+</pre>
+<pre class="result">
+ count
+------+
+   120
+</pre>
+
+-# Call the preprocessor for deep learning.  For the training dataset:
+<pre class="example">
+\\x on
+DROP TABLE IF EXISTS iris_train_packed, iris_train_packed_summary;
+SELECT madlib.training_preprocessor_dl('iris_train',         -- Source table
+                                       'iris_train_packed',  -- Output table
+                                       'class_text',         -- Dependent variable
+                                       'attributes'          -- Independent variable
+                                        );
+SELECT * FROM iris_train_packed_summary;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]-------+---------------------------------------------
+source_table        | iris_train
+output_table        | iris_train_packed
+dependent_varname   | class_text
+independent_varname | attributes
+dependent_vartype   | character varying
+class_values        | {Iris-setosa,Iris-versicolor,Iris-virginica}
+buffer_size         | 60
+normalizing_const   | 1.0
+num_classes         | 3
+</pre>
+For the validation dataset:
+<pre class="example">
+DROP TABLE IF EXISTS iris_test_packed, iris_test_packed_summary;
+SELECT madlib.validation_preprocessor_dl('iris_test',          -- Source table
+                                         'iris_test_packed',   -- Output table
+                                         'class_text',         -- Dependent variable
+                                         'attributes',         -- Independent variable
+                                         'iris_train_packed'   -- From training preprocessor step
+                                          );
+SELECT * FROM iris_test_packed_summary;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]-------+---------------------------------------------
+source_table        | iris_test
+output_table        | iris_test_packed
+dependent_varname   | class_text
+independent_varname | attributes
+dependent_vartype   | character varying
+class_values        | {Iris-setosa,Iris-versicolor,Iris-virginica}
+buffer_size         | 15
+normalizing_const   | 1.0
+num_classes         | 3
+</pre>
+
+-# Define and load model architecture.  Use Keras to define
+the model architecture with 1 hidden layer:
+<pre class="example">
+import keras
+from keras.models import Sequential
+from keras.layers import Dense
+model1 = Sequential()
+model1.add(Dense(10, activation='relu', input_shape=(4,)))
+model1.add(Dense(10, activation='relu'))
+model1.add(Dense(3, activation='softmax'))
+model1.summary()
+\verbatim
+
+_________________________________________________________________
+Layer (type)                 Output Shape              Param #
+=================================================================
+dense_1 (Dense)              (None, 10)                50
+_________________________________________________________________
+dense_2 (Dense)              (None, 10)                110
+_________________________________________________________________
+dense_3 (Dense)              (None, 3)                 33
+=================================================================
+Total params: 193
+Trainable params: 193
+Non-trainable params: 0
+\endverbatim
+</pre>
+Export the model to JSON:
+<pre class="example">
+model1.to_json()
+</pre>
+<pre class="result">
+'{"class_name": "Sequential", "keras_version": "2.1.6", "config": [{"class_name": "Dense", "config": {"kernel_initializer": {"class_name": "VarianceScaling", "config": {"distribution": "uniform", "scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_1", "kernel_constraint": null, "bias_regularizer": null, "bias_constraint": null, "dtype": "float32", "activation": "relu", "trainable": true, "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros", "config": {}}, "units": 10, "batch_input_shape": [null, 4], "use_bias": true, "activity_regularizer": null}}, {"class_name": "Dense", "config": {"kernel_initializer": {"class_name": "VarianceScaling", "config": {"distribution": "uniform", "scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_2", "kernel_constraint": null, "bias_regularizer": null, "bias_constraint": null, "activation": "relu", "trainable": true, "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros", "config": {}}, "units": 10, "use_bias": true, "activity_regularizer": null}}, {"class_name": "Dense", "config": {"kernel_initializer": {"class_name": "VarianceScaling", "config": {"distribution": "uniform", "scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_3", "kernel_constraint": null, "bias_regularizer": null, "bias_constraint": null, "activation": "softmax", "trainable": true, "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros", "config": {}}, "units": 3, "use_bias": true, "activity_regularizer": null}}], "backend": "tensorflow"}'
+</pre>
+Define model architecture with 2 hidden layers:
+<pre class="example">
+model2 = Sequential()
+model2.add(Dense(10, activation='relu', input_shape=(4,)))
+model2.add(Dense(10, activation='relu'))
+model2.add(Dense(10, activation='relu'))
+model2.add(Dense(3, activation='softmax'))
+model2.summary()
+\verbatim
+
+Layer (type)                 Output Shape              Param #
+=================================================================
+dense_4 (Dense)              (None, 10)                50
+_________________________________________________________________
+dense_5 (Dense)              (None, 10)                110
+_________________________________________________________________
+dense_6 (Dense)              (None, 10)                110
+_________________________________________________________________
+dense_7 (Dense)              (None, 3)                 33
+=================================================================
+Total params: 303
+Trainable params: 303
+Non-trainable params: 0
+\endverbatim
+</pre>
+Export the model to JSON:
+<pre class="example">
+model2.to_json()
+</pre>
+<pre class="result">
+'{"class_name": "Sequential", "keras_version": "2.1.6", "config": [{"class_name": "Dense", "config": {"kernel_initializer": {"class_name": "VarianceScaling", "config": {"distribution": "uniform", "scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_4", "kernel_constraint": null, "bias_regularizer": null, "bias_constraint": null, "dtype": "float32", "activation": "relu", "trainable": true, "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros", "config": {}}, "units": 10, "batch_input_shape": [null, 4], "use_bias": true, "activity_regularizer": null}}, {"class_name": "Dense", "config": {"kernel_initializer": {"class_name": "VarianceScaling", "config": {"distribution": "uniform", "scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_5", "kernel_constraint": null, "bias_regularizer": null, "bias_constraint": null, "activation": "relu", "trainable": true, "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros", "config": {}}, "units": 10, "use_bias": true, "activity_regularizer": null}}, {"class_name": "Dense", "config": {"kernel_initializer": {"class_name": "VarianceScaling", "config": {"distribution": "uniform", "scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_6", "kernel_constraint": null, "bias_regularizer": null, "bias_constraint": null, "activation": "relu", "trainable": true, "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros", "config": {}}, "units": 10, "use_bias": true, "activity_regularizer": null}}, {"class_name": "Dense", "config": {"kernel_initializer": {"class_name": "VarianceScaling", "config": {"distribution": "uniform", "scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_7", "kernel_constraint": null, "bias_regularizer": null, "bias_constraint": null, "activation": "softmax", "trainable": true, "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros", "config": {}}, "units": 3, "use_bias": true, "activity_regularizer": null}}], "backend": "tensorflow"}'
+</pre>
+Load into model architecture table:
+<pre class="example">
+DROP TABLE IF EXISTS model_arch_library;
+SELECT madlib.load_keras_model('model_arch_library',  -- Output table,
+$$
+{"class_name": "Sequential", "keras_version": "2.1.6", "config": [{"class_name": "Dense", "config": {"kernel_initializer": {"class_name": "VarianceScaling", "config": {"distribution": "uniform", "scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_1", "kernel_constraint": null, "bias_regularizer": null, "bias_constraint": null, "dtype": "float32", "activation": "relu", "trainable": true, "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros", "config": {}}, "units": 10, "batch_input_shape": [null, 4], "use_bias": true, "activity_regularizer": null}}, {"class_name": "Dense", "config": {"kernel_initializer": {"class_name": "VarianceScaling", "config": {"distribution": "uniform", "scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_2", "kernel_constraint": null, "bias_regularizer": null, "bias_constraint": null, "activation": "relu", "trainable": true, "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros", "config": {}}, "units": 10, "use_bias": true, "activity_regularizer": null}}, {"class_name": "Dense", "config": {"kernel_initializer": {"class_name": "VarianceScaling", "config": {"distribution": "uniform", "scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_3", "kernel_constraint": null, "bias_regularizer": null, "bias_constraint": null, "activation": "softmax", "trainable": true, "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros", "config": {}}, "units": 3, "use_bias": true, "activity_regularizer": null}}], "backend": "tensorflow"}
+$$
+::json,         -- JSON blob
+                               NULL,                  -- Weights
+                               'Sophie',              -- Name
+                               'MLP with 1 hidden layer'       -- Descr
+);
+SELECT madlib.load_keras_model('model_arch_library',  -- Output table,
+$$
+{"class_name": "Sequential", "keras_version": "2.1.6", "config": [{"class_name": "Dense", "config": {"kernel_initializer": {"class_name": "VarianceScaling", "config": {"distribution": "uniform", "scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_4", "kernel_constraint": null, "bias_regularizer": null, "bias_constraint": null, "dtype": "float32", "activation": "relu", "trainable": true, "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros", "config": {}}, "units": 10, "batch_input_shape": [null, 4], "use_bias": true, "activity_regularizer": null}}, {"class_name": "Dense", "config": {"kernel_initializer": {"class_name": "VarianceScaling", "config": {"distribution": "uniform", "scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_5", "kernel_constraint": null, "bias_regularizer": null, "bias_constraint": null, "activation": "relu", "trainable": true, "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros", "config": {}}, "units": 10, "use_bias": true, "activity_regularizer": null}}, {"class_name": "Dense", "config": {"kernel_initializer": {"class_name": "VarianceScaling", "config": {"distribution": "uniform", "scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_6", "kernel_constraint": null, "bias_regularizer": null, "bias_constraint": null, "activation": "relu", "trainable": true, "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros", "config": {}}, "units": 10, "use_bias": true, "activity_regularizer": null}}, {"class_name": "Dense", "config": {"kernel_initializer": {"class_name": "VarianceScaling", "config": {"distribution": "uniform", "scale": 1.0, "seed": null, "mode": "fan_avg"}}, "name": "dense_7", "kernel_constraint": null, "bias_regularizer": null, "bias_constraint": null, "activation": "softmax", "trainable": true, "kernel_regularizer": null, "bias_initializer": {"class_name": "Zeros", "config": {}}, "units": 3, "use_bias": true, "activity_regularizer": null}}], "backend": "tensorflow"}
+$$
+::json,         -- JSON blob
+                               NULL,                  -- Weights
+                               'Maria',               -- Name
+                               'MLP with 2 hidden layers'       -- Descr
+);
+</pre>
+
+<h4>Hyperband</h4>
+
+-# Print Hyperband schedule for example input parameters:
+<pre class="example">
+DROP TABLE IF EXISTS hb_schedule;
+SELECT madlib.hyperband_schedule ('hb_schedule', 
+                                   81,
+                                   3,
+                                   0);
+SELECT * FROM hb_schedule ORDER BY s DESC, i;
+</pre>
+<pre class="result">
+ s | i | n_i | r_i 
+---+---+-----+-----
+ 4 | 0 |  81 |   1
+ 4 | 1 |  27 |   3
+ 4 | 2 |   9 |   9
+ 4 | 3 |   3 |  27
+ 4 | 4 |   1 |  81
+ 3 | 0 |  27 |   3
+ 3 | 1 |   9 |   9
+ 3 | 2 |   3 |  27
+ 3 | 3 |   1 |  81
+ 2 | 0 |   9 |   9
+ 2 | 1 |   3 |  27
+ 2 | 2 |   1 |  81
+ 1 | 0 |   6 |  27
+ 1 | 1 |   2 |  81
+ 0 | 0 |   5 |  81
+(15 rows)
+</pre>
+-# Run Hyperband method:
+<pre class="example">
+DROP TABLE IF EXISTS automl_output, automl_output_info, automl_output_summary, automl_mst_table, automl_mst_table_summary;
+SELECT madlib.madlib_keras_automl('iris_train_packed',                -- source table
+                                  'automl_output',                    -- model output table
+                                  'model_arch_library',               -- model architecture table
+                                  'automl_mst_table',                 -- model selection output table
+                                  ARRAY[1,2],                         -- model IDs
+                                  $${
+                                      'loss': ['categorical_crossentropy'], 
+                                      'optimizer_params_list': [ 
+                                          {'optimizer': ['Adam'],'lr': [0.001, 0.1, 'log']},
+                                          {'optimizer': ['RMSprop'],'lr': [0.001, 0.1, 'log']}
+                                      ],
+                                      'metrics': ['accuracy']
+                                  } $$,                               -- compile param grid
+                                  $${'batch_size': [4, 8], 'epochs': [1]}$$,  -- fit params grid
+                                  'hyperband',                        -- autoML method
+                                  'R=9, eta=3, skip_last=0',          -- autoML params
+                                  NULL,                               -- random state
+                                  NULL,                               -- object table
+                                  FALSE,                              -- use GPUs
+                                  'iris_test_packed',                 -- validation table
+                                  1,                                  -- metrics compute freq
+                                  NULL,                               -- name
+                                  NULL);                              -- descr
+</pre>
+-# View the model summary:
+<pre class="example">
+SELECT * FROM automl_output_summary;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]-------------+---------------------------------------------
+source_table              | iris_train_packed
+validation_table          | iris_test_packed
+model                     | automl_output
+model_info                | automl_output_info
+dependent_varname         | class_text
+independent_varname       | attributes
+model_arch_table          | model_arch_library
+model_selection_table     | automl_mst_table
+automl_method             | hyperband
+automl_params             | R=9, eta=3, skip_last=0
+random_state              | 
+object_table              | 
+use_gpus                  | f
+metrics_compute_frequency | 1
+name                      | 
+description               | 
+start_training_time       | 2020-10-23 00:20:52
+end_training_time         | 2020-10-23 00:22:19
+madlib_version            | 1.18.0-dev
+num_classes               | 3
+class_values              | {Iris-setosa,Iris-versicolor,Iris-virginica}
+dependent_vartype         | character varying
+normalizing_const         | 1
+</pre>
+-# View results for a few models:
+<pre class="example">
+SELECT * FROM automl_output_info ORDER BY validation_metrics_final DESC, validation_loss_final LIMIT 3;
+</pre>
+<pre class="result">
+-[ RECORD 1]----------------------------------------------------------------------------------------------------------
+mst_key                  | 13
+model_id                 | 1
+compile_params           | optimizer='Adam(lr=0.09102824394462919)',metrics=['accuracy'],loss='categorical_crossentropy'
+fit_params               | epochs=1,batch_size=4
+model_type               | madlib_keras
+model_size               | 0.7900390625
+metrics_elapsed_time     | {5.37390279769897,11.0799419879913,16.6234488487244,22.406044960022,28.1228229999542,33.9054269790649,39.4304218292236,45.18506193161
+01,50.8772490024567}
+metrics_type             | {accuracy}
+loss_type                | categorical_crossentropy
+training_metrics_final   | 0.966666638851166
+training_loss_final      | 0.117527179419994
+training_metrics         | {0.658333361148834,0.975000023841858,0.616666674613953,0.800000011920929,0.975000023841858,0.633333325386047,0.783333361148834,0.9666
+66638851166,0.966666638851166}
+training_loss            | {0.495927810668945,0.18766151368618,0.515772044658661,0.352419972419739,0.0683904364705086,0.749827742576599,0.778484106063843,0.1788
+07646036148,0.117527179419994}
+validation_metrics_final | 1
+validation_loss_final    | 0.0773465484380722
+validation_metrics       | {0.800000011920929,0.933333337306976,0.800000011920929,0.800000011920929,0.966666638851166,0.800000011920929,0.833333313465118,1,1}
+validation_loss          | {0.353509128093719,0.181772708892822,0.291709125041962,0.319768697023392,0.0782377645373344,0.42935499548912,0.600821077823639,0.1398
+00950884819,0.0773465484380722}
+metrics_iters            | {5,6,7,8,9,10,11,12,13}
+s                        | 0
+i                        | 0
+-[ RECORD 2]----------------------------------------------------------------------------------------------------------
+mst_key                  | 12
+model_id                 | 2
+compile_params           | optimizer='RMSprop(lr=0.0038913960350146193)',metrics=['accuracy'],loss='categorical_crossentropy'
+fit_params               | epochs=1,batch_size=4
+model_type               | madlib_keras
+model_size               | 1.2197265625
+metrics_elapsed_time     | {6.42797207832336,13.1542639732361,19.5103330612183,5.07128381729126,10.5596950054169,16.2247838973999,22.1064488887787,27.7473468780
+518,33.3738968372345,39.1290938854218,44.8826239109039,50.5644388198853}
+metrics_type             | {accuracy}
+loss_type                | categorical_crossentropy
+training_metrics_final   | 0.949999988079071
+training_loss_final      | 0.107505217194557
+training_metrics         | {0.666666686534882,0.949999988079071,0.958333313465118,0.949999988079071,0.774999976158142,0.941666662693024,0.941666662693024,0.9583
+33313465118,0.858333349227905,0.941666662693024,0.958333313465118,0.949999988079071}
+training_loss            | {0.807353079319,0.531827747821808,0.375816851854324,0.29875060915947,0.358659148216248,0.192024797201157,0.200978621840477,0.15286296
+6060638,0.272547781467438,0.125148341059685,0.11623315513134,0.107505217194557}
+validation_metrics_final | 0.966666638851166
+validation_loss_final    | 0.0540979467332363
+validation_metrics       | {0.699999988079071,0.899999976158142,0.966666638851166,0.966666638851166,0.899999976158142,1,0.899999976158142,0.966666638851166,0.89
+9999976158142,0.966666638851166,1,0.966666638851166}
+validation_loss          | {0.819778800010681,0.472518295049667,0.300146490335464,0.222854107618332,0.225204601883888,0.147142887115479,0.192571476101875,0.1301
+05406045914,0.178782090544701,0.0740523263812065,0.0714136436581612,0.0540979467332363}
+metrics_iters            | {2,3,4,5,6,7,8,9,10,11,12,13}
+s                        | 1
+i                        | 1
+-[ RECORD 3]----------------------------------------------------------------------------------------------------------
+mst_key                  | 6
+model_id                 | 1
+compile_params           | optimizer='Adam(lr=0.02358545238214664)',metrics=['accuracy'],loss='categorical_crossentropy'
+fit_params               | epochs=1,batch_size=8
+model_type               | madlib_keras
+model_size               | 0.7900390625
+metrics_elapsed_time     | {10.6679489612579,6.12874889373779,12.8602039813995,19.2172629833221}
+metrics_type             | {accuracy}
+loss_type                | categorical_crossentropy
+training_metrics_final   | 0.966666638851166
+training_loss_final      | 0.367920279502869
+training_metrics         | {0.658333361148834,0.658333361148834,0.891666650772095,0.966666638851166}
+training_loss            | {0.744447708129883,0.627880990505219,0.487682670354843,0.367920279502869}
+validation_metrics_final | 0.933333337306976
+validation_loss_final    | 0.280433148145676
+validation_metrics       | {0.699999988079071,0.699999988079071,0.933333337306976,0.933333337306976}
+validation_loss          | {0.5818150639534,0.465440601110458,0.350821226835251,0.280433148145676}
+metrics_iters            | {1,2,3,4}
+s                        | 2
+i                        | 1
+</pre>
+
+<h4>Hyperopt</h4>
+
+-# Run Hyperopt for a set number of trials, i.e., model configurations:
+<pre class="example">
+DROP TABLE IF EXISTS automl_output, automl_output_info, automl_output_summary, automl_mst_table, automl_mst_table_summary;
+SELECT madlib.madlib_keras_automl('iris_train_packed',                -- source table
+                                  'automl_output',                    -- model output table
+                                  'model_arch_library',               -- model architecture table
+                                  'automl_mst_table',                 -- model selection output table
+                                  ARRAY[1,2],                         -- model IDs
+                                  $${
+                                      'loss': ['categorical_crossentropy'], 
+                                      'optimizer_params_list': [ 
+                                          {'optimizer': ['Adam'],'lr': [0.001, 0.1, 'log']},
+                                          {'optimizer': ['RMSprop'],'lr': [0.001, 0.1, 'log']}
+                                      ],
+                                      'metrics': ['accuracy']
+                                  } $$,                               -- compile param grid
+                                  $${'batch_size': [4, 8], 'epochs': [1]}$$,  -- fit params grid
+                                  'hyperopt',                         -- autoML method
+                                  'num_configs=20, num_iterations=10, algorithm=tpe',  -- autoML params
+                                  NULL,                               -- random state
+                                  NULL,                               -- object table
+                                  FALSE,                              -- use GPUs
+                                  'iris_test_packed',                 -- validation table
+                                  1,                                  -- metrics compute freq
+                                  NULL,                               -- name
+                                  NULL);                              -- descr
+</pre>
+-# View the model summary:
+<pre class="example">
+SELECT * FROM automl_output_summary;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]-------------+-------------------------------------------------
+source_table              | iris_train_packed
+validation_table          | iris_test_packed
+model                     | automl_output
+model_info                | automl_output_info
+dependent_varname         | class_text
+independent_varname       | attributes
+model_arch_table          | model_arch_library
+model_selection_table     | automl_mst_table
+automl_method             | hyperopt
+automl_params             | num_configs=20, num_iterations=10, algorithm=tpe
+random_state              | 
+object_table              | 
+use_gpus                  | f
+metrics_compute_frequency | 1
+name                      | 
+description               | 
+start_training_time       | 2020-10-23 00:24:43
+end_training_time         | 2020-10-23 00:28:41
+madlib_version            | 1.18.0-dev
+num_classes               | 3
+class_values              | {Iris-setosa,Iris-versicolor,Iris-virginica}
+dependent_vartype         | character varying
+normalizing_const         | 1
+</pre>
+-# View results for a few models:
+<pre class="example">
+SELECT * FROM automl_output_info ORDER BY validation_metrics_final DESC, validation_loss_final LIMIT 3;
+</pre>
+<pre class="result">
+-[ RECORD 1]----------------------------------------------------------------------------------------------------------
+mst_key                  | 4
+model_id                 | 1
+compile_params           | optimizer='Adam(lr=0.021044174547856155)',metrics=['accuracy'],loss='categorical_crossentropy'
+fit_params               | epochs=1,batch_size=8
+model_type               | madlib_keras
+model_size               | 0.7900390625
+metrics_elapsed_time     | {24.9291331768036,27.1591901779175,29.3875880241394,31.4712460041046,33.6599950790405,35.9415881633759,38.0477111339569,40.2351109981537,42.3932039737701,44.4729251861572}
+metrics_type             | {accuracy}
+loss_type                | categorical_crossentropy
+training_metrics_final   | 0.958333313465118
+training_loss_final      | 0.116280987858772
+training_metrics         | {0.658333361148834,0.658333361148834,0.733333349227905,0.816666662693024,0.949999988079071,0.949999988079071,0.949999988079071,0.875,0.958333313465118,0.958333313465118}
+training_loss            | {0.681611657142639,0.50702965259552,0.41643014550209,0.349031865596771,0.2586330473423,0.234042942523956,0.204623967409134,0.337687611579895,0.116805233061314,0.116280987858772}
+validation_metrics_final | 1
+validation_loss_final    | 0.067971371114254
+validation_metrics       | {0.699999988079071,0.699999988079071,0.733333349227905,0.766666650772095,0.899999976158142,0.899999976158142,0.899999976158142,0.899999976158142,1,1}
+validation_loss          | {0.523795306682587,0.386897593736649,0.323715627193451,0.29447802901268,0.218715354800224,0.216124311089516,0.186037495732307,0.257792592048645,0.0693960413336754,0.067971371114254}
+metrics_iters            | {1,2,3,4,5,6,7,8,9,10}
+-[ RECORD 2]----------------------------------------------------------------------------------------------------------
+mst_key                  | 8
+model_id                 | 1
+compile_params           | optimizer='RMSprop(lr=0.055711748803920255)',metrics=['accuracy'],loss='categorical_crossentropy'
+fit_params               | epochs=1,batch_size=4
+model_type               | madlib_keras
+model_size               | 0.7900390625
+metrics_elapsed_time     | {68.9713232517242,71.1428651809692,73.0566282272339,75.2099182605743,77.4740402698517,79.4580070972443,81.5958452224731,83.6865520477295,85.6433861255646,87.8569240570068}
+metrics_type             | {accuracy}
+loss_type                | categorical_crossentropy
+training_metrics_final   | 0.966666638851166
+training_loss_final      | 0.106823824346066
+training_metrics         | {0.658333361148834,0.699999988079071,0.875,0.691666662693024,0.699999988079071,0.791666686534882,0.774999976158142,0.966666638851166,0.966666638851166,0.966666638851166}
+training_loss            | {0.681002557277679,0.431159198284149,0.418115794658661,0.51969450712204,0.605500161647797,0.36535832285881,0.451890885829926,0.126570284366608,0.116986438632011,0.106823824346066}
+validation_metrics_final | 1
+validation_loss_final    | 0.0758842155337334
+validation_metrics       | {0.699999988079071,0.699999988079071,0.966666638851166,0.699999988079071,0.699999988079071,0.800000011920929,0.766666650772095,0.966666638851166,0.966666638851166,1}
+validation_loss          | {0.693905889987946,0.364648938179016,0.287941485643387,0.509377717971802,0.622031152248383,0.377092003822327,0.488217085599899,0.10258474200964,0.0973251685500145,0.0758842155337334}
+metrics_iters            | {1,2,3,4,5,6,7,8,9,10}
+-[ RECORD 3]----------------------------------------------------------------------------------------------------------
+mst_key                  | 13
+model_id                 | 1
+compile_params           | optimizer='RMSprop(lr=0.006381376508189085)',metrics=['accuracy'],loss='categorical_crossentropy'
+fit_params               | epochs=1,batch_size=4
+model_type               | madlib_keras
+model_size               | 0.7900390625
+metrics_elapsed_time     | {141.029213190079,143.075024366379,145.330604314804,147.341159343719,149.579845190048,151.819869279861,153.939630270004,156.235336303711,158.536979198456,160.583434343338}
+metrics_type             | {accuracy}
+loss_type                | categorical_crossentropy
+training_metrics_final   | 0.975000023841858
+training_loss_final      | 0.0981351062655449
+training_metrics         | {0.875,0.933333337306976,0.875,0.975000023841858,0.975000023841858,0.908333361148834,0.949999988079071,0.966666638851166,0.975000023841858,0.975000023841858}
+training_loss            | {0.556384921073914,0.32896700501442,0.29009011387825,0.200998887419701,0.149432390928268,0.183790743350983,0.120595499873161,0.12202025949955,0.101290702819824,0.0981351062655449}
+validation_metrics_final | 1
+validation_loss_final    | 0.0775858238339424
+validation_metrics       | {0.899999976158142,0.966666638851166,0.766666650772095,1,1,0.933333337306976,0.966666638851166,0.966666638851166,1,1}
+validation_loss          | {0.442976772785187,0.249921068549156,0.268403559923172,0.167330235242844,0.134699374437332,0.140658855438232,0.0964709892868996,0.110730975866318,0.0810751244425774,0.0775858238339424}
+metrics_iters            | {1,2,3,4,5,6,7,8,9,10}
+</pre>
+-# Run inference on one of the models generated by Hyperopt.  In this example we use the
+validation set to predict on:
+<pre class="example">
+DROP TABLE IF EXISTS iris_predict;
+SELECT madlib.madlib_keras_predict('automl_output',    -- model
+                                   'iris_test',        -- test_table
+                                   'id',               -- id column
+                                   'attributes',       -- independent var
+                                   'iris_predict',     -- output table
+                                    'response',        -- prediction type
+                                    FALSE,             -- use gpus
+                                    4                 -- MST key
+                                   );
+SELECT * FROM iris_predict ORDER BY id;
+</pre>
+<pre class="result">
+ id  |   class_text    |    prob    
+-----+-----------------+------------
+   5 | Iris-setosa     |  0.9998704
+   7 | Iris-setosa     | 0.99953365
+  10 | Iris-setosa     |  0.9993413
+  16 | Iris-setosa     |  0.9999825
+  17 | Iris-setosa     |  0.9999256
+  21 | Iris-setosa     |  0.9995347
+  23 | Iris-setosa     |  0.9999405
+  27 | Iris-setosa     |  0.9989955
+  30 | Iris-setosa     |  0.9990559
+  31 | Iris-setosa     |  0.9986846
+  32 | Iris-setosa     |  0.9992879
+  37 | Iris-setosa     | 0.99987197
+  39 | Iris-setosa     |  0.9989151
+  46 | Iris-setosa     |  0.9981341
+  47 | Iris-setosa     |  0.9999044
+  53 | Iris-versicolor |  0.9745001
+  54 | Iris-versicolor |  0.8989025
+  56 | Iris-versicolor | 0.97066855
+  63 | Iris-versicolor | 0.96652734
+  71 | Iris-versicolor | 0.84569126
+  77 | Iris-versicolor |  0.9564522
+  83 | Iris-versicolor |  0.9664927
+  85 | Iris-versicolor | 0.96553373
+  93 | Iris-versicolor | 0.96748537
+ 103 | Iris-virginica  |  0.9343488
+ 108 | Iris-virginica  | 0.91668576
+ 117 | Iris-virginica  |  0.7323582
+ 124 | Iris-virginica  | 0.72906417
+ 132 | Iris-virginica  | 0.50430095
+ 144 | Iris-virginica  |  0.9487652
+(30 rows)
+</pre>
 
 @anchor notes
 @par Notes
-TBD.
 
+In practice you may need to do more than one run of an autoML method to arrive
+at a model with adequate accuracy.  One approach is to set the search space to
+be quite broad initially, then observe which hyperparameter ranges and model architectures
+seem to be doing the best.  Subesquent runs can then zoom in on those good ones
+in order to fine tune the model.
+
+@anchor literature
+@par Literature
+
+[1] Li <em>et al.</em>, "Hyperband: A Novel Bandit-Based Approach to
+Hyperparameter Optimization", Journal of Machine Learning Research 18 (2018) 1-52.
+
+[2] J. Bergstra, D. Yamins, D. D. Cox, "Making a Science of Model Search:
+Hyperparameter Optimization in Hundreds of Dimensions for Vision Architectures,"
+<em>Proceedings of the 30th International Conference on Machine Learning</em>, Atlanta, Georgia,
+USA, 2013. JMLR: W&CP volume 28.
 
 @anchor related
 @par Related Topics
-TBD.
+
+madlib_keras_automl.sql_in
 
 */
 
