@@ -776,9 +776,6 @@ class InternalKerasPredictTestCase(unittest.TestCase):
 
         self.independent_var = [[[240]]]
         self.total_images_per_seg = [3,3,4]
-        self.subject.K.set_session = Mock()
-        self.subject.clear_keras_session = Mock()
-
 
     def tearDown(self):
         self.module_patcher.stop()
@@ -789,7 +786,6 @@ class InternalKerasPredictTestCase(unittest.TestCase):
         serialized_weights = np.array(model_weights, dtype=np.float32).tostring()
 
         k = {'SD': {}}
-        is_response = True
         result = self.subject.internal_keras_predict(
             self.independent_var, self.model.to_json(),
             serialized_weights, 255, 0, self.all_seg_ids,
@@ -803,7 +799,6 @@ class InternalKerasPredictTestCase(unittest.TestCase):
 
         k = {'SD': { 'row_count': 1}}
         k['SD']['segment_model_predict'] = self.model
-        is_response = True
         result = self.subject.internal_keras_predict(
             self.independent_var, None, None, 255, 0,
             self.all_seg_ids, self.total_images_per_seg, False, 0, 4, **k)
@@ -817,17 +812,6 @@ class InternalKerasPredictTestCase(unittest.TestCase):
 
         k = {'SD': { 'row_count': 2}}
         k['SD']['segment_model_predict'] = self.model
-        is_response = True
-        result = self.subject.internal_keras_predict(
-            self.independent_var, None, None, 255, 0,
-            self.all_seg_ids, self.total_images_per_seg, False, 0, 4, **k)
-        self.assertEqual(3, len(result))
-        self.assertEqual(False, 'row_count' in k['SD'])
-        self.assertEqual(False, 'segment_model_predict' in k['SD'])
-
-        k = {'SD': { 'row_count': 2}}
-        k['SD']['segment_model_predict'] = self.model
-        is_response = False
         result = self.subject.internal_keras_predict(
             self.independent_var, None, None, 255, 0,
             self.all_seg_ids, self.total_images_per_seg, False, 0, 4, **k)
@@ -838,20 +822,21 @@ class InternalKerasPredictTestCase(unittest.TestCase):
         self.assertEqual(False, 'row_count' in k['SD'])
         self.assertEqual(False, 'segment_model_predict' in k['SD'])
 
-
     def test_predict_error_should_clear_sd(self):
         self.subject.is_platform_pg = Mock(return_value = False)
-        self.model.add(Dense(3))
+        # self.model.add(Dense(3))
+        model_weights = [1, 2, 3, 4]
+        serialized_weights = np.array(model_weights, dtype=np.float32).tostring()
 
-        # inject error by passing 0 as the normalizing const so that we get a
-        # divide by zero error
-        normalizing_const = 0
+        # inject error by passing current_seg_id as -1
+        current_seg_id = -1
         k = {'SD':{}}
-        is_response = True
-        with self.assertRaises(plpy.PLPYException):
+        with self.assertRaises(plpy.PLPYException) as error:
             self.subject.internal_keras_predict(
-                self.independent_var, None, None, normalizing_const,
-                0, self.all_seg_ids, self.total_images_per_seg, False, 0, 4, **k)
+                self.independent_var, self.model.to_json(), serialized_weights,
+                255, current_seg_id, self.all_seg_ids,
+                self.total_images_per_seg, False, 0, 4, **k)
+        self.assertEqual("ValueError('-1 is not in list',)", str(error.exception))
         self.assertEqual(False, 'row_count' in k['SD'])
         self.assertEqual(False, 'segment_model_predict' in k['SD'])
 
@@ -1446,6 +1431,7 @@ class InputValidatorTestCase(unittest.TestCase):
         with self.assertRaises(plpy.PLPYException) as error:
             obj = self.subject._validate_gpu_config(self.module_name, 'foo', [1,0,0,1])
         self.assertIn('does not have gpu', str(error.exception).lower())
+
 
 class MadlibSerializerTestCase(unittest.TestCase):
     def setUp(self):
