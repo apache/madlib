@@ -36,6 +36,7 @@ import tensorflow as tf
 from tensorflow.keras import backend as K
 from tensorflow.keras import utils as keras_utils
 from tensorflow.keras.optimizers import *
+from tensorflow.keras.callbacks import TensorBoard
 
 import tensorflow.keras.optimizers as opt
 import tensorflow.keras.losses as losses
@@ -292,17 +293,32 @@ def parse_and_validate_fit_params(fit_param_str):
     if fit_param_str:
         fit_params_dict = convert_string_of_args_to_dict(fit_param_str)
 
-        literal_eval_fit_params = ['batch_size','epochs','verbose',
+        literal_eval_fit_params = ['batch_size','epochs','verbose', 'shuffle',
                                    'class_weight','initial_epoch','steps_per_epoch']
-        accepted_fit_params = literal_eval_fit_params + ['shuffle']
+        accepted_fit_params = literal_eval_fit_params + ['callbacks']
 
         fit_params_dict = validate_and_literal_eval_keys(fit_params_dict,
                                                          literal_eval_fit_params,
                                                          accepted_fit_params)
-        if 'shuffle' in fit_params_dict:
-            shuffle_value = fit_params_dict['shuffle']
-            if shuffle_value == 'True' or shuffle_value == 'False':
-                fit_params_dict['shuffle'] = bool(shuffle_value)
+        if 'callbacks' in fit_params_dict:
+            try:
+                callbacks=fit_params_dict['callbacks']
+                tree = ast.parse(callbacks, mode='eval')
+                assert(type(tree.body) == ast.List)
+                assert(len(tree.body.elts) == 1)
+                assert(type(tree.body.elts[0]) == ast.Call)
+                assert(tree.body.elts[0].func.id == 'TensorBoard')
+                tb_params = tree.body.elts[0].keywords
+                tb_params_dict = { tb_params[i].arg : tb_params[i].value \
+                                for i in range(len(tb_params)) }
+            except:
+                plpy.error("Invalid callbacks fit param.  Currently, "
+                            "only TensorBoard callbacks are accepted.")
+
+            accepted_tb_params = [ 'log_dir', 'histogram_freq', 'batch_size', 'update_freq',
+                                   'write_graph', 'write_grad', 'write_images' ]
+            tb_params_dict = validate_and_literal_eval_keys(tb_params_dict, accepted_tb_params, accepted_tb_params)
+            fit_params_dict['callbacks'] = [TensorBoard(tb_params_dict)]
 
         return fit_params_dict
     else:
