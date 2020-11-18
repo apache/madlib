@@ -27,6 +27,7 @@ from madlib_keras_model_selection import ModelSelectionSchema
 from keras_model_arch_table import ModelArchSchema
 from utilities.validate_args import table_exists, drop_tables, input_tbl_valid
 from utilities.validate_args import quote_ident
+from madlib_keras_helper import DISTRIBUTION_KEY_COLNAME
 
 class AutoMLConstants:
     BRACKET = 's'
@@ -40,9 +41,11 @@ class AutoMLConstants:
     SKIP_LAST = 'skip_last'
     HYPERBAND_PARAMS = [R, ETA, SKIP_LAST]
     LOSS_METRIC = 'training_loss_final'
-    TEMP_MST_TABLE = unique_string('temp_mst_table')
-    TEMP_MST_SUMMARY_TABLE = add_postfix(TEMP_MST_TABLE, '_summary')
-    TEMP_OUTPUT_TABLE = unique_string('temp_output_table')
+    MST_TABLE = unique_string('mst_table')
+    MST_SUMMARY_TABLE = add_postfix(MST_TABLE, '_summary')
+    MODEL_OUTPUT_TABLE = unique_string('output_table')
+    MODEL_SUMMARY_TABLE = add_postfix(MODEL_OUTPUT_TABLE, '_summary')
+    MODEL_INFO_TABLE = add_postfix(MODEL_OUTPUT_TABLE, '_info')
     METRICS_ITERS = 'metrics_iters' # custom column
     NUM_CONFIGS = 'num_configs'
     NUM_ITERS = 'num_iterations'
@@ -79,6 +82,7 @@ class KerasAutoML(object):
         self.model_id_list = sorted(list(set(model_id_list)))
         self.compile_params_grid = compile_params_grid
         self.fit_params_grid = fit_params_grid
+        self.dist_key_col = DISTRIBUTION_KEY_COLNAME
 
         if object_table is not None:
             object_table = "{0}.{1}".format(schema_madlib, quote_ident(object_table))
@@ -110,11 +114,21 @@ class KerasAutoML(object):
             AutoMLConstants.LOSS_METRIC = 'validation_loss_final'
 
     def create_model_output_table(self):
+        #  TODO:
+        # In v1.17 we did not include a __dist_key__ column.  This prevents
+        #  gpdb from knowing which segments the models are on when they get
+        #  warm started, adding unnecessary extra data movement each round.
+        # Including in v1.18 as a first step toward that.  The plan is
+        #  that we will use it to eliminate this overhead in FitMultiple
+        #  (improving AutoML performance and warm start in general) in a
+        #  future release that would no longer be able to warmstart from
+        #  a 1.17 model output table.
         output_table_create_query = """
                                     CREATE TABLE {self.model_output_table}
                                     ({ModelSelectionSchema.MST_KEY} INTEGER PRIMARY KEY,
                                      {ModelArchSchema.MODEL_WEIGHTS} BYTEA,
-                                     {ModelArchSchema.MODEL_ARCH} JSON)
+                                     {ModelArchSchema.MODEL_ARCH} JSON,
+                                     {self.dist_key_col} INTEGER)
                                     """.format(self=self, ModelSelectionSchema=ModelSelectionSchema,
                                                ModelArchSchema=ModelArchSchema)
         plpy.execute(output_table_create_query)
@@ -140,10 +154,8 @@ class KerasAutoML(object):
                                    validation_metrics DOUBLE PRECISION[],
                                    validation_loss DOUBLE PRECISION[],
                                    {AutoMLSchema.METRICS_ITERS} INTEGER[])
-                                   """.format(self=self,
-                                              ModelSelectionSchema=ModelSelectionSchema,
-                                              ModelArchSchema=ModelArchSchema,
-                                              AutoMLSchema=AutoMLConstants)
+                                       """.format(self=self, ModelSelectionSchema=ModelSelectionSchema,
+                                                  ModelArchSchema=ModelArchSchema, AutoMLSchema=AutoMLConstants)
         plpy.execute(info_table_create_query)
 
     def update_model_selection_table(self):
@@ -160,10 +172,9 @@ class KerasAutoML(object):
                                                                           AutoMLSchema=AutoMLConstants,
                                                                           ModelSelectionSchema=ModelSelectionSchema))
 
-    def generate_model_output_summary_table(self, model_training):
+    def generate_model_output_summary_table(self):
         """
         Creates and populates static values related to the AutoML workload.
-        :param model_training: Fit Multiple function call object.
         """
         #TODO this code is duplicated in create_model_summary_table
         name = 'NULL' if self.name is None else '$MAD${0}$MAD$'.format(self.name)
@@ -172,17 +183,17 @@ class KerasAutoML(object):
         random_state = 'NULL' if self.random_state is None else '$MAD${0}$MAD$'.format(self.random_state)
         validation_table = 'NULL' if self.validation_table is None else '$MAD${0}$MAD$'.format(self.validation_table)
 
-        create_query = plpy.prepare("""
+        create_query = """
                 CREATE TABLE {self.model_summary_table} AS
                 SELECT
                     $MAD${self.source_table}$MAD$::TEXT AS source_table,
                     {validation_table}::TEXT AS validation_table,
                     $MAD${self.model_output_table}$MAD$::TEXT AS model,
                     $MAD${self.model_info_table}$MAD$::TEXT AS model_info,
-                    (SELECT dependent_varname FROM {model_training.model_summary_table})
-                    AS dependent_varname,
-                    (SELECT independent_varname FROM {model_training.model_summary_table})
-                    AS independent_varname,
+                    (SELECT dependent_varname FROM {a.MODEL_SUMMARY_TABLE})
+                        AS dependent_varname,
+                    (SELECT independent_varname FROM {a.MODEL_SUMMARY_TABLE})
+                        AS independent_varname,
                     $MAD${self.model_arch_table}$MAD$::TEXT AS model_arch_table,
                     $MAD${self.model_selection_table}$MAD$::TEXT AS model_selection_table,
                     $MAD${self.automl_method}$MAD$::TEXT AS automl_method,
@@ -190,27 +201,20 @@ class KerasAutoML(object):
                     {random_state}::TEXT AS random_state,
                     {object_table}::TEXT AS object_table,
                     {self.use_gpus} AS use_gpus,
-                    (SELECT metrics_compute_frequency FROM {model_training.model_summary_table})::INTEGER
-                    AS metrics_compute_frequency,
+                    (SELECT metrics_compute_frequency FROM {a.MODEL_SUMMARY_TABLE})::INTEGER 
+                        AS metrics_compute_frequency,
                     {name}::TEXT AS name,
                     {descr}::TEXT AS description,
                     '{self.start_training_time}'::TIMESTAMP AS start_training_time,
                     '{self.end_training_time}'::TIMESTAMP AS end_training_time,
-                    (SELECT madlib_version FROM {model_training.model_summary_table}) AS madlib_version,
-                    (SELECT num_classes FROM {model_training.model_summary_table})::INTEGER AS num_classes,
-                    (SELECT class_values FROM {model_training.model_summary_table}) AS class_values,
-                    (SELECT dependent_vartype FROM {model_training.model_summary_table})
-                    AS dependent_vartype,
-                    (SELECT normalizing_const FROM {model_training.model_summary_table})
-                    AS normalizing_const
-            """.format(self=self,
-                       validation_table=validation_table,
-                       random_state=random_state,
-                       object_table=object_table,
-                       name=name,
-                       descr=descr,
-                       model_training=model_training))
-
+                    (SELECT madlib_version FROM {a.MODEL_SUMMARY_TABLE}) AS madlib_version,
+                    (SELECT num_classes FROM {a.MODEL_SUMMARY_TABLE})::INTEGER AS num_classes,
+                    (SELECT class_values FROM {a.MODEL_SUMMARY_TABLE}) AS class_values,
+                    (SELECT dependent_vartype FROM {a.MODEL_SUMMARY_TABLE}) 
+                        AS dependent_vartype,
+                    (SELECT normalizing_const FROM {a.MODEL_SUMMARY_TABLE})
+                        AS normalizing_const
+            """.format(a=AutoMLConstants, **locals())
         plpy.execute(create_query)
 
     def is_automl_method(self, method_name):
@@ -261,13 +265,10 @@ class KerasAutoML(object):
                    ', loss=' + str(loss_value) + '\n'
         return res_str
 
-    def remove_temp_tables(self, model_training):
+    def remove_temp_tables(self):
         """
         Remove all intermediate tables created for AutoML runs/updates.
-        :param model_training: Fit Multiple function call object.
         """
-        if not model_training:
-            return
-        drop_tables([model_training.original_model_output_table, model_training.model_info_table,
-                     model_training.model_summary_table, AutoMLConstants.TEMP_MST_TABLE,
-                     AutoMLConstants.TEMP_MST_SUMMARY_TABLE])
+        drop_tables([AutoMLConstants.MODEL_OUTPUT_TABLE, AutoMLConstants.MODEL_INFO_TABLE,
+                     AutoMLConstants.MODEL_SUMMARY_TABLE, AutoMLConstants.MST_TABLE,
+                     AutoMLConstants.MST_SUMMARY_TABLE])
