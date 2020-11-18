@@ -181,14 +181,12 @@ def fit(schema_madlib, source_table, model, model_arch_table,
             {gp_segment_id_col},
             {segments_per_host},
             ARRAY{images_per_seg_train},
-            {use_gpus}::BOOLEAN,
             ARRAY{accessible_gpus_for_seg},
             $1,
-            $2,
-            $3
+            $2
         ) AS iteration_result
         FROM {source_table}
-        """.format(**locals()), ["bytea", "boolean", "bytea"])
+        """.format(**locals()), ["bytea", "bytea"])
 
     # Define the state for the model and loss/metric storage lists
     training_loss, training_metrics, metrics_elapsed_time = [], [], []
@@ -202,57 +200,54 @@ def fit(schema_madlib, source_table, model, model_arch_table,
         start_iteration = time.time()
         is_final_iteration = (i == num_iterations)
         serialized_weights = plpy.execute(run_training_iteration,
-                                        [serialized_weights, is_final_iteration, custom_function_map]
+                                        [serialized_weights, custom_function_map]
                                         )[0]['iteration_result']
         end_iteration = time.time()
         info_str = "\tTime for training in iteration {0}: {1} sec".format(i,
             end_iteration - start_iteration)
 
-
-        """
-        #TODO 
-        1. unit test this if else if possible
-        2. rename should_clear_session_for_training
-        when should we clear the session/SD ?
-        If there is no validation dataset, we should clear it at the last call
-        to train evaluate
-        else If there is a validation dataset, we should clear it at the last call
-        to validation evaluate
-        """
         if should_compute_metrics_this_iter(i, metrics_compute_frequency,
                                             num_iterations):
-            if validation_set_provided:
-                should_clear_session_for_training = False
-            else:
-                should_clear_session_for_training = is_final_iteration
-            compute_out = compute_loss_and_metrics(
-                schema_madlib, source_table, compile_params_to_pass, model_arch,
-                serialized_weights, use_gpus, accessible_gpus_for_seg, dist_key_mapping,
-                images_per_seg_train, training_metrics, training_loss, i, should_clear_session_for_training,
-                custom_function_map)
+            """
+            If there is no validation dataset, we should clear the session/gd at
+            the last call to train evaluate. Otherwise clear it at the last call
+            to validation evaluate
+            """
+
+            should_clear_session = False
+            if not validation_set_provided:
+                should_clear_session = is_final_iteration
+
+            compute_out = compute_loss_and_metrics(schema_madlib, source_table,
+                                                   compile_params_to_pass,
+                                                   model_arch,
+                                                   serialized_weights, use_gpus,
+                                                   accessible_gpus_for_seg,
+                                                   dist_key_mapping,
+                                                   images_per_seg_train,
+                                                   training_metrics,
+                                                   training_loss,
+                                                   should_clear_session,
+                                                   custom_function_map)
             metrics_iters.append(i)
-            compute_time, compute_metrics, compute_loss = compute_out
-            info_str += "\n\tTime for evaluating training dataset in "\
-                        "iteration {0}: {1} sec\n".format(i, compute_time)
-            info_str += "\tTraining set metric after iteration {0}: {1}\n".format(
-                i, compute_metrics)
-            info_str += "\tTraining set loss after iteration {0}: {1}".format(
-                i, compute_loss)
+            info_str = get_evaluate_info_msg(i, info_str, compute_out, True)
             if validation_set_provided:
                 # Compute loss/accuracy for validation data.
-                val_compute_out = compute_loss_and_metrics(
-                    schema_madlib, validation_table, compile_params_to_pass,
-                    model_arch, serialized_weights, use_gpus, accessible_gpus_for_seg,
-                    seg_ids_val, images_per_seg_val, validation_metrics,
-                    validation_loss, i, is_final_iteration, custom_function_map)
-                val_compute_time, val_compute_metrics, val_compute_loss = val_compute_out
-
-                info_str += "\n\tTime for evaluating validation dataset in "\
-                        "iteration {0}: {1} sec\n".format(i, val_compute_time)
-                info_str += "\tValidation set metric after iteration {0}: {1}\n".format(
-                    i, val_compute_metrics)
-                info_str += "\tValidation set loss after iteration {0}: {1}".format(
-                    i, val_compute_loss)
+                val_compute_out = compute_loss_and_metrics(schema_madlib,
+                                                           validation_table,
+                                                           compile_params_to_pass,
+                                                           model_arch,
+                                                           serialized_weights,
+                                                           use_gpus,
+                                                           accessible_gpus_for_seg,
+                                                           seg_ids_val,
+                                                           images_per_seg_val,
+                                                           validation_metrics,
+                                                           validation_loss,
+                                                           is_final_iteration,
+                                                           custom_function_map)
+                info_str = get_evaluate_info_msg(i, info_str, val_compute_out,
+                                                 False)
 
             metrics_elapsed_end_time = time.time()
             metrics_elapsed_time.append(
@@ -364,6 +359,22 @@ def fit(schema_madlib, source_table, model, model_arch_table,
     #TODO add a unit test for this in a future PR
     reset_cuda_env(original_cuda_env)
 
+
+def get_evaluate_info_msg(i, info_str, compute_out, is_train):
+    compute_time, compute_metrics, compute_loss = compute_out
+    if is_train:
+        label = "Training"
+    else:
+        label = "Validation"
+    info_str += "\n\tTime for evaluating {0} dataset in " \
+                "iteration {1}: {2} sec\n".format(label.lower(), i, compute_time)
+    info_str += "\t{0} set metric after iteration {1}: {2}\n".format(
+        label, i, compute_metrics)
+    info_str += "\t{0} set loss after iteration {1}: {2}".format(
+        label, i, compute_loss)
+    return info_str
+
+
 def get_initial_weights(model_table, model_arch, serialized_weights, warm_start,
                         use_gpus, accessible_gpus_for_seg, mst_filter=''):
     """
@@ -421,9 +432,10 @@ def get_source_summary_table_dict(fit_validator):
     return source_summary
 
 def compute_loss_and_metrics(schema_madlib, table, compile_params, model_arch,
-                             serialized_weights, use_gpus, accessible_gpus_for_seg,
-                             dist_key_mapping, images_per_seg_val, metrics_list, loss_list,
-                             curr_iter, is_final_iteration, custom_fn_name,
+                             serialized_weights, use_gpus,
+                             accessible_gpus_for_seg, dist_key_mapping,
+                             images_per_seg_val, metrics_list, loss_list,
+                             should_clear_session, custom_fn_name,
                              model_table=None, mst_key=None):
     """
     Compute the loss and metric using a given model (serialized_weights) on the
@@ -439,7 +451,7 @@ def compute_loss_and_metrics(schema_madlib, table, compile_params, model_arch,
                                                    accessible_gpus_for_seg,
                                                    dist_key_mapping,
                                                    images_per_seg_val,
-                                                   is_final_iteration,
+                                                   should_clear_session,
                                                    custom_fn_name,
                                                    model_table,
                                                    mst_key)
@@ -491,25 +503,22 @@ def update_model(segment_model, prev_serialized_weights):
 def fit_transition(state, dependent_var, independent_var, dependent_var_shape,
                    independent_var_shape, model_architecture,
                    compile_params, fit_params, dist_key, dist_key_mapping,
-                   current_seg_id, segments_per_host, images_per_seg, use_gpus,
-                   accessible_gpus_for_seg, prev_serialized_weights, is_final_iteration=True,
+                   current_seg_id, segments_per_host, images_per_seg,
+                   accessible_gpus_for_seg, prev_serialized_weights,
                    is_multiple_model=False, custom_function_map=None, **kwargs):
     """
     This transition function is common for madlib_keras_fit() and
     madlib_keras_fit_multiple_model(). The important difference between
-    these two calls is the way this function handles the input param
-    prev_serialized_weights and clearing keras session.
+    these two calls is the way tensorflow/keras sessions and GD gets used.
     For madlib_keras_fit_multiple_model,
-        TODO does point a.) still hold true ?
-        a. prev_serialized_weights is always passed in as the state
-        (image count, serialized weights), since it is fetched in the
-        table for each hop of the model between segments.
-        b. keras session is cleared at the end of each iteration, i.e,
-        last row of each iteration.
+        a. We create a tensorflow session per hop and store it in GD alongwith
+        the model and clear both GD and the session at the end of each
+        hop.
     For madlib_keras_fit,
-        a. prev_serialized_weights is passed in as serialized weights
-        b. keras session is cleared at the end of the final iteration,
-        i.e, last row of last iteration.
+        b. We create only one tensorflow session for both fit and eval transition
+        functions and store it in GD. This session gets reused by both fit and eval
+        and only gets cleared in eval transition at the last row of the last iteration.
+
     """
     if not independent_var or not dependent_var:
         return state
@@ -552,7 +561,7 @@ def fit_transition(state, dependent_var, independent_var, dependent_var_shape,
 def fit_multiple_transition_caching(state, dependent_var, independent_var, dependent_var_shape,
                              independent_var_shape, model_architecture,
                              compile_params, fit_params, dist_key, dist_key_mapping,
-                             current_seg_id, segments_per_host, images_per_seg, use_gpus,
+                             current_seg_id, segments_per_host, images_per_seg,
                              accessible_gpus_for_seg, prev_serialized_weights,
                              is_final_training_call, custom_function_map=None, **kwargs):
     """
@@ -642,8 +651,9 @@ def get_state_to_return(segment_model, is_last_row, is_multiple_model, agg_image
     """
     1. For both model averaging fit_transition and fit multiple transition, the
     state only needs to have the image count except for the last row.
-    2. For model averaging fit_transition, the last row state must always contain
-    the image count as well as the model weights
+    2. For model averaging fit_transition, the last row state must always contains
+    the image count as well as the model weights. This state then gets passed to the
+    merge and final functions.
     3. For fit multiple transition, the last row state only needs the model
     weights. This state is the output of the UDA for that hop. We don't need
     the image_count here because unlike model averaging, model hopper does
@@ -796,7 +806,7 @@ def validate_evaluate(module_name, model_table, model_summary_table, test_table,
 def get_loss_metric_from_keras_eval(schema_madlib, table, compile_params,
                                     model_arch, serialized_weights, use_gpus,
                                     accessible_gpus_for_seg, dist_key_mapping, images_per_seg,
-                                    is_final_iteration=True, custom_function_map=None,
+                                    should_clear_session=True, custom_function_map=None,
                                     model_table=None, mst_key=None):
 
     dist_key_col = '0' if is_platform_pg() else DISTRIBUTION_KEY_COLNAME
@@ -830,9 +840,8 @@ def get_loss_metric_from_keras_eval(schema_madlib, table, compile_params,
                                             {gp_segment_id_col},
                                             {segments_per_host},
                                             ARRAY{images_per_seg},
-                                            {use_gpus}::BOOLEAN,
                                             ARRAY{accessible_gpus_for_seg},
-                                            {is_final_iteration},
+                                            {should_clear_session},
                                             {custom_map_var}
                                             )) as loss_metric
         from {table} AS __table__ {mult_sql}
@@ -861,22 +870,29 @@ def internal_keras_eval_transition(state, dependent_var, independent_var,
                                    model_architecture, serialized_weights, compile_params,
                                    dist_key, dist_key_mapping, current_seg_id,
                                    segments_per_host, images_per_seg,
-                                   use_gpus, accessible_gpus_for_seg,
-                                   is_final_iteration, custom_function_map=None, **kwargs):
+                                   accessible_gpus_for_seg, should_clear_session,
+                                   custom_function_map=None, **kwargs):
     GD = kwargs['GD']
     device_name = get_device_name_and_set_cuda_env(accessible_gpus_for_seg[current_seg_id], current_seg_id)
     agg_loss, agg_metric, agg_image_count = state
-    # This transition function is common to evaluate as well as the fit functions
-    # and is used to determine when to clear the session.
-    # For evaluate,
-    #   is_final_iteration is always set to true, so the session is cleared once
-    #   evaluated the last buffer on each segment.
-    # When called from fit functions,
-    #  if is_final_iteration is false, the fit function has already created a
-    #   session and a graph that can be used between iterations and cleared only
-    #   for the last buffer of last iteration
-    #  if is_final_iteration is false, we can clear the
-
+    """
+    This transition function is common to evaluate as well as the fit functions.
+    All these calls have a different logic for creating and clear the tensorflow
+    session
+    For evaluate,
+        We create only one tensorflow session and store it in GD.
+        should_clear_session is always set to true, so the session and GD is
+        cleared once the last buffer is evaluated on each segment.
+    For fit,
+        We reuse the session and GD created as part of fit_transition and only clear
+        the session and GD at last row of the last iteration of eval_transition.
+        should_clear_session is only set to true for the last call to eval_transition
+        which can be either the training eval or validation eval
+    For fit_multiple,
+        We create one session per hop and store it in GD. 
+        should_clear_session is always set to true, so the session and GD is
+        cleared once the last buffer is evaluated on each segment.
+    """
     segment_model, sess = get_init_model_and_sess(GD, device_name,
                                                   accessible_gpus_for_seg[current_seg_id],
                                                   segments_per_host,
@@ -911,7 +927,8 @@ def internal_keras_eval_transition(state, dependent_var, independent_var,
 
     total_images = get_image_count_per_seg_from_array(dist_key_mapping.index(dist_key),
                                                       images_per_seg)
-    if agg_image_count == total_images and is_final_iteration:
+    is_last_row = agg_image_count == total_images
+    if is_last_row and should_clear_session:
         GD_STORE.clear(GD)
         clear_keras_session(sess)
         del sess
