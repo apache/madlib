@@ -134,7 +134,6 @@ class AutoMLHyperopt(KerasAutoML):
 
         self.start_training_time = get_current_timestamp(AutoMLConstants.TIME_FORMAT)
         metrics_elapsed_time_offset = 0
-        model_training = None
         for low, high in configs_lst:
             i, n = low, high - low + 1
 
@@ -152,14 +151,14 @@ class AutoMLHyperopt(KerasAutoML):
 
             model_id_list, compile_params, fit_params = self.extract_param_vals(sampled_params)
             msts_list = self.generate_msts(model_id_list, compile_params, fit_params)
-            self.remove_temp_tables(model_training)
+            self.remove_temp_tables()
             self.populate_temp_mst_tables(i, msts_list)
 
             plpy.info("***Evaluating {n} newly suggested model configurations***".format(n=n))
             start_time = time.time()
             with SetGUC("plan_cache_mode", "force_generic_plan"):
-                model_training = FitMultipleModel(self.schema_madlib, self.source_table, AutoMLConstants.TEMP_OUTPUT_TABLE,
-                                                  AutoMLConstants.TEMP_MST_TABLE, self.num_iters, self.use_gpus, self.validation_table,
+                model_training = FitMultipleModel(self.schema_madlib, self.source_table, AutoMLConstants.MODEL_OUTPUT_TABLE,
+                                                  AutoMLConstants.MST_TABLE, self.num_iters, self.use_gpus, self.validation_table,
                                                   self.metrics_compute_frequency, False, self.name, self.description,
                                                   metrics_elapsed_time_offset=metrics_elapsed_time_offset)
             metrics_elapsed_time_offset += time.time() - start_time
@@ -169,7 +168,7 @@ class AutoMLHyperopt(KerasAutoML):
 
             # HyperOpt TPE update
             for k, hyperopt_param in enumerate(hyperopt_params, i):
-                loss_val = plpy.execute("SELECT {AutoMLSchema.LOSS_METRIC} FROM {model_training.model_info_table} " \
+                loss_val = plpy.execute("SELECT {AutoMLSchema.LOSS_METRIC} FROM {AutoMLSchema.MODEL_INFO_TABLE} " \
                              "WHERE {ModelSelectionSchema.MST_KEY}={k}".format(AutoMLSchema=AutoMLConstants,
                                                                                ModelSelectionSchema=ModelSelectionSchema,
                                                                                **locals()))[0][AutoMLConstants.LOSS_METRIC]
@@ -180,14 +179,14 @@ class AutoMLHyperopt(KerasAutoML):
             trials.refresh()
 
             # stacks info of all model configs together
-            self.update_model_output_and_info_tables(model_training)
+            self.update_model_output_and_info_tables()
 
             self.print_best_mst_so_far()
 
         self.end_training_time = get_current_timestamp(AutoMLConstants.TIME_FORMAT)
         self.update_model_selection_table()
-        self.generate_model_output_summary_table(model_training)
-        self.remove_temp_tables(model_training)
+        self.generate_model_output_summary_table()
+        self.remove_temp_tables()
 
     def get_configs_list(self, num_configs, num_segments):
         """
@@ -351,11 +350,11 @@ class AutoMLHyperopt(KerasAutoML):
         :param msts_list: list of generated msts.
         """
         # extra sanity check
-        if table_exists(AutoMLConstants.TEMP_MST_TABLE):
-            drop_tables([AutoMLConstants.TEMP_MST_TABLE])
+        if table_exists(AutoMLConstants.MST_TABLE):
+            drop_tables([AutoMLConstants.MST_TABLE])
 
         create_query = """
-                        CREATE TABLE {AutoMLSchema.TEMP_MST_TABLE} (
+                        CREATE TABLE {AutoMLSchema.MST_TABLE} (
                             {mst_key} INTEGER,
                             {model_id} INTEGER,
                             {compile_params} VARCHAR,
@@ -375,7 +374,7 @@ class AutoMLHyperopt(KerasAutoML):
             fit_params = mst[ModelSelectionSchema.FIT_PARAMS]
             insert_query = """
                             INSERT INTO
-                                {AutoMLSchema.TEMP_MST_TABLE}(
+                                {AutoMLSchema.MST_TABLE}(
                                     {mst_key_col},
                                     {model_id_col},
                                     {compile_params_col},
@@ -396,7 +395,7 @@ class AutoMLHyperopt(KerasAutoML):
             mst_key_val += 1
             plpy.execute(insert_query)
 
-        self.generate_mst_summary_table(AutoMLConstants.TEMP_MST_SUMMARY_TABLE)
+        self.generate_mst_summary_table(AutoMLConstants.MST_SUMMARY_TABLE)
 
     def generate_mst_summary_table(self, tbl_name):
         """
@@ -438,21 +437,32 @@ class AutoMLHyperopt(KerasAutoML):
                                   **locals())
         plpy.execute(insert_summary_query)
 
-    def update_model_output_and_info_tables(self, model_training):
+    def update_model_output_and_info_tables(self):
         """
         Updates model output and info tables by stacking rows after each evaluation round.
-        :param model_training: Fit Multiple class object
         """
-        metrics_iters = plpy.execute("SELECT {AutoMLSchema.METRICS_ITERS} " \
-                                     "FROM {model_training.original_model_output_table}_summary".format(self=self,
-                                                                                                        model_training=model_training,
-                                                                                                        AutoMLSchema=AutoMLConstants))[0][AutoMLConstants.METRICS_ITERS]
+        metrics_iters = plpy.execute("""
+            SELECT {AutoMLSchema.METRICS_ITERS}
+            FROM {AutoMLSchema.MODEL_SUMMARY_TABLE}
+        """.format(self=self, AutoMLSchema=AutoMLConstants))[0][AutoMLConstants.METRICS_ITERS]
         if metrics_iters:
             metrics_iters = "ARRAY{0}".format(metrics_iters)
+
         # stacking new rows from training
-        plpy.execute("INSERT INTO {self.model_output_table} SELECT * FROM " \
-                     "{model_training.original_model_output_table}".format(self=self, model_training=model_training))
-        plpy.execute("INSERT INTO {self.model_info_table} SELECT *, {metrics_iters} FROM " \
-                     "{model_training.model_info_table}".format(self=self,
-                                                                     model_training=model_training,
-                                                                     metrics_iters=metrics_iters))
+        plpy.execute("""
+            INSERT INTO {self.model_output_table}
+            SELECT * FROM {AutoMLConstants.MODEL_OUTPUT_TABLE}
+        """.format(self=self,
+                   AutoMLConstants=AutoMLConstants
+                  )
+        )
+
+        plpy.execute("""
+            INSERT INTO {self.model_info_table}
+            SELECT *, {metrics_iters}
+            FROM {AutoMLConstants.MODEL_INFO_TABLE}
+        """.format(self=self,
+                   AutoMLConstants=AutoMLConstants,
+                   metrics_iters=metrics_iters
+                  )
+        )
