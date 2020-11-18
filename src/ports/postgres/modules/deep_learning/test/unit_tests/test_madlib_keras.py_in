@@ -110,44 +110,43 @@ class MadlibKerasFitEvalTransitionTestCase(unittest.TestCase):
             self.model.to_json(), self.compile_params, self.fit_params, 0,
             self.dist_key_mapping, 0, 4, self.total_images_per_seg,
             self.accessible_gpus_for_seg, previous_state.tostring(),  **kwargs)
+
+        image_count = kwargs['GD']['agg_image_count']
+        self.assertEqual(ending_image_count, image_count)
         image_count = new_state
         self.assertEqual(ending_image_count, image_count)
 
-    def _test_fit_transition_multiple_model_no_cache_first_buffer_pass(self,
-                                                                      **kwargs):
+    def _test_fit_transition_multiple_model_no_cache_first_buffer_pass(self, **kwargs):
         ending_image_count = len(self.dependent_var_int)
-
-        previous_weights = np.array(self.model_weights, dtype=np.float32)
 
         new_state = self.subject.fit_transition(
             None, self.dependent_var, self.independent_var,
             self.dependent_var_shape, self.independent_var_shape,
             self.model.to_json(), self.compile_params, self.fit_params, 0,
             self.dist_key_mapping, 0, 4, self.total_images_per_seg,
-            self.accessible_gpus_for_seg, previous_weights.tostring(),
+            self.accessible_gpus_for_seg, self.serialized_weights,
              True, **kwargs)
 
-        image_count = new_state
+        self.assertEqual(new_state, None, 'returned weights must be NULL for all rows but the last')
+        image_count = kwargs['GD']['agg_image_count']
         self.assertEqual(ending_image_count, image_count)
 
     def test_fit_transition_multiple_model_cache_first_buffer_pass(self):
         ending_image_count = len(self.dependent_var_int)
 
-        previous_weights = np.array(self.model_weights, dtype=np.float32)
-
         k = {'GD': {}}
         new_state = self.subject.fit_multiple_transition_caching(
-            None, self.dependent_var, self.independent_var,
+            self.dependent_var, self.independent_var,
             self.dependent_var_shape, self.independent_var_shape,
             self.model.to_json(), self.compile_params, self.fit_params, 0,
             self.dist_key_mapping, 0, 4, self.total_images_per_seg,
-            self.accessible_gpus_for_seg, previous_weights.tostring(), True, **k)
+            self.accessible_gpus_for_seg, self.serialized_weights, True, **k)
 
-        image_count = new_state
+        self.assertEqual(new_state, None, 'returned weights must be NULL for all rows but the last')
+        image_count = k['GD']['agg_image_count']
         self.assertEqual(ending_image_count, image_count)
         self.assertTrue('sess' not in k['GD'])
         self.assertTrue('segment_model' not in k['GD'])
-        self.assertTrue('cache_set' not in k['GD'])
         self.assertTrue(k['GD']['x_train'])
         self.assertTrue(k['GD']['y_train'])
 
@@ -162,7 +161,7 @@ class MadlibKerasFitEvalTransitionTestCase(unittest.TestCase):
             self.dependent_var_shape, self.independent_var_shape,
             self.model.to_json(), None, self.fit_params, 0,
             self.dist_key_mapping, 0, 4, self.total_images_per_seg,
-            self.accessible_gpus_for_seg, self.dummy_prev_weights, True, **kwargs)
+            self.accessible_gpus_for_seg, self.dummy_prev_weights, **kwargs)
 
         image_count = new_state
         self.assertEqual(ending_image_count, image_count)
@@ -172,50 +171,55 @@ class MadlibKerasFitEvalTransitionTestCase(unittest.TestCase):
         starting_image_count = len(self.dependent_var_int)
         ending_image_count = starting_image_count + len(self.dependent_var_int)
 
-        state = starting_image_count
+        kwargs['GD']['agg_image_count'] = starting_image_count
+
         new_state = self.subject.fit_transition(
-            state, self.dependent_var, self.independent_var,
+            None, self.dependent_var, self.independent_var,
             self.dependent_var_shape, self.independent_var_shape,
             self.model.to_json(), None, self.fit_params, 0,
             self.dist_key_mapping, 0, 4, self.total_images_per_seg,
             self.accessible_gpus_for_seg, self.dummy_prev_weights, True, True,
             **kwargs)
 
-        image_count = new_state
+        self.assertEqual(new_state, None, 'returned weights must be NULL for all rows but the last')
+        image_count = kwargs['GD']['agg_image_count']
         self.assertEqual(ending_image_count, image_count)
 
     def test_fit_transition_multiple_model_cache_middle_buffer_pass(self):
         starting_image_count = len(self.dependent_var_int)
         ending_image_count = starting_image_count + len(self.dependent_var_int)
 
-        previous_weights = np.array(self.model_weights, dtype=np.float32)
         x_train = list()
         y_train = list()
         x_train.append(self.subject.np_array_float32(self.independent_var, self.independent_var_shape))
         y_train.append(self.subject.np_array_int16(self.dependent_var, self.dependent_var_shape))
 
-        k = {'GD': {'x_train': x_train, 'y_train': y_train}}
+        k = {'GD': {'x_train': x_train, 'y_train': y_train,
+                    'agg_image_count' : starting_image_count
+                    }
+            }
 
-        state = starting_image_count
         new_state = self.subject.fit_multiple_transition_caching(
-            state, self.dependent_var, self.independent_var,
+            self.dependent_var, self.independent_var,
             self.dependent_var_shape, self.independent_var_shape,
             self.model.to_json(), self.compile_params, self.fit_params, 0,
-            self.dist_key_mapping, 0, 4, self.total_images_per_seg,
-            self.accessible_gpus_for_seg, previous_weights.tostring(), True, **k)
 
-        image_count = new_state
+            self.dist_key_mapping, 0, 4, self.total_images_per_seg,
+            self.accessible_gpus_for_seg, self.serialized_weights, True, **k)
+
+        self.assertEqual(new_state, None, 'returned weights must be NULL for all rows but the last')
+        image_count = k['GD']['agg_image_count']
         self.assertEqual(ending_image_count, image_count)
         self.assertTrue('sess' not in k['GD'])
         self.assertTrue('segment_model' not in k['GD'])
-        self.assertTrue('cache_set' not in k['GD'])
         self.assertTrue(k['GD']['x_train'])
         self.assertTrue(k['GD']['y_train'])
 
     def _test_fit_transition_last_buffer_pass(self, **kwargs):
-
         starting_image_count = 2*len(self.dependent_var_int)
         ending_image_count = starting_image_count + len(self.dependent_var_int)
+
+        kwargs['GD']['agg_image_count'] = starting_image_count
 
         state = starting_image_count
         previous_state = np.array(self.model_weights, dtype=np.float32)
@@ -226,6 +230,7 @@ class MadlibKerasFitEvalTransitionTestCase(unittest.TestCase):
             self.dist_key_mapping, 0, 4, self.total_images_per_seg,
             self.accessible_gpus_for_seg, previous_state.tostring(),
             **kwargs)
+
         state = np.fromstring(new_state, dtype=np.float32)
         image_count = state[0]
         # We need to assert that the weights should be multiplied by final image count.
@@ -287,7 +292,6 @@ class MadlibKerasFitEvalTransitionTestCase(unittest.TestCase):
         starting_image_count = len(self.dependent_var_int)
         ending_image_count = starting_image_count + len(self.dependent_var_int)
 
-
         state = [self.loss * starting_image_count,
                  self.accuracy * starting_image_count, starting_image_count]
 
@@ -310,9 +314,8 @@ class MadlibKerasFitEvalTransitionTestCase(unittest.TestCase):
                                                                      **kwargs):
         starting_image_count = 2*len(self.dependent_var_int)
 
-        state = starting_image_count
         new_state = self.subject.fit_transition(
-            state , self.dependent_var, self.independent_var,
+            None, self.dependent_var, self.independent_var,
             self.dependent_var_shape, self.independent_var_shape,
             self.model.to_json(), None, self.fit_params, 0,
             self.dist_key_mapping, 0, 4, self.total_images_per_seg,
@@ -320,17 +323,15 @@ class MadlibKerasFitEvalTransitionTestCase(unittest.TestCase):
             True, **kwargs)
 
         state = np.fromstring(new_state, dtype=np.float32)
-        weights = np.rint(state[0:]).astype(np.int)
 
         ## image count should not be added to the final state of
         # fit multiple
-        self.assertEqual(len(self.model_weights), len(weights))
+        self.assertEqual(len(self.model_weights), len(state))
 
     def test_fit_transition_multiple_model_cache_last_buffer_pass(self):
         starting_image_count = 2*len(self.dependent_var_int)
         ending_image_count = starting_image_count + len(self.dependent_var_int)
 
-        previous_weights = np.array(self.model_weights, dtype=np.float32)
         x_train = list()
         y_train = list()
         x_train.append(self.subject.np_array_float32(self.independent_var, self.independent_var_shape))
@@ -342,32 +343,34 @@ class MadlibKerasFitEvalTransitionTestCase(unittest.TestCase):
 
         state = starting_image_count
         graph1 = self.subject.tf.get_default_graph()
+
+        k['GD']['agg_image_count'] = starting_image_count
+
         new_state = self.subject.fit_multiple_transition_caching(
-            state, self.dependent_var, self.independent_var,
+            self.dependent_var, self.independent_var,
             self.dependent_var_shape, self.independent_var_shape,
             self.model.to_json(), self.compile_params, self.fit_params, 0,
             self.dist_key_mapping, 0, 4, self.total_images_per_seg,
-            self.accessible_gpus_for_seg, previous_weights.tostring(), False, **k)
+            self.accessible_gpus_for_seg, self.serialized_weights, False, **k)
         graph2 = self.subject.tf.get_default_graph()
         self.assertNotEquals(graph1, graph2)
         state = np.fromstring(new_state, dtype=np.float32)
-        weights = np.rint(state[0:]).astype(np.int)
 
         ## image count should not be added to the final state of
         # fit multiple
-        self.assertEqual(len(self.model_weights), len(weights))
+        self.assertEqual(len(self.model_weights), len(state))
 
         self.assertTrue('sess' not in k['GD'])
         self.assertTrue('segment_model' not in k['GD'])
-        self.assertTrue(k['GD']['cache_set'])
         self.assertTrue(k['GD']['x_train'])
         self.assertTrue(k['GD']['y_train'])
+
+        # TODO:  test is_final_training_call = True
 
     def test_fit_transition_multiple_model_cache_filled_pass(self):
         starting_image_count = 2*len(self.dependent_var_int)
         ending_image_count = starting_image_count + len(self.dependent_var_int)
 
-        previous_weights = np.array(self.model_weights, dtype=np.float32)
         x_train = list()
         y_train = list()
         x_train.append(self.subject.np_array_float32(self.independent_var, self.independent_var_shape))
@@ -380,19 +383,18 @@ class MadlibKerasFitEvalTransitionTestCase(unittest.TestCase):
         self.subject.compile_and_set_weights(self.model, self.compile_params,
                                                      '/cpu:0', self.serialized_weights)
         s1 = self.subject.K.get_session()
-        k = {'GD': {'x_train': x_train, 'y_train': y_train, 'cache_set': True,
+        k = {'GD': {'x_train': x_train, 'y_train': y_train,
                     'sess': s1, 'segment_model': self.model}}
         graph1 = self.subject.tf.get_default_graph()
         new_state = self.subject.fit_multiple_transition_caching(
-            None, self.dependent_var, self.independent_var,
-            self.dependent_var_shape, self.independent_var_shape,
+            None, None,
+            None, None,
             self.model.to_json(), self.compile_params, self.fit_params, 0,
             self.dist_key_mapping, 0, 4, self.total_images_per_seg,
-            self.accessible_gpus_for_seg, previous_weights.tostring(), False, **k)
+            self.accessible_gpus_for_seg, self.serialized_weights, False, **k)
         graph2 = self.subject.tf.get_default_graph()
         self.assertNotEquals(graph1, graph2)
-        state = np.fromstring(new_state, dtype=np.float32)
-        weights = np.rint(state[0:]).astype(np.int)
+        weights = np.fromstring(new_state, dtype=np.float32)
 
         ## image count should not be added to the final state of
         # fit multiple
@@ -400,7 +402,6 @@ class MadlibKerasFitEvalTransitionTestCase(unittest.TestCase):
 
         self.assertTrue('sess' not in k['GD'])
         self.assertTrue('segment_model' not in k['GD'])
-        self.assertTrue(k['GD']['cache_set'])
         self.assertTrue(k['GD']['x_train'])
         self.assertTrue(k['GD']['y_train'])
 
@@ -408,7 +409,6 @@ class MadlibKerasFitEvalTransitionTestCase(unittest.TestCase):
         starting_image_count = 2*len(self.dependent_var_int)
         ending_image_count = starting_image_count + len(self.dependent_var_int)
 
-        previous_weights = np.array(self.model_weights, dtype=np.float32)
         x_train = list()
         y_train = list()
         x_train.append(self.subject.np_array_float32(self.independent_var, self.independent_var_shape))
@@ -418,19 +418,18 @@ class MadlibKerasFitEvalTransitionTestCase(unittest.TestCase):
         x_train.append(self.subject.np_array_float32(self.independent_var, self.independent_var_shape))
         y_train.append(self.subject.np_array_int16(self.dependent_var, self.dependent_var_shape))
 
-        k = {'GD': {'x_train': x_train, 'y_train': y_train, 'cache_set': True}}
+        k = {'GD': {'x_train': x_train, 'y_train': y_train }}
         graph1 = self.subject.tf.get_default_graph()
         new_state = self.subject.fit_multiple_transition_caching(
-            None, self.dependent_var, self.independent_var,
-            self.dependent_var_shape, self.independent_var_shape,
+            None, None,
+            None, None,
             self.model.to_json(), self.compile_params, self.fit_params, 0,
             self.dist_key_mapping, 0, 4, self.total_images_per_seg,
-            self.accessible_gpus_for_seg, previous_weights.tostring(), True, **k)
+            self.accessible_gpus_for_seg, self.serialized_weights, True, **k)
         graph2 = self.subject.tf.get_default_graph()
         self.assertNotEquals(graph1, graph2)
 
-        state = np.fromstring(new_state, dtype=np.float32)
-        weights = np.rint(state[0:]).astype(np.int)
+        weights = np.fromstring(new_state, dtype=np.float32)
 
         ## image count should not be added to the final state of
         # fit multiple
@@ -438,7 +437,6 @@ class MadlibKerasFitEvalTransitionTestCase(unittest.TestCase):
 
         self.assertTrue('sess' not in k['GD'])
         self.assertTrue('segment_model' not in k['GD'])
-        self.assertTrue('cache_set' not in k['GD'])
         self.assertTrue('x_train' not in k['GD'])
         self.assertTrue('y_train' not in k['GD'])
 
@@ -627,6 +625,14 @@ class MadlibKerasFitEvalTransitionTestCase(unittest.TestCase):
         self.assertTrue(iter_sess._closed)
         return iter_sess
 
+    def _init_GD(self, gd):
+        self.subject.compile_and_set_weights(self.model, self.compile_params,
+                                             '/cpu:0', self.serialized_weights)
+        gd = {'segment_model': self.model,
+                    'sess': Mock(),
+                    'agg_image_count' : starting_image_count
+        }
+
     def _assert_keras_session_same_as_gd_session(self, gd):
         sess = self.subject.K.get_session()
         self.assertEquals(sess, gd['sess'])
@@ -639,27 +645,6 @@ class MadlibKerasFitEvalTransitionTestCase(unittest.TestCase):
         self.assertTrue(gd['segment_model'])
 
     ################################################################
-
-    def test_fit_transition_first_tuple_none_ind_var_dep_var(self):
-        k = {}
-        self.assertEqual('dummy_state',
-                         self.subject.fit_transition('dummy_state', [0], None,
-                                                     'noshape', 'noshape',
-                                                     'dummy_model_json', "foo", "bar",
-                                                     1, [0,1,2], 0, 4, [3,3,3], False,
-                                                     [0], 'dummy_prev_state', **k))
-        self.assertEqual('dummy_state',
-                         self.subject.fit_transition('dummy_state', None, [[0.5]],
-                                                     'noshape', 'noshape',
-                                                     'dummy_model_json', "foo", "bar",
-                                                     1, [0,1,2], 0, 4, [3,3,3], False,
-                                                     [0], 'dummy_prev_state', **k))
-        self.assertEqual('dummy_state',
-                         self.subject.fit_transition('dummy_state', None, None,
-                                                     'noshape', 'noshape',
-                                                     'dummy_model_json', "foo", "bar",
-                                                     1, [0,1,2], 0, 4, [3,3,3], False,
-                                                     [0], 'dummy_prev_state', **k))
 
     def test_fit_merge(self):
         image_count = self.total_images_per_seg[0]
@@ -749,7 +734,6 @@ class MadlibKerasFitEvalTransitionTestCase(unittest.TestCase):
     def test_should_compute_metrics_this_iter_every_iter(self):
         res = self.subject.should_compute_metrics_this_iter(2, 1, 5)
         self.assertEqual(True, res)
-
 
 class InternalKerasPredictTestCase(unittest.TestCase):
     def setUp(self):
@@ -1016,16 +1000,12 @@ class MadlibKerasWrapperTestCase(unittest.TestCase):
         target_dict = {'batch_size':2, 'epochs':1, 'verbose':0}
         literal_eval_fit_params = ['batch_size','epochs','verbose','shuffle',
                            'class_weight','initial_epoch','steps_per_epoch']
-        accepted_fit_params = literal_eval_fit_params + ['shuffle']
+        accepted_fit_params = literal_eval_fit_params
         result_params = self.subject.validate_and_literal_eval_keys(
                             test_dict,
                             literal_eval_fit_params,
                             accepted_fit_params)
         self.assertDictEqual(result_params, target_dict)
-
-    def test_parse_and_validate_fit_params(self):
-        result = {'batch_size':2, 'epochs':1, 'verbose':0}
-        self.assertDictEqual(result, self.subject.parse_and_validate_fit_params('batch_size=2, epochs=1, verbose=0'))
 
     def test_parse_and_validate_fit_params(self):
         test_str = "batch_size=2, epochs=1, verbose=0"
