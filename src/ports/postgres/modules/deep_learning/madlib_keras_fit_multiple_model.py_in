@@ -48,6 +48,8 @@ from utilities.utilities import get_seg_number
 from utilities.utilities import get_segments_per_host
 from utilities.utilities import rename_table
 import utilities.debug as DEBUG
+from utilities.debug import plpy_prepare
+from utilities.debug import plpy_execute
 
 DEBUG.timings_enabled = False
 DEBUG.mst_keys_enabled = False
@@ -138,11 +140,17 @@ class FitMultipleModel(object):
         self.info_str = ""
         self.dep_shape_col = add_postfix(mb_dep_var_col, "_shape")
         self.ind_shape_col = add_postfix(mb_indep_var_col, "_shape")
-        self.use_gpus = use_gpus
+        self.use_gpus = use_gpus if use_gpus else False
         self.segments_per_host = get_segments_per_host()
+        self.model_input_tbl = unique_string('model_input')
+        self.model_output_tbl = unique_string('model_output')
+        self.schedule_tbl = unique_string('schedule')
+        self.next_schedule_tbl = unique_string('next_schedule')
         self.cached_source_table = unique_string('cached_source_table')
         self.metrics_elapsed_time_offset = metrics_elapsed_time_offset
-        self.hop_plan_tbl = unique_string('hop_plan')
+        self.rotate_schedule_tbl_plan = self.add_object_maps_plan = None
+        self.hop_plan = self.udf_plan = None
+
         if self.use_gpus:
             self.accessible_gpus_for_seg = get_accessible_gpus_for_seg(
                 self.schema_madlib, self.segments_per_host, self.module_name)
@@ -158,7 +166,6 @@ class FitMultipleModel(object):
         self.model_summary_table = add_postfix(
             self.original_model_output_tbl, '_summary')
 
-        self.model_output_tbl = unique_string('model_output')
         self.warm_start = bool(warm_start)
 
         self.fit_validator_train = FitMultipleInputValidator(
@@ -195,17 +202,12 @@ class FitMultipleModel(object):
             self.dist_key_mapping_valid, self.images_per_seg_valid = \
                 get_image_count_per_seg_for_minibatched_data_from_db(
                     self.validation_table)
-        self.model_input_tbl = unique_string(desp='model_input')
-        self.schedule_tbl = unique_string(desp='schedule')
 
         self.dist_keys = query_dist_keys(self.source_table, self.dist_key_col)
-        DEBUG.plpy.info("init_dist_keys = {0}".format(self.dist_keys))
         self.max_dist_key = sorted(self.dist_keys)[-1]
-        DEBUG.plpy.info("sorted_dist_keys = {0}".format(sorted(self.dist_keys)))
-        DEBUG.plpy.info("max_dist_key = {0}".format(self.max_dist_key))
         self.extra_dist_keys = []
 
-        num_msts = len(self.msts)
+        num_msts = self.num_msts = len(self.msts)
         num_dist_keys = len(self.dist_keys)
 
         if num_msts < num_dist_keys:
@@ -263,7 +265,7 @@ class FitMultipleModel(object):
         """
         final_output_table_create_query = """
                                     DROP TABLE IF EXISTS {self.original_model_output_tbl};
-                                    CREATE TABLE {self.original_model_output_tbl} AS
+                                    CREATE {self.unlogged} TABLE {self.original_model_output_tbl} AS
                                     SELECT
                                         {self.mst_key_col}::INTEGER,
                                         {self.model_weights_col}::BYTEA,
@@ -286,7 +288,6 @@ class FitMultipleModel(object):
                 if hop == 0:
                     start_iteration = time.time()
 
-                DEBUG.print_timing('train_multiple_model_extra')
                 self.run_training(hop, hop==0 and iter==1)
                 DEBUG.start_timing('train_multiple_model_extra')
 
@@ -326,13 +327,9 @@ class FitMultipleModel(object):
             images_per_seg = self.images_per_seg_valid
             self.info_str += "\n\tValidation set after iteration {0}:".format(epoch)
         for mst in self.msts:
-            DEBUG.start_timing('eval_query_weights')
             weights = query_weights(self.model_output_tbl, self.model_weights_col,
                                     self.mst_key_col, mst[self.mst_key_col])
-            DEBUG.print_timing('eval_query_weights')
-            DEBUG.start_timing('eval_get_model_arch_weights')
             model_arch = get_model_arch(self.model_arch_table, mst[self.model_id_col])
-            DEBUG.print_timing('eval_get_model_arch_weights')
             DEBUG.start_timing('eval_compute_loss_and_metrics')
             _, metric, loss = compute_loss_and_metrics(
                 self.schema_madlib, table, "$madlib${0}$madlib$".format(
@@ -353,7 +350,7 @@ class FitMultipleModel(object):
             mst_loss[mst[self.mst_key_col]].append(loss)
             mst_metric[mst[self.mst_key_col]].append(metric)
             self.info_str += "\n\tmst_key={0}: metric={1}, loss={2}".format(mst[self.mst_key_col], metric, loss)
-        DEBUG.start_timing('eval_model_total')
+        DEBUG.print_timing('eval_model_total')
 
     def populate_object_map(self):
         builtin_losses = dir(losses)
@@ -391,11 +388,10 @@ class FitMultipleModel(object):
         self.custom_mst_keys = { mst['mst_key'] for mst in custom_msts }
 
     def init_schedule_tbl(self):
-        self.prev_dist_key_col = '__prev_dist_key__'
         mst_key_list = '[' + ','.join(self.all_mst_keys) + ']'
 
         create_sched_query = """
-            CREATE TABLE {self.schedule_tbl} AS
+            CREATE {self.unlogged_table} TABLE {self.schedule_tbl} AS
                 WITH map AS
                     (SELECT
                         unnest(ARRAY{mst_key_list}) {self.mst_key_col},
@@ -410,13 +406,12 @@ class FitMultipleModel(object):
                     USING ({self.mst_key_col})
             DISTRIBUTED BY ({self.dist_key_col})
         """.format(self=self, mst_key_list=mst_key_list)
-        DEBUG.plpy.execute(create_sched_query)
+        plpy_execute(create_sched_query)
 
     def rotate_schedule_tbl(self):
-        if not hasattr(self, 'rotate_schedule_plan'):
-            self.next_schedule_tbl = unique_string('next_schedule')
+        if self.rotate_schedule_tbl_plan is None:
             rotate_schedule_tbl_query = """
-                CREATE TABLE {self.next_schedule_tbl} AS
+                CREATE {self.unlogged_table} TABLE {self.next_schedule_tbl} AS
                     SELECT
                         {self.mst_key_col},
                         {self.model_id_col},
@@ -427,7 +422,8 @@ class FitMultipleModel(object):
                             FIRST_VALUE({self.dist_key_col})
                                 OVER(ORDER BY {self.dist_key_col})
                         ) AS {self.dist_key_col}
-                    FROM {self.schedule_tbl};
+                    FROM {self.schedule_tbl}
+                DISTRIBUTED BY ({self.prev_dist_key_col})
             """.format(self=self)
             self.rotate_schedule_tbl_plan = plpy.prepare(rotate_schedule_tbl_query)
 
@@ -462,7 +458,7 @@ class FitMultipleModel(object):
                     JOIN {self.original_model_output_tbl} o
                         USING ({self.mst_key_col})
         """.format(self=self)
-        DEBUG.plpy.execute(load_warm_start_weights_query)
+        plpy_execute(load_warm_start_weights_query)
 
         plpy.execute("DROP TABLE IF EXISTS {0}".format(self.model_info_tbl))
 
@@ -490,13 +486,13 @@ class FitMultipleModel(object):
                         ON m.{self.model_id_col} = a.{self.model_id_col}
                 WHERE a.{self.model_weights_col} IS NOT NULL;
         """.format(self=self)
-        DEBUG.plpy.execute(load_xfer_learning_weights_query)
+        plpy_execute(load_xfer_learning_weights_query)
 
     def init_model_output_tbl(self):
         DEBUG.start_timing('init_model_output_and_info')
 
         output_table_create_query = """
-                                    CREATE TABLE {self.model_output_tbl}
+                                    CREATE {self.unlogged_table} TABLE {self.model_output_tbl}
                                     ({self.mst_key_col} INTEGER,
                                      {self.model_weights_col} BYTEA,
                                      {self.model_arch_col} JSON,
@@ -504,8 +500,9 @@ class FitMultipleModel(object):
                                      {self.fit_params_col} TEXT,
                                      {self.object_map_col} BYTEA,
                                      {self.dist_key_col} INTEGER,
-                                     PRIMARY KEY ({self.mst_key_col}, {self.dist_key_col}))
-                                     DISTRIBUTED BY ({self.dist_key_col})
+                                     PRIMARY KEY ({self.dist_key_col}, {self.mst_key_col})
+                                    )
+                                    DISTRIBUTED BY ({self.dist_key_col})
                                     """.format(self=self)
         plpy.execute(output_table_create_query)
 
@@ -522,8 +519,6 @@ class FitMultipleModel(object):
             initialized_msts = set([ row['mst_keys'] for row in res ])
         else:
             initialized_msts = set()
-
-        DEBUG.plpy.info("Pre-initialized mst keys: {}".format(initialized_msts))
 
         # We've already bulk loaded all of the models with user-specified weights.
         #  For the rest of the models, we need to generate the weights for each
@@ -552,7 +547,6 @@ class FitMultipleModel(object):
 
             num_dist_keys = len(self.dist_keys)
 
-            DEBUG.plpy.info("Initializing index {} mst {}".format(index, mst['mst_key']))
             if index < num_dist_keys:
                 dist_key = self.dist_keys[index]
             else:  # For models that won't be trained on first hop
@@ -602,12 +596,13 @@ class FitMultipleModel(object):
             )
 
             # Add object_map to any msts which use custom functions
-            add_object_maps_plan = plpy.prepare("""
-                UPDATE {self.model_output_tbl}
-                    SET {self.object_map_col} = $1
-                        WHERE {self.mst_key_col} IN {custom_keys}
-            """.format(**locals()), ["BYTEA"])
-            DEBUG.plpy.execute(add_object_maps_plan, [self.custom_fn_object_map])
+            if self.add_object_maps_plan is None:
+                self.add_object_maps_plan = plpy.prepare("""
+                    UPDATE {self.model_output_tbl}
+                        SET {self.object_map_col} = $1
+                            WHERE {self.mst_key_col} IN {custom_keys}
+                """.format(**locals()), ["BYTEA"])
+            plpy.execute(self.add_object_maps_plan, [self.custom_fn_object_map])
 
     def init_model_info_tbl(self):
         info_table_create_query = """
@@ -780,8 +775,43 @@ class FitMultipleModel(object):
             self.update_info_table(mst, True)
             if self.validation_table:
                 self.update_info_table(mst, False)
-    
+   
     def run_training(self, hop, is_very_first_hop):
+        """
+               This method is called once per hop from the main fit_multiple_model loop.
+            The hop param here identifies the hop number within an iteration, starting
+            over each iteration at hop 0.  It ranges from 0 to the greater of either
+            the number of model configs in the mst table or the number of segments with
+            data on them.  This ensures that each model config gets paired with each
+            data segment exactly once per iteration.
+
+               If there are more segments than model configs, then there will be some
+            NULL mst_key rows in the model_input & model_output tables.  If instead there
+            are more mst keys than segments, then the models not being trained this round
+            will have "extra" dist keys, meaning dist_key > max_dist_key where max_dist_key
+            is the largest dist key in the source table.  Each of these will be distributed
+            on some segment, but we don't care which.
+
+            There are 2 main tasks performed in run_training():
+                1.)  The actual hop - each of the rows in the model_output table from the
+                     previous round are permuted onto the next segment in a round-robin
+                     fashion... the result is saved as the model_input table for this round.
+                     The bulk of the data in each row is the model weights.  The schedule
+                     table is there to guides each of these models from their previous location
+                     to their new scheduled location, where they will train this round.
+
+                2.)  Calling fit_transition_multiple_model() - We join the model_input
+                     table with the data source table to train the models on the data local
+                     to their segment.  The most important concern here is making sure that
+                     the plan for this query does not redistribute any of the model weights.
+                     The dist keys are carefully chosen so that there should be no data
+                     movement--the only time the model weights move is during the actual
+                     hop.  Without caching, the models are trained one row at a time,
+                     conceptually similar to a UDA.  With caching enabled, all of the
+                     rows are combined in memory on the very first round.  So after that
+                     we replace the source table with an empty table (cached_source_table),
+                     containing only 1 row per segment, with dist keys but no actual data.
+        """
         # NOTE: In the DL module, we want to avoid CREATING TEMP tables
         # (creates a slice which stays until the session is disconnected)
         # or minimize writing queries that generate plans with Motions (creating
@@ -798,28 +828,29 @@ class FitMultipleModel(object):
         if hop > 0:
             DEBUG.print_mst_keys(self.model_output_tbl, 'before_hop')
             DEBUG.start_timing("hop")
-            hop_query = """
-                CREATE {self.unlogged_table} TABLE {self.model_input_tbl} AS
-                    SELECT o.{self.mst_key_col},
-                           o.{self.model_weights_col},
-                           o.{self.model_arch_col},
-                           o.{self.compile_params_col},
-                           o.{self.fit_params_col},
-                           o.{self.object_map_col},
-                           s.{self.dist_key_col}
-                    FROM {self.model_output_tbl} o JOIN {self.schedule_tbl} s
-                        ON o.{self.dist_key_col} = s.{self.prev_dist_key_col}
-                    DISTRIBUTED BY ({self.dist_key_col});
-            """.format(self=self)
 
-            DEBUG.plpy.execute(hop_query)
+            if self.hop_plan is None:
+                self.hop_plan = plpy_prepare("""
+                    CREATE {self.unlogged_table} TABLE {self.model_input_tbl} AS
+                        SELECT o.{self.mst_key_col},
+                               o.{self.model_weights_col},
+                               o.{self.model_arch_col},
+                               o.{self.compile_params_col},
+                               o.{self.fit_params_col},
+                               o.{self.object_map_col},
+                               s.{self.dist_key_col}
+                        FROM {self.model_output_tbl} o JOIN {self.schedule_tbl} s
+                            ON o.{self.dist_key_col} = s.{self.prev_dist_key_col}
+                        DISTRIBUTED BY ({self.dist_key_col})
+                    """.format(self=self)
+                )
+
+            plpy_execute(self.hop_plan)
 
             DEBUG.print_timing("hop")
             DEBUG.print_mst_keys(self.model_input_tbl, 'after_hop')
 
-            DEBUG.start_timing("truncate_output")
             self.truncate_and_drop(self.model_output_tbl)
-            DEBUG.print_timing("truncate_output")
         else:
             # Skip hop if it's the first in an iteration, just rename
             plpy.execute("""
@@ -827,11 +858,10 @@ class FitMultipleModel(object):
                     RENAME TO {self.model_input_tbl}
             """.format(self=self))
  
-        use_gpus = self.use_gpus if self.use_gpus else False
-        ind_shape = self.ind_shape_col
-        dep_shape = self.dep_shape_col
-        dep_var = mb_dep_var_col
-        indep_var = mb_indep_var_col
+        ind_shape_col = self.ind_shape_col
+        dep_shape_col = self.dep_shape_col
+        dep_var_col = mb_dep_var_col
+        indep_var_col = mb_indep_var_col
         source_table = self.source_table
 
         if self.use_caching:
@@ -844,83 +874,72 @@ class FitMultipleModel(object):
             if is_very_first_hop:
                 plpy.execute("""
                     DROP TABLE IF EXISTS {self.cached_source_table};
-                    CREATE TABLE {self.cached_source_table} AS
+                    CREATE {self.unlogged_table} TABLE {self.cached_source_table} AS
                         SELECT {self.dist_key_col} FROM {self.source_table}
                             GROUP BY {self.dist_key_col}
                                 DISTRIBUTED BY({self.dist_key_col});
                     """.format(self=self))
             else:
-                dep_shape = ind_shape = 'NULL'
-                dep_var = indep_var = 'NULL'
+                dep_shape_col = ind_shape_col = 'NULL'
+                dep_var_col = indep_var_col = 'NULL'
                 source_table = self.cached_source_table
 
-        res = plpy.execute("""
-            SELECT count(*)
-            FROM {self.model_input_tbl}
-        """.format(self=self))
-        if res:
-            DEBUG.plpy.info("rows in model_input table: {}".format(res[0]['count']))
-        else:
-            DEBUG.plpy.error("No rows in model_input table!")
-
-#TODO: prepare this statement once, then just fill in the params with execute()
-#      on all the rest of the hops / iterations
-
         DEBUG.start_timing("udf")
-        udf_query = plpy.prepare("""
-            CREATE {self.unlogged_table} TABLE {self.model_output_tbl} AS
-            SELECT
-                model_in.{self.mst_key_col},
-                CASE WHEN model_in.{self.dist_key_col} > {self.max_dist_key}
-                THEN
-                    model_in.{self.model_weights_col}
-                ELSE
-                    {self.schema_madlib}.fit_transition_multiple_model(
-                        {dep_var_col},
-                        {indep_var_col},
-                        {dep_shape},
-                        {ind_shape},
-                        model_in.{self.model_arch_col}::TEXT,
-                        model_in.{self.compile_params_col}::TEXT,
-                        model_in.{self.fit_params_col}::TEXT,
-                        src.{self.dist_key_col},
-                        ARRAY{self.dist_key_mapping},
-                        src.{self.gp_segment_id_col},
-                        {self.segments_per_host},
-                        ARRAY{self.images_per_seg_train},
-                        ARRAY{self.accessible_gpus_for_seg},
-                        model_in.{self.model_weights_col}::BYTEA,
-                        {self.is_final_training_call}::BOOLEAN,
-                        {use_caching}::BOOLEAN,
-                        model_in.{self.object_map_col}::BYTEA
-                    )
-                END::BYTEA AS {self.model_weights_col},
-                model_in.{self.model_arch_col},
-                model_in.{self.compile_params_col},
-                model_in.{self.fit_params_col},
-                model_in.{self.object_map_col},
-                model_in.{self.dist_key_col}
-            FROM {self.model_input_tbl} model_in
-                FULL JOIN {source_table} src
-                USING ({self.dist_key_col}) 
-            DISTRIBUTED BY({self.dist_key_col})
-            """.format(dep_var_col=dep_var,
-                       indep_var_col=indep_var,
-                       dep_shape=dep_shape,
-                       ind_shape=ind_shape,
-                       use_caching=self.use_caching,
-                       source_table=source_table,
-                       self=self
-                       )
-        )
+        if self.udf_plan is None:
+            self.udf_plan = plpy_prepare("""
+                CREATE {self.unlogged_table} TABLE {self.model_output_tbl} AS
+                SELECT
+                    model_in.{self.mst_key_col},
+                    CASE WHEN model_in.{self.dist_key_col} > {self.max_dist_key}
+                    THEN
+                        model_in.{self.model_weights_col}
+                    ELSE
+                        {self.schema_madlib}.fit_transition_multiple_model(
+                            {dep_var_col},
+                            {indep_var_col},
+                            {dep_shape_col},
+                            {ind_shape_col},
+                            model_in.{self.model_arch_col}::TEXT,
+                            model_in.{self.compile_params_col}::TEXT,
+                            model_in.{self.fit_params_col}::TEXT,
+                            src.{self.dist_key_col},
+                            ARRAY{self.dist_key_mapping},
+                            src.{self.gp_segment_id_col},
+                            {self.segments_per_host},
+                            ARRAY{self.images_per_seg_train},
+                            ARRAY{self.accessible_gpus_for_seg},
+                            model_in.{self.model_weights_col}::BYTEA,
+                            $1::BOOLEAN, -- is_final_training_call
+                            {self.use_caching}::BOOLEAN,
+                            model_in.{self.object_map_col}::BYTEA
+                        )
+                    END::BYTEA AS {self.model_weights_col},
+                    model_in.{self.model_arch_col},
+                    model_in.{self.compile_params_col},
+                    model_in.{self.fit_params_col},
+                    model_in.{self.object_map_col},
+                    model_in.{self.dist_key_col}
+                FROM {self.model_input_tbl} model_in
+                    FULL JOIN {source_table} src
+                    USING ({self.dist_key_col}) 
+                DISTRIBUTED BY({self.dist_key_col})
+                """.format(dep_var_col=dep_var_col,
+                           indep_var_col=indep_var_col,
+                           dep_shape_col=dep_shape_col,
+                           ind_shape_col=ind_shape_col,
+                           source_table=source_table,
+                           self=self
+                           ),
+                [ 'BOOLEAN' ]
+            )
 
         try:
-            plpy.execute(udf_query)
+            plpy_execute(self.udf_plan, [ self.is_final_training_call ] )
         except plpy.SPIError as e:
             msg = e.message
-            if not 'TransAggDetail' in msg:
+            if not 'UDF_Detail' in msg:
                 raise e
-            e.message, detail = msg.split('TransAggDetail')
+            e.message, detail = msg.split('UDF_Detail')
             # Extract Traceback from segment, add to
             #  DETAIL of error message on coordinator
             e.args = (e.message,)
@@ -931,30 +950,21 @@ class FitMultipleModel(object):
 
         DEBUG.print_timing("udf")
 
-        res = plpy.execute("""
-            SELECT {self.mst_key_col} AS mst_key, {self.model_weights_col} IS NOT NULL AS weights
-                FROM {self.model_output_tbl}
-        """.format(self=self))
-        if res:
-            null_msts = len([None for row in res if row['mst_key'] is None])
-            null_weights = len([None for row in res if row['weights'] is False])
-            DEBUG.plpy.info(
-                "{} rows total ({} mst_key=NULL and {} weights=NULL) in model_output table."\
-                    .format(res.nrows(), null_msts, null_weights))
-        else:
-            plpy.error("No rows in output of UDF!")
-
         plpy.execute("DELETE FROM {self.model_output_tbl} WHERE model_weights IS NULL".format(self=self))
 
-        DEBUG.start_timing("truncate_input")
         self.truncate_and_drop(self.model_input_tbl)
-        DEBUG.print_timing("truncate_input")
+
+        if self.use_caching and is_very_first_hop:
+            # Throw away plan for source_table, force generation of a new one
+            #  next time for cached_source_table
+            self.udf_plan = None
+
         DEBUG.print_timing("run_training")
 
     def truncate_and_drop(self, table):
         """
         This function truncates and drops one of the intermediate tables used
-        during an iteration (mostly, model_input_tbl and model_output_tbl).
+        during an iteration (model_input_tbl, model_output_tbl, schedule_tbl).
         If available, set the `dev_opt_unsafe_truncate_in_subtransaction` guc 
         so that the truncate command can release the disk space. The disk space
         will be released immediately and hence the model_output table won't grow

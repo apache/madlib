@@ -156,7 +156,7 @@ def fit(schema_madlib, source_table, model, model_arch_table,
     dist_key_mapping, images_per_seg_train = get_image_count_per_seg_for_minibatched_data_from_db(source_table)
 
     if validation_table:
-        seg_ids_val, images_per_seg_val = get_image_count_per_seg_for_minibatched_data_from_db(validation_table)
+        dist_key_mapping_val, images_per_seg_val = get_image_count_per_seg_for_minibatched_data_from_db(validation_table)
 
     # Construct validation dataset if provided
     validation_set_provided = bool(validation_table)
@@ -556,12 +556,11 @@ def fit_transition(state, dependent_var, independent_var, dependent_var_shape,
 
     device_name = get_device_name_and_set_cuda_env(accessible_gpus_for_seg[current_seg_id], current_seg_id)
 
-    with tf.device(device_name):
-        segment_model, sess = get_init_model_and_sess(GD, device_name,
-            accessible_gpus_for_seg[current_seg_id],
-            segments_per_host,
-            model_architecture, compile_params,
-            custom_function_map)
+    segment_model, sess = get_init_model_and_sess(GD, device_name,
+        accessible_gpus_for_seg[current_seg_id],
+        segments_per_host,
+        model_architecture, compile_params,
+        custom_function_map)
 
     if GD_STORE.AGG_IMAGE_COUNT in GD:
         agg_image_count = GD[GD_STORE.AGG_IMAGE_COUNT]
@@ -618,8 +617,9 @@ def fit_multiple_transition_caching(dependent_var, independent_var, dependent_va
     dependent_var_shape and independent_var_shape are passed
     in as None for all hops except the very first hop
     Some things to note in this function are:
-    - weights can be passed in as None for the
-      very first hop and the final training call
+    - weights can be passed in as None for the very first hop
+      and the final training call.  (This can only happen if
+      num msts < num segs)
     - x_train, y_train and cache_set is cleared from GD for
       is_final_training_call = True
     """
@@ -666,24 +666,22 @@ def fit_multiple_transition_caching(dependent_var, independent_var, dependent_va
 
     segment_model = None
     sess = None
+
     if is_last_row:
         device_name = get_device_name_and_set_cuda_env(accessible_gpus_for_seg[current_seg_id], current_seg_id)
-
-        with tf.device(device_name):
-            segment_model, sess = get_init_model_and_sess(GD, device_name,
-                                                          accessible_gpus_for_seg[current_seg_id],
-                                                          segments_per_host,
-                                                          model_architecture, compile_params,
-                                                          custom_function_map)
+        segment_model, sess = get_init_model_and_sess(GD, device_name,
+                                                      accessible_gpus_for_seg[current_seg_id],
+                                                      segments_per_host,
+                                                      model_architecture, compile_params,
+                                                      custom_function_map)
 
         with tf.device(device_name):
             set_model_weights(segment_model, serialized_weights)
             fit_params = parse_and_validate_fit_params(fit_params)
 
-            with tf.device(device_name):
-                for i in range(len(GD['x_train'])):
-                    # Fit segment model on data
-                    segment_model.fit(GD['x_train'][i], GD['y_train'][i], **fit_params)
+            for i in range(len(GD['x_train'])):
+                # Fit segment model on data
+                segment_model.fit(GD['x_train'][i], GD['y_train'][i], **fit_params)
 
     return_state = get_state_to_return(segment_model, is_last_row, True,
                                        agg_image_count)
