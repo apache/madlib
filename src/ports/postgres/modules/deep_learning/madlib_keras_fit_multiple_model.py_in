@@ -311,9 +311,13 @@ class FitMultipleModel(object):
         plpy.execute("DROP TABLE IF EXISTS {self.schedule_tbl}".format(self=self))
         if self.use_caching:
             plpy.execute("DROP TABLE IF EXISTS {self.cached_source_table}".format(self=self))
- 
-    def evaluate_model(self, epoch, table, is_train):
-        DEBUG.start_timing('eval_model_total')
+
+    def evaluate_model(self, iter, table, is_train):
+        if is_train:
+            label = "training"
+        else:
+            label = "validation"
+
         if is_train:
             mst_metric_eval_time = self.train_mst_metric_eval_time
             mst_loss = self.train_mst_loss
@@ -326,11 +330,12 @@ class FitMultipleModel(object):
             mst_metric = self.valid_mst_metric
             seg_ids = self.dist_key_mapping_valid
             images_per_seg = self.images_per_seg_valid
-            self.info_str += "\n\tValidation set after iteration {0}:".format(epoch)
+            self.info_str += "\n\t\n\tValidation set after iteration {0}:".format(iter)
+        total_eval_compute_time = 0
         for mst in self.msts:
             model_arch = get_model_arch(self.model_arch_table, mst[self.model_id_col])
             DEBUG.start_timing('eval_compute_loss_and_metrics')
-            _, metric, loss = compute_loss_and_metrics(
+            eval_compute_time, metric, loss = compute_loss_and_metrics(
                 self.schema_madlib, table, "$madlib${0}$madlib$".format(
                     mst[self.compile_params_col]),
                 model_arch,
@@ -343,12 +348,15 @@ class FitMultipleModel(object):
                 mst[self.object_map_col],
                 self.model_output_tbl,
                 mst[self.mst_key_col])
-            DEBUG.print_timing('eval_compute_loss_and_metrics')
+            total_eval_compute_time += eval_compute_time
             mst_metric_eval_time[mst[self.mst_key_col]] \
                 .append(self.metrics_elapsed_time_offset + (time.time() - self.metrics_elapsed_start_time))
             mst_loss[mst[self.mst_key_col]].append(loss)
             mst_metric[mst[self.mst_key_col]].append(metric)
-            self.info_str += "\n\tmst_key={0}: metric={1}, loss={2}".format(mst[self.mst_key_col], metric, loss)
+            self.info_str += "\n\tmst_key={0}: metric={1}, loss={2}".format(
+                mst[self.mst_key_col], metric, loss)
+        self.info_str += "\n\tTime for evaluating {0} dataset in iteration " \
+                         "{1}: {2}".format(label, iter, total_eval_compute_time)
         DEBUG.print_timing('eval_model_total')
 
     def populate_object_map(self):
@@ -438,7 +446,7 @@ class FitMultipleModel(object):
         """
         For warm start, we need to copy any rows of the model output
         table provided by the user whose mst keys appear in the
-        supplied model selection table.  We also copy over the 
+        supplied model selection table.  We also copy over the
         compile & fit params from the model_selection_table, and
         the dist_key's from the schedule table.
         """
@@ -511,7 +519,7 @@ class FitMultipleModel(object):
         res = plpy.execute("""
             SELECT {self.mst_key_col} AS mst_keys FROM {self.model_output_tbl}
         """.format(self=self))
-       
+
         if res:
             initialized_msts = set([ row['mst_keys'] for row in res ])
         else:
@@ -768,7 +776,7 @@ class FitMultipleModel(object):
             self.update_info_table(mst, True)
             if self.validation_table:
                 self.update_info_table(mst, False)
-   
+
     def run_training(self, hop, is_very_first_hop):
         """
                This method is called once per hop from the main fit_multiple_model loop.
@@ -850,7 +858,7 @@ class FitMultipleModel(object):
                 ALTER TABLE {self.model_output_tbl}
                     RENAME TO {self.model_input_tbl}
             """.format(self=self))
- 
+
         ind_shape_col = self.ind_shape_col
         dep_shape_col = self.dep_shape_col
         dep_var_col = mb_dep_var_col
@@ -972,7 +980,7 @@ class FitMultipleModel(object):
         """
         This function truncates and drops one of the intermediate tables used
         during an iteration (model_input_tbl, model_output_tbl, schedule_tbl).
-        If available, set the `dev_opt_unsafe_truncate_in_subtransaction` guc 
+        If available, set the `dev_opt_unsafe_truncate_in_subtransaction` guc
         so that the truncate command can release the disk space. The disk space
         will be released immediately and hence the model_output table won't grow
         in size with each hop.
