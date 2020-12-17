@@ -51,7 +51,7 @@ import utilities.debug as DEBUG
 from utilities.debug import plpy_prepare
 from utilities.debug import plpy_execute
 
-DEBUG.timings_enabled = False
+DEBUG.timings_enabled = True
 DEBUG.mst_keys_enabled = False
 DEBUG.plpy_execute_enabled = False
 DEBUG.plpy_info_enabled = False
@@ -224,9 +224,9 @@ class FitMultipleModel(object):
 
         random.shuffle(self.msts_for_schedule)
 
-        # Comma-separated list of the mst_keys, including NULL's
-        #  This will be used to pass the mst keys to the db as
-        #  a sql ARRAY[]
+        # Ordered list of sql representations of each mst_key,
+        #  including NULL's.  This will be used to pass the mst keys
+        #  to the db as a sql ARRAY[]
         self.all_mst_keys = [ str(mst['mst_key']) if mst else 'NULL'\
                 for mst in self.msts_for_schedule ]
 
@@ -498,7 +498,7 @@ class FitMultipleModel(object):
                                      {self.fit_params_col} TEXT,
                                      {self.object_map_col} BYTEA,
                                      {self.dist_key_col} INTEGER,
-                                     PRIMARY KEY ({self.dist_key_col}, {self.mst_key_col})
+                                     PRIMARY KEY ({self.dist_key_col})
                                     )
                                     DISTRIBUTED BY ({self.dist_key_col})
                                     """.format(self=self)
@@ -881,6 +881,20 @@ class FitMultipleModel(object):
                 dep_shape_col = ind_shape_col = 'NULL'
                 dep_var_col = indep_var_col = 'NULL'
                 source_table = self.cached_source_table
+
+            if is_very_first_hop or self.is_final_training_call:
+                num_msts = self.num_msts
+                num_segs = len(self.dist_keys)
+                if num_msts < num_segs:
+                    # Add some empty rows, so that cache gets
+                    #  populated or deleted on all segments, not
+                    #  just those with models on them currently.
+                    insert_empty_rows_query = """
+                        INSERT INTO {self.model_input_tbl} (__dist_key__)
+                            SELECT __dist_key__ FROM {self.schedule_tbl}
+                                WHERE {self.mst_key_col} IS NULL
+                    """.format(self=self)
+                    plpy_execute(insert_empty_rows_query)
 
         DEBUG.start_timing("udf")
         if self.udf_plan is None:
