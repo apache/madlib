@@ -58,12 +58,53 @@ def print_mst_keys(table, label, force=False):
         dist_key = r[dist_key_col]
         plpy_orig.info("|_MST_KEYS_{label}|{mst_key}|{seg_id}|{dist_key}|{table}".format(**locals()))
 
+class prep_entry:
+    def __init__(self, sql, args, kwargs):
+        self.sql = sql
+        self.args = args
+        self.kwargs = kwargs
+
+def plpy_prepare(*args, **kwargs):
+    """ debug.plpy.prepare(sql, ..., force=False)
+
+        If you want debug.plpy.execute() to be able
+        to display the query and/or plan for a
+        prepared query, you must call this function
+        (as debug.plpy.prepare() ) in place of
+        regular plpy.prepare().  Otherwise the execute
+        wrapper will not have access to the query string,
+        so you will only get timing info (no plan).
+    """ 
+    force = False
+    if 'force' in kwargs:
+        force = kwargs['force']
+        del kwargs['force']
+
+    plpy = plpy_orig # override global plpy,
+                     # to avoid infinite recursion
+
+    if not (plpy_execute_enabled or force):
+        return plpy.prepare(*args, **kwargs)
+
+    if len(args) < 1:
+        raise TypeError('debug.plpy.execute() takes at least 1 parameter, 0 passed')
+    elif type(sql) != str:
+        raise TypeError('debug.plpy.prepare() takes a str as its 1st parameter')
+
+    sql = args[0]
+    plpy.info(sql)
+
+    plan = plpy_orig.prepare(*args, **kwargs)
+    prep = prep_entry(sql, args[1:], kwargs)
+    plpy_wrapper.prepared_queries[plan] = prep
+    return plan
+
 plpy_execute_enabled = False
 def plpy_execute(*args, **kwargs):
-    """ debug.plpy.execute(sql, ..., force=False)
+    """ debug.plpy.execute(q, ..., force=False)
 
-        Replace plpy.execute(sql, ...) with
-        debug.plpy.execute(sql, ...) to debug
+        Replace plpy.execute(q, ...) with
+        debug.plpy.execute(q, ...) to debug
         a query.  Shows the query itself, the
         EXPLAIN of it, and how long the query
         takes to execute.
@@ -81,17 +122,32 @@ def plpy_execute(*args, **kwargs):
         return plpy.execute(*args, **kwargs)
 
     if len(args) > 0:
-        sql = args[0]
+        q = args[0]
     else:
         raise TypeError('debug.plpy.execute() takes at least 1 parameter, 0 passed')
 
-    if type(sql) == str: # can't print if a PLyPlan object
-        plpy.info(sql)
+    prep = None
+    if type(q) == str:
+        plpy.info(q)
+        sql = q
+    elif repr(type(q)) == "<type 'PLyPlan'>":
+        if q in plpy_wrapper.prepared_queries:
+            prep = plpy_wrapper.prepared_queries[q]
+            sql = prep.sql
+        else:
+            sql = q
+    else:
+        raise TypeError(
+            "First arg of debug.plpy.execute() must be str or <type 'PLyPlan'>, got {}".format(type(q))
+        )
 
-        # Print EXPLAIN of sql command
-        res = plpy.execute("EXPLAIN " + sql, *args[1:], **kwargs)
-        for r in res:
-            plpy.info(r['QUERY PLAN'])
+    # Print EXPLAIN of sql command
+    explain_query = "EXPLAIN" + sql
+    if prep:
+        explain_query = plpy.prepare(explain_query, *prep.args, **prep.kwargs)
+    res = plpy.execute(explain_query, *args[1:], **kwargs)
+    for r in res:
+        plpy.info(r['QUERY PLAN'])
 
     # Run actual sql command, with timing
     start = time.time()
@@ -139,7 +195,12 @@ def plpy_debug(*args, **kwargs):
     else:
         plpy_orig.debug(*args, **kwargs)
 
-class plpy:
+class plpy_wrapper:
+    prepare = staticmethod(plpy_prepare)
     execute = staticmethod(plpy_execute)
     info = staticmethod(plpy_info)
     debug = staticmethod(plpy_debug)
+
+    prepared_queries = dict()
+
+plpy = plpy_wrapper
