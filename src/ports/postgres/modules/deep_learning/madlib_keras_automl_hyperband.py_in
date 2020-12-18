@@ -153,13 +153,13 @@ class AutoMLHyperband(KerasAutoML):
                  model_id_list, compile_params_grid, fit_params_grid, automl_method,
                  automl_params, random_state=None, object_table=None,
                  use_gpus=False, validation_table=None, metrics_compute_frequency=None,
-                 name=None, description=None, **kwargs):
+                 name=None, description=None, use_caching=False, **kwargs):
         automl_method = automl_method if automl_method else AutoMLConstants.HYPERBAND
         automl_params = automl_params if automl_params else 'R=6, eta=3, skip_last=0'
         KerasAutoML.__init__(self, schema_madlib, source_table, model_output_table, model_arch_table,
                              model_selection_table, model_id_list, compile_params_grid, fit_params_grid,
                              automl_method, automl_params, random_state, object_table, use_gpus,
-                             validation_table, metrics_compute_frequency, name, description, **kwargs)
+                             validation_table, metrics_compute_frequency, name, description, use_caching, **kwargs)
         self.validate_and_define_inputs()
         self.create_model_output_table()
         self.create_model_output_info_table()
@@ -245,17 +245,23 @@ class AutoMLHyperband(KerasAutoML):
             self.reconstruct_temp_mst_table(i, ranges_dict, configs_prune_lookup) # has keys to evaluate
             active_keys = plpy.execute("SELECT {ModelSelectionSchema.MST_KEY} " \
                                        "FROM {AutoMLSchema.MST_TABLE}".format(AutoMLSchema=AutoMLConstants,
-                                                                                   ModelSelectionSchema=ModelSelectionSchema))
+                                                                              ModelSelectionSchema=ModelSelectionSchema))
             for k in active_keys:
                 i_dict[k[ModelSelectionSchema.MST_KEY]] += 1
             self.warm_start = int(i != 0)
             mcf = self.metrics_compute_frequency if self._is_valid_metrics_compute_frequency(num_iterations) else None
             start_time = time.time()
             with SetGUC("plan_cache_mode", "force_generic_plan"):
-                model_training = FitMultipleModel(self.schema_madlib, self.source_table, AutoMLConstants.MODEL_OUTPUT_TABLE,
-                                                AutoMLConstants.MST_TABLE, num_iterations, self.use_gpus,
-                                                self.validation_table, mcf, self.warm_start, self.name, self.description,
-						 metrics_elapsed_time_offset=metrics_elapsed_time_offset)
+                model_training = FitMultipleModel(self.schema_madlib,
+                                                  self.source_table,
+                                                  AutoMLConstants.MODEL_OUTPUT_TABLE,
+                                                  AutoMLConstants.MST_TABLE,
+                                                  num_iterations, self.use_gpus,
+                                                  self.validation_table, mcf,
+                                                  self.warm_start, self.name,
+                                                  self.description,
+                                                  self.use_caching,
+                                                  metrics_elapsed_time_offset)
                 model_training.fit_multiple_model()
             metrics_elapsed_time_offset += time.time() - start_time
             self.update_model_output_table()
