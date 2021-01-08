@@ -331,6 +331,29 @@ SELECT assert(
     normalizing_const = 1, 'Output summary table validation failed. Actual:' || __to_char(summary)
 ) FROM (SELECT * FROM automl_output_summary) summary;
 
+-- Validate metrics_elapsed_time
+-- We know that the schedule for the above automl query looks like
+--  s | i | n_i | r_i
+-- ---+---+-----+-----
+--  1 | 0 |   3 |   2
+--  1 | 1 |   1 |   6
+--  0 | 0 |   2 |   6
+-- So we can make 3 assertions:
+-- 1. The metrics_elapsed_time array should have cumulative time for each mst
+-- 2. Within the same bracket, we know that one mst is run for 8 iterations and
+--    the other two are run for 2 iterations. So we can assert that the 3rd iteration
+--    time for (s=1,i=1) > the 2nd iteration time of any of the other two (s=1,i=0)
+-- 3. Within different brackets (s=1,i=0) and (s=0,i=0), we know that the 1st iteration of
+--    the former > last/2nd iteration time of the latter
+
+SELECT  assert(metrics_elapsed_time = ARRAY(SELECT unnest(metrics_elapsed_time) ORDER BY 1),
+     'metrics_elapsed_time is not cumulative over iterations for one or more msts') FROM automl_output_info  metrics_iters;
+SELECT assert(t1.metrics_elapsed_time[2] < t2.metrics_elapsed_time[3] , 'metrics_elapsed_time is not
+    cumulative within the same bracket.') FROM (SELECT * FROM automl_output_info WHERE s=1 and i = 0) t1, (SELECT * FROM automl_output_info WHERE s=1 and i = 1) t2;
+SELECT assert(t1.metrics_elapsed_time[2] < t2.metrics_elapsed_time[1] , 'metrics_elapsed_time is not
+    cumulative between two brackets.') FROM (SELECT * FROM automl_output_info WHERE s=1 and i = 0) t1,
+    (SELECT * FROM automl_output_info WHERE s=0 and i =0) t2;
+
 -- Validate output info table for s and i NOT NULL
 SELECT assert(
     metrics_iters IS NOT NULL AND
