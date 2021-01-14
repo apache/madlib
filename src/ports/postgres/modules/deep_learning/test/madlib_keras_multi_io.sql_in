@@ -1,0 +1,121 @@
+/* ---------------------------------------------------------------------*//**
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ *
+ *//* ---------------------------------------------------------------------*/
+
+\i m4_regexp(MODULE_PATHNAME,
+             `\(.*\)libmadlib\.so',
+             `\1../../modules/deep_learning/test/madlib_keras_iris.setup.sql_in'
+)
+
+\i m4_regexp(MODULE_PATHNAME,
+             `\(.*\)libmadlib\.so',
+             `\1../../modules/deep_learning/test/madlib_keras_custom_function.setup.sql_in'
+)
+
+m4_include(`SQLCommon.m4')
+
+-- Test multi io
+DROP TABLE IF EXISTS iris_model, iris_model_summary;
+SELECT madlib_keras_fit('iris_mult_packed',
+                        'iris_model',
+                        'iris_model_arch',
+                        3,
+                        $$ loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'] $$::text,
+                        $$ batch_size=5, epochs=3 $$::text,
+                        2,
+                        NULL,
+                        'iris_mult_val');
+
+-- Run Evaluate
+DROP TABLE IF EXISTS evaluate_out;
+SELECT madlib_keras_evaluate(
+    'iris_model',
+    'iris_mult_val',
+    'evaluate_out',
+    FALSE);
+
+-- Run Predict
+DROP TABLE IF EXISTS iris_predict;
+SELECT madlib_keras_predict(
+    'iris_model',
+    'iris_mult',
+    'id',
+    'attributes, attributes2',
+    'iris_predict',
+    0.5,
+    FALSE);
+
+-- Warm Start
+
+DROP TABLE IF EXISTS iris_model_first_run;
+CREATE TABLE iris_model_first_run AS
+SELECT training_loss_final, training_metrics_final
+FROM iris_model_summary;
+
+SELECT madlib_keras_fit('iris_mult_packed',
+                        'iris_model',
+                        'iris_model_arch',
+                        3,
+                        $$ loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'] $$::text,
+                        $$ batch_size=5, epochs=3 $$::text,
+                        2,
+                        NULL,
+                        'iris_mult_val',
+                        1,
+                        TRUE);
+
+-- Transfer Learning
+
+DROP TABLE IF EXISTS iris_model_arch_multi;
+CREATE TABLE iris_model_arch_multi AS
+SELECT * FROM iris_model_arch WHERE model_id = 3;
+
+UPDATE iris_model_arch_multi set model_weights = (select model_weights from iris_model);
+
+DROP TABLE IF EXISTS iris_model_transfer, iris_model_transfer_summary;
+SELECT madlib_keras_fit('iris_mult_packed',
+                        'iris_model_transfer',
+                        'iris_model_arch_multi',
+                        3,
+                        $$ loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'] $$::text,
+                        $$ batch_size=5, epochs=3 $$::text,
+                        2,
+                        NULL,
+                        'iris_mult_val');
+
+-- Custom Function
+
+DROP TABLE IF EXISTS test_custom_function_table;
+SELECT load_custom_function('test_custom_function_table', custom_function_zero_object(), 'test_custom_fn', 'returns test_custom_fn');
+SELECT load_custom_function('test_custom_function_table', custom_function_one_object(), 'test_custom_fn1', 'returns test_custom_fn1');
+
+DROP TABLE if exists iris_model, iris_model_summary, iris_model_info;
+SELECT madlib_keras_fit(
+    'iris_mult_packed',
+    'iris_model',
+    'iris_model_arch',
+    3,
+    $$ loss='test_custom_fn', optimizer='adam', metrics=['test_custom_fn1'] $$::text,
+    $$ batch_size=5, epochs=3 $$::text,
+    2,
+    FALSE, NULL, 1, NULL, NULL, NULL,
+    'test_custom_function_table'
+);
+

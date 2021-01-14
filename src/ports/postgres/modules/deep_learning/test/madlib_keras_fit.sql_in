@@ -46,41 +46,40 @@ SELECT madlib_keras_fit(
     'cifar_10_sample_val');
 
 SELECT assert(
-        model_arch_table = 'model_arch' AND
-        model_id = 1 AND
-        model_type = 'madlib_keras' AND
-        start_training_time         < now() AND
-        end_training_time > start_training_time AND
-        source_table = 'cifar_10_sample_batched' AND
-        validation_table = 'cifar_10_sample_val' AND
-        model = 'keras_saved_out' AND
-        dependent_varname = 'y' AND
-        dependent_vartype = 'smallint' AND
-        independent_varname = 'x' AND
-        normalizing_const = 255.0 AND
-        pg_typeof(normalizing_const) = 'real'::regtype AND
-        name is NULL AND
-        description is NULL AND
-        object_table is NULL AND
-        model_size > 0 AND
-        madlib_version is NOT NULL AND
-        compile_params = $$ optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['mae']$$::text AND
-        fit_params = $$ batch_size=2, epochs=1, verbose=0 $$::text AND
-        num_iterations = 3 AND
-        metrics_compute_frequency = 3 AND
-        num_classes = 2 AND
-        class_values = '{0,1}' AND
-        metrics_type = '{mae}' AND
-        training_metrics_final >= 0  AND
-        training_loss_final  >= 0  AND
-        array_upper(training_metrics, 1) = 1 AND
-        array_upper(training_loss, 1) = 1 AND
-        array_upper(metrics_elapsed_time, 1) = 1 AND
-        validation_metrics_final >= 0 AND
-        validation_loss_final  >= 0  AND
-        array_upper(validation_metrics, 1) = 1 AND
-        array_upper(validation_loss, 1) = 1 ,
-        'Keras model output Summary Validation failed. Actual:' || __to_char(summary))
+    model_arch_table = 'model_arch' AND
+    model_id = 1 AND
+    model_type = 'madlib_keras' AND
+    start_training_time         < now() AND
+    end_training_time > start_training_time AND
+    source_table = 'cifar_10_sample_batched' AND
+    validation_table = 'cifar_10_sample_val' AND
+    model = 'keras_saved_out' AND
+    dependent_varname[0] = 'y' AND
+    dependent_vartype[0] = 'smallint' AND
+    independent_varname[0] = 'x' AND
+    normalizing_const = 255.0 AND
+    pg_typeof(normalizing_const) = 'real'::regtype AND
+    name is NULL AND
+    description is NULL AND
+    object_table is NULL AND
+    model_size > 0 AND
+    madlib_version is NOT NULL AND
+    compile_params = $$ optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['mae']$$::text AND
+    fit_params = $$ batch_size=2, epochs=1, verbose=0 $$::text AND
+    num_iterations = 3 AND
+    metrics_compute_frequency = 3 AND
+    num_classes[0] = 2 AND
+    metrics_type = '{mae}' AND
+    training_metrics_final >= 0  AND
+    training_loss_final  >= 0  AND
+    array_upper(training_metrics, 1) = 1 AND
+    array_upper(training_loss, 1) = 1 AND
+    array_upper(metrics_elapsed_time, 1) = 1 AND
+    validation_metrics_final >= 0 AND
+    validation_loss_final  >= 0  AND
+    array_upper(validation_metrics, 1) = 1 AND
+    array_upper(validation_loss, 1) = 1 ,
+    'Keras model output Summary Validation failed. Actual:' || __to_char(summary))
 FROM (SELECT * FROM keras_saved_out_summary) summary;
 
 SELECT assert(
@@ -139,8 +138,9 @@ SELECT madlib_keras_fit(
 SELECT assert(
     source_table = 'cifar_10_sample_batched' AND
     model = 'keras_out' AND
-    dependent_varname = 'y' AND
-    independent_varname = 'x' AND
+    dependent_varname[0] = 'y' AND
+    dependent_vartype[0] = 'smallint' AND
+    independent_varname[0] = 'x' AND
     model_arch_table = 'model_arch' AND
     model_id = 1 AND
     compile_params = $$ optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['accuracy']$$::text AND
@@ -155,10 +155,8 @@ SELECT assert(
     start_training_time         < now() AND
     end_training_time > start_training_time AND
     array_upper(metrics_elapsed_time, 1) = 2 AND
-    dependent_vartype = 'smallint' AND
     madlib_version is NOT NULL AND
-    num_classes = 2 AND
-    class_values = '{0,1}' AND
+    num_classes[0] = 2 AND
     metrics_type = '{accuracy}' AND
     normalizing_const = 255.0 AND
     training_metrics_final is not NULL AND
@@ -295,7 +293,7 @@ SELECT madlib_keras_fit(
 -- induce failure by passing a non numeric column
 DROP TABLE IF EXISTS cifar_10_sample_val_failure;
 CREATE TABLE cifar_10_sample_val_failure AS SELECT * FROM cifar_10_sample_val;
-ALTER TABLE cifar_10_sample_val_failure rename dependent_var to dependent_var_original;
+ALTER TABLE cifar_10_sample_val_failure rename y to dependent_var_original;
 ALTER TABLE cifar_10_sample_val_failure rename buffer_id to dependent_var;
 DROP TABLE IF EXISTS keras_out, keras_out_summary;
 SELECT assert(trap_error($TRAP$SELECT madlib_keras_fit(
@@ -316,40 +314,40 @@ SELECT assert(trap_error($TRAP$SELECT madlib_keras_fit(
 DROP TABLE IF EXISTS cifar_10_sample_text_batched;
 m4_changequote(`<!', `!>')
 CREATE TABLE cifar_10_sample_text_batched AS
-    SELECT buffer_id, independent_var, dependent_var,
-      independent_var_shape, dependent_var_shape
+    SELECT buffer_id, x, y,
+      x_shape, y_shape
       m4_ifdef(<!__POSTGRESQL__!>, <!!>, <!, __dist_key__ !>)
     FROM cifar_10_sample_batched m4_ifdef(<!__POSTGRESQL__!>, <!!>, <! DISTRIBUTED BY (__dist_key__) !>);
 
 -- Insert a new row with NULL as the dependent var (one-hot encoded)
 UPDATE cifar_10_sample_text_batched
-	SET dependent_var = convert_array_to_bytea(ARRAY[0,0,1,0,0]::smallint[]) WHERE buffer_id=0;
+	SET y = convert_array_to_bytea(ARRAY[0,0,1,0,0]::smallint[]) WHERE buffer_id=0;
 UPDATE cifar_10_sample_text_batched
-	SET dependent_var = convert_array_to_bytea(ARRAY[0,1,0,0,0]::smallint[]) WHERE buffer_id=1;
-INSERT INTO cifar_10_sample_text_batched(m4_ifdef(<!__POSTGRESQL__!>, <!!>, <! __dist_key__, !>) buffer_id, independent_var, dependent_var, independent_var_shape, dependent_var_shape)
-    SELECT m4_ifdef(<!__POSTGRESQL__!>, <!!>, <! __dist_key__, !>) 2 AS buffer_id, independent_var,
-        convert_array_to_bytea(ARRAY[0,1,0,0,0]::smallint[]) AS dependent_var,
-        independent_var_shape, dependent_var_shape
+	SET y = convert_array_to_bytea(ARRAY[0,1,0,0,0]::smallint[]) WHERE buffer_id=1;
+INSERT INTO cifar_10_sample_text_batched(m4_ifdef(<!__POSTGRESQL__!>, <!!>, <! __dist_key__, !>) buffer_id, x, y, x_shape, y_shape)
+    SELECT m4_ifdef(<!__POSTGRESQL__!>, <!!>, <! __dist_key__, !>) 2 AS buffer_id, x,
+        convert_array_to_bytea(ARRAY[0,1,0,0,0]::smallint[]) AS y,
+        x_shape, y_shape
     FROM cifar_10_sample_batched WHERE cifar_10_sample_batched.buffer_id=0;
-UPDATE cifar_10_sample_text_batched SET dependent_var_shape = ARRAY[1,5];
+UPDATE cifar_10_sample_text_batched SET y_shape = ARRAY[1,5];
 
 -- Create the necessary summary table for the batched input.
 DROP TABLE IF EXISTS cifar_10_sample_text_batched_summary;
 CREATE TABLE cifar_10_sample_text_batched_summary(
     source_table text,
     output_table text,
-    dependent_varname text,
-    independent_varname text,
-    dependent_vartype text,
-    class_values text[],
+    dependent_varname text[],
+    independent_varname text[],
+    dependent_vartype text[],
+    y_class_values text[],
     buffer_size integer,
     normalizing_const numeric);
 INSERT INTO cifar_10_sample_text_batched_summary values (
     'cifar_10_sample',
     'cifar_10_sample_text_batched',
-    'y_text',
-    'x',
-    'text',
+    ARRAY['y'],
+    ARRAY['x'],
+    ARRAY['text'],
     ARRAY[NULL,'cat','dog',NULL,NULL],
     1,
     255.0);
@@ -363,10 +361,10 @@ SELECT madlib_keras_fit(
     $$ optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['accuracy']$$::text,
     $$ batch_size=2, epochs=1, verbose=0 $$::text,
     3);
--- Assert fit has correct class_values
+-- Assert fit has correct dependent_vartype
+SELECT * FROM keras_saved_out_summary;
 SELECT assert(
-    dependent_vartype = 'text' AND
-    class_values = '{NULL,cat,dog,NULL,NULL}',
+    dependent_vartype[0] = 'text',
     'Keras model output Summary Validation failed. Actual:' || __to_char(summary))
 FROM (SELECT * FROM keras_saved_out_summary) summary;
 
@@ -384,7 +382,7 @@ WHERE y = 1;
 
 DROP TABLE IF EXISTS cifar_10_sample_int_batched;
 DROP TABLE IF EXISTS cifar_10_sample_int_batched_summary;
-SELECT training_preprocessor_dl('cifar_10_sample','cifar_10_sample_int_batched','y','x', 2, 255, 5);
+SELECT training_preprocessor_dl('cifar_10_sample','cifar_10_sample_int_batched','y','x', 2, 255, ARRAY[5]);
 
 DROP TABLE IF EXISTS keras_saved_out, keras_saved_out_summary;
 SELECT madlib_keras_fit(
@@ -396,10 +394,10 @@ SELECT madlib_keras_fit(
     $$ batch_size=2, epochs=1, verbose=0 $$::text,
     3);
 
+SELECT * FROM keras_saved_out_summary;
 -- Assert fit has correct class_values
 SELECT assert(
-    dependent_vartype = 'smallint' AND
-    class_values = '{NULL,0,1,4,5}',
+    dependent_vartype[0] = 'smallint',
     'Keras model output Summary Validation failed. Actual:' || __to_char(summary))
 FROM (SELECT * FROM keras_saved_out_summary) summary;
 

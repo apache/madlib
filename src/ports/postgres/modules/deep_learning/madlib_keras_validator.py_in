@@ -53,11 +53,12 @@ import tensorflow.keras.metrics as metrics
 class InputValidator:
     @staticmethod
     def validate_predict_evaluate_tables(
-        module_name, model_table, model_summary_table, test_table, output_table,
-        independent_varname):
+        module_name, model_table, model_summary_table, test_table, output_table):
         InputValidator._validate_model_weights_tbl(module_name, model_table)
         InputValidator._validate_model_summary_tbl(
             module_name, model_summary_table)
+        independent_varname = plpy.execute("SELECT {0} FROM {1}".format(
+            "independent_varname", model_summary_table))[0]["independent_varname"]
         InputValidator._validate_test_tbl(
             module_name, test_table, independent_varname)
         output_tbl_valid(output_table, module_name)
@@ -118,54 +119,53 @@ class InputValidator:
         this case is 1 (start the index at 1).
         """
 
+        shapes = []
         if is_minibatched:
-            ind_shape_col = add_postfix(independent_varname, "_shape")
-            query = """
-                SELECT {ind_shape_col} AS shape
-                FROM {table}
-                LIMIT 1
-            """.format(**locals())
-            # This query will fail if an image in independent var does not have the
-            # same number of dimensions as the input_shape.
-            result = plpy.execute(query)[0]['shape']
-            result = result[1:]
+            for i in independent_varname:
+                ind_shape_col = add_postfix(i, "_shape")
+                query = """
+                    SELECT {ind_shape_col} AS shape
+                    FROM {table}
+                    LIMIT 1
+                """.format(**locals())
+                # This query will fail if an image in independent var does not have the
+                # same number of dimensions as the input_shape.
+                result = plpy.execute(query)
+                result = result[0]['shape']
+                shapes.append(result[1:])
         else:
-            array_upper_query = ", ".join("array_upper({0}, {1}) AS n_{2}".format(
-                independent_varname, i+offset, i) for i in range(len(input_shape)))
-            query = """
-                SELECT {0}
-                FROM {1}
-                LIMIT 1
-            """.format(array_upper_query, table)
-
-            # This query will fail if an image in independent var does not have the
-            # same number of dimensions as the input_shape.
-            result = plpy.execute(query)[0]
-
-        _assert(len(result) == len(input_shape),
+            for counter, ind in enumerate(independent_varname):
+                array_upper_query = ", ".join("array_upper({0}, {1})".format(
+                    ind, i+offset, i) for i in range(len(input_shape[counter])))
+                query = """
+                    SELECT ARRAY[{0}] AS shape
+                    FROM {1}
+                    LIMIT 1
+                """.format(array_upper_query, table)
+                # This query will fail if an image in independent var does not have the
+                # same number of dimensions as the input_shape.
+                result = plpy.execute(query)
+                result = result[0]['shape']
+                shapes.append(result)
+        _assert(len(shapes) == len(input_shape),
             "model_keras error: The number of dimensions ({0}) of each image"
             " in model architecture and {1} in {2} ({3}) do not match.".format(
                 len(input_shape), independent_varname, table, len(result)))
 
         for i in range(len(input_shape)):
-            if is_minibatched:
-                key_name = i
-                input_shape_from_table = [result[j]
-                    for j in range(len(input_shape))]
-            else:
-                key_format = "n_{0}"
-                key_name = key_format.format(i)
-                input_shape_from_table = [result[key_format.format(j)]
-                    for j in range(len(input_shape))]
 
-            if result[key_name] != input_shape[i]:
-                # Construct the shape in independent varname to display
-                # meaningful error msg.
-                plpy.error("model_keras error: Input shape {0} in the model"
-                    " architecture does not match the input shape {1} of column"
-                    " {2} in table {3}.".format(
-                        input_shape, input_shape_from_table,
-                        independent_varname, table))
+            local_input_shape = input_shape[i]
+            local_arch_shape = shapes[i]
+
+            for j in range(len(local_input_shape)):
+                if local_arch_shape[j] != local_input_shape[j]:
+                    # Construct the shape in independent varname to display
+                    # meaningful error msg.
+                    plpy.error("model_keras error: Input shape {0} in the model"
+                        " architecture does not match the input shape {1} of column"
+                        " {2} in table {3}.".format(
+                            local_input_shape[j], local_arch_shape[j],
+                            independent_varname, table))
 
     @staticmethod
     def validate_model_arch_table(module_name, model_arch_table, model_id):
@@ -184,14 +184,15 @@ class InputValidator:
     def validate_class_values(module_name, class_values, pred_type, model_arch):
         if not class_values:
             return
-        num_classes = len(class_values)
-        _assert(num_classes == get_num_classes(model_arch),
+        num_classes = [len(i) for i in class_values]
+        _assert(num_classes == get_num_classes(model_arch, len(class_values)),
                 "{0}: The number of class values do not match the " \
                 "provided architecture.".format(module_name))
-        if pred_type == 'prob' and num_classes+1 >= 1600:
-            plpy.error({"{0}: The output will have {1} columns, exceeding the "\
-                " max number of columns that can be created (1600)".format(
-                    module_name, num_classes+1)})
+        for i in num_classes:
+            if pred_type == 'prob' and i+1 >= 1600:
+                plpy.error({"{0}: The output will have {1} columns, exceeding the "\
+                    " max number of columns that can be created (1600)".format(
+                        module_name, i+1)})
 
     @staticmethod
     def validate_model_weights(module_name, model_arch, model_weights):
@@ -217,19 +218,19 @@ class InputValidator:
     @staticmethod
     def _validate_test_tbl(module_name, test_table, independent_varname):
         input_tbl_valid(test_table, module_name)
-        _assert(is_var_valid(test_table, independent_varname),
+        for i in independent_varname:
+            _assert(is_var_valid(test_table, i),
                 "{module_name} error: invalid independent_varname "
-                "('{independent_varname}') for test table "
+                "('{i}') for test table "
                 "({table}).".format(
                     module_name=module_name,
-                    independent_varname=independent_varname,
+                    i=i,
                     table=test_table))
 
     @staticmethod
     def _validate_model_summary_tbl(module_name, model_summary_table):
         input_tbl_valid(model_summary_table, module_name)
-        cols_to_check_for = [CLASS_VALUES_COLNAME,
-                             DEPENDENT_VARNAME_COLNAME,
+        cols_to_check_for = [DEPENDENT_VARNAME_COLNAME,
                              DEPENDENT_VARTYPE_COLNAME,
                              MODEL_ID_COLNAME,
                              MODEL_ARCH_TABLE_COLNAME,
@@ -260,9 +261,10 @@ class InputValidator:
 class FitCommonValidator(object):
     def __init__(self, source_table, validation_table, output_model_table,
                  model_arch_table, model_id, dependent_varname,
-                 independent_varname, num_iterations,
+                 independent_varname, dep_shape_cols, ind_shape_cols, num_iterations,
                  metrics_compute_frequency, warm_start,
-                 use_gpus, accessible_gpus_for_seg, module_name, object_table):
+                 use_gpus, accessible_gpus_for_seg, module_name, object_table,
+                 val_dep_var, val_ind_var):
         self.source_table = source_table
         self.validation_table = validation_table
         self.output_model_table = output_model_table
@@ -270,8 +272,8 @@ class FitCommonValidator(object):
         self.model_id = model_id
         self.dependent_varname = dependent_varname
         self.independent_varname = independent_varname
-        self.dep_shape_col = add_postfix(dependent_varname, "_shape")
-        self.ind_shape_col = add_postfix(independent_varname, "_shape")
+        self.dep_shape_cols = dep_shape_cols
+        self.ind_shape_cols = ind_shape_cols
         self.metrics_compute_frequency = metrics_compute_frequency
         self.warm_start = warm_start
         self.num_iterations = num_iterations
@@ -285,6 +287,9 @@ class FitCommonValidator(object):
                 self.output_model_table, "_summary")
         self.accessible_gpus_for_seg = accessible_gpus_for_seg
         self.module_name = module_name
+        self.val_dep_var = val_dep_var
+        self.val_ind_var = val_ind_var
+
         self._validate_common_args()
         if use_gpus:
             InputValidator._validate_gpu_config(self.module_name,
@@ -300,20 +305,17 @@ class FitCommonValidator(object):
         if self.object_table is not None:
             input_tbl_valid(self.object_table, self.module_name)
             cols_in_tbl_valid(self.object_table, CustomFunctionSchema.col_names, self.module_name)
-        input_tbl_valid(self.source_summary_table, self.module_name,
-                        error_suffix_str="Please ensure that the source table ({0}) "
-                                         "has been preprocessed by "
-                                         "the image preprocessor.".format(self.source_table))
-        cols_in_tbl_valid(self.source_summary_table, [CLASS_VALUES_COLNAME,
-            NORMALIZING_CONST_COLNAME, DEPENDENT_VARTYPE_COLNAME,
+
+        cols_in_tbl_valid(self.source_summary_table,
+            [NORMALIZING_CONST_COLNAME, DEPENDENT_VARTYPE_COLNAME,
             'dependent_varname', 'independent_varname'], self.module_name)
         if not is_platform_pg():
             cols_in_tbl_valid(self.source_table, [DISTRIBUTION_KEY_COLNAME], self.module_name)
 
         # Source table and validation tables must have the same schema
         self._validate_input_table(self.source_table)
-        validate_bytea_var_for_minibatch(self.source_table,
-                                         self.dependent_varname)
+        for i in self.dependent_varname:
+            validate_bytea_var_for_minibatch(self.source_table, i)
 
         self._validate_validation_table()
         if self.warm_start:
@@ -323,42 +325,50 @@ class FitCommonValidator(object):
             output_tbl_valid(self.output_model_table, self.module_name)
             output_tbl_valid(self.output_summary_model_table, self.module_name)
 
-    def _validate_input_table(self, table):
-        _assert(is_var_valid(table, self.independent_varname),
+    def _validate_input_table(self, table, is_validation_table=False):
+
+        independent_varname = self.val_ind_var if is_validation_table else self.independent_varname
+        dependent_varname = self.val_dep_var if is_validation_table else self.dependent_varname
+
+        for name in independent_varname:
+            _assert(is_var_valid(table, name),
                 "{module_name}: invalid independent_varname "
                 "('{independent_varname}') for table ({table}). "
                 "Please ensure that the input table ({table}) "
                 "has been preprocessed by the image preprocessor.".format(
                     module_name=self.module_name,
-                    independent_varname=self.independent_varname,
+                    independent_varname=name,
                     table=table))
 
-        _assert(is_var_valid(table, self.dependent_varname),
+        for name in dependent_varname:
+            _assert(is_var_valid(table, name),
                 "{module_name}: invalid dependent_varname "
                 "('{dependent_varname}') for table ({table}). "
                 "Please ensure that the input table ({table}) "
                 "has been preprocessed by the image preprocessor.".format(
                     module_name=self.module_name,
-                    dependent_varname=self.dependent_varname,
+                    dependent_varname=name,
                     table=table))
+        if not is_validation_table:
+            for name in self.ind_shape_cols:
+                _assert(is_var_valid(table, name),
+                    "{module_name}: invalid independent_var_shape "
+                    "('{ind_shape_col}') for table ({table}). "
+                    "Please ensure that the input table ({table}) "
+                    "has been preprocessed by the image preprocessor.".format(
+                        module_name=self.module_name,
+                        ind_shape_col=name,
+                        table=table))
 
-        _assert(is_var_valid(table, self.ind_shape_col),
-                "{module_name}: invalid independent_var_shape "
-                "('{ind_shape_col}') for table ({table}). "
-                "Please ensure that the input table ({table}) "
-                "has been preprocessed by the image preprocessor.".format(
-                    module_name=self.module_name,
-                    ind_shape_col=self.ind_shape_col,
-                    table=table))
-
-        _assert(is_var_valid(table, self.dep_shape_col),
-                "{module_name}: invalid dependent_var_shape "
-                "('{dep_shape_col}') for table ({table}). "
-                "Please ensure that the input table ({table}) "
-                "has been preprocessed by the image preprocessor.".format(
-                    module_name=self.module_name,
-                    dep_shape_col=self.dep_shape_col,
-                    table=table))
+            for name in self.dep_shape_cols:
+                _assert(is_var_valid(table, name),
+                    "{module_name}: invalid dependent_var_shape "
+                    "('{dep_shape_col}') for table ({table}). "
+                    "Please ensure that the input table ({table}) "
+                    "has been preprocessed by the image preprocessor.".format(
+                        module_name=self.module_name,
+                        dep_shape_col=name,
+                        table=table))
 
         if not is_platform_pg():
             _assert(is_var_valid(table, DISTRIBUTION_KEY_COLNAME),
@@ -378,13 +388,14 @@ class FitCommonValidator(object):
     def _validate_validation_table(self):
         if self.validation_table and self.validation_table.strip() != '':
             input_tbl_valid(self.validation_table, self.module_name)
-            self._validate_input_table(self.validation_table)
-            dependent_vartype = get_expr_type(self.dependent_varname,
-                                              self.validation_table)
-            _assert(dependent_vartype == 'bytea',
-                    "Dependent variable column {0} in validation table {1} should be "
-                    "a bytea and also one hot encoded.".format(
-                        self.dependent_varname, self.validation_table))
+            self._validate_input_table(self.validation_table, True)
+            for i in self.val_dep_var:
+                dependent_vartype = get_expr_type(i,
+                                                  self.validation_table)
+                _assert(dependent_vartype == 'bytea',
+                        "Dependent variable column {0} in validation table {1} should be "
+                        "a bytea and also one hot encoded.".format(
+                            i, self.validation_table))
 
 
     def validate_input_shapes(self, input_shape):
@@ -399,9 +410,9 @@ class FitCommonValidator(object):
 class FitInputValidator(FitCommonValidator):
     def __init__(self, source_table, validation_table, output_model_table,
                  model_arch_table, model_id, dependent_varname,
-                 independent_varname, num_iterations,
+                 independent_varname, dep_shape_cols, ind_shape_cols, num_iterations,
                  metrics_compute_frequency, warm_start,
-                 use_gpus, accessible_gpus_for_seg, object_table):
+                 use_gpus, accessible_gpus_for_seg, object_table, val_dep_var, val_ind_var):
 
         self.module_name = 'madlib_keras_fit'
         super(FitInputValidator, self).__init__(source_table,
@@ -411,22 +422,27 @@ class FitInputValidator(FitCommonValidator):
                                                 model_id,
                                                 dependent_varname,
                                                 independent_varname,
+                                                dep_shape_cols,
+                                                ind_shape_cols,
                                                 num_iterations,
                                                 metrics_compute_frequency,
                                                 warm_start,
                                                 use_gpus,
                                                 accessible_gpus_for_seg,
                                                 self.module_name,
-                                                object_table)
+                                                object_table,
+                                                val_dep_var,
+                                                val_ind_var)
         InputValidator.validate_model_arch_table(self.module_name, self.model_arch_table,
             self.model_id)
 
 class FitMultipleInputValidator(FitCommonValidator):
     def __init__(self, source_table, validation_table, output_model_table,
                  model_selection_table, model_selection_summary_table, dependent_varname,
-                 independent_varname, num_iterations, model_info_table, mst_key_col,
+                 independent_varname, dep_shape_cols, ind_shape_cols,
+                 num_iterations, model_info_table, mst_key_col,
                  model_arch_table_col, metrics_compute_frequency, warm_start,
-                 use_gpus, accessible_gpus_for_seg):
+                 use_gpus, accessible_gpus_for_seg, val_dep_var, val_ind_var):
 
         self.module_name = 'madlib_keras_fit_multiple'
 
@@ -450,13 +466,17 @@ class FitMultipleInputValidator(FitCommonValidator):
                                                         None,
                                                         dependent_varname,
                                                         independent_varname,
+                                                        dep_shape_cols,
+                                                        ind_shape_cols,
                                                         num_iterations,
                                                         metrics_compute_frequency,
                                                         warm_start,
                                                         use_gpus,
                                                         accessible_gpus_for_seg,
                                                         self.module_name,
-                                                        self.object_table)
+                                                        self.object_table,
+                                                        val_dep_var,
+                                                        val_ind_var)
 
 class MstLoaderInputValidator():
     def __init__(self,

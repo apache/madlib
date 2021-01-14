@@ -98,22 +98,22 @@ SELECT assert(COUNT(*) = num_buffers(17, 5),
     'Incorrect number of buffers in data_preprocessor_input_batch.')
 FROM data_preprocessor_input_batch;
 
-SELECT assert(independent_var_shape[2]=6, 'Incorrect image shape ' || independent_var_shape[2])
+SELECT assert(x_shape[2]=6, 'Incorrect image shape ' || x_shape[2])
 FROM data_preprocessor_input_batch WHERE buffer_id=0;
 
-SELECT assert(independent_var_shape[1]=buffer_size, 'Incorrect buffer size ' || independent_var_shape[1])
+SELECT assert(x_shape[1]=buffer_size, 'Incorrect buffer size ' || x_shape[1])
 FROM (SELECT buffer_size(17, 5) buffer_size) a, data_preprocessor_input_batch WHERE buffer_id=0;
 
-SELECT assert(independent_var_shape[1]=buffer_size, 'Incorrect buffer size ' || independent_var_shape[1])
+SELECT assert(x_shape[1]=buffer_size, 'Incorrect buffer size ' || x_shape[1])
 FROM (SELECT buffer_size(17, 5) buffer_size) a, data_preprocessor_input_batch WHERE buffer_id=1;
 
-SELECT assert(independent_var_shape[1]=buffer_size, 'Incorrect buffer size ' || independent_var_shape[1])
+SELECT assert(x_shape[1]=buffer_size, 'Incorrect buffer size ' || x_shape[1])
 FROM (SELECT buffer_size(17, 5) buffer_size) a, data_preprocessor_input_batch WHERE buffer_id=2;
 
 SELECT assert(total_images = 17, 'Incorrect total number of images! Last buffer has incorrect size?')
-FROM (SELECT SUM(independent_var_shape[1]) AS total_images FROM data_preprocessor_input_batch) a;
+FROM (SELECT SUM(x_shape[1]) AS total_images FROM data_preprocessor_input_batch) a;
 
-SELECT assert(octet_length(independent_var) = buffer_size*6*4, 'Incorrect buffer length ' || octet_length(independent_var)::TEXT)
+SELECT assert(octet_length(x) = buffer_size*6*4, 'Incorrect buffer length ' || octet_length(x)::TEXT)
 FROM (SELECT buffer_size(17, 5) buffer_size) a, data_preprocessor_input_batch WHERE buffer_id=0;
 
 
@@ -130,16 +130,16 @@ SELECT assert(COUNT(*) = num_buffers(17, 5),
     'Incorrect number of buffers in validation_out.')
 FROM validation_out;
 
-SELECT assert(independent_var_shape[2]=6, 'Incorrect image shape.')
+SELECT assert(x_shape[2]=6, 'Incorrect image shape.')
 FROM data_preprocessor_input_batch WHERE buffer_id=0;
 
-SELECT assert(independent_var_shape[1]=buffer_size, 'Incorrect buffer size.')
+SELECT assert(x_shape[1]=buffer_size, 'Incorrect buffer size.')
 FROM (SELECT buffer_size(17, 5) buffer_size) a, data_preprocessor_input_batch WHERE buffer_id=1;
 
 SELECT assert(total_images = 17, 'Incorrect total number of images! Last buffer has incorrect size?')
-FROM (SELECT SUM(independent_var_shape[1]) AS total_images FROM data_preprocessor_input_batch) a;
+FROM (SELECT SUM(x_shape[1]) AS total_images FROM data_preprocessor_input_batch) a;
 
-SELECT assert(octet_length(independent_var) = buffer_size*6*4, 'Incorrect buffer length')
+SELECT assert(octet_length(x) = buffer_size*6*4, 'Incorrect buffer length')
 FROM (SELECT buffer_size(17, 5) buffer_size) a, validation_out WHERE buffer_id=0;
 
 DROP TABLE IF EXISTS data_preprocessor_input_batch, data_preprocessor_input_batch_summary;
@@ -249,17 +249,17 @@ SELECT training_preprocessor_dl(
   'x',
   4,
   5,
-  16 -- num_classes
+  ARRAY[16] -- num_classes
   );
 
 -- Test that indepdendent vars get divided by 5, by verifying min value goes from 1 to 0.2, and max value from 233 to 46.6
-SELECT assert(relative_error(MIN(x),0.2) < 0.00001, 'Independent var not normalized properly!') FROM (SELECT UNNEST(convert_bytea_to_real_array(independent_var)) as x FROM data_preprocessor_input_batch) a;
-SELECT assert(relative_error(MAX(x),46.6) < 0.00001, 'Independent var not normalized properly!') FROM (SELECT UNNEST(convert_bytea_to_real_array(independent_var)) as x FROM data_preprocessor_input_batch) a;
+SELECT assert(relative_error(MIN(x),0.2) < 0.00001, 'Independent var not normalized properly!') FROM (SELECT UNNEST(convert_bytea_to_real_array(x)) as x FROM data_preprocessor_input_batch) a;
+SELECT assert(relative_error(MAX(x),46.6) < 0.00001, 'Independent var not normalized properly!') FROM (SELECT UNNEST(convert_bytea_to_real_array(x)) as x FROM data_preprocessor_input_batch) a;
 -- Test that 1-hot encoded array is of length 16 (num_classes)
-SELECT assert(dependent_var_shape[2] = 16, 'Incorrect one-hot encode dimension with num_classes') FROM
+SELECT assert(y_shape[2] = 16, 'Incorrect one-hot encode dimension with num_classes') FROM
   data_preprocessor_input_batch WHERE buffer_id = 0;
 
-SELECT assert(octet_length(independent_var) = buffer_size*6*4, 'Incorrect buffer length')
+SELECT assert(octet_length(x) = buffer_size*6*4, 'Incorrect buffer length')
 FROM (SELECT buffer_size(17, 4) buffer_size) a, data_preprocessor_input_batch WHERE buffer_id=0;
 
 -- Test summary table
@@ -267,22 +267,22 @@ SELECT assert
         (
         source_table        = 'data_preprocessor_input' AND
         output_table        = 'data_preprocessor_input_batch' AND
-        dependent_varname   = 'y' AND
-        independent_varname = 'x' AND
-        dependent_vartype   = 'integer' AND
-        class_values        = '{-6,-3,-1,0,2,3,4,5,6,7,8,9,10,12,NULL,NULL}' AND
+        dependent_varname[0]   = 'y' AND
+        independent_varname[0] = 'x' AND
+        dependent_vartype[0]   = 'integer' AND
+        y_class_values      = '{-6,-3,-1,0,2,3,4,5,6,7,8,9,10,12,NULL,NULL}' AND
         summary.buffer_size = a.buffer_size AND  -- we sort the class values in python
         normalizing_const   = 5 AND
         pg_typeof(normalizing_const) = 'real'::regtype AND
-        num_classes         = 16 AND
+        num_classes[0]         = 16 AND
         distribution_rules  = 'all_segments',
         'Summary Validation failed. Actual:' || __to_char(summary)
         ) FROM (SELECT buffer_size(17, 4) buffer_size) a,
           (SELECT * FROM data_preprocessor_input_batch_summary) summary;
 
 --- Test output data type
-SELECT assert(pg_typeof(independent_var) = 'bytea'::regtype, 'Wrong independent_var type') FROM data_preprocessor_input_batch WHERE buffer_id = 0;
-SELECT assert(pg_typeof(dependent_var) = 'bytea'::regtype, 'Wrong dependent_var type') FROM data_preprocessor_input_batch WHERE buffer_id = 0;
+SELECT assert(pg_typeof(x) = 'bytea'::regtype, 'Wrong independent_varx type') FROM data_preprocessor_input_batch WHERE buffer_id = 0;
+SELECT assert(pg_typeof(y) = 'bytea'::regtype, 'Wrong dependent_var type') FROM data_preprocessor_input_batch WHERE buffer_id = 0;
 
 -- Test for validation data where the input table has only a subset of
 -- the classes compared to the original training data
@@ -302,10 +302,10 @@ SELECT validation_preprocessor_dl(
   'data_preprocessor_input_batch');
 -- Hard code 5.0 as the normalizing constant, based on the previous
 -- query's input param, to test if normalization is correct.
-SELECT assert(abs(x_new[1]/5.0-(convert_bytea_to_real_array(independent_var))[1]) < 0.0000001, 'Incorrect normalizing in validation table.')
-FROM validation_input, validation_out;
+SELECT assert(abs(input.x_new[1]/5.0-(convert_bytea_to_real_array(output.x_new))[1]) < 0.0000001, 'Incorrect normalizing in validation table.')
+FROM validation_input as input, validation_out as output;
 -- Validate if one hot encoding is as expected.
-SELECT assert(convert_bytea_to_smallint_array(dependent_var) = '{0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0}', 'Incorrect one-hot encode dimension with num_classes') FROM
+SELECT assert(convert_bytea_to_smallint_array(y_new) = '{0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0}', 'Incorrect one-hot encode dimension with num_classes') FROM
   validation_out WHERE buffer_id = 0;
 
 -- Test summary table
@@ -313,14 +313,14 @@ SELECT assert
         (
         source_table        = 'validation_input' AND
         output_table        = 'validation_out' AND
-        dependent_varname   = 'y_new' AND
-        independent_varname = 'x_new' AND
-        dependent_vartype   = 'integer' AND
-        class_values        = '{-6,-3,-1,0,2,3,4,5,6,7,8,9,10,12,NULL,NULL}' AND
+        dependent_varname[0]   = 'y_new' AND
+        independent_varname[0] = 'x_new' AND
+        dependent_vartype[0]   = 'integer' AND
+        y_new_class_values      = '{-6,-3,-1,0,2,3,4,5,6,7,8,9,10,12,NULL,NULL}' AND
         buffer_size         = 1 AND  -- we sort the class values in python
         normalizing_const   = 5 AND
         pg_typeof(normalizing_const) = 'real'::regtype AND
-        num_classes         = 16,
+        num_classes[0]         = 16,
         'Summary Validation failed. Actual:' || __to_char(summary)
         ) from (select * from validation_out_summary) summary;
 
@@ -334,37 +334,37 @@ SELECT training_preprocessor_dl(
   'x',
   4,
   5);
-SELECT assert(pg_typeof(dependent_var) = 'bytea'::regtype, 'One-hot encode doesn''t convert into integer array format') FROM data_preprocessor_input_batch WHERE buffer_id = 0;
-SELECT assert(dependent_var_shape[2] = 2, 'Incorrect one-hot encode dimension') FROM
+SELECT assert(pg_typeof(y1) = 'bytea'::regtype, 'One-hot encode doesn''t convert into integer array format') FROM data_preprocessor_input_batch WHERE buffer_id = 0;
+SELECT assert(y1_shape[2] = 2, 'Incorrect one-hot encode dimension') FROM
    data_preprocessor_input_batch WHERE buffer_id = 0;
 
-SELECT assert(octet_length(independent_var) = buffer_size*6*4, 'Incorrect buffer length')
+SELECT assert(octet_length(x) = buffer_size*6*4, 'Incorrect buffer length')
 FROM (SELECT buffer_size(17, 4) buffer_size) a, data_preprocessor_input_batch WHERE buffer_id=0;
 
-SELECT assert(SUM(y) = 1, 'Incorrect one-hot encode format') FROM (SELECT buffer_id, UNNEST((convert_bytea_to_smallint_array(dependent_var))[1:2]) as y FROM data_preprocessor_input_batch) a WHERE buffer_id = 0;
-SELECT assert (dependent_vartype   = 'boolean' AND
-               class_values        = '{f,t}' AND
-               num_classes         = 2,
+SELECT assert(SUM(y) = 1, 'Incorrect one-hot encode format') FROM (SELECT buffer_id, UNNEST((convert_bytea_to_smallint_array(y1))[1:2]) as y FROM data_preprocessor_input_batch) a WHERE buffer_id = 0;
+SELECT assert (dependent_vartype[0] = 'boolean' AND
+               y1_class_values      = '{f,t}' AND
+               num_classes[0]       = 2,
                'Summary Validation failed. Actual:' || __to_char(summary)
               ) from (select * from data_preprocessor_input_batch_summary) summary;
 
 -- Test to assert the output summary table for validation has the correct
 -- num_classes and class_values
 DROP TABLE IF EXISTS validation_input;
-CREATE TABLE validation_input(id serial, x_new double precision[], y INTEGER, y_new BOOLEAN, y2 TEXT, y3 DOUBLE PRECISION, y4 DOUBLE PRECISION[], y5 INTEGER[]);
-INSERT INTO validation_input(x_new, y, y_new, y2, y3, y4, y5) VALUES
+CREATE TABLE validation_input(id serial, x_new double precision[], y INTEGER, y1 BOOLEAN, y2 TEXT, y3 DOUBLE PRECISION, y4 DOUBLE PRECISION[], y5 INTEGER[]);
+INSERT INTO validation_input(x_new, y, y1, y2, y3, y4, y5) VALUES
 (ARRAY[1,2,3,4,5,6], 4, TRUE, 'a', 4.0, ARRAY[1.0, 0.0], ARRAY[1,0]);
 DROP TABLE IF EXISTS validation_out, validation_out_summary;
 SELECT validation_preprocessor_dl(
   'validation_input',
   'validation_out',
-  'y_new',
+  'y1',
   'x_new',
   'data_preprocessor_input_batch');
 
-SELECT assert (dependent_vartype   = 'boolean' AND
-               class_values        = '{f,t}' AND
-               num_classes         = 2,
+SELECT assert (dependent_vartype[0]   = 'boolean' AND
+               y1_class_values        = '{f,t}' AND
+               num_classes[0]         = 2,
                'Summary Validation failed. Actual:' || __to_char(summary)
               ) from (select * from validation_out_summary) summary;
 -- test text type
@@ -376,17 +376,17 @@ SELECT training_preprocessor_dl(
   'x',
   4,
   5);
-SELECT assert(pg_typeof(dependent_var) = 'bytea'::regtype, 'One-hot encode doesn''t convert into integer array format') FROM data_preprocessor_input_batch WHERE buffer_id = 0;
-SELECT assert(dependent_var_shape[2] = 3, 'Incorrect one-hot encode dimension') FROM
+SELECT assert(pg_typeof(y2) = 'bytea'::regtype, 'One-hot encode doesn''t convert into integer array format') FROM data_preprocessor_input_batch WHERE buffer_id = 0;
+SELECT assert(y2_shape[2] = 3, 'Incorrect one-hot encode dimension') FROM
    data_preprocessor_input_batch WHERE buffer_id = 0;
 
-SELECT assert(octet_length(independent_var) = buffer_size*6*4, 'Incorrect buffer length')
+SELECT assert(octet_length(x) = buffer_size*6*4, 'Incorrect buffer length')
 FROM (SELECT buffer_size(17, 4) buffer_size) a, data_preprocessor_input_batch WHERE buffer_id=0;
 
-SELECT assert(SUM(y) = 1, 'Incorrect one-hot encode format') FROM (SELECT buffer_id, UNNEST((convert_bytea_to_smallint_array(dependent_var))[1:3]) as y FROM data_preprocessor_input_batch) a WHERE buffer_id = 0;
-SELECT assert (dependent_vartype   = 'text' AND
-               class_values        = '{a,b,c}' AND
-               num_classes         = 3,
+SELECT assert(SUM(y) = 1, 'Incorrect one-hot encode format') FROM (SELECT buffer_id, UNNEST((convert_bytea_to_smallint_array(y2))[1:3]) as y FROM data_preprocessor_input_batch) a WHERE buffer_id = 0;
+SELECT assert (dependent_vartype[0]   = 'text' AND
+               y2_class_values        = '{a,b,c}' AND
+               num_classes[0]      = 3,
                'Summary Validation failed. Actual:' || __to_char(summary)
               ) from (select * from data_preprocessor_input_batch_summary) summary;
 
@@ -412,15 +412,15 @@ SELECT training_preprocessor_dl(
   'x',
   4,
   5);
-SELECT assert(pg_typeof(dependent_var) = 'bytea'::regtype, 'One-hot encode doesn''t convert into integer array format') FROM data_preprocessor_input_batch WHERE buffer_id = 0;
-SELECT assert(dependent_var_shape[2] = 3, 'Incorrect one-hot encode dimension') FROM
+SELECT assert(pg_typeof(y3) = 'bytea'::regtype, 'One-hot encode doesn''t convert into integer array format') FROM data_preprocessor_input_batch WHERE buffer_id = 0;
+SELECT assert(y3_shape[2] = 3, 'Incorrect one-hot encode dimension') FROM
   data_preprocessor_input_batch WHERE buffer_id = 0;
-SELECT assert(octet_length(independent_var) = buffer_size*6*4, 'Incorrect buffer length')
+SELECT assert(octet_length(x) = buffer_size*6*4, 'Incorrect buffer length')
 FROM (SELECT buffer_size(17, 4) buffer_size) a, data_preprocessor_input_batch WHERE buffer_id=0;
-SELECT assert(SUM(y) = 1, 'Incorrect one-hot encode format') FROM (SELECT buffer_id, UNNEST((convert_bytea_to_smallint_array(dependent_var))[1:3]) as y FROM data_preprocessor_input_batch) a WHERE buffer_id = 0;
-SELECT assert (dependent_vartype   = 'double precision' AND
-               class_values        = '{4.0,4.2,5.0}' AND
-               num_classes         = 3,
+SELECT assert(SUM(y) = 1, 'Incorrect one-hot encode format') FROM (SELECT buffer_id, UNNEST((convert_bytea_to_smallint_array(y3))[1:3]) as y FROM data_preprocessor_input_batch) a WHERE buffer_id = 0;
+SELECT assert (dependent_vartype[0]= 'double precision' AND
+               y3_class_values        = '{4.0,4.2,5.0}' AND
+               num_classes[0]      = 3,
                'Summary Validation failed. Actual:' || __to_char(summary)
               ) from (select * from data_preprocessor_input_batch_summary) summary;
 
@@ -433,17 +433,17 @@ SELECT training_preprocessor_dl(
   'x',
   4,
   5);
-SELECT assert(pg_typeof(dependent_var) = 'bytea'::regtype, 'One-hot encode doesn''t convert into integer array format') FROM data_preprocessor_input_batch WHERE buffer_id = 0;
-SELECT assert(dependent_var_shape[2] = 2, 'Incorrect one-hot encode dimension') FROM
+SELECT assert(pg_typeof(y4) = 'bytea'::regtype, 'One-hot encode doesn''t convert into integer array format') FROM data_preprocessor_input_batch WHERE buffer_id = 0;
+SELECT assert(y4_shape[2] = 2, 'Incorrect one-hot encode dimension') FROM
   data_preprocessor_input_batch WHERE buffer_id = 0;
 
-SELECT assert(octet_length(independent_var) = buffer_size*6*4, 'Incorrect buffer length')
+SELECT assert(octet_length(x) = buffer_size*6*4, 'Incorrect buffer length')
 FROM (SELECT buffer_size(17, 4) buffer_size) a, data_preprocessor_input_batch WHERE buffer_id=0;
 
-SELECT assert(relative_error(SUM(y), SUM(y4)) < 0.000001, 'Incorrect one-hot encode value') FROM (SELECT UNNEST(convert_bytea_to_smallint_array(dependent_var)) AS y FROM data_preprocessor_input_batch) a, (SELECT UNNEST(y4) as y4 FROM data_preprocessor_input) b;
-SELECT assert (dependent_vartype   = 'double precision[]' AND
-               class_values        IS NULL AND
-               num_classes         IS NULL,
+SELECT assert(relative_error(SUM(y), SUM(y4)) < 0.000001, 'Incorrect one-hot encode value') FROM (SELECT UNNEST(convert_bytea_to_smallint_array(y4)) AS y FROM data_preprocessor_input_batch) a, (SELECT UNNEST(y4) as y4 FROM data_preprocessor_input) b;
+SELECT assert (dependent_vartype[0]= 'double precision[]' AND
+               y4_class_values        IS NULL AND
+               num_classes[0]      IS NULL,
                'Summary Validation failed. Actual:' || __to_char(summary)
               ) from (select * from data_preprocessor_input_batch_summary) summary;
 
@@ -455,7 +455,7 @@ SELECT validation_preprocessor_dl(
   'x_new',
   'data_preprocessor_input_batch');
 
-SELECT assert(convert_bytea_to_smallint_array(dependent_var) = '{1,0}' AND dependent_var_shape[2] = 2, 'Incorrect one-hot encoding for already encoded dep var') FROM
+SELECT assert(convert_bytea_to_smallint_array(y4) = '{1,0}' AND y4_shape[2] = 2, 'Incorrect one-hot encoding for already encoded dep var') FROM
   validation_out WHERE buffer_id = 0;
 
 -- test integer array type
@@ -467,17 +467,17 @@ SELECT training_preprocessor_dl(
   'x',
   4,
   5);
-SELECT assert(pg_typeof(dependent_var) = 'bytea'::regtype, 'One-hot encode doesn''t convert into integer array format') FROM data_preprocessor_input_batch WHERE buffer_id = 0;
-SELECT assert(dependent_var_shape[2] = 2, 'Incorrect one-hot encode dimension') FROM
+SELECT assert(pg_typeof(y5) = 'bytea'::regtype, 'One-hot encode doesn''t convert into integer array format') FROM data_preprocessor_input_batch WHERE buffer_id = 0;
+SELECT assert(y5_shape[2] = 2, 'Incorrect one-hot encode dimension') FROM
   data_preprocessor_input_batch WHERE buffer_id = 0;
 
-SELECT assert(octet_length(independent_var) = buffer_size*6*4, 'Incorrect buffer length')
+SELECT assert(octet_length(x) = buffer_size*6*4, 'Incorrect buffer length')
 FROM (SELECT buffer_size(17, 4) buffer_size) a, data_preprocessor_input_batch WHERE buffer_id=0;
 
-SELECT assert(relative_error(SUM(y), SUM(y5)) < 0.000001, 'Incorrect one-hot encode value') FROM (SELECT UNNEST(convert_bytea_to_smallint_array(dependent_var)) AS y FROM data_preprocessor_input_batch) a, (SELECT UNNEST(y5) as y5 FROM data_preprocessor_input) b;
-SELECT assert (dependent_vartype   = 'integer[]' AND
-               class_values        IS NULL AND
-               num_classes         IS NULL,
+SELECT assert(relative_error(SUM(y), SUM(y5)) < 0.000001, 'Incorrect one-hot encode value') FROM (SELECT UNNEST(convert_bytea_to_smallint_array(y5)) AS y FROM data_preprocessor_input_batch) a, (SELECT UNNEST(y5) as y5 FROM data_preprocessor_input) b;
+SELECT assert (dependent_vartype[0] = 'integer[]' AND
+               y5_class_values        IS NULL AND
+               num_classes[0]      IS NULL,
                'Summary Validation failed. Actual:' || __to_char(summary)
               ) from (select * from data_preprocessor_input_batch_summary) summary;
 
@@ -511,21 +511,21 @@ SELECT training_preprocessor_dl(
   'x',
   4,
   5,
-  5 -- num_classes
+  ARRAY[5] -- num_classes
   );
 -- Test summary table if class_values has NULL as a legitimate
 -- class label, and also two other NULLs because num_classes=5
 -- but table has only 3 distinct class labels (including NULL)
 SELECT assert
         (
-        class_values        = '{NULL,a,b,NULL,NULL}',
+        label_class_values        = '{NULL,a,b,NULL,NULL}',
         'Summary Validation failed with NULL data. Actual:' || __to_char(summary)
         ) from (select * from data_preprocessor_input_batch_summary) summary;
 
-SELECT assert(dependent_var_shape[2] = 5, 'Incorrect one-hot encode dimension') FROM
+SELECT assert(label_shape[2] = 5, 'Incorrect one-hot encode dimension') FROM
   data_preprocessor_input_batch WHERE buffer_id = 0;
 
-SELECT assert(octet_length(independent_var) = buffer_size*6*4, 'Incorrect buffer length')
+SELECT assert(octet_length(x) = buffer_size*6*4, 'Incorrect buffer length')
 FROM (SELECT buffer_size(17, 4) buffer_size) a, data_preprocessor_input_batch WHERE buffer_id=0;
 
 -- The same tests, but for validation.
@@ -551,18 +551,18 @@ SELECT validation_preprocessor_dl(
 -- but table has only 3 distinct class labels (including NULL)
 SELECT assert
         (
-        class_values        = '{NULL,a,b,NULL,NULL}',
+        label_class_values        = '{NULL,a,b,NULL,NULL}',
         'Summary Validation failed with NULL data. Actual:' || __to_char(summary)
         ) from (select * from validation_out_batch_summary) summary;
 
 -- Validate one hot encoding for specific row is correct
-SELECT assert(convert_bytea_to_smallint_array(dependent_var) = '{0,1,0,0,0}' AND dependent_var_shape[2] =5, 'Incorrect normalizing in validation table.')
+SELECT assert(convert_bytea_to_smallint_array(validation_out_batch.label) = '{0,1,0,0,0}' AND label_shape[2] =5, 'Incorrect normalizing in validation table.')
 FROM data_preprocessor_input_validation_null, validation_out_batch
-WHERE x[1]=1 AND abs((convert_bytea_to_real_array(independent_var))[1] - 0.2::REAL) < 0.00001;
+WHERE data_preprocessor_input_validation_null.x[1]=1 AND abs((convert_bytea_to_real_array(validation_out_batch.x))[1] - 0.2::REAL) < 0.00001;
 -- Assert one-hot encoding for NULL label
-SELECT assert(convert_bytea_to_smallint_array(dependent_var) = '{1,0,0,0,0}' AND dependent_var_shape[2] =5, 'Incorrect normalizing in validation table.')
+SELECT assert(convert_bytea_to_smallint_array(validation_out_batch. label) = '{1,0,0,0,0}' AND label_shape[2] =5, 'Incorrect normalizing in validation table.')
 FROM data_preprocessor_input_validation_null, validation_out_batch
-WHERE x[1]=111 AND abs((convert_bytea_to_real_array(independent_var))[1] - 22.2::REAL) < 0.00001;
+WHERE data_preprocessor_input_validation_null.x[1]=111 AND abs((convert_bytea_to_real_array(validation_out_batch.x))[1] - 22.2::REAL) < 0.00001;
 
 -- Test the content of 1-hot encoded dep var when NULL is the
 -- class label.
@@ -579,7 +579,7 @@ SELECT training_preprocessor_dl(
   'x',
   4,
   5,
-  3 -- num_classes
+  ARRAY[3] -- num_classes
   );
 
 -- class_values must be '{NULL,NULL,NULL}' where the first NULL
@@ -587,17 +587,17 @@ SELECT training_preprocessor_dl(
 -- are added as num_classes=3.
 SELECT assert
         (
-        class_values        = '{NULL,NULL,NULL}',
+        label_class_values        = '{NULL,NULL,NULL}',
         'Summary Validation failed with NULL data. Actual:' || __to_char(summary)
         ) from (select * from data_preprocessor_input_batch_summary) summary;
 
-SELECT assert(dependent_var_shape[2] = 3, 'Incorrect one-hot encode dimension') FROM
+SELECT assert(label_shape[2] = 3, 'Incorrect one-hot encode dimension') FROM
   data_preprocessor_input_batch WHERE buffer_id = 0;
-SELECT assert(octet_length(independent_var) = 24, 'Incorrect buffer length')
+SELECT assert(octet_length(x) = 24, 'Incorrect buffer length')
 FROM data_preprocessor_input_batch WHERE buffer_id=0;
 -- NULL is treated as a class label, so it should show '1' for the
 -- first index
-SELECT assert(convert_bytea_to_smallint_array(dependent_var) = '{1,0,0}', 'Incorrect one-hot encode dimension with NULL data') FROM
+SELECT assert(convert_bytea_to_smallint_array(label) = '{1,0,0}', 'Incorrect one-hot encode dimension with NULL data') FROM
   data_preprocessor_input_batch WHERE buffer_id = 0;
 
 -- The same tests for validation.
@@ -616,17 +616,17 @@ SELECT validation_preprocessor_dl(
 -- are added as num_classes=3.
 SELECT assert
         (
-        class_values        = '{NULL,NULL,NULL}',
+        label_class_values        = '{NULL,NULL,NULL}',
         'Summary Validation failed with NULL data. Actual:' || __to_char(summary)
         ) from (select * from validation_out_batch_summary) summary;
 
-SELECT assert(dependent_var_shape[2] = 3, 'Incorrect one-hot encode dimension') FROM
+SELECT assert(label_shape[2] = 3, 'Incorrect one-hot encode dimension') FROM
   validation_out_batch WHERE buffer_id = 0;
-SELECT assert(octet_length(independent_var) = 24, 'Incorrect buffer length')
+SELECT assert(octet_length(x) = 24, 'Incorrect buffer length')
 FROM data_preprocessor_input_batch WHERE buffer_id=0;
 -- NULL is treated as a class label, so it should show '1' for the
 -- first index
-SELECT assert(convert_bytea_to_smallint_array(dependent_var) = '{1,0,0}', 'Incorrect one-hot encode dimension with NULL data') FROM
+SELECT assert(convert_bytea_to_smallint_array(label) = '{1,0,0}', 'Incorrect one-hot encode dimension with NULL data') FROM
   validation_out_batch WHERE buffer_id = 0;
 
 -- Test if validation class values is not a subset of training data class values.

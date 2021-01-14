@@ -29,6 +29,7 @@ from utilities.utilities import add_postfix
 from utilities.utilities import get_segments_per_host
 from utilities.utilities import unique_string
 from utilities.utilities import get_psql_type
+from utilities.utilities import split_quoted_delimited_str
 from utilities.validate_args import get_expr_type
 from utilities.validate_args import input_tbl_valid
 
@@ -48,7 +49,7 @@ class BasePredict():
         self.table_to_validate = table_to_validate
         self.test_table = test_table
         self.id_col = id_col
-        self.independent_varname = independent_varname
+        self.independent_varname = split_quoted_delimited_str(independent_varname)
         self.output_table = output_table
         self.pred_type = pred_type
         self.module_name = module_name
@@ -86,18 +87,34 @@ class BasePredict():
         if self.pred_type == 1:
             rank_create_sql = ""
 
-        self.pred_vartype = self.dependent_vartype.strip('[]')
-        unnest_sql = ''
-        if self.pred_vartype in ['text', 'character varying', 'varchar']:
+        self.pred_vartype = [i.strip('[]') for i in self.dependent_vartype]
+        unnest_sql = []
+        full_class_name_list = []
+        full_class_value_list = []
 
-            unnest_sql = "unnest(ARRAY{0}) AS {1} , unnest".format(
-                ['NULL' if i is None else i for i in class_values],
-                self.dependent_varname)
-        else:
+        for i in range(self.dependent_var_count):
 
-            unnest_sql = "unnest(ARRAY[{0}]) AS {1} , unnest".format(
-                ','.join(['NULL' if i is None else str(i) for i in class_values]),
-                self.dependent_varname)
+            if self.pred_vartype[i] in ['text', 'character varying', 'varchar']:
+
+                unnest_sql.append("unnest(ARRAY{0}) AS {1}".format(
+                    ['NULL' if j is None else j for j in class_values[i]],
+                    self.dependent_varname[i]))
+            else:
+
+                unnest_sql.append("unnest(ARRAY[{0}]) AS {1}".format(
+                    ','.join(['NULL' if j is None else str(j) for j in class_values[i]]),
+                    self.dependent_varname[i]))
+
+
+            for j in class_values[i]:
+                tmp_class_name = self.dependent_varname[i] if self.dependent_varname[i] is not None else "NULL::TEXT"
+                full_class_name_list.append(tmp_class_name)
+                tmp_class_value = j if j is not None else "NULL::TEXT"
+                full_class_value_list.append(tmp_class_value)
+
+        unnest_sql = """unnest(ARRAY{full_class_name_list}::TEXT[]) AS class_name,
+                        unnest(ARRAY{full_class_value_list}::TEXT[]) AS class_value
+                        """.format(**locals())
 
         if self.get_all:
             filter_sql = ""
@@ -116,29 +133,42 @@ class BasePredict():
 
         # Calling CREATE TABLE instead of CTAS, to ensure that the plan_cache_mode
         # guc codepath is called when passing in the weights
-        plpy.execute("""
+        sql = """
             CREATE TABLE {self.output_table}
                 ({self.id_col} {self.id_col_type},
-                 {self.dependent_varname} {self.pred_vartype},
+                 class_name TEXT,
+                 class_value TEXT,
                  {pred_col_name} {pred_col_type},
                  rank INTEGER)
-            """.format(**locals()))
+            """.format(**locals())
+        plpy.execute(sql)
+
+        independent_varname_sql = ["{0}::REAL[]".format(i) for i in self.independent_varname]
+
+        while len(independent_varname_sql) < 5:
+            independent_varname_sql.append("NULL::REAL[]")
+        independent_varname_sql = ', '.join(independent_varname_sql)
+
         # Passing huge model weights to internal_keras_predict() for each row
         # resulted in slowness of overall madlib_keras_predict().
         # To avoid this, a CASE is added to pass the model weights only for
         # the very first row(min(ctid)) that is fetched on each segment and NULL
         # for the other rows.
 
-        predict_query = plpy.prepare("""
+        rank_sql = """ row_number() OVER (PARTITION BY {self.id_col}, class_name
+                       ORDER BY {pred_col_name} DESC) AS rank
+                       """.format(**locals())
+        sql1 = """
             INSERT INTO {self.output_table}
             SELECT *
             FROM (
-                SELECT *, row_number() OVER (PARTITION BY {self.id_col}
-                                  ORDER BY {pred_col_name} DESC) AS rank
+                SELECT *, {rank_sql}
                 FROM (
                     SELECT  {self.id_col}::{self.id_col_type},
-                            {unnest_sql}({self.schema_madlib}.internal_keras_predict
-                                ({self.independent_varname},
+                            {unnest_sql},
+                            unnest(
+                            {self.schema_madlib}.internal_keras_predict
+                                ({independent_varname_sql},
                                 $1,
                                 CASE WHEN {self.test_table}.ctid = min_ctid.ctid THEN $2 ELSE NULL END,
                                 {self.normalizing_const},
@@ -146,19 +176,21 @@ class BasePredict():
                                 ARRAY{seg_ids_test},
                                 ARRAY{images_per_seg_test},
                                 {self.gpus_per_host},
-                                {segments_per_host})
-                            ) AS {pred_col_name}
-                        FROM {self.test_table}
-                        LEFT JOIN
-                            (SELECT {select_segmentid_comma} MIN({self.test_table}.ctid) AS ctid
-                             FROM {self.test_table}
-                             {group_by_clause}) min_ctid
-                        ON {join_cond_on_segmentid} {self.test_table}.ctid=min_ctid.ctid
+                                {segments_per_host})) AS prob
+
+                            FROM {self.test_table}
+                            LEFT JOIN
+                                (SELECT {select_segmentid_comma} MIN({self.test_table}.ctid) AS ctid
+                                 FROM {self.test_table}
+                                 {group_by_clause}) min_ctid
+                            ON {join_cond_on_segmentid} {self.test_table}.ctid=min_ctid.ctid
                 ) __subq1__
             ) __subq2__
             {filter_sql}
-            """.format(**locals()), ["text", "bytea"])
+            """.format(**locals())
+        predict_query = plpy.prepare(sql1, ["text", "bytea"])
         plpy.execute(predict_query, [self.model_arch, self.model_weights])
+
 
         if self.is_response:
             # Drop the rank column since it is irrelevant
@@ -167,12 +199,16 @@ class BasePredict():
                 DROP COLUMN rank
                 """.format(**locals()))
 
+    def set_default_class_values(self, in_class_values, dependent_var_count):
 
-    def set_default_class_values(self, class_values):
-        self.class_values = class_values
-        if self.class_values is None:
-            num_classes = get_num_classes(self.model_arch)
-            self.class_values = range(0, num_classes)
+        self.class_values = []
+        num_classes = get_num_classes(self.model_arch, dependent_var_count)
+        for counter, i in enumerate(in_class_values):
+            if (i is None) or (i==[None]):
+                self.class_values.append(range(0, num_classes[counter]))
+            else:
+                self.class_values.append(i)
+
 
 @MinWarning("warning")
 class Predict(BasePredict):
@@ -199,16 +235,20 @@ class Predict(BasePredict):
         self.dependent_vartype = param_proc.get_dependent_vartype()
         self.model_weights = param_proc.get_model_weights()
         self.model_arch = param_proc.get_model_arch()
-        class_values = param_proc.get_class_values()
-        self.set_default_class_values(class_values)
-        self.normalizing_const = param_proc.get_normalizing_const()
+
         self.dependent_varname = param_proc.get_dependent_varname()
+        self.dependent_var_count = len(self.dependent_varname)
+        class_values = []
+        for dep in self.dependent_varname:
+            class_values.append(param_proc.get_class_values(dep))
+        self.set_default_class_values(class_values, self.dependent_var_count)
+        self.normalizing_const = param_proc.get_normalizing_const()
 
         self.validate()
         self.id_col_type = get_expr_type(self.id_col, self.test_table)
         BasePredict.call_internal_keras(self)
         if self.is_mult_model:
-            plpy.execute("DROP VIEW IF EXISTS {}".format(self.temp_summary_view))
+            plpy.execute("DROP VIEW IF EXISTS {0}".format(self.temp_summary_view))
 
     def validate(self):
         input_tbl_valid(self.model_table, self.module_name)
@@ -218,13 +258,11 @@ class Predict(BasePredict):
             plpy.error("{self.module_name}: Multi-model needs to pass mst_key".format(**locals()))
         InputValidator.validate_predict_evaluate_tables(
             self.module_name, self.model_table, self.model_summary_table,
-            self.test_table, self.output_table, self.independent_varname)
+            self.test_table, self.output_table)
 
         InputValidator.validate_id_in_test_tbl(
             self.module_name, self.test_table, self.id_col)
 
-        InputValidator.validate_class_values(
-            self.module_name, self.class_values, self.pred_type, self.model_arch)
         input_shape = get_input_shape(self.model_arch)
         InputValidator.validate_pred_type(
             self.module_name, self.pred_type, self.class_values)
@@ -236,25 +274,32 @@ class PredictBYOM(BasePredict):
     def __init__(self, schema_madlib, model_arch_table, model_id,
                  test_table, id_col, independent_varname, output_table,
                  pred_type, use_gpus, class_values, normalizing_const,
-                 **kwargs):
+                 dependent_count, **kwargs):
 
         self.module_name='madlib_keras_predict_byom'
         self.model_arch_table = model_arch_table
         self.model_id = model_id
         self.class_values = class_values
         self.normalizing_const = normalizing_const
-        self.dependent_varname = 'dependent_var'
+        self.dependent_var_count = dependent_count
+
+        if self.dependent_var_count == 1:
+            self.dependent_varname = ['dependent_var']
+        else:
+            self.dependent_varname = ['dependent_var_{0}'.format(i) for i in range(self.dependent_var_count)]
         BasePredict.__init__(self, schema_madlib, model_arch_table,
                              test_table, id_col, independent_varname,
                              output_table, pred_type, use_gpus, self.module_name)
-
+        self.dependent_vartype = []
         if self.class_values:
-            self.dependent_vartype = get_psql_type(self.class_values[0])
+            for i in self.class_values:
+                self.dependent_vartype.append(get_psql_type(i[0]))
         else:
+            self.class_values = [None]*self.dependent_var_count
             if self.pred_type == 1:
-                self.dependent_vartype = 'text'
+                self.dependent_vartype = ['text']*self.dependent_var_count
             else:
-                self.dependent_vartype = 'double precision'
+                self.dependent_vartype = ['double precision']*self.dependent_var_count
 
         ## Set default values for norm const and class_values
         # use_gpus and pred_type are defaulted in base_predict's init
@@ -277,17 +322,36 @@ class PredictBYOM(BasePredict):
         _assert(self.model_weights and self.model_arch,
                 "{0}: Model weights and architecture should not be NULL.".format(
                     self.module_name))
-        self.set_default_class_values(self.class_values)
+        self.set_default_class_values(self.class_values, self.dependent_var_count)
 
         InputValidator.validate_pred_type(
             self.module_name, self.pred_type, self.class_values)
         InputValidator.validate_normalizing_const(
             self.module_name, self.normalizing_const)
-        InputValidator.validate_class_values(
-            self.module_name, self.class_values, self.pred_type, self.model_arch)
+
+        # TODO: Fix this validation
+        # The current method looks at the 'units' keyword which doesn't mean
+        # anything because every layer has it. It was passing because the layers
+        # are traversed in order. It won't work for multi-io and prone to breaking
+        # in the regular case.
+
+        # InputValidator.validate_class_values(
+        #     self.module_name, self.class_values, self.pred_type, self.model_arch)
         InputValidator.validate_input_shape(
             self.test_table, self.independent_varname,
             get_input_shape(self.model_arch), 1)
+
+def internal_keras_predict_wide(independent_var, independent_var2,
+                                independent_var3, independent_var4, independent_var5,
+                                model_architecture, model_weights,
+                                normalizing_const, current_seg_id, seg_ids,
+                                images_per_seg, gpus_per_host, segments_per_host,
+                                **kwargs):
+    return internal_keras_predict(
+        [independent_var, independent_var2, independent_var3, independent_var4, independent_var5],
+        model_architecture, model_weights, normalizing_const, current_seg_id,
+        seg_ids, images_per_seg, gpus_per_host, segments_per_host,
+        **kwargs)
 
 def internal_keras_predict(independent_var, model_architecture, model_weights,
                            normalizing_const, current_seg_id, seg_ids,
@@ -297,7 +361,7 @@ def internal_keras_predict(independent_var, model_architecture, model_weights,
     model_key = 'segment_model_predict'
     row_count_key = 'row_count'
     try:
-        device_name = get_device_name_and_set_cuda_env( gpus_per_host, current_seg_id)
+        device_name = get_device_name_and_set_cuda_env(gpus_per_host, current_seg_id)
         if model_key not in SD:
             set_keras_session(device_name, gpus_per_host, segments_per_host)
             model = model_from_json(model_architecture)
@@ -311,16 +375,24 @@ def internal_keras_predict(independent_var, model_architecture, model_weights,
         # Since the test data isn't mini-batched,
         # we have to make sure that the test data np array has the same
         # number of dimensions as input_shape. So we add a dimension to x.
-        independent_var = expand_input_dims(independent_var)
-        independent_var /= normalizing_const
 
+        independent_var_filtered = []
+        for i in independent_var:
+            if i is not None:
+                independent_var_filtered.append(expand_input_dims(i)/normalizing_const)
         with tf.device(device_name):
-            probs = model.predict(independent_var)
+            probs = model.predict(independent_var_filtered)
         # probs is a list containing a list of probability values, of all
         # class levels. Since we are assuming each input is a single image,
         # and not mini-batched, this list contains exactly one list in it,
         # so return back the first list in probs.
-        result = probs[0]
+        result = []
+        if len(independent_var_filtered) > 1:
+            for i in probs:
+                for j in i[0]:
+                    result.append(j)
+        else:
+            result = probs[0]
         total_images = get_image_count_per_seg_from_array(seg_ids.index(current_seg_id),
                                                           images_per_seg)
 
