@@ -410,3 +410,39 @@ def generate_row_string(configs_dict):
     if result_row_string[0] == ',':
         return result_row_string[1:]
     return result_row_string
+
+def get_data_distribution_per_segment(table_name):
+    """
+    Returns a list with count of segments on each host that the input
+    table's data is distributed on.
+    :param table_name: input table name
+    :return: len(return list) = total num of segments in cluster
+    Each index of the array/list represents a segment of the cluster. If the data
+    is not distributed on that segment, then that index's value will be set to zero.
+    Otherwise the value will be set to the count of segments that have the data on
+    that segment's host.
+    For e.g. If there are 2 hosts and 3 segs per host
+    host1 - seg0, seg1, seg2
+    host2 - seg3, seg4, seg5
+    If the data is distributed on seg0, seg1 and seg3 then the return value will be
+    [2,2,0,1,0,0]
+    """
+    if is_platform_pg():
+        return [1]
+    else:
+        res = plpy.execute("""
+                    WITH cte AS (SELECT DISTINCT(gp_segment_id)
+                                 FROM {table_name})
+                    SELECT content, count as cnt
+                        FROM gp_segment_configuration
+                        JOIN (SELECT hostname, count(*)
+                              FROM gp_segment_configuration
+                              WHERE content in (SELECT * FROM cte)
+                              GROUP BY hostname) a
+                        USING (hostname)
+                        WHERE content in (SELECT * FROM cte)
+                    ORDER BY 1""".format(table_name=table_name))
+        data_distribution_per_segment = [0] * get_seg_number()
+        for r in res:
+            data_distribution_per_segment[r['content']] = int(r['cnt'])
+        return data_distribution_per_segment
