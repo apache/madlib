@@ -19,7 +19,7 @@
 
 import math
 import plpy
-
+import time
 from madlib_keras_automl import KerasAutoML, AutoMLConstants
 from utilities.utilities import get_current_timestamp, get_seg_number, get_segments_per_host, \
     unique_string, add_postfix, extract_keyvalue_params, _assert, _assert_equal, rename_table, \
@@ -228,6 +228,7 @@ class AutoMLHyperband(KerasAutoML):
                 i_dict[mst_key] = -1
 
         # outer loop on diagonal
+        metrics_elapsed_time_offset = 0
         for i in range((self.s_max+1) - int(self.skip_last)):
             # inner loop on s desc
             temp_lst = []
@@ -249,11 +250,14 @@ class AutoMLHyperband(KerasAutoML):
                 i_dict[k[ModelSelectionSchema.MST_KEY]] += 1
             self.warm_start = int(i != 0)
             mcf = self.metrics_compute_frequency if self._is_valid_metrics_compute_frequency(num_iterations) else None
+            start_time = time.time()
             with SetGUC("plan_cache_mode", "force_generic_plan"):
                 model_training = FitMultipleModel(self.schema_madlib, self.source_table, AutoMLConstants.MODEL_OUTPUT_TABLE,
                                                 AutoMLConstants.MST_TABLE, num_iterations, self.use_gpus,
-                                                self.validation_table, mcf, self.warm_start, self.name, self.description)
+                                                self.validation_table, mcf, self.warm_start, self.name, self.description,
+						 metrics_elapsed_time_offset=metrics_elapsed_time_offset)
                 model_training.fit_multiple_model()
+            metrics_elapsed_time_offset += time.time() - start_time
             self.update_model_output_table()
             self.update_model_output_info_table(i, initial_vals)
 
