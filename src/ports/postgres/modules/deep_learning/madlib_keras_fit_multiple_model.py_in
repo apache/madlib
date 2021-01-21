@@ -46,8 +46,6 @@ from utilities.utilities import rotate
 from utilities.utilities import madlib_version
 from utilities.utilities import is_platform_pg
 from utilities.utilities import get_seg_number
-from utilities.utilities import get_segments_per_host
-from utilities.utilities import rename_table
 import utilities.debug as DEBUG
 from utilities.debug import plpy_prepare
 from utilities.debug import plpy_execute
@@ -172,7 +170,6 @@ class FitMultipleModel(object):
         self.columns_dict['val_ind_shape_cols'] = self.val_ind_shape_cols
 
         self.use_gpus = use_gpus if use_gpus else False
-        self.segments_per_host = get_segments_per_host()
         self.model_input_tbl = unique_string('model_input')
         self.model_output_tbl = unique_string('model_output')
         self.schedule_tbl = unique_string('schedule')
@@ -182,6 +179,7 @@ class FitMultipleModel(object):
         self.rotate_schedule_tbl_plan = self.add_object_maps_plan = None
         self.hop_plan = self.udf_plan = None
 
+        self.segments_per_host = get_data_distribution_per_segment(source_table)
         if self.use_gpus:
             self.accessible_gpus_for_seg = get_accessible_gpus_for_seg(
                 self.schema_madlib, self.segments_per_host, self.module_name)
@@ -190,7 +188,7 @@ class FitMultipleModel(object):
 
         self.original_model_output_tbl = model_output_table
         if not self.original_model_output_tbl:
-	       plpy.error("Must specify an output table.")
+            plpy.error("Must specify an output table.")
 
         self.model_info_tbl = add_postfix(
             self.original_model_output_tbl, '_info')
@@ -375,12 +373,13 @@ class FitMultipleModel(object):
                     None,
                     self.use_gpus,
                     self.accessible_gpus_for_seg,
-                    seg_ids,
-                    images_per_seg,
-                    [], [], True,
-                    mst[self.object_map_col],
-                    self.model_output_tbl,
-                    mst[self.mst_key_col],
+                    self.segments_per_host,
+                seg_ids,
+                images_per_seg,
+                [], [], True,
+                mst[self.object_map_col],
+                self.model_output_tbl,
+                mst[self.mst_key_col],
                     is_train)
             total_eval_compute_time += eval_compute_time
             mst_metric_eval_time[mst[self.mst_key_col]] \
@@ -962,7 +961,7 @@ class FitMultipleModel(object):
                             src.{self.dist_key_col},
                             ARRAY{self.dist_key_mapping},
                             src.{self.gp_segment_id_col},
-                            {self.segments_per_host},
+                            ARRAY{self.segments_per_host},
                             ARRAY{self.images_per_seg_train},
                             ARRAY{self.accessible_gpus_for_seg},
                             model_in.{self.model_weights_col}::BYTEA,
