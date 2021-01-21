@@ -99,7 +99,7 @@ CREATE OR REPLACE FUNCTION madlib_installcheck_deep_learning.fit_transition_mult
     dist_key                    INTEGER,
     dist_key_mapping            INTEGER[],
     current_seg_id              INTEGER,
-    segments_per_host           INTEGER,
+    segments_per_host           INTEGER[],
     images_per_seg              INTEGER[],
     accessible_gpus_for_seg     INTEGER[],
     serialized_weights          BYTEA,
@@ -146,7 +146,7 @@ $$ LANGUAGE plpythonu VOLATILE;
 
 CREATE OR REPLACE FUNCTION validate_transition_function_params(
     current_seg_id                       INTEGER,
-    segments_per_host                    INTEGER,
+    segments_per_host                    INTEGER[],
     images_per_seg                       INTEGER[],
     expected_num_calls                   INTEGER,
     expected_dist_key                    INTEGER,
@@ -270,7 +270,8 @@ $$
     fit_mult.images_per_seg_train = images_per_seg
     fit_mult.dist_key_mapping = fit_mult.dist_keys = dist_keys
     fit_mult.accessible_gpus_per_seg = [0] * num_dist_keys
-    fit_mult.segments_per_host = num_data_segs
+    data_distribution_per_seg = [num_data_segs] * num_dist_keys
+    fit_mult.segments_per_host = data_distribution_per_seg
 
     fit_mult.msts_for_schedule = fit_mult.msts[:num_models]
     if num_models < num_dist_keys:
@@ -296,14 +297,14 @@ $$
                 ORDER BY __dist_key__  -- This would be gp_segment_id if it weren't a simulation
             ) AS expected_dist_key_mapping,
             ARRAY{fm.images_per_seg_train} AS expected_images_per_seg,
-            {num_data_segs} AS segments_per_host,
+            ARRAY{data_distribution_per_seg} AS segments_per_host,
             __dist_key__
         FROM {fm.source_table}
         GROUP BY __dist_key__
         DISTRIBUTED BY (__dist_key__);
     """.format(
             fm=fit_mult,
-            num_data_segs=num_data_segs,
+            data_distribution_per_seg=data_distribution_per_seg,
             exp_table=expected_distkey_mappings_tbl
         )
     plpy.execute(create_distkey_map_tbl_cmd)
@@ -427,7 +428,7 @@ SELECT test_run_training('src_3segs', 0, False, False, False);
     CREATE TABLE validate_params_results AS
         SELECT validate_transition_function_params(
             s.gp_segment_id,
-            3,
+            ARRAY[3, 3, 3],
             s.expected_images_per_seg,
             5,                 -- expected num_calls (per dist_key)
             s.__dist_key__,
@@ -773,7 +774,7 @@ DROP FUNCTION madlib_installcheck_deep_learning.fit_transition_multiple_model(
     dist_key                    INTEGER,
     dist_key_mapping            INTEGER[],
     current_seg_id              INTEGER,
-    segments_per_host           INTEGER,
+    segments_per_host           INTEGER[],
     images_per_seg              INTEGER[],
     accessible_gpus_for_seg     INTEGER[],
     serialized_weights          BYTEA,

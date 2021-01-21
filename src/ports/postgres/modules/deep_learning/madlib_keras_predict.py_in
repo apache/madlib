@@ -26,7 +26,6 @@ from predict_input_params import PredictParamsProcessor
 from utilities.control import MinWarning
 from utilities.utilities import _assert
 from utilities.utilities import add_postfix
-from utilities.utilities import get_segments_per_host
 from utilities.utilities import unique_string
 from utilities.utilities import get_psql_type
 from utilities.utilities import split_quoted_delimited_str
@@ -55,10 +54,12 @@ class BasePredict():
         self.pred_type = pred_type
         self.module_name = module_name
 
-        self.segments_per_host = get_segments_per_host()
         self.use_gpus = use_gpus if use_gpus else False
+        self.segments_per_host = get_data_distribution_per_segment(test_table)
         if self.use_gpus:
-            accessible_gpus_for_seg = get_accessible_gpus_for_seg(schema_madlib, self.segments_per_host, self.module_name)
+            accessible_gpus_for_seg = get_accessible_gpus_for_seg(schema_madlib,
+                                                                  self.segments_per_host,
+                                                                  self.module_name)
             _assert(len(set(accessible_gpus_for_seg)) == 1,
                 '{0}: Asymmetric gpu configurations are not supported'.format(self.module_name))
             self.gpus_per_host = accessible_gpus_for_seg[0]
@@ -83,7 +84,6 @@ class BasePredict():
         gp_segment_id_col, seg_ids_test, \
         images_per_seg_test = get_image_count_per_seg_for_non_minibatched_data_from_db(
             self.test_table)
-        segments_per_host = get_segments_per_host()
 
         if self.pred_type == 1:
             rank_create_sql = ""
@@ -177,7 +177,7 @@ class BasePredict():
                                 ARRAY{seg_ids_test},
                                 ARRAY{images_per_seg_test},
                                 {self.gpus_per_host},
-                                {segments_per_host})) AS prob
+                                ARRAY{self.segments_per_host})) AS prob
 
                             FROM {self.test_table}
                             LEFT JOIN
@@ -364,7 +364,7 @@ def internal_keras_predict(independent_var, model_architecture, model_weights,
     try:
         device_name = get_device_name_and_set_cuda_env(gpus_per_host, current_seg_id)
         if model_key not in SD:
-            set_keras_session(device_name, gpus_per_host, segments_per_host)
+            set_keras_session(device_name, gpus_per_host, segments_per_host[current_seg_id])
             model = model_from_json(model_architecture)
             set_model_weights(model, model_weights)
             SD[model_key] = model
