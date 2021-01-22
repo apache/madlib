@@ -22,12 +22,11 @@ namespace postgres {
  */
 class NativeRandomNumberGenerator {
 public:
+    typedef double result_type;
 
 #if _GLIBCXX_USE_CXX11_ABI
-    typedef long long result_type;
 #define CONST_EXPR constexpr
 #else
-    typedef double result_type;
 #define CONST_EXPR
 #endif
 

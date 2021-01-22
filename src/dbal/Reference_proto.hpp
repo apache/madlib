@@ -18,7 +18,7 @@ namespace dbal {
  * @tparam IsMutable Whether the target value is mutable. Note that \c IsMutable
  *     overrides any const-qualifier that \c T may contain.
  */
-template <typename T, bool IsMutable = boost::is_const<T>::value_type>
+template <typename T, bool IsMutable = boost::is_const<T>::value>
 class Ref {
 public:
     typedef const T val_type;

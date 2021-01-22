@@ -49,22 +49,30 @@ user_domain_error(const char*, const char* inMessage, const T& inVal) {
     if (std::isnan(inVal))
         return std::numeric_limits<double>::quiet_NaN();
 
-    // The following line is taken from
-    // http://www.boost.org/doc/libs/1_49_0/libs/math/doc/sf_and_dist/html/math_toolkit/policy/pol_tutorial/user_def_err_pol.html
+#if _GLIBCXX_USE_CXX11_ABI
+    int prec = std::numeric_limits<T>::max_digits10;
+#else
+    // For older C++ standards, max_digits10 was not available so we have to convert manually
+    //  http://www.boost.org/doc/libs/1_49_0/libs/math/doc/sf_and_dist/html/math_toolkit/policy/pol_tutorial/user_def_err_pol.html
     int prec = 2 + (std::numeric_limits<T>::digits * 30103UL) / 100000UL;
+#endif // _GLIBCXX_USE_CXX11_ABI
 
-    std::string msg = (boost::format(inMessage)
+    throw std::domain_error(inMessage);
+
+     std:: string *msg = new std::string(
+        (boost::format(inMessage)
             % boost::io::group(std::setprecision(prec), inVal)
-        ).str();
-
+        ).str()
+     );
+ 
     // Some Boost error messages contain a space before the punctuation mark,
     // which we will remove.
-    std::string::iterator lastChar = msg.end() - 1;
-    std::string::iterator secondLastChar = msg.end() - 2;
+    std::string::iterator lastChar = msg->end() - 1;
+    std::string::iterator secondLastChar = msg->end() - 2;
     if (std::ispunct(*lastChar) && std::isspace(*secondLastChar))
-        msg.erase(secondLastChar, lastChar);
+        msg->erase(secondLastChar, lastChar);
 
-    throw std::domain_error(msg);
+    throw std::domain_error(*msg);
 }
 
 } // namespace policies

@@ -68,9 +68,13 @@ wsr_test_transition::run(AnyType &args) {
         ? args[2].getAs<double>()
         : -1;
 
-    if (!std::isfinite(precision))
-        throw std::invalid_argument((boost::format(
-            "Precision must be finite, but got %1%.") % precision).str());
+
+    if (!std::isfinite(precision)) {
+        std::stringstream ss;
+        ss << "Precision must be finite, but got " << precision;
+        std::string *msg = new std::string(ss.str());
+        throw std::invalid_argument( *msg );
+    }
     else if (precision < 0)
         precision = value * std::numeric_limits<double>::epsilon();
 

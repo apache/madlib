@@ -210,9 +210,9 @@ AnyType lda_gibbs_sample::run(AnyType & args)
     if (!args.getUserFuncContext()) {
         ArrayHandle<int64_t> model64 = args[3].getAs<ArrayHandle<int64_t> >();
         if (model64.size() != model64_size) {
-            std::stringstream ss;
-            ss << "invalid dimension: model64.size() = " << model64.size();
-            throw std::invalid_argument(ss.str());
+            std::stringstream err_msg;
+            err_msg << "invalid dimension: model64.size() = " << model64.size();
+            throw std::invalid_argument(err_msg.str());
         }
         if (__min(model64) < 0) {
             throw std::invalid_argument("invalid topic counts in model");

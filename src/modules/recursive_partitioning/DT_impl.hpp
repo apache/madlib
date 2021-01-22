@@ -385,7 +385,7 @@ DecisionTree<Container>::impurity(const ColumnVector &stats) const {
         if (impurity_type == GINI){
             return 1 - proportions.cwiseProduct(proportions).sum();
         } else if (impurity_type == ENTROPY){
-            return proportions.unaryExpr(std::ptr_fun(computeEntropy)).sum();
+            return proportions.unaryExpr(std::function<double(const double&)>(computeEntropy)).sum();
         } else if (impurity_type == MISCLASS){
             return 1 - proportions.maxCoeff();
         } else
