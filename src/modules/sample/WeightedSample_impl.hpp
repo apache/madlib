@@ -7,17 +7,7 @@
 #ifndef MADLIB_MODULES_SAMPLE_WEIGHTED_SAMPLE_IMPL_HPP
 #define MADLIB_MODULES_SAMPLE_WEIGHTED_SAMPLE_IMPL_HPP
 
-#if _GLIBCXX_USE_CXX11_ABI
-#include <random>
-#else
-#include <boost/tr1/random.hpp>
-
-// Import TR1 names (currently used from boost). This can go away once we make
-// the switch to C++11.
-namespace std {
-    using tr1::bernoulli_distribution;
-}
-#endif // _GNUCXX_USE_CXX11_ABI
+#include <boost/random/bernoulli_distribution.hpp>
 
 namespace madlib {
 
@@ -113,7 +103,7 @@ WeightedSampleAccumulator<Container, T>::operator<<(
     // weight
     if (weight > 0.) {
         weight_sum += weight;
-        std::bernoulli_distribution success(weight / weight_sum);
+        boost::bernoulli_distribution<double> success(weight / weight_sum);
         // Note that a NativeRandomNumberGenerator object is stateless, so it
         // is not a problem to instantiate an object for each RN generation...
         NativeRandomNumberGenerator generator;

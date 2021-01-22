@@ -164,7 +164,7 @@ dst_compute_entropy_final::run(AnyType &args){
     ColumnVector probs = state.cast<double>() / sum_of_dep_counts;
     // usage of unaryExpr with functor:
     // http://eigen.tuxfamily.org/dox/classEigen_1_1MatrixBase.html#a23fc4bf97168dee2516f85edcfd4cfe7
-    return -(probs.unaryExpr(std::ptr_fun(p_log2_p))).sum();
+    return -(probs.unaryExpr(std::function<double(const double&)>(p_log2_p))).sum();
 }
 // ------------------------------------------------------------
 
