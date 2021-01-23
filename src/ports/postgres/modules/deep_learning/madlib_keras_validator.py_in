@@ -260,20 +260,12 @@ class InputValidator:
 
 class FitCommonValidator(object):
     def __init__(self, source_table, validation_table, output_model_table,
-                 model_arch_table, model_id, dependent_varname,
-                 independent_varname, dep_shape_cols, ind_shape_cols, num_iterations,
-                 metrics_compute_frequency, warm_start,
-                 use_gpus, accessible_gpus_for_seg, module_name, object_table,
-                 val_dep_var, val_ind_var):
+                 num_iterations, metrics_compute_frequency, warm_start,
+                 use_gpus, accessible_gpus_for_seg, module_name, object_table):
         self.source_table = source_table
         self.validation_table = validation_table
         self.output_model_table = output_model_table
-        self.model_arch_table = model_arch_table
-        self.model_id = model_id
-        self.dependent_varname = dependent_varname
-        self.independent_varname = independent_varname
-        self.dep_shape_cols = dep_shape_cols
-        self.ind_shape_cols = ind_shape_cols
+
         self.metrics_compute_frequency = metrics_compute_frequency
         self.warm_start = warm_start
         self.num_iterations = num_iterations
@@ -282,42 +274,52 @@ class FitCommonValidator(object):
         if self.source_table:
             self.source_summary_table = add_postfix(
                 self.source_table, "_summary")
+        if self.validation_table:
+            self.validation_summary_table = add_postfix(
+                self.validation_table, "_summary")
         if self.output_model_table:
             self.output_summary_model_table = add_postfix(
                 self.output_model_table, "_summary")
         self.accessible_gpus_for_seg = accessible_gpus_for_seg
         self.module_name = module_name
-        self.val_dep_var = val_dep_var
-        self.val_ind_var = val_ind_var
 
-        self._validate_common_args()
+        self._validate_tables()
+
+        self.src_summary_dict = self.get_source_summary_table_dict(self.source_summary_table)
+
+        self.dependent_varname = self.src_summary_dict['dependent_varname']
+        self.independent_varname = self.src_summary_dict['independent_varname']
+        self.dep_shape_cols = [add_postfix(i, "_shape") for i in self.dependent_varname]
+        self.ind_shape_cols = [add_postfix(i, "_shape") for i in self.independent_varname]
+
+        self.val_dep_var = None
+        self.val_ind_var = None
+        self.val_dep_shape_cols = None
+        self.val_ind_shape_cols = None
+        if self.validation_table:
+            val_summary_dict = self.get_source_summary_table_dict(self.validation_summary_table)
+
+            self.val_dep_var = val_summary_dict['dependent_varname']
+            self.val_ind_var = val_summary_dict['independent_varname']
+            self.val_dep_shape_cols = [add_postfix(i, "_shape") for i in self.val_dep_var]
+            self.val_ind_shape_cols = [add_postfix(i, "_shape") for i in self.val_ind_var]
+
+        self._validate_tables_schema()
         if use_gpus:
             InputValidator._validate_gpu_config(self.module_name,
                 self.source_table, self.accessible_gpus_for_seg)
 
-    def _validate_common_args(self):
-        _assert(self.num_iterations > 0,
-            "{0}: Number of iterations cannot be < 1.".format(self.module_name))
-        _assert(self._is_valid_metrics_compute_frequency(),
-            "{0}: metrics_compute_frequency must be in the range (1 - {1}).".format(
-                self.module_name, self.num_iterations))
+    def _validate_tables(self):
         input_tbl_valid(self.source_table, self.module_name)
+        input_tbl_valid(self.source_summary_table, self.module_name)
+        if self.validation_table:
+            input_tbl_valid(self.validation_table, self.module_name)
+            input_tbl_valid(self.validation_summary_table, self.module_name)
+
         if self.object_table is not None:
             input_tbl_valid(self.object_table, self.module_name)
             cols_in_tbl_valid(self.object_table, CustomFunctionSchema.col_names, self.module_name)
 
-        cols_in_tbl_valid(self.source_summary_table,
-            [NORMALIZING_CONST_COLNAME, DEPENDENT_VARTYPE_COLNAME,
-            'dependent_varname', 'independent_varname'], self.module_name)
-        if not is_platform_pg():
-            cols_in_tbl_valid(self.source_table, [DISTRIBUTION_KEY_COLNAME], self.module_name)
-
-        # Source table and validation tables must have the same schema
-        self._validate_input_table(self.source_table)
-        for i in self.dependent_varname:
-            validate_bytea_var_for_minibatch(self.source_table, i)
-
-        self._validate_validation_table()
         if self.warm_start:
             input_tbl_valid(self.output_model_table, self.module_name)
             input_tbl_valid(self.output_summary_model_table, self.module_name)
@@ -325,60 +327,59 @@ class FitCommonValidator(object):
             output_tbl_valid(self.output_model_table, self.module_name)
             output_tbl_valid(self.output_summary_model_table, self.module_name)
 
-    def _validate_input_table(self, table, is_validation_table=False):
 
-        independent_varname = self.val_ind_var if is_validation_table else self.independent_varname
-        dependent_varname = self.val_dep_var if is_validation_table else self.dependent_varname
-
-        for name in independent_varname:
-            _assert(is_var_valid(table, name),
-                "{module_name}: invalid independent_varname "
-                "('{independent_varname}') for table ({table}). "
-                "Please ensure that the input table ({table}) "
-                "has been preprocessed by the image preprocessor.".format(
-                    module_name=self.module_name,
-                    independent_varname=name,
-                    table=table))
-
-        for name in dependent_varname:
-            _assert(is_var_valid(table, name),
-                "{module_name}: invalid dependent_varname "
-                "('{dependent_varname}') for table ({table}). "
-                "Please ensure that the input table ({table}) "
-                "has been preprocessed by the image preprocessor.".format(
-                    module_name=self.module_name,
-                    dependent_varname=name,
-                    table=table))
-        if not is_validation_table:
-            for name in self.ind_shape_cols:
-                _assert(is_var_valid(table, name),
-                    "{module_name}: invalid independent_var_shape "
-                    "('{ind_shape_col}') for table ({table}). "
-                    "Please ensure that the input table ({table}) "
-                    "has been preprocessed by the image preprocessor.".format(
-                        module_name=self.module_name,
-                        ind_shape_col=name,
-                        table=table))
-
-            for name in self.dep_shape_cols:
-                _assert(is_var_valid(table, name),
-                    "{module_name}: invalid dependent_var_shape "
-                    "('{dep_shape_col}') for table ({table}). "
-                    "Please ensure that the input table ({table}) "
-                    "has been preprocessed by the image preprocessor.".format(
-                        module_name=self.module_name,
-                        dep_shape_col=name,
-                        table=table))
-
+    def _validate_tables_schema(self):
+        # Source table and validation tables must have the same schema
+        additional_cols = []
         if not is_platform_pg():
-            _assert(is_var_valid(table, DISTRIBUTION_KEY_COLNAME),
-                    "{module_name}: missing distribution key "
-                    "('{dist_key_col}') for table ({table}). "
-                    "Please ensure that the input table ({table}) "
-                    "has been preprocessed by the image preprocessor.".format(
+            additional_cols.append(DISTRIBUTION_KEY_COLNAME)
+
+        self._validate_columns_in_preprocessed_table(self.source_table,
+                                                    self.independent_varname +
+                                                    self.dependent_varname +
+                                                    self.ind_shape_cols +
+                                                    self.dep_shape_cols +
+                                                    additional_cols)
+        for i in self.dependent_varname:
+            validate_bytea_var_for_minibatch(self.source_table, i)
+
+        if self.validation_table and self.validation_table.strip() != '':
+            self._validate_columns_in_preprocessed_table(self.validation_table,
+                                                        self.val_ind_var +
+                                                        self.val_dep_var +
+                                                        self.val_ind_shape_cols +
+                                                        self.val_dep_shape_cols+
+                                                        additional_cols)
+            for i in self.val_dep_var:
+                validate_bytea_var_for_minibatch(self.validation_table, i)
+
+        cols_in_tbl_valid(self.source_summary_table,
+                          [NORMALIZING_CONST_COLNAME, DEPENDENT_VARTYPE_COLNAME,
+                           'dependent_varname', 'independent_varname'], self.module_name)
+
+    def _validate_misc_args(self):
+        _assert(self.num_iterations > 0,
+                "{0}: Number of iterations cannot be < 1.".format(self.module_name))
+        _assert(self._is_valid_metrics_compute_frequency(),
+                "{0}: metrics_compute_frequency must be in the range (1 - {1}).".format(
+                    self.module_name, self.num_iterations))
+
+    def get_source_summary_table_dict(self, source_summary_table):
+        source_summary = plpy.execute("""
+                SELECT *
+                FROM {0}
+            """.format(source_summary_table))[0]
+        return source_summary
+
+    def _validate_columns_in_preprocessed_table(self, table_name, col_names):
+        for col in col_names:
+            _assert(is_var_valid(table_name, col),
+                    "{module_name}: invalid column name "
+                    "('{col}') for table ({table_name}). "
+                    "Please ensure that the input table ({table_name}) "
+                    "has been preprocessed.".format(
                         module_name=self.module_name,
-                        dist_key_col=DISTRIBUTION_KEY_COLNAME,
-                        table=table))
+                        **locals()))
 
     def _is_valid_metrics_compute_frequency(self):
         return self.metrics_compute_frequency is None or \
@@ -389,6 +390,8 @@ class FitCommonValidator(object):
         if self.validation_table and self.validation_table.strip() != '':
             input_tbl_valid(self.validation_table, self.module_name)
             self._validate_input_table(self.validation_table, True)
+            validation_summary_table = add_postfix(self.validation_table, "_summary")
+            input_tbl_valid(validation_summary_table, self.module_name)
             for i in self.val_dep_var:
                 dependent_vartype = get_expr_type(i,
                                                   self.validation_table)
@@ -403,71 +406,53 @@ class FitCommonValidator(object):
                                input_shape, 2, True)
         if self.validation_table:
             InputValidator.validate_input_shape(
-                self.validation_table, self.independent_varname,
+                self.validation_table,  self.independent_varname,
                 input_shape, 2, True)
 
 
 class FitInputValidator(FitCommonValidator):
     def __init__(self, source_table, validation_table, output_model_table,
-                 model_arch_table, model_id, dependent_varname,
-                 independent_varname, dep_shape_cols, ind_shape_cols, num_iterations,
+                 model_arch_table, model_id, num_iterations,
                  metrics_compute_frequency, warm_start,
-                 use_gpus, accessible_gpus_for_seg, object_table, val_dep_var, val_ind_var):
+                 use_gpus, accessible_gpus_for_seg, object_table):
 
         self.module_name = 'madlib_keras_fit'
         super(FitInputValidator, self).__init__(source_table,
                                                 validation_table,
                                                 output_model_table,
-                                                model_arch_table,
-                                                model_id,
-                                                dependent_varname,
-                                                independent_varname,
-                                                dep_shape_cols,
-                                                ind_shape_cols,
                                                 num_iterations,
                                                 metrics_compute_frequency,
                                                 warm_start,
                                                 use_gpus,
                                                 accessible_gpus_for_seg,
                                                 self.module_name,
-                                                object_table,
-                                                val_dep_var,
-                                                val_ind_var)
-        InputValidator.validate_model_arch_table(self.module_name, self.model_arch_table,
-            self.model_id)
+                                                object_table
+                                                )
+        InputValidator.validate_model_arch_table(self.module_name, model_arch_table,
+            model_id)
 
 class FitMultipleInputValidator(FitCommonValidator):
     def __init__(self, source_table, validation_table, output_model_table,
-                 model_selection_table, model_selection_summary_table, dependent_varname,
-                 independent_varname, dep_shape_cols, ind_shape_cols,
-                 num_iterations, model_info_table, mst_key_col,
+                 model_selection_table, num_iterations, mst_key_col,
                  model_arch_table_col, metrics_compute_frequency, warm_start,
-                 use_gpus, accessible_gpus_for_seg, val_dep_var, val_ind_var):
+                 use_gpus, accessible_gpus_for_seg):
 
         self.module_name = 'madlib_keras_fit_multiple'
-
         input_tbl_valid(model_selection_table, self.module_name)
-        input_tbl_valid(model_selection_summary_table, self.module_name,
+        self.model_selection_summary_table = add_postfix(model_selection_table,
+                                                         '_summary')
+        input_tbl_valid(self.model_selection_summary_table, self.module_name,
                         error_suffix_str="Please ensure that the model selection table ({0}) "
                                          "has been created by "
                                          "load_model_selection_table().".format(
                                             model_selection_table))
         self.msts, self.model_arch_table, self.object_table = query_model_configs(
-            model_selection_table, model_selection_summary_table,
+            model_selection_table, self.model_selection_summary_table,
             mst_key_col, model_arch_table_col)
-        if warm_start:
-            input_tbl_valid(model_info_table, self.module_name)
-        else:
-            output_tbl_valid(model_info_table, self.module_name)
+        input_tbl_valid(self.model_arch_table, self.module_name)
         super(FitMultipleInputValidator, self).__init__(source_table,
                                                         validation_table,
                                                         output_model_table,
-                                                        self.model_arch_table,
-                                                        None,
-                                                        dependent_varname,
-                                                        independent_varname,
-                                                        dep_shape_cols,
-                                                        ind_shape_cols,
                                                         num_iterations,
                                                         metrics_compute_frequency,
                                                         warm_start,
@@ -477,6 +462,13 @@ class FitMultipleInputValidator(FitCommonValidator):
                                                         self.object_table,
                                                         val_dep_var,
                                                         val_ind_var)
+        self.output_model_info_table = add_postfix(output_model_table,
+                                                   '_info')
+
+        if warm_start:
+            input_tbl_valid(self.output_model_info_table, self.module_name)
+        else:
+            output_tbl_valid(self.output_model_info_table, self.module_name)
 
 class MstLoaderInputValidator():
     def __init__(self,

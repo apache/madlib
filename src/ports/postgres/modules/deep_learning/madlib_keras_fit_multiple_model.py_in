@@ -45,6 +45,7 @@ from utilities.utilities import unique_string
 from utilities.utilities import madlib_version
 from utilities.utilities import is_platform_pg
 from utilities.utilities import get_seg_number
+from utilities.validate_args import input_tbl_valid
 import utilities.debug as DEBUG
 from utilities.debug import plpy_prepare
 from utilities.debug import plpy_execute
@@ -110,8 +111,6 @@ class FitMultipleModel(object):
         self.source_table = source_table
         self.validation_table = validation_table
         self.model_selection_table = model_selection_table
-        if self.model_selection_table:
-            self.model_selection_summary_table = add_postfix(self.model_selection_table, '_summary')
 
         self.dist_key_col = DISTRIBUTION_KEY_COLNAME
         self.prev_dist_key_col = '__prev_dist_key__'
@@ -134,40 +133,6 @@ class FitMultipleModel(object):
         self.train_mst_loss = defaultdict(list)
         self.train_mst_metric = defaultdict(list)
         self.info_str = ""
-        source_summary_table = add_postfix(self.source_table, "_summary")
-        input_tbl_valid(source_summary_table, self.module_name)
-        src_summary_dict = get_source_summary_table_dict(source_summary_table)
-
-        self.mb_dep_var_cols = src_summary_dict['dependent_varname']
-        self.mb_indep_var_cols = src_summary_dict['independent_varname']
-        self.dep_shape_cols = [add_postfix(i, "_shape") for i in self.mb_dep_var_cols]
-        self.ind_shape_cols = [add_postfix(i, "_shape") for i in self.mb_indep_var_cols]
-
-        self.columns_dict = {}
-        self.columns_dict['mb_dep_var_cols'] = self.mb_dep_var_cols
-        self.columns_dict['mb_indep_var_cols'] = self.mb_indep_var_cols
-        self.columns_dict['dep_shape_cols'] = self.dep_shape_cols
-        self.columns_dict['ind_shape_cols'] = self.ind_shape_cols
-
-        self.val_dep_var = None
-        self.val_ind_var = None
-        self.val_dep_shape_cols = None
-        self.val_ind_shape_cols = None
-        if validation_table:
-            validation_summary_table = add_postfix(self.validation_table, "_summary")
-            input_tbl_valid(validation_summary_table, self.module_name)
-            val_summary_dict = get_source_summary_table_dict(validation_summary_table)
-
-            self.val_dep_var = val_summary_dict['dependent_varname']
-            self.val_ind_var = val_summary_dict['independent_varname']
-            self.val_dep_shape_cols = [add_postfix(i, "_shape") for i in self.val_dep_var]
-            self.val_ind_shape_cols = [add_postfix(i, "_shape") for i in self.val_ind_var]
-
-        self.columns_dict['val_dep_var'] = self.val_dep_var
-        self.columns_dict['val_ind_var'] = self.val_ind_var
-        self.columns_dict['val_dep_shape_cols'] = self.val_dep_shape_cols
-        self.columns_dict['val_ind_shape_cols'] = self.val_ind_shape_cols
-
         self.use_gpus = use_gpus if use_gpus else False
         self.model_input_tbl = unique_string('model_input')
         self.model_output_tbl = unique_string('model_output')
@@ -178,6 +143,7 @@ class FitMultipleModel(object):
         self.rotate_schedule_tbl_plan = self.add_object_maps_plan = None
         self.hop_plan = self.udf_plan = None
 
+        input_tbl_valid(self.source_table, self.module_name)
         self.segments_per_host = get_data_distribution_per_segment(source_table)
         if self.use_gpus:
             self.accessible_gpus_for_seg = get_accessible_gpus_for_seg(
@@ -186,30 +152,32 @@ class FitMultipleModel(object):
             self.accessible_gpus_for_seg = get_seg_number()*[0]
 
         self.original_model_output_tbl = model_output_table
-        if not self.original_model_output_tbl:
-            plpy.error("Must specify an output table.")
-
-        self.model_info_tbl = add_postfix(
-            self.original_model_output_tbl, '_info')
-        self.model_summary_table = add_postfix(
-            self.original_model_output_tbl, '_summary')
-
         self.warm_start = bool(warm_start)
 
         self.fit_validator_train = FitMultipleInputValidator(
             self.source_table, self.validation_table, self.original_model_output_tbl,
-            self.model_selection_table, self.model_selection_summary_table,
-            self.mb_dep_var_cols, self.mb_indep_var_cols, self.dep_shape_cols,
-            self.ind_shape_cols, self.num_iterations,
-            self.model_info_tbl, self.mst_key_col, self.model_arch_table_col,
-            self.metrics_compute_frequency, self.warm_start, self.use_gpus,
-            self.accessible_gpus_for_seg, self.val_dep_var, self.val_ind_var)
+            self.model_selection_table, self.num_iterations, self.mst_key_col,
+            self.model_arch_table_col, self.metrics_compute_frequency,
+            self.warm_start, self.use_gpus, self.accessible_gpus_for_seg)
+        self.model_info_tbl = self.fit_validator_train.output_model_info_table
+        self.model_summary_table = self.fit_validator_train.output_summary_model_table
+        self.model_selection_summary_table = self.fit_validator_train.model_selection_summary_table
         if self.metrics_compute_frequency is None:
             self.metrics_compute_frequency = num_iterations
 
         self.msts = self.fit_validator_train.msts
         self.model_arch_table = self.fit_validator_train.model_arch_table
         self.object_table = self.fit_validator_train.object_table
+        self.columns_dict = {}
+        self.columns_dict['mb_dep_var_cols'] = self.fit_validator_train.dependent_varname
+        self.columns_dict['mb_indep_var_cols'] = self.fit_validator_train.independent_varname
+        self.columns_dict['dep_shape_cols'] = self.fit_validator_train.dep_shape_cols
+        self.columns_dict['ind_shape_cols'] = self.fit_validator_train.ind_shape_cols
+        self.columns_dict['val_dep_var'] = self.fit_validator_train.val_dep_var
+        self.columns_dict['val_ind_var'] = self.fit_validator_train.val_ind_var
+        self.columns_dict['val_dep_shape_cols'] = self.fit_validator_train.val_dep_shape_cols
+        self.columns_dict['val_ind_shape_cols'] = self.fit_validator_train.val_ind_shape_cols
+
         self.metrics_iters = []
         self.object_map_col = 'object_map'
         self.custom_mst_keys = None
@@ -222,7 +190,7 @@ class FitMultipleModel(object):
 
         self.dist_key_mapping, self.images_per_seg_train = \
             get_image_count_per_seg_for_minibatched_data_from_db(
-                self.source_table, self.dep_shape_cols[0])
+                self.source_table, self.fit_validator_train.dep_shape_cols[0])
 
         if self.validation_table:
             self.valid_mst_metric_eval_time = defaultdict(list)
@@ -230,7 +198,7 @@ class FitMultipleModel(object):
             self.valid_mst_metric = defaultdict(list)
             self.dist_key_mapping_valid, self.images_per_seg_valid = \
                 get_image_count_per_seg_for_minibatched_data_from_db(
-                    self.validation_table, self.val_dep_shape_cols[0])
+                    self.validation_table, self.fit_validator_train.val_dep_shape_cols[0])
 
         self.dist_keys = query_dist_keys(self.source_table, self.dist_key_col)
         self.max_dist_key = sorted(self.dist_keys)[-1]
@@ -713,7 +681,7 @@ class FitMultipleModel(object):
         source_summary_table = self.fit_validator_train.source_summary_table
         src_summary_dict = get_source_summary_table_dict(source_summary_table)
 
-        class_values_colnames = [add_postfix(i, "_class_values") for i in self.mb_dep_var_cols]
+        class_values_colnames = [add_postfix(i, "_class_values") for i in self.fit_validator_train.dependent_varname]
         # class_values = src_summary_dict['class_values']
         class_values_type =[get_expr_type(i, source_summary_table) for i in class_values_colnames]
         # class_values_type = src_summary_dict['class_values_type']
@@ -897,10 +865,10 @@ class FitMultipleModel(object):
             """.format(self=self))
 
         #TODO: Fix these to add multi io
-        dep_shape_col = self.dep_shape_cols[0]
-        ind_shape_col = self.ind_shape_cols[0]
-        dep_var_col = self.mb_dep_var_cols[0]
-        indep_var_col = self.mb_indep_var_cols[0]
+        dep_shape_col = self.fit_validator_train.dep_shape_cols[0]
+        ind_shape_col = self.fit_validator_train.ind_shape_cols[0]
+        dep_var_col = self.fit_validator_train.dependent_varname[0]
+        indep_var_col = self.fit_validator_train.independent_varname[0]
         source_table = self.source_table
 
         if self.use_caching:

@@ -103,6 +103,7 @@ def fit(schema_madlib, source_table, model, model_arch_table,
     fit_params = "" if not fit_params else fit_params
     _assert(compile_params, "Compile parameters cannot be empty or NULL.")
 
+    input_tbl_valid(source_table, module_name)
     segments_per_host = get_data_distribution_per_segment(source_table)
     use_gpus = use_gpus if use_gpus else False
     if use_gpus:
@@ -114,51 +115,27 @@ def fit(schema_madlib, source_table, model, model_arch_table,
 
     if object_table is not None:
         object_table = "{0}.{1}".format(schema_madlib, quote_ident(object_table))
-
-    source_summary_table = add_postfix(source_table, "_summary")
-    input_tbl_valid(source_summary_table, module_name)
-    src_summary_dict = get_source_summary_table_dict(source_summary_table)
-
-    columns_dict = {}
-    columns_dict['mb_dep_var_cols'] = src_summary_dict['dependent_varname']
-    columns_dict['mb_indep_var_cols'] = src_summary_dict['independent_varname']
-    columns_dict['dep_shape_cols'] = [add_postfix(i, "_shape") for i in columns_dict['mb_dep_var_cols']]
-    columns_dict['ind_shape_cols'] = [add_postfix(i, "_shape") for i in columns_dict['mb_indep_var_cols']]
-
-    multi_dep_count = len(columns_dict['mb_dep_var_cols'])
-    val_dep_var = None
-    val_ind_var = None
-
-    val_dep_shape_cols = None
-    val_ind_shape_cols = None
-    if validation_table:
-        validation_summary_table = add_postfix(validation_table, "_summary")
-        input_tbl_valid(validation_summary_table, module_name)
-        val_summary_dict = get_source_summary_table_dict(validation_summary_table)
-
-        val_dep_var = val_summary_dict['dependent_varname']
-        val_ind_var = val_summary_dict['independent_varname']
-        val_dep_shape_cols = [add_postfix(i, "_shape") for i in val_dep_var]
-        val_ind_shape_cols = [add_postfix(i, "_shape") for i in val_ind_var]
-
     fit_validator = FitInputValidator(
         source_table, validation_table, model, model_arch_table, model_id,
-        columns_dict['mb_dep_var_cols'], columns_dict['mb_indep_var_cols'],
-        columns_dict['dep_shape_cols'], columns_dict['ind_shape_cols'],
         num_iterations, metrics_compute_frequency, warm_start,
-        use_gpus, accessible_gpus_for_seg, object_table,
-        val_dep_var, val_ind_var)
+        use_gpus, accessible_gpus_for_seg, object_table)
 
-    columns_dict['val_dep_var'] = val_dep_var
-    columns_dict['val_ind_var'] = val_ind_var
-    columns_dict['val_dep_shape_cols'] = val_dep_shape_cols
-    columns_dict['val_ind_shape_cols'] = val_ind_shape_cols
+    columns_dict = {}
+    columns_dict['mb_dep_var_cols'] = fit_validator.dependent_varname
+    columns_dict['mb_indep_var_cols'] = fit_validator.independent_varname
+    columns_dict['dep_shape_cols'] = fit_validator.dep_shape_cols
+    columns_dict['ind_shape_cols'] = fit_validator.ind_shape_cols
+    columns_dict['val_dep_var'] = fit_validator.val_dep_var
+    columns_dict['val_ind_var'] = fit_validator.val_ind_var
+    columns_dict['val_dep_shape_cols'] = fit_validator.val_dep_shape_cols
+    columns_dict['val_ind_shape_cols'] = fit_validator.val_ind_shape_cols
+    multi_dep_count = len(fit_validator.dependent_varname)
 
-    fit_validator.dependent_varname = columns_dict['mb_dep_var_cols']
-    fit_validator.independent_varname = columns_dict['mb_indep_var_cols']
-    fit_validator.dep_shape_col = columns_dict['dep_shape_cols']
-    fit_validator.ind_shape_col = columns_dict['ind_shape_cols']
-
+    # fit_validator.dependent_varname = columns_dict['mb_dep_var_cols']
+    # fit_validator.independent_varname = columns_dict['mb_indep_var_cols']
+    # fit_validator.dep_shape_col = columns_dict['dep_shape_cols']
+    # fit_validator.ind_shape_col = columns_dict['ind_shape_cols']
+    src_summary_dict = fit_validator.src_summary_dict
     class_values_colnames = [add_postfix(i, "_class_values") for i in columns_dict['mb_dep_var_cols']]
     src_summary_dict['class_values_type'] =[ get_expr_type(
         i, fit_validator.source_summary_table) for i in class_values_colnames]
@@ -446,6 +423,7 @@ def fit(schema_madlib, source_table, model, model_arch_table,
                    normalizing_const_colname=NORMALIZING_CONST_COLNAME,
                    FLOAT32_SQL_TYPE = FLOAT32_SQL_TYPE,
                    model_id_colname = ModelArchSchema.MODEL_ID,
+                   source_summary_table=fit_validator.source_summary_table,
                    **locals()),
                    ["TEXT", "TEXT", "TEXT", "TEXT", "DOUBLE PRECISION[]"])
     plpy.execute(create_output_summary_table,
@@ -867,6 +845,7 @@ def evaluate(schema_madlib, model_table, test_table, output_table,
 
     module_name = 'madlib_keras_evaluate'
     is_mult_model = mst_key is not None
+    test_summary_table = None
     if test_table:
         test_summary_table = add_postfix(test_table, "_summary")
     model_summary_table = None
@@ -874,6 +853,7 @@ def evaluate(schema_madlib, model_table, test_table, output_table,
         model_summary_table = add_postfix(model_table, "_summary")
 
     mult_where_clause = ""
+    input_tbl_valid(model_table, module_name)
     if is_mult_model:
         mult_where_clause = "WHERE mst_key = {0}".format(mst_key)
         model_summary_table = create_summary_view(module_name, model_table, mst_key)
@@ -1035,7 +1015,6 @@ def get_loss_metric_from_keras_eval(schema_madlib, table, columns_dict, compile_
         weights = '$1'
         mult_sql = ''
         custom_map_var = '$2'
-        plpy.info(eval_sql.format(**locals()))
         evaluate_query = plpy.prepare(eval_sql.format(**locals()), ["bytea", "bytea"])
         res = plpy.execute(evaluate_query, [serialized_weights, custom_function_map])
 
