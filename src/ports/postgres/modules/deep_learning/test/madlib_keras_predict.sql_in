@@ -52,16 +52,17 @@ SELECT madlib_keras_predict(
 SELECT assert(UPPER(pg_typeof(id)::TEXT) = 'INTEGER', 'id column should be INTEGER type')
     FROM cifar10_predict;
 
-SELECT assert(UPPER(pg_typeof(y)::TEXT) =
-    'SMALLINT', 'prediction column should be SMALLINT type')
+SELECT assert(UPPER(pg_typeof(class_value)::TEXT) =
+    'TEXT', 'prediction column should be TEXT type')
     FROM cifar10_predict;
 
 -- Validate correct number of rows returned.
-SELECT assert(COUNT(*)=4, 'Output table of madlib_keras_predict should have two rows')
+SELECT assert(COUNT(*)=4, 'Output table of madlib_keras_predict should have four rows')
 FROM cifar10_predict;
 
+SELECT * FROM cifar10_predict;
 -- First test that all values are in set of class values; if this breaks, it's definitely a problem.
-SELECT assert(y IN (0,1),
+SELECT assert(class_value IN ('0','1'),
     'Predicted value not in set of defined class values for model')
 FROM cifar10_predict;
 
@@ -91,7 +92,7 @@ SELECT assert(UPPER(pg_typeof(prob)::TEXT) =
     'DOUBLE PRECISION', 'column prob should be double precision type')
     FROM  cifar10_predict;
 
-SELECT assert(COUNT(*)=4, 'Predict out table must have exactly three cols.')
+SELECT assert(COUNT(*)=5, 'Predict out table must have exactly five cols.')
 FROM pg_attribute
 WHERE attrelid='cifar10_predict'::regclass AND attnum>0;
 
@@ -110,7 +111,7 @@ SELECT assert(UPPER(pg_typeof(prob)::TEXT) =
     'DOUBLE PRECISION', 'column prob should be double precision type')
     FROM  cifar10_predict;
 
-SELECT assert(COUNT(*)=4, 'Predict out table must have exactly three cols.')
+SELECT assert(COUNT(*)=5, 'Predict out table must have exactly five cols.')
 FROM pg_attribute
 WHERE attrelid='cifar10_predict'::regclass AND attnum>0;
 
@@ -119,22 +120,22 @@ WHERE attrelid='cifar10_predict'::regclass AND attnum>0;
 DROP TABLE IF EXISTS cifar_10_sample_text_batched;
 m4_changequote(`<!', `!>')
 CREATE TABLE cifar_10_sample_text_batched AS
-    SELECT buffer_id, independent_var, dependent_var,
-      independent_var_shape, dependent_var_shape
+    SELECT buffer_id, x, y,
+      x_shape, y_shape
       m4_ifdef(<!__POSTGRESQL__!>, <!!>, <!, __dist_key__ !>)
     FROM cifar_10_sample_batched m4_ifdef(<!__POSTGRESQL__!>, <!!>, <!DISTRIBUTED BY (__dist_key__)!>);
 
 -- Insert a new row with NULL as the dependent var (one-hot encoded)
 UPDATE cifar_10_sample_text_batched
-	SET dependent_var = convert_array_to_bytea(ARRAY[0,0,1,0,0]::smallint[]) WHERE buffer_id=0;
+	SET y = convert_array_to_bytea(ARRAY[0,0,1,0,0]::smallint[]) WHERE buffer_id=0;
 UPDATE cifar_10_sample_text_batched
-	SET dependent_var = convert_array_to_bytea(ARRAY[0,1,0,0,0]::smallint[]) WHERE buffer_id=1;
-INSERT INTO cifar_10_sample_text_batched(m4_ifdef(<!__POSTGRESQL__!>, <!!>, <! __dist_key__, !>) buffer_id, independent_var, dependent_var, independent_var_shape, dependent_var_shape)
-    SELECT m4_ifdef(<!__POSTGRESQL__!>, <!!>, <! __dist_key__, !>) 2 AS buffer_id, independent_var,
-        convert_array_to_bytea(ARRAY[0,1,0,0,0]::smallint[]) AS dependent_var,
-        independent_var_shape, dependent_var_shape
+	SET y = convert_array_to_bytea(ARRAY[0,1,0,0,0]::smallint[]) WHERE buffer_id=1;
+INSERT INTO cifar_10_sample_text_batched(m4_ifdef(<!__POSTGRESQL__!>, <!!>, <! __dist_key__, !>) buffer_id, x, y, x_shape, y_shape)
+    SELECT m4_ifdef(<!__POSTGRESQL__!>, <!!>, <! __dist_key__, !>) 2 AS buffer_id, x,
+        convert_array_to_bytea(ARRAY[0,1,0,0,0]::smallint[]) AS y,
+        x_shape, y_shape
     FROM cifar_10_sample_batched WHERE cifar_10_sample_batched.buffer_id=0;
-UPDATE cifar_10_sample_text_batched SET dependent_var_shape = ARRAY[1,5];
+UPDATE cifar_10_sample_text_batched SET y_shape = ARRAY[1,5];
 m4_changequote(<!`!>,<!'!>)
 
 -- Create the necessary summary table for the batched input.
@@ -142,18 +143,18 @@ DROP TABLE IF EXISTS cifar_10_sample_text_batched_summary;
 CREATE TABLE cifar_10_sample_text_batched_summary(
     source_table text,
     output_table text,
-    dependent_varname text,
-    independent_varname text,
-    dependent_vartype text,
-    class_values text[],
+    dependent_varname text[],
+    independent_varname text[],
+    dependent_vartype text[],
+    y_class_values text[],
     buffer_size integer,
     normalizing_const numeric);
 INSERT INTO cifar_10_sample_text_batched_summary values (
     'cifar_10_sample',
     'cifar_10_sample_text_batched',
-    'y_text',
-    'x',
-    'text',
+    ARRAY['y'],
+    ARRAY['x'],
+    ARRAY['text'],
     ARRAY[NULL,'cat','dog','bird','fish'],
     1,
     255.0);
@@ -171,7 +172,7 @@ SELECT madlib_keras_fit(
 -- Predict with pred_type=prob
 DROP TABLE IF EXISTS cifar_10_sample_text;
 CREATE TABLE cifar_10_sample_text AS
-    SELECT id, x, y_text
+    SELECT id, x, y
     FROM cifar_10_sample;
 DROP TABLE IF EXISTS cifar10_predict;
 SELECT madlib_keras_predict(
@@ -190,7 +191,7 @@ SELECT assert(UPPER(pg_typeof(prob)::TEXT) =
     'DOUBLE PRECISION', 'column prob should be double precision type')
 FROM cifar10_predict;
 
-SELECT assert(COUNT(*)=4, 'Predict out table must have exactly four cols.')
+SELECT assert(COUNT(*)=5, 'Predict out table must have exactly five cols.')
 FROM pg_attribute
 WHERE attrelid='cifar10_predict'::regclass AND attnum>0;
 
@@ -208,13 +209,13 @@ SELECT madlib_keras_predict(
 -- Validate the output datatype of newly created prediction columns
 -- for prediction type = 'response' and class_values 'TEXT' with NULL
 -- as a valid class_values
-SELECT assert(UPPER(pg_typeof(y_text)::TEXT) =
-    'TEXT', 'prediction column should be TEXT type')
+SELECT assert(UPPER(pg_typeof(class_value)::TEXT) =
+    'TEXT', 'class_value column should be TEXT type')
 FROM  cifar10_predict LIMIT 1;
 
 -- Tests where the assumption is user has one-hot encoded, so class_values
 -- in input summary table will be NULL.
-UPDATE keras_saved_out_summary SET class_values=NULL;
+UPDATE keras_saved_out_summary SET y_class_values=ARRAY[NULL]::smallint[];
 
 -- Predict with pred_type=all
 DROP TABLE IF EXISTS cifar10_predict;
@@ -245,8 +246,8 @@ SELECT madlib_keras_predict(
 -- for prediction type = 'response' and class_value = NULL
 -- Returns: Index of class value in user's one-hot encoded data with
 -- highest probability
-SELECT assert(UPPER(pg_typeof(y_text)::TEXT) =
-    'TEXT', 'column y_text should be text type')
+SELECT assert(UPPER(pg_typeof(class_value)::TEXT) =
+    'TEXT', 'column class_value should be text type')
 FROM cifar10_predict LIMIT 1;
 
 -- Test predict with INTEGER class_values
@@ -254,9 +255,9 @@ FROM cifar10_predict LIMIT 1;
 -- Update output_summary table to reflect
 -- class_values {NULL,0,1,4,5} and dependent_vartype is SMALLINT
 UPDATE keras_saved_out_summary
-SET dependent_varname = 'y',
-    class_values = ARRAY[NULL,0,1,4,5]::INTEGER[],
-    dependent_vartype = 'smallint';
+SET dependent_varname = ARRAY['y'],
+    y_class_values = ARRAY[NULL,0,1,4,5]::INTEGER[],
+    dependent_vartype = ARRAY['smallint'];
 -- Predict with pred_type=prob
 DROP TABLE IF EXISTS cifar10_predict;
 SELECT madlib_keras_predict(
@@ -365,7 +366,7 @@ SELECT assert(relative_error(test_accuracy, training_metrics_final) < 0.1,
     'Predict output validation failed.')
 FROM iris_multiple_model_info i,
 (SELECT count(*)/(150*0.8) AS test_accuracy FROM
-    (SELECT iris_train.class_text AS actual, iris_predict.class_text AS estimated
+    (SELECT iris_train.class_text AS actual, iris_predict.class_value AS estimated
      FROM iris_predict INNER JOIN iris_train
      ON iris_train.id=iris_predict.id)q
      WHERE q.actual=q.estimated) q2

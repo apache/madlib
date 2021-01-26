@@ -31,6 +31,7 @@ import tensorflow as tf
 
 from madlib_keras_model_selection import ModelSelectionSchema
 
+from internal.db_utils import quote_literal
 from utilities.utilities import _assert
 from utilities.utilities import add_postfix
 from utilities.utilities import is_platform_pg
@@ -40,6 +41,7 @@ from utilities.utilities import madlib_version
 from utilities.utilities import unique_string
 from utilities.validate_args import get_expr_type
 from utilities.validate_args import quote_ident
+from utilities.validate_args import input_tbl_valid
 from utilities.control import MinWarning
 
 import tensorflow as tf
@@ -102,14 +104,6 @@ def fit(schema_madlib, source_table, model, model_arch_table,
     fit_params = "" if not fit_params else fit_params
     _assert(compile_params, "Compile parameters cannot be empty or NULL.")
 
-    mb_dep_var_col = MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL
-    mb_indep_var_col = MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL
-
-    dep_shape_col = add_postfix(
-        MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL, "_shape")
-    ind_shape_col = add_postfix(
-        MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL, "_shape")
-
     segments_per_host = get_segments_per_host()
     use_gpus = use_gpus if use_gpus else False
     if use_gpus:
@@ -120,11 +114,56 @@ def fit(schema_madlib, source_table, model, model_arch_table,
     if object_table is not None:
         object_table = "{0}.{1}".format(schema_madlib, quote_ident(object_table))
 
+    source_summary_table = add_postfix(source_table, "_summary")
+    input_tbl_valid(source_summary_table, module_name)
+    src_summary_dict = get_source_summary_table_dict(source_summary_table)
+
+    columns_dict = {}
+    columns_dict['mb_dep_var_cols'] = src_summary_dict['dependent_varname']
+    columns_dict['mb_indep_var_cols'] = src_summary_dict['independent_varname']
+    columns_dict['dep_shape_cols'] = [add_postfix(i, "_shape") for i in columns_dict['mb_dep_var_cols']]
+    columns_dict['ind_shape_cols'] = [add_postfix(i, "_shape") for i in columns_dict['mb_indep_var_cols']]
+
+    multi_dep_count = len(columns_dict['mb_dep_var_cols'])
+    val_dep_var = None
+    val_ind_var = None
+
+    val_dep_shape_cols = None
+    val_ind_shape_cols = None
+    if validation_table:
+        validation_summary_table = add_postfix(validation_table, "_summary")
+        input_tbl_valid(validation_summary_table, module_name)
+        val_summary_dict = get_source_summary_table_dict(validation_summary_table)
+
+        val_dep_var = val_summary_dict['dependent_varname']
+        val_ind_var = val_summary_dict['independent_varname']
+        val_dep_shape_cols = [add_postfix(i, "_shape") for i in val_dep_var]
+        val_ind_shape_cols = [add_postfix(i, "_shape") for i in val_ind_var]
+
     fit_validator = FitInputValidator(
-        source_table, validation_table, model, model_arch_table,
-        model_id, mb_dep_var_col, mb_indep_var_col,
+        source_table, validation_table, model, model_arch_table, model_id,
+        columns_dict['mb_dep_var_cols'], columns_dict['mb_indep_var_cols'],
+        columns_dict['dep_shape_cols'], columns_dict['ind_shape_cols'],
         num_iterations, metrics_compute_frequency, warm_start,
-        use_gpus, accessible_gpus_for_seg, object_table)
+        use_gpus, accessible_gpus_for_seg, object_table,
+        val_dep_var, val_ind_var)
+
+    columns_dict['val_dep_var'] = val_dep_var
+    columns_dict['val_ind_var'] = val_ind_var
+    columns_dict['val_dep_shape_cols'] = val_dep_shape_cols
+    columns_dict['val_ind_shape_cols'] = val_ind_shape_cols
+
+    fit_validator.dependent_varname = columns_dict['mb_dep_var_cols']
+    fit_validator.independent_varname = columns_dict['mb_indep_var_cols']
+    fit_validator.dep_shape_col = columns_dict['dep_shape_cols']
+    fit_validator.ind_shape_col = columns_dict['ind_shape_cols']
+
+    class_values_colnames = [add_postfix(i, "_class_values") for i in columns_dict['mb_dep_var_cols']]
+    src_summary_dict['class_values_type'] =[ get_expr_type(
+        i, fit_validator.source_summary_table) for i in class_values_colnames]
+    src_summary_dict['norm_const_type'] = get_expr_type(
+        NORMALIZING_CONST_COLNAME, fit_validator.source_summary_table)
+
     if metrics_compute_frequency is None:
         metrics_compute_frequency = num_iterations
 
@@ -142,27 +181,31 @@ def fit(schema_madlib, source_table, model, model_arch_table,
     # Get the serialized master model
     start_deserialization = time.time()
     model_arch, model_weights = get_model_arch_weights(model_arch_table, model_id)
-    num_classes = get_num_classes(model_arch)
+
+    # The last n layers are the output layers where n is the number of dep vars
+    num_classes = get_num_classes(model_arch, multi_dep_count)
+
     input_shape = get_input_shape(model_arch)
     fit_validator.validate_input_shapes(input_shape)
+
     dist_key_col = '0' if is_platform_pg() else DISTRIBUTION_KEY_COLNAME
     gp_segment_id_col = '0' if is_platform_pg() else GP_SEGMENT_ID_COLNAME
 
     serialized_weights = get_initial_weights(model, model_arch, model_weights,
                                              warm_start, accessible_gpus_for_seg)
     # Compute total images on each segment
-    dist_key_mapping, images_per_seg_train = get_image_count_per_seg_for_minibatched_data_from_db(source_table)
+    dist_key_mapping, images_per_seg_train = get_image_count_per_seg_for_minibatched_data_from_db(source_table, columns_dict['dep_shape_cols'][0])
 
     if validation_table:
-        dist_key_mapping_val, images_per_seg_val = get_image_count_per_seg_for_minibatched_data_from_db(validation_table)
+        dist_key_mapping_val, images_per_seg_val = get_image_count_per_seg_for_minibatched_data_from_db(validation_table, columns_dict['dep_shape_cols'][0])
 
     # Construct validation dataset if provided
     validation_set_provided = bool(validation_table)
     validation_metrics = []; validation_loss = []
 
     # Prepare the SQL for running distributed training via UDA
-    compile_params_to_pass = "$madlib$" + compile_params + "$madlib$"
-    fit_params_to_pass = "$madlib$" + fit_params + "$madlib$"
+    compile_params_to_pass = quote_literal(compile_params)
+    fit_params_to_pass = quote_literal(fit_params)
     custom_function_map = None
 
     # If the object_table exists, we read the list of custom
@@ -176,12 +219,39 @@ def fit(schema_madlib, source_table, model, model_arch_table,
         # with the function definition
         plpy.error("Object table not specified for function {0} in compile_params".format(custom_fn_list))
 
+    # Use the smart interface
+    if (len(columns_dict['mb_dep_var_cols']) <= 5 and
+        len(columns_dict['mb_indep_var_cols']) <= 5):
+
+        dep_var_array = 5 * ["NULL"]
+        indep_var_array = 5 * ["NULL"]
+
+        for counter, var in enumerate(columns_dict['mb_dep_var_cols']):
+            dep_var_array[counter] = var
+
+        for counter, var in enumerate(columns_dict['mb_indep_var_cols']):
+            indep_var_array[counter] = var
+        mb_dep_var_cols_sql = ', '.join(dep_var_array)
+        mb_indep_var_cols_sql = ', '.join(indep_var_array)
+    else:
+
+        mb_dep_var_cols_sql = ', '.join(["dependent_var_{0}".format(i)
+                                    for i in columns_dict['mb_dep_var_cols']])
+        mb_dep_var_cols_sql = "ARRAY[{0}]".format(mb_dep_var_cols_sql)
+
+        mb_indep_var_cols_sql = ', '.join(["independent_var_{0}".format(i)
+                                    for i in columns_dict['mb_indep_var_cols']])
+        mb_indep_var_cols_sql = "ARRAY[{0}]".format(mb_indep_var_cols_sql)
+
+    dep_shape_cols_sql = ', '.join(columns_dict['dep_shape_cols'])
+    ind_shape_cols_sql = ', '.join(columns_dict['ind_shape_cols'])
+
     run_training_iteration = plpy.prepare("""
         SELECT {schema_madlib}.fit_step(
-            {mb_dep_var_col},
-            {mb_indep_var_col},
-            {dep_shape_col},
-            {ind_shape_col},
+            {mb_dep_var_cols_sql},
+            {mb_indep_var_cols_sql},
+            ARRAY[{dep_shape_cols_sql}],
+            ARRAY[{ind_shape_cols_sql}],
             $MAD${model_arch}$MAD$::TEXT,
             {compile_params_to_pass}::TEXT,
             {fit_params_to_pass}::TEXT,
@@ -242,12 +312,12 @@ def fit(schema_madlib, source_table, model, model_arch_table,
             the last call to train evaluate. Otherwise clear it at the last call
             to validation evaluate
             """
-
             should_clear_session = False
             if not validation_set_provided:
                 should_clear_session = is_final_iteration
 
             compute_out = compute_loss_and_metrics(schema_madlib, source_table,
+                                                   columns_dict,
                                                    compile_params_to_pass,
                                                    model_arch,
                                                    serialized_weights, use_gpus,
@@ -259,11 +329,13 @@ def fit(schema_madlib, source_table, model, model_arch_table,
                                                    should_clear_session,
                                                    custom_function_map)
             metrics_iters.append(i)
+            compute_time, compute_metrics, compute_loss = compute_out
             info_str = get_evaluate_info_msg(i, info_str, compute_out, True)
             if validation_set_provided:
                 # Compute loss/accuracy for validation data.
                 val_compute_out = compute_loss_and_metrics(schema_madlib,
                                                            validation_table,
+                                                           columns_dict,
                                                            compile_params_to_pass,
                                                            model_arch,
                                                            serialized_weights,
@@ -285,14 +357,15 @@ def fit(schema_madlib, source_table, model, model_arch_table,
     end_training_time = datetime.datetime.now()
 
     version = madlib_version(schema_madlib)
-    src_summary_dict = get_source_summary_table_dict(fit_validator)
-    class_values = src_summary_dict['class_values']
     class_values_type = src_summary_dict['class_values_type']
-    norm_const = src_summary_dict['norm_const']
+    norm_const = src_summary_dict['normalizing_const']
     norm_const_type = src_summary_dict['norm_const_type']
-    dep_vartype = src_summary_dict['dep_vartype']
-    dependent_varname = src_summary_dict['dependent_varname_in_source_table']
-    independent_varname = src_summary_dict['independent_varname_in_source_table']
+    dep_vartype = src_summary_dict['dependent_vartype']
+    dependent_varname = src_summary_dict['dependent_varname']
+    independent_varname = src_summary_dict['independent_varname']
+
+    dep_name_list = ', '.join([quote_literal(i) for i in dependent_varname])
+    ind_name_list = ', '.join([quote_literal(i) for i in independent_varname])
 
     # Define some constants to be inserted into the summary table.
     model_type = "madlib_keras"
@@ -316,13 +389,14 @@ def fit(schema_madlib, source_table, model, model_arch_table,
         # Must quote the string before inserting to table. Explicitly
         # quoting it here since this can also take a NULL value, done
         # in the else part.
-        validation_table = "$MAD${0}$MAD$".format(validation_table)
+        validation_table = quote_literal(validation_table)
     else:
         validation_metrics = validation_loss = 'NULL'
         validation_metrics_final = validation_loss_final = 'NULL'
         validation_table = 'NULL'
 
-    object_table = "$MAD${0}$MAD$".format(object_table) if object_table is not None else 'NULL'
+    object_table = quote_literal(object_table) if object_table is not None else 'NULL'
+    class_values_colnames = ' , '.join(class_values_colnames)
     if warm_start:
         plpy.execute("DROP TABLE {0}, {1}".format
                      (model, fit_validator.output_summary_model_table))
@@ -331,8 +405,8 @@ def fit(schema_madlib, source_table, model, model_arch_table,
         SELECT
             $MAD${source_table}$MAD$::TEXT AS source_table,
             $MAD${model}$MAD$::TEXT AS model,
-            $MAD${dependent_varname}$MAD$::TEXT AS dependent_varname,
-            $MAD${independent_varname}$MAD$::TEXT AS independent_varname,
+            ARRAY[{dep_name_list}]::TEXT[] AS dependent_varname,
+            ARRAY[{ind_name_list}]::TEXT[] AS independent_varname,
             $MAD${model_arch_table}$MAD$::TEXT AS model_arch_table,
             {model_id}::INTEGER AS {model_id_colname},
             $1 AS compile_params,
@@ -349,9 +423,8 @@ def fit(schema_madlib, source_table, model, model_arch_table,
             '{end_training_time}'::TIMESTAMP AS end_training_time,
             $5 AS metrics_elapsed_time,
             '{version}'::TEXT AS madlib_version,
-            {num_classes}::INTEGER AS num_classes,
-            $6 AS {class_values_colname},
-            $MAD${dep_vartype}$MAD$::TEXT AS {dependent_vartype_colname},
+            ARRAY{num_classes}::INTEGER[] AS num_classes,
+            ARRAY{dep_vartype}::TEXT[] AS {dependent_vartype_colname},
             {norm_const}::{FLOAT32_SQL_TYPE} AS {normalizing_const_colname},
             {metrics_type}::TEXT[] AS metrics_type,
             {training_metrics_final}::DOUBLE PRECISION AS training_metrics_final,
@@ -362,18 +435,19 @@ def fit(schema_madlib, source_table, model, model_arch_table,
             {validation_loss_final}::DOUBLE PRECISION AS validation_loss_final,
             {validation_metrics}::DOUBLE PRECISION[] AS validation_metrics,
             {validation_loss}::DOUBLE PRECISION[] AS validation_loss,
-            ARRAY{metrics_iters}::INTEGER[] AS metrics_iters
+            ARRAY{metrics_iters}::INTEGER[] AS metrics_iters,
+            {class_values_colnames}
+        FROM {source_summary_table}
         """.format(output_summary_model_table=fit_validator.output_summary_model_table,
-                   class_values_colname=CLASS_VALUES_COLNAME,
                    dependent_vartype_colname=DEPENDENT_VARTYPE_COLNAME,
                    normalizing_const_colname=NORMALIZING_CONST_COLNAME,
                    FLOAT32_SQL_TYPE = FLOAT32_SQL_TYPE,
                    model_id_colname = ModelArchSchema.MODEL_ID,
                    **locals()),
-                   ["TEXT", "TEXT", "TEXT", "TEXT", "DOUBLE PRECISION[]", class_values_type])
+                   ["TEXT", "TEXT", "TEXT", "TEXT", "DOUBLE PRECISION[]"])
     plpy.execute(create_output_summary_table,
                  [compile_params, fit_params, name,
-                  description, metrics_elapsed_time, class_values])
+                  description, metrics_elapsed_time])
 
     plpy.execute("""
         CREATE TABLE {0}
@@ -441,33 +515,20 @@ def get_initial_weights(model_table, model_arch, serialized_weights, warm_start,
                 model.get_weights())
     return serialized_weights
 
-def get_source_summary_table_dict(fit_validator):
+def get_source_summary_table_dict(source_summary_table):
     source_summary = plpy.execute("""
-            SELECT
-                {class_values} AS class_values,
-                {norm_const} AS norm_const,
-                {dep_vartype} AS dep_vartype,
-                {dep_varname} AS dependent_varname_in_source_table,
-                {indep_varname} AS independent_varname_in_source_table
-            FROM {tbl}
-        """.format(class_values=CLASS_VALUES_COLNAME,
-                   norm_const=NORMALIZING_CONST_COLNAME,
-                   dep_vartype=DEPENDENT_VARTYPE_COLNAME,
-                   dep_varname='dependent_varname',
-                   indep_varname='independent_varname',
-                   tbl=fit_validator.source_summary_table))[0]
-    source_summary['class_values_type'] = get_expr_type(
-        CLASS_VALUES_COLNAME, fit_validator.source_summary_table)
-    source_summary['norm_const_type'] = get_expr_type(
-        NORMALIZING_CONST_COLNAME, fit_validator.source_summary_table)
+            SELECT *
+            FROM {0}
+        """.format(source_summary_table))[0]
+
     return source_summary
 
-def compute_loss_and_metrics(schema_madlib, table, compile_params, model_arch,
-                             serialized_weights, use_gpus,
-                             accessible_gpus_for_seg, dist_key_mapping,
-                             images_per_seg_val, metrics_list, loss_list,
+def compute_loss_and_metrics(schema_madlib, table, columns_dict, compile_params, model_arch,
+                             serialized_weights, use_gpus, accessible_gpus_for_seg,
+                             dist_key_mapping, images_per_seg_val,
+                             metrics_list, loss_list,
                              should_clear_session, custom_fn_map,
-                             model_table=None, mst_key=None):
+                             model_table=None, mst_key=None, is_train=True):
     """
     Compute the loss and metric using a given model (serialized_weights) on the
     given dataset (table.)
@@ -475,6 +536,7 @@ def compute_loss_and_metrics(schema_madlib, table, compile_params, model_arch,
     start_val = time.time()
     evaluate_result = get_loss_metric_from_keras_eval(schema_madlib,
                                                    table,
+                                                   columns_dict,
                                                    compile_params,
                                                    model_arch,
                                                    serialized_weights,
@@ -485,12 +547,9 @@ def compute_loss_and_metrics(schema_madlib, table, compile_params, model_arch,
                                                    should_clear_session,
                                                    custom_fn_map,
                                                    model_table,
-                                                   mst_key)
+                                                   mst_key,
+                                                   is_train)
     end_val = time.time()
-
-    if len(evaluate_result) not in [1, 2]:
-        plpy.error('Calling evaluate on table {0} returned < 2 '
-                   'metrics. Expected both loss and a metric.'.format(table))
     loss = evaluate_result[0]
     metric = evaluate_result[1]
     metrics_list.append(metric)
@@ -522,6 +581,33 @@ def init_model(model_architecture, compile_params, custom_function_map):
     compile_model(segment_model, compile_params, custom_function_map)
     return segment_model
 
+def fit_transition_wide(state, dependent_var1, dependent_var2, dependent_var3,
+                   dependent_var4, dependent_var5, independent_var1,
+                   independent_var2, independent_var3, independent_var4,
+                   independent_var5, dependent_var_shape,
+                   independent_var_shape, model_architecture,
+                   compile_params, fit_params, dist_key, dist_key_mapping,
+                   current_seg_id, segments_per_host, images_per_seg,
+                   accessible_gpus_for_seg, prev_serialized_weights,
+                   is_multiple_model=False, custom_function_map=None, **kwargs):
+
+    if not independent_var1 or not dependent_var1:
+        return state
+    dependent_var = [dependent_var1, dependent_var2, dependent_var3,
+                        dependent_var4, dependent_var5]
+    independent_var = [independent_var1, independent_var2, independent_var3,
+                        independent_var4, independent_var5]
+
+    dependent_var = [i for i in dependent_var if i is not None]
+    independent_var = [i for i in independent_var if i is not None]
+
+    return fit_transition(state, dependent_var, independent_var, dependent_var_shape,
+                   independent_var_shape, model_architecture,
+                   compile_params, fit_params, dist_key, dist_key_mapping,
+                   current_seg_id, segments_per_host, images_per_seg,
+                   accessible_gpus_for_seg, prev_serialized_weights,
+                   is_multiple_model, custom_function_map, **kwargs)
+
 def fit_transition(state, dependent_var, independent_var, dependent_var_shape,
                    independent_var_shape, model_architecture,
                    compile_params, fit_params, dist_key, dist_key_mapping,
@@ -542,8 +628,8 @@ def fit_transition(state, dependent_var, independent_var, dependent_var_shape,
         and only gets cleared in eval transition at the last row of the last iteration.
 
     """
-    if not dependent_var_shape or not independent_var_shape\
-        or dependent_var is None or independent_var is None:
+    if not dependent_var_shape[0] or not independent_var_shape[0]\
+        or dependent_var[0] is None or independent_var[0] is None:
             plpy.error("fit_transition called with no data")
 
     if not prev_serialized_weights or not model_architecture:
@@ -569,9 +655,14 @@ def fit_transition(state, dependent_var, independent_var, dependent_var_shape,
         with tf.device(device_name):
             set_model_weights(segment_model, prev_serialized_weights)
 
+    x_train = []
+    y_train = []
     # Prepare the data
-    x_train = np_array_float32(independent_var, independent_var_shape)
-    y_train = np_array_int16(dependent_var, dependent_var_shape)
+    for counter, shape in enumerate(independent_var_shape):
+        x_train.append(np_array_float32(independent_var[counter], shape))
+
+    for counter, shape in enumerate(dependent_var_shape):
+        y_train.append(np_array_int16(dependent_var[counter], shape))
 
     # Fit segment model on data
     #TODO consider not doing this every time
@@ -580,7 +671,8 @@ def fit_transition(state, dependent_var, independent_var, dependent_var_shape,
         segment_model.fit(x_train, y_train, **fit_params)
 
     # Aggregating number of images, loss and accuracy
-    agg_image_count += len(x_train)
+
+    agg_image_count += len(x_train[0])
     GD[GD_STORE.AGG_IMAGE_COUNT] = agg_image_count
     total_images = get_image_count_per_seg_from_array(dist_key_mapping.index(dist_key),
                                                       images_per_seg)
@@ -629,8 +721,8 @@ def fit_multiple_transition_caching(dependent_var, independent_var, dependent_va
         GD[GD_STORE.AGG_IMAGE_COUNT] = agg_image_count
 
     # Prepare the data
-    if not dependent_var_shape or not independent_var_shape \
-        or dependent_var is None or independent_var is None:
+    if not dependent_var_shape[0] or not independent_var_shape[0] \
+        or dependent_var[0] is None or independent_var[0] is None:
         if 'x_train' not in GD or 'y_train' not in GD:
             plpy.error("cache not populated properly.")
         is_last_row = True
@@ -640,14 +732,16 @@ def fit_multiple_transition_caching(dependent_var, independent_var, dependent_va
             GD['x_train'] = list()
             GD['y_train'] = list()
 
-        agg_image_count += independent_var_shape[0]
+        #TODO: Fix the [0] for multi io
+        agg_image_count += independent_var_shape[0][0]
+
         GD[GD_STORE.AGG_IMAGE_COUNT] = agg_image_count
         total_images = get_image_count_per_seg_from_array(
             dist_key_mapping.index(dist_key), images_per_seg
         )
         is_last_row = agg_image_count == total_images
-        x_train_current = np_array_float32(independent_var, independent_var_shape)
-        y_train_current = np_array_int16(dependent_var, dependent_var_shape)
+        x_train_current = np_array_float32(independent_var[0], independent_var_shape[0])
+        y_train_current = np_array_int16(dependent_var[0], dependent_var_shape[0])
         GD['x_train'].append(x_train_current)
         GD['y_train'].append(y_train_current)
 
@@ -756,7 +850,6 @@ def fit_final(state, **kwargs):
     # Return if called early
     if not state:
         return state
-
     image_count, weights = madlib_keras_serializer.deserialize_as_image_1d_weights(state)
     if image_count == 0:
         plpy.error("fit_final: Total images processed is 0")
@@ -764,7 +857,6 @@ def fit_final(state, **kwargs):
     # Averaging the weights
     weights /= image_count
     return madlib_keras_serializer.serialize_nd_weights(weights)
-
 
 def evaluate(schema_madlib, model_table, test_table, output_table,
              use_gpus, mst_key, **kwargs):
@@ -799,13 +891,24 @@ def evaluate(schema_madlib, model_table, test_table, output_table,
     model_arch = res['model_arch']
 
     input_shape = get_input_shape(model_arch)
+
+    model_summary_dict = get_source_summary_table_dict(model_summary_table)
+    # independent_varname = model_summary_dict['independent_varname']
+    # ind_shape_cols = [add_postfix(i, "_shape") for i in independent_varname]
+
+    columns_dict = {}
+    columns_dict['mb_dep_var_cols'] = model_summary_dict['dependent_varname']
+    columns_dict['mb_indep_var_cols'] = model_summary_dict['independent_varname']
+    columns_dict['dep_shape_cols'] = [add_postfix(i, "_shape") for i in columns_dict['mb_dep_var_cols']]
+    columns_dict['ind_shape_cols'] = [add_postfix(i, "_shape") for i in columns_dict['mb_indep_var_cols']]
+
     InputValidator.validate_input_shape(
-        test_table, MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL, input_shape, 2, True)
+        test_table, columns_dict['mb_indep_var_cols'], input_shape, 2, True)
 
     compile_params_query = "SELECT compile_params, metrics_type, object_table FROM {0}".format(model_summary_table)
     res = plpy.execute(compile_params_query)[0]
     metrics_type = res['metrics_type']
-    compile_params = "$madlib$" + res['compile_params'] + "$madlib$"
+    compile_params = quote_literal(res['compile_params'])
     object_table = res['object_table']
     loss_type = get_loss_from_compile_param(res['compile_params'])
     custom_function_map = None
@@ -813,13 +916,16 @@ def evaluate(schema_madlib, model_table, test_table, output_table,
         custom_fn_list = get_custom_functions_list(res['compile_params'])
         custom_function_map = query_custom_functions_map(object_table, custom_fn_list)
 
-    dist_key_mapping, images_per_seg = get_image_count_per_seg_for_minibatched_data_from_db(test_table)
+    dist_key_mapping, images_per_seg = get_image_count_per_seg_for_minibatched_data_from_db(test_table, columns_dict['ind_shape_cols'][0])
 
-    loss, metric = \
+    loss_metric = \
         get_loss_metric_from_keras_eval(
-            schema_madlib, test_table, compile_params, model_arch,
+            schema_madlib, test_table, columns_dict, compile_params, model_arch,
             model_weights, use_gpus, accessible_gpus_for_seg, dist_key_mapping,
             images_per_seg, custom_function_map=custom_function_map)
+
+    loss = loss_metric[0]
+    metric = loss_metric[1]
 
     if not metrics_type:
         metrics_type = None
@@ -840,9 +946,9 @@ def validate_evaluate(module_name, model_table, model_summary_table, test_table,
                 error_suffix_str="Please ensure that the test table ({0}) "
                                  "has been preprocessed by "
                                  "the image preprocessor.".format(test_table))
-        cols_in_tbl_valid(test_summary_table, [CLASS_VALUES_COLNAME,
-            NORMALIZING_CONST_COLNAME, DEPENDENT_VARTYPE_COLNAME,
-            DEPENDENT_VARNAME_COLNAME, INDEPENDENT_VARNAME_COLNAME], module_name)
+        cols_in_tbl_valid(test_summary_table, [NORMALIZING_CONST_COLNAME,
+            DEPENDENT_VARTYPE_COLNAME, DEPENDENT_VARNAME_COLNAME,
+            INDEPENDENT_VARNAME_COLNAME], module_name)
 
     input_tbl_valid(model_table, module_name)
     if is_mult_model and not columns_exist_in_table(model_table, ['mst_key']):
@@ -851,16 +957,19 @@ def validate_evaluate(module_name, model_table, model_summary_table, test_table,
         plpy.error("{module_name}: Multi-model needs to pass mst_key".format(**locals()))
     InputValidator.validate_predict_evaluate_tables(
         module_name, model_table, model_summary_table,
-        test_table, output_table, MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL)
+        test_table, output_table)
     _validate_test_summary_tbl()
-    validate_bytea_var_for_minibatch(test_table,
-                                     MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL)
 
-def get_loss_metric_from_keras_eval(schema_madlib, table, compile_params,
+    dependent_varname = plpy.execute("SELECT {0} FROM {1}".format(
+        "dependent_varname", model_summary_table))[0]["dependent_varname"]
+    for i in dependent_varname:
+        validate_bytea_var_for_minibatch(test_table, i)
+
+def get_loss_metric_from_keras_eval(schema_madlib, table, columns_dict, compile_params,
                                     model_arch, serialized_weights, use_gpus,
                                     accessible_gpus_for_seg, dist_key_mapping, images_per_seg,
                                     should_clear_session=True, custom_function_map=None,
-                                    model_table=None, mst_key=None):
+                                    model_table=None, mst_key=None, is_train=True):
     """
     This function will call the internal keras evaluate function to get the loss
     and accuracy of each tuple which then gets averaged to get the final result.
@@ -870,22 +979,30 @@ def get_loss_metric_from_keras_eval(schema_madlib, table, compile_params,
     gp_segment_id_col = '0' if is_platform_pg() else '__table__.{0}'.format(GP_SEGMENT_ID_COLNAME)
     segments_per_host = get_segments_per_host()
 
-    mb_dep_var_col = MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL
-    mb_indep_var_col = MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL
-
-    dep_shape_col = add_postfix(
-        MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL, "_shape")
-    ind_shape_col = add_postfix(
-        MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL, "_shape")
-
+    """
+    This function will call the internal keras evaluate function to get the loss
+    and accuracy of each tuple which then gets averaged to get the final result.
+    """
     use_gpus = use_gpus if use_gpus else False
+
+    if is_train:
+        mb_dep_var_cols_sql = ', '.join(columns_dict['mb_dep_var_cols'])
+        mb_indep_var_cols_sql = ', '.join(columns_dict['mb_indep_var_cols'])
+        dep_shape_cols_sql = ', '.join(columns_dict['dep_shape_cols'])
+        ind_shape_cols_sql = ', '.join(columns_dict['ind_shape_cols'])
+    else:
+        mb_dep_var_cols_sql = ', '.join(columns_dict['val_dep_var'])
+        mb_indep_var_cols_sql = ', '.join(columns_dict['val_ind_var'])
+        dep_shape_cols_sql = ', '.join(columns_dict['val_dep_shape_cols'])
+        ind_shape_cols_sql = ', '.join(columns_dict['val_ind_shape_cols'])
+
 
     eval_sql = """
         select ({schema_madlib}.internal_keras_evaluate(
-                                            {mb_dep_var_col},
-                                            {mb_indep_var_col},
-                                            {dep_shape_col},
-                                            {ind_shape_col},
+                                            ARRAY[{mb_dep_var_cols_sql}],
+                                            ARRAY[{mb_indep_var_cols_sql}],
+                                            ARRAY[{dep_shape_cols_sql}],
+                                            ARRAY[{ind_shape_cols_sql}],
                                             $MAD${model_arch}$MAD$,
                                             {weights},
                                             {compile_params},
@@ -912,6 +1029,7 @@ def get_loss_metric_from_keras_eval(schema_madlib, table, compile_params,
         weights = '$1'
         mult_sql = ''
         custom_map_var = '$2'
+        plpy.info(eval_sql.format(**locals()))
         evaluate_query = plpy.prepare(eval_sql.format(**locals()), ["bytea", "bytea"])
         res = plpy.execute(evaluate_query, [serialized_weights, custom_function_map])
 
@@ -931,7 +1049,7 @@ def internal_keras_eval_transition(state, dependent_var, independent_var,
                                    custom_function_map=None, **kwargs):
     GD = kwargs['GD']
     device_name = get_device_name_and_set_cuda_env(accessible_gpus_for_seg[current_seg_id], current_seg_id)
-    agg_loss, agg_metric, agg_image_count = state
+
     """
     This transition function is common to evaluate as well as the fit functions.
     All these calls have a different logic for creating and clear the tensorflow
@@ -946,10 +1064,30 @@ def internal_keras_eval_transition(state, dependent_var, independent_var,
         should_clear_session is only set to true for the last call to eval_transition
         which can be either the training eval or validation eval
     For fit_multiple,
-        We create one session per hop and store it in GD. 
+        We create one session per hop and store it in GD.
         should_clear_session is always set to true, so the session and GD is
         cleared once the last buffer is evaluated on each segment.
     """
+
+    multi_output = True if len(dependent_var) > 1 else False
+
+    if multi_output:
+        output_count = len(dependent_var)
+        agg_loss = state[0]
+        if agg_loss == 0:
+            state = []
+            for i in range(2*output_count+2):
+                state.append(0)
+        agg_image_count = state[-1]
+        aux_losses = []
+        aux_metrics = []
+        for counter in range(output_count):
+            aux_losses.append(state[2*counter+1])
+            aux_metrics.append(state[2*counter+2])
+
+    else:
+        agg_loss, agg_metric, agg_image_count = state
+
     segment_model, sess = get_init_model_and_sess(GD, device_name,
                                                   accessible_gpus_for_seg[current_seg_id],
                                                   segments_per_host,
@@ -961,26 +1099,39 @@ def internal_keras_eval_transition(state, dependent_var, independent_var,
         agg_loss = 0
         set_model_weights(segment_model, serialized_weights)
 
+    x_val = []
+    y_val = []
+    for counter, shape in enumerate(independent_var_shape):
+        x_val.append(np_array_float32(independent_var[counter], shape))
+    for counter, shape in enumerate(dependent_var_shape):
+        y_val.append(np_array_int16(dependent_var[counter], shape))
 
-    x_val = np_array_float32(independent_var, independent_var_shape)
-    y_val = np_array_int16(dependent_var, dependent_var_shape)
+    image_count = len(y_val[0])
+    agg_image_count += image_count
 
     with tf.device(device_name):
         res = segment_model.evaluate(x_val, y_val)
 
     # if metric is None, model.evaluate will only return loss as a scalar
     # Otherwise, it will return a list which has loss and metric
-    if type(res) is list:
-        loss, metric = res
+    if multi_output:
+        loss = res[0]
+        agg_loss += (image_count * loss)
+        for counter in range(output_count):
+            # For multi output cases, res has the following structure
+            # print(model.metrics_names)
+            # ['loss', 'dense_4_loss', 'dense_5_loss', 'dense_4_acc', 'dense_5_acc']
+            aux_losses[counter] = aux_losses[counter] + (image_count * res[counter+1])
+            aux_metrics[counter] = aux_metrics[counter] + (image_count * res[counter+1+len(dependent_var)])
     else:
-        loss = res
-        metric = 0
+        if type(res) is list:
+           loss, metric = res
+        else:
+            loss = res
+            metric = 0
 
-    image_count = len(y_val)
-
-    agg_image_count += image_count
-    agg_loss += (image_count * loss)
-    agg_metric += (image_count * metric)
+        agg_loss += (image_count * loss)
+        agg_metric += (image_count * metric)
 
     total_images = get_image_count_per_seg_from_array(dist_key_mapping.index(dist_key),
                                                       images_per_seg)
@@ -991,9 +1142,15 @@ def internal_keras_eval_transition(state, dependent_var, independent_var,
         del sess
         del segment_model
 
-    state[0] = agg_loss
-    state[1] = agg_metric
-    state[2] = agg_image_count
+    state = [agg_loss]
+
+    if multi_output:
+        for counter in range(output_count):
+            state.append(aux_losses[counter])
+            state.append(aux_metrics[counter])
+    else:
+        state.append(agg_metric)
+    state.append(agg_image_count)
 
     return state
 
@@ -1002,27 +1159,22 @@ def internal_keras_eval_merge(state1, state2, **kwargs):
     if not state1 or not state2:
         return state1 or state2
 
-    loss1, metric1, image_count1 = state1
-    loss2, metric2, image_count2 = state2
-
-    merged_loss = loss1 + loss2
-    merged_metric = metric1 + metric2
-    total_image_count = image_count1 + image_count2
-
-    merged_state = [ merged_loss, merged_metric , total_image_count ]
+    merged_state = []
+    for i in range(len(state1)):
+        merged_state.append(state1[i]+state2[i])
 
     return merged_state
 
 def internal_keras_eval_final(state, **kwargs):
-    loss, metric, image_count = state
+    image_count = state[-1]
 
     if image_count == 0:
         plpy.error("internal_keras_eval_final: Total images processed is 0")
 
-    loss /= image_count
-    metric /= image_count
+    for i in range(len(state)-1):
+        state[i] = state[i]/image_count
 
-    return loss, metric
+    return state
 
 def fit_help(schema_madlib, message, **kwargs):
     """

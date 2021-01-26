@@ -111,6 +111,12 @@ class KerasAutoML(object):
         self.description = description
         self.use_caching = use_caching
 
+        self.source_table_summary = add_postfix(self.source_table, '_summary')
+        self.dependent_varname = plpy.execute(
+            "SELECT dependent_varname FROM {0}".format(
+                self.source_table_summary))[0]['dependent_varname']
+        self.class_values_colnames = [add_postfix(i, "_class_values") for i in self.dependent_varname]
+
         if self.validation_table:
             AutoMLConstants.LOSS_METRIC = 'validation_loss_final'
 
@@ -183,6 +189,7 @@ class KerasAutoML(object):
         object_table = 'NULL' if self.object_table is None else '$MAD${0}$MAD$'.format(self.object_table)
         random_state = 'NULL' if self.random_state is None else '$MAD${0}$MAD$'.format(self.random_state)
         validation_table = 'NULL' if self.validation_table is None else '$MAD${0}$MAD$'.format(self.validation_table)
+        class_values_colnames = ' , '.join(self.class_values_colnames)
 
         create_query = """
                 CREATE TABLE {self.model_summary_table} AS
@@ -191,10 +198,8 @@ class KerasAutoML(object):
                     {validation_table}::TEXT AS validation_table,
                     $MAD${self.model_output_table}$MAD$::TEXT AS model,
                     $MAD${self.model_info_table}$MAD$::TEXT AS model_info,
-                    (SELECT dependent_varname FROM {a.MODEL_SUMMARY_TABLE})
-                        AS dependent_varname,
-                    (SELECT independent_varname FROM {a.MODEL_SUMMARY_TABLE})
-                        AS independent_varname,
+                    dependent_varname,
+                    independent_varname,
                     $MAD${self.model_arch_table}$MAD$::TEXT AS model_arch_table,
                     $MAD${self.model_selection_table}$MAD$::TEXT AS model_selection_table,
                     $MAD${self.automl_method}$MAD$::TEXT AS automl_method,
@@ -202,19 +207,17 @@ class KerasAutoML(object):
                     {random_state}::TEXT AS random_state,
                     {object_table}::TEXT AS object_table,
                     {self.use_gpus} AS use_gpus,
-                    (SELECT metrics_compute_frequency FROM {a.MODEL_SUMMARY_TABLE})::INTEGER 
-                        AS metrics_compute_frequency,
+                    metrics_compute_frequency,
                     {name}::TEXT AS name,
                     {descr}::TEXT AS description,
                     '{self.start_training_time}'::TIMESTAMP AS start_training_time,
                     '{self.end_training_time}'::TIMESTAMP AS end_training_time,
-                    (SELECT madlib_version FROM {a.MODEL_SUMMARY_TABLE}) AS madlib_version,
-                    (SELECT num_classes FROM {a.MODEL_SUMMARY_TABLE})::INTEGER AS num_classes,
-                    (SELECT class_values FROM {a.MODEL_SUMMARY_TABLE}) AS class_values,
-                    (SELECT dependent_vartype FROM {a.MODEL_SUMMARY_TABLE}) 
-                        AS dependent_vartype,
-                    (SELECT normalizing_const FROM {a.MODEL_SUMMARY_TABLE})
-                        AS normalizing_const
+                    madlib_version,
+                    num_classes,
+                    {class_values_colnames},
+                    dependent_vartype,
+                    normalizing_const
+                FROM {a.MODEL_SUMMARY_TABLE}
             """.format(a=AutoMLConstants, **locals())
         plpy.execute(create_query)
 

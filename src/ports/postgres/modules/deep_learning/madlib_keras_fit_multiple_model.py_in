@@ -36,6 +36,7 @@ from madlib_keras_model_selection import ModelSelectionSchema
 from madlib_keras_validator import *
 from madlib_keras_wrapper import *
 
+from internal.db_utils import quote_literal
 from utilities.control import OptimizerControl
 from utilities.control import SetGUC
 from utilities.utilities import add_postfix
@@ -56,8 +57,6 @@ DEBUG.mst_keys_enabled = False
 DEBUG.plpy_execute_enabled = False
 DEBUG.plpy_info_enabled = False
 
-mb_dep_var_col = MINIBATCH_OUTPUT_DEPENDENT_COLNAME_DL
-mb_indep_var_col = MINIBATCH_OUTPUT_INDEPENDENT_COLNAME_DL
 
 """
 FitMultipleModel: This class implements the Model Hopper technique for
@@ -138,8 +137,40 @@ class FitMultipleModel(object):
         self.train_mst_loss = defaultdict(list)
         self.train_mst_metric = defaultdict(list)
         self.info_str = ""
-        self.dep_shape_col = add_postfix(mb_dep_var_col, "_shape")
-        self.ind_shape_col = add_postfix(mb_indep_var_col, "_shape")
+        source_summary_table = add_postfix(self.source_table, "_summary")
+        input_tbl_valid(source_summary_table, self.module_name)
+        src_summary_dict = get_source_summary_table_dict(source_summary_table)
+
+        self.mb_dep_var_cols = src_summary_dict['dependent_varname']
+        self.mb_indep_var_cols = src_summary_dict['independent_varname']
+        self.dep_shape_cols = [add_postfix(i, "_shape") for i in self.mb_dep_var_cols]
+        self.ind_shape_cols = [add_postfix(i, "_shape") for i in self.mb_indep_var_cols]
+
+        self.columns_dict = {}
+        self.columns_dict['mb_dep_var_cols'] = self.mb_dep_var_cols
+        self.columns_dict['mb_indep_var_cols'] = self.mb_indep_var_cols
+        self.columns_dict['dep_shape_cols'] = self.dep_shape_cols
+        self.columns_dict['ind_shape_cols'] = self.ind_shape_cols
+
+        self.val_dep_var = None
+        self.val_ind_var = None
+        self.val_dep_shape_cols = None
+        self.val_ind_shape_cols = None
+        if validation_table:
+            validation_summary_table = add_postfix(self.validation_table, "_summary")
+            input_tbl_valid(validation_summary_table, self.module_name)
+            val_summary_dict = get_source_summary_table_dict(validation_summary_table)
+
+            self.val_dep_var = val_summary_dict['dependent_varname']
+            self.val_ind_var = val_summary_dict['independent_varname']
+            self.val_dep_shape_cols = [add_postfix(i, "_shape") for i in self.val_dep_var]
+            self.val_ind_shape_cols = [add_postfix(i, "_shape") for i in self.val_ind_var]
+
+        self.columns_dict['val_dep_var'] = self.val_dep_var
+        self.columns_dict['val_ind_var'] = self.val_ind_var
+        self.columns_dict['val_dep_shape_cols'] = self.val_dep_shape_cols
+        self.columns_dict['val_ind_shape_cols'] = self.val_ind_shape_cols
+
         self.use_gpus = use_gpus if use_gpus else False
         self.segments_per_host = get_segments_per_host()
         self.model_input_tbl = unique_string('model_input')
@@ -159,7 +190,7 @@ class FitMultipleModel(object):
 
         self.original_model_output_tbl = model_output_table
         if not self.original_model_output_tbl:
-	    plpy.error("Must specify an output table.")
+	       plpy.error("Must specify an output table.")
 
         self.model_info_tbl = add_postfix(
             self.original_model_output_tbl, '_info')
@@ -171,10 +202,11 @@ class FitMultipleModel(object):
         self.fit_validator_train = FitMultipleInputValidator(
             self.source_table, self.validation_table, self.original_model_output_tbl,
             self.model_selection_table, self.model_selection_summary_table,
-            mb_dep_var_col, mb_indep_var_col, self.num_iterations,
+            self.mb_dep_var_cols, self.mb_indep_var_cols, self.dep_shape_cols,
+            self.ind_shape_cols, self.num_iterations,
             self.model_info_tbl, self.mst_key_col, self.model_arch_table_col,
             self.metrics_compute_frequency, self.warm_start, self.use_gpus,
-            self.accessible_gpus_for_seg)
+            self.accessible_gpus_for_seg, self.val_dep_var, self.val_ind_var)
         if self.metrics_compute_frequency is None:
             self.metrics_compute_frequency = num_iterations
 
@@ -193,7 +225,7 @@ class FitMultipleModel(object):
 
         self.dist_key_mapping, self.images_per_seg_train = \
             get_image_count_per_seg_for_minibatched_data_from_db(
-                self.source_table)
+                self.source_table, self.dep_shape_cols[0])
 
         if self.validation_table:
             self.valid_mst_metric_eval_time = defaultdict(list)
@@ -201,7 +233,7 @@ class FitMultipleModel(object):
             self.valid_mst_metric = defaultdict(list)
             self.dist_key_mapping_valid, self.images_per_seg_valid = \
                 get_image_count_per_seg_for_minibatched_data_from_db(
-                    self.validation_table)
+                    self.validation_table, self.val_dep_shape_cols[0])
 
         self.dist_keys = query_dist_keys(self.source_table, self.dist_key_col)
         self.max_dist_key = sorted(self.dist_keys)[-1]
@@ -336,18 +368,20 @@ class FitMultipleModel(object):
             model_arch = get_model_arch(self.model_arch_table, mst[self.model_id_col])
             DEBUG.start_timing('eval_compute_loss_and_metrics')
             eval_compute_time, metric, loss = compute_loss_and_metrics(
-                self.schema_madlib, table, "$madlib${0}$madlib$".format(
+                self.schema_madlib, table, self.columns_dict,
+                    "$madlib${0}$madlib$".format(
                     mst[self.compile_params_col]),
-                model_arch,
-                None,
-                self.use_gpus,
-                self.accessible_gpus_for_seg,
-                seg_ids,
-                images_per_seg,
-                [], [], True,
-                mst[self.object_map_col],
-                self.model_output_tbl,
-                mst[self.mst_key_col])
+                    model_arch,
+                    None,
+                    self.use_gpus,
+                    self.accessible_gpus_for_seg,
+                    seg_ids,
+                    images_per_seg,
+                    [], [], True,
+                    mst[self.object_map_col],
+                    self.model_output_tbl,
+                    mst[self.mst_key_col],
+                    is_train)
             total_eval_compute_time += eval_compute_time
             mst_metric_eval_time[mst[self.mst_key_col]] \
                 .append(self.metrics_elapsed_time_offset + (time.time() - self.metrics_elapsed_start_time))
@@ -678,39 +712,43 @@ class FitMultipleModel(object):
     def create_model_summary_table(self):
         if self.warm_start:
             plpy.execute("DROP TABLE {0}".format(self.model_summary_table))
-        src_summary_dict = get_source_summary_table_dict(self.fit_validator_train)
-        class_values = src_summary_dict['class_values']
-        class_values_type = src_summary_dict['class_values_type']
-        dep_vartype = src_summary_dict['dep_vartype']
-        dependent_varname = \
-            src_summary_dict['dependent_varname_in_source_table']
-        independent_varname = \
-            src_summary_dict['independent_varname_in_source_table']
-        norm_const = src_summary_dict['norm_const']
+        source_summary_table = self.fit_validator_train.source_summary_table
+        src_summary_dict = get_source_summary_table_dict(source_summary_table)
+
+        class_values_colnames = [add_postfix(i, "_class_values") for i in self.mb_dep_var_cols]
+        # class_values = src_summary_dict['class_values']
+        class_values_type =[get_expr_type(i, source_summary_table) for i in class_values_colnames]
+        # class_values_type = src_summary_dict['class_values_type']
+
+        dependent_varname = src_summary_dict['dependent_varname']
+        independent_varname = src_summary_dict['independent_varname']
+        dep_name_list = ', '.join([quote_literal(i) for i in dependent_varname])
+        ind_name_list = ', '.join([quote_literal(i) for i in independent_varname])
+
+        norm_const = src_summary_dict['normalizing_const']
         self.validation_table = 'NULL' if self.validation_table is None \
             else '$MAD${0}$MAD$'.format(self.validation_table)
-        if class_values is None:
+        if class_values_colnames is None:
             num_classes = 'NULL'
         else:
-            num_classes = len(class_values)
+            num_classes = len(class_values_colnames)
+        class_values_colnames = ' , '.join(class_values_colnames)
         name = 'NULL' if self.name is None else '$MAD${0}$MAD$'.format(self.name)
         descr = 'NULL' if self.description is None else '$MAD${0}$MAD$'.format(self.description)
         object_table = 'NULL' if self.object_table is None \
             else '$MAD${0}$MAD$'.format(self.object_table)
         metrics_iters = self.metrics_iters if self.metrics_iters else 'NULL'
-        class_values_colname = CLASS_VALUES_COLNAME
-        dependent_vartype_colname = DEPENDENT_VARTYPE_COLNAME
         normalizing_const_colname = NORMALIZING_CONST_COLNAME
         float32_sql_type = FLOAT32_SQL_TYPE
-        create_query = plpy.prepare("""
+        create_query = """
                 CREATE TABLE {self.model_summary_table} AS
                 SELECT
                     $MAD${self.source_table}$MAD$::TEXT AS source_table,
                     {self.validation_table}::TEXT AS validation_table,
                     $MAD${self.original_model_output_tbl}$MAD$::TEXT AS model,
                     $MAD${self.model_info_tbl}$MAD$::TEXT AS model_info,
-                    $MAD${dependent_varname}$MAD$::TEXT AS dependent_varname,
-                    $MAD${independent_varname}$MAD$::TEXT AS independent_varname,
+                    ARRAY[{dep_name_list}]::TEXT[] AS dependent_varname,
+                    ARRAY[{ind_name_list}]::TEXT[] AS independent_varname,
                     $MAD${self.model_arch_table}$MAD$::TEXT AS model_arch_table,
                     $MAD${self.model_selection_table}$MAD$::TEXT AS model_selection_table,
                     {object_table}::TEXT AS object_table,
@@ -722,13 +760,14 @@ class FitMultipleModel(object):
                     '{self.start_training_time}'::TIMESTAMP AS start_training_time,
                     '{self.end_training_time}'::TIMESTAMP AS end_training_time,
                     '{self.version}'::TEXT AS madlib_version,
-                    {num_classes}::INTEGER AS num_classes,
-                    $1 AS {class_values_colname},
-                    $MAD${dep_vartype}$MAD$::TEXT AS {dependent_vartype_colname},
+                    ARRAY[{num_classes}]::INTEGER[] AS num_classes,
+                    {class_values_colnames},
+                    dependent_vartype,
                     {norm_const}::{float32_sql_type} AS {normalizing_const_colname},
                     ARRAY{metrics_iters}::INTEGER[] AS metrics_iters
-            """.format(**locals()), [class_values_type])
-        plpy.execute(create_query, [class_values])
+                FROM {source_summary_table}
+            """.format(**locals())
+        plpy.execute(create_query)
 
     def update_info_table(self, mst, is_train):
         mst_key = mst[self.mst_key_col]
@@ -859,10 +898,11 @@ class FitMultipleModel(object):
                     RENAME TO {self.model_input_tbl}
             """.format(self=self))
 
-        ind_shape_col = self.ind_shape_col
-        dep_shape_col = self.dep_shape_col
-        dep_var_col = mb_dep_var_col
-        indep_var_col = mb_indep_var_col
+        #TODO: Fix these to add multi io
+        dep_shape_col = self.dep_shape_cols[0]
+        ind_shape_col = self.ind_shape_cols[0]
+        dep_var_col = self.mb_dep_var_cols[0]
+        indep_var_col = self.mb_indep_var_cols[0]
         source_table = self.source_table
 
         if self.use_caching:
@@ -881,8 +921,10 @@ class FitMultipleModel(object):
                                 DISTRIBUTED BY({self.dist_key_col});
                     """.format(self=self))
             else:
-                dep_shape_col = ind_shape_col = 'NULL'
-                dep_var_col = indep_var_col = 'NULL'
+                dep_shape_col = 'NULL'
+                ind_shape_col = 'NULL'
+                dep_var_col = 'NULL'
+                indep_var_col = 'NULL'
                 source_table = self.cached_source_table
 
             if is_very_first_hop or self.is_final_training_call:
@@ -910,10 +952,10 @@ class FitMultipleModel(object):
                         model_in.{self.model_weights_col}
                     ELSE
                         {self.schema_madlib}.fit_transition_multiple_model(
-                            {dep_var_col},
-                            {indep_var_col},
-                            {dep_shape_col},
-                            {ind_shape_col},
+                            ARRAY[{dep_var_col}]::BYTEA[],
+                            ARRAY[{indep_var_col}]::BYTEA[],
+                            ARRAY[{dep_shape_col}]::INTEGER[],
+                            ARRAY[{ind_shape_col}]::INTEGER[],
                             model_in.{self.model_arch_col}::TEXT,
                             model_in.{self.compile_params_col}::TEXT,
                             model_in.{self.fit_params_col}::TEXT,
@@ -936,7 +978,7 @@ class FitMultipleModel(object):
                     model_in.{self.dist_key_col}
                 FROM {self.model_input_tbl} model_in
                     LEFT JOIN {source_table} src
-                    USING ({self.dist_key_col}) 
+                    USING ({self.dist_key_col})
                 DISTRIBUTED BY({self.dist_key_col})
                 """.format(dep_var_col=dep_var_col,
                            indep_var_col=indep_var_col,
@@ -965,7 +1007,8 @@ class FitMultipleModel(object):
 
         DEBUG.print_timing("udf")
 
-        plpy.execute("DELETE FROM {self.model_output_tbl} WHERE model_weights IS NULL".format(self=self))
+        plpy.execute("DELETE FROM {self.model_output_tbl} WHERE {self.model_weights_col} IS NULL".format(self=self))
+
 
         self.truncate_and_drop(self.model_input_tbl)
 
