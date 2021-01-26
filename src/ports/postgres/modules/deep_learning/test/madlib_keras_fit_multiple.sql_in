@@ -52,7 +52,6 @@ $$
         model_selection_table,
         1
     )
-    
 $$ LANGUAGE plpythonu VOLATILE
 m4_ifdef(<!__HAS_FUNCTION_PROPERTIES__!>, MODIFIES SQL DATA);
 
@@ -90,8 +89,8 @@ m4_ifdef(`__HAS_FUNCTION_PROPERTIES__',MODIFIES SQL DATA);
 -- Mock fit_transition function, for testing
 --  madlib_keras_fit_multiple_model() python code
 CREATE OR REPLACE FUNCTION madlib_installcheck_deep_learning.fit_transition_multiple_model(
-    dependent_var               BYTEA,
-    independent_var             BYTEA,
+    dependent_var               BYTEA[],
+    independent_var             BYTEA[],
     dependent_var_shape         INTEGER[],
     independent_var_shape       INTEGER[],
     model_architecture          TEXT,
@@ -127,8 +126,8 @@ $$
     for k in param_keys:
         params[k] = g[k]
 
-    params['dependent_var'] = len(dependent_var) if dependent_var else 0
-    params['independent_var'] = len(independent_var) if independent_var else 0
+    params['dependent_var'] = len(dependent_var[0]) if dependent_var[0] else 0
+    params['independent_var'] = len(independent_var[0]) if independent_var[0] else 0
     params['num_calls'] = num_calls
 
     if not 'transition_function_params' in GD:
@@ -138,7 +137,7 @@ $$
     # compute simulated seg_id ( current_seg_id is the actual seg_id )
     seg_id = dist_key_mapping.index( dist_key )
 
-    if dependent_var_shape and dependent_var_shape[0] * num_calls < images_per_seg [ seg_id ]:
+    if dependent_var_shape[0] and dependent_var_shape[0][0] * num_calls < images_per_seg [ seg_id ]:
         return None
     else:
         GD['transition_function_params'][dist_key]['reset'] = True
@@ -211,7 +210,7 @@ CREATE OR REPLACE FUNCTION setup_model_tables(
     output_table TEXT,
     cached_source_table TEXT
 ) RETURNS TEXT AS
-$$ 
+$$
     fit_mult = GD['fit_mult']
 
     fit_mult.model_input_tbl = input_table
@@ -227,11 +226,11 @@ $$
                   = ( mst_key::TEXT::BYTEA,
                       ( '{{ "a" : ' || mst_key::TEXT || ' }}' )::JSON,
                       'c' || mst_key::TEXT,
-                      'f' || mst_key::TEXT 
+                      'f' || mst_key::TEXT
                     )
         WHERE mst_key IS NOT NULL;
     """.format(model_out=fit_mult.model_output_tbl)
-    plpy.execute(q) 
+    plpy.execute(q)
 $$ LANGUAGE plpythonu VOLATILE;
 
 -- Updates dist keys in src table and internal fit_mult class variables
@@ -244,7 +243,7 @@ CREATE OR REPLACE FUNCTION update_dist_keys(
     num_models INTEGER,
     expected_distkey_mappings_tbl TEXT
 ) RETURNS VOID AS
-$$ 
+$$
     redist_cmd = """
         UPDATE {src_table}
             SET __dist_key__ = (buffer_id % {num_data_segs})
@@ -254,7 +253,7 @@ $$
     fit_mult = GD['fit_mult']
 
     q = """
-        SELECT SUM(independent_var_shape[1]) AS image_count,
+        SELECT SUM(attributes_shape[1]) AS image_count,
             __dist_key__
         FROM {src_table}
         GROUP BY __dist_key__
@@ -399,7 +398,7 @@ SELECT assert(
     'mst_keys in schedule table created by test_init_schedule() does not match keys in mst_table'
 ) FROM current_schedule s FULL JOIN iris_mst_table m USING (mst_key);
 
--- Save order of mst keys in schedule for tracking 
+-- Save order of mst keys in schedule for tracking
 DROP TABLE IF EXISTS expected_order;
 CREATE TABLE expected_order AS SELECT ARRAY(SELECT mst_key FROM current_schedule ORDER BY __dist_key__) mst_keys;
 
@@ -598,7 +597,7 @@ SELECT assert(
     'NULL mst_key found in schedule table created by test_init_schedule, even though # msts = # segs'
 ) FROM current_schedule WHERE mst_key IS NULL;
 
--- Save new order of mst keys in schedule for tracking 
+-- Save new order of mst keys in schedule for tracking
 DROP TABLE IF EXISTS expected_order;
 CREATE TABLE expected_order AS SELECT ARRAY(SELECT mst_key FROM current_schedule ORDER BY __dist_key__) mst_keys;
 
@@ -764,8 +763,8 @@ SELECT test_run_training('src_5segs', 5, False, True, True);
 --   test files that run afterwards
 DROP FUNCTION madlib_installcheck_deep_learning.version();
 DROP FUNCTION madlib_installcheck_deep_learning.fit_transition_multiple_model(
-    dependent_var               BYTEA,
-    independent_var             BYTEA,
+    dependent_var               BYTEA[],
+    independent_var             BYTEA[],
     dependent_var_shape         INTEGER[],
     independent_var_shape       INTEGER[],
     model_architecture          TEXT,
@@ -783,4 +782,4 @@ DROP FUNCTION madlib_installcheck_deep_learning.fit_transition_multiple_model(
     custom_function_map         BYTEA
 )
 
->>> )  -- m4_endif postgres
+>>>)  -- m4_endif postgres
