@@ -907,14 +907,14 @@ class MadlibKerasPredictBYOMTestCase(unittest.TestCase):
         self.assertIn('invalid_pred_type', str(error.exception))
 
         # The validation for this test has been disabled
-        # with self.assertRaises(plpy.PLPYException) as error:
-        #     self.module.PredictBYOM('schema_madlib', 'model_arch_table',
-        #                              'model_id', 'test_table', 'id_col',
-        #                              'independent_varname', 'output_table',
-        #                              self.pred_type, self.use_gpus,
-        #                              ["foo", "bar", "baaz"], self.normalizing_const,
-        #                              self.dependent_count)
-        # self.assertIn('class values', str(error.exception).lower())
+        with self.assertRaises(plpy.PLPYException) as error:
+            self.module.PredictBYOM('schema_madlib', 'model_arch_table',
+                                     'model_id', 'test_table', 'id_col',
+                                     'independent_varname', 'output_table',
+                                     self.pred_type, self.use_gpus,
+                                     ["foo", "bar", "baaz"], self.normalizing_const,
+                                     self.dependent_count)
+        self.assertIn('class values', str(error.exception).lower())
 
         with self.assertRaises(plpy.PLPYException) as error:
             self.module.PredictBYOM('schema_madlib', 'model_arch_table',
@@ -1313,6 +1313,37 @@ class MadlibKerasFitCommonValidatorTestCase(unittest.TestCase):
             'module_name', None)
         self.assertEqual(False, obj._is_valid_metrics_compute_frequency())
 
+    def test_validator_dep_indep_type_not_array(self):
+        # only dep is not array
+        self.subject.FitCommonValidator.get_source_summary_table_dict = \
+            Mock(return_value={'dependent_varname':'a',
+                               'independent_varname':['b']})
+        with self.assertRaises(plpy.PLPYException) as error:
+            self.subject.FitCommonValidator(
+                'test_table', 'val_table', 'model_table', 5, None, False, False, [0],
+                'module_name', None)
+        self.assertIn('not been preprocessed properly', str(error.exception))
+
+        # only indep is not array
+        self.subject.FitCommonValidator.get_source_summary_table_dict = \
+            Mock(return_value={'dependent_varname':['a'],
+                               'independent_varname':'b'})
+        with self.assertRaises(plpy.PLPYException) as error:
+            self.subject.FitCommonValidator(
+                'test_table', 'val_table', 'model_table', 5, None, False, False, [0],
+                'module_name', None)
+        self.assertIn('not been preprocessed properly', str(error.exception))
+
+        # both indep and dep are not arrays
+        self.subject.FitCommonValidator.get_source_summary_table_dict = \
+            Mock(return_value={'dependent_varname':'a',
+                               'independent_varname':'b'})
+        with self.assertRaises(plpy.PLPYException) as error:
+            self.subject.FitCommonValidator(
+                'test_table', 'val_table', 'model_table', 5, None, False, False, [0],
+                'module_name', None)
+        self.assertIn('not been preprocessed properly', str(error.exception))
+
 
 class InputValidatorTestCase(unittest.TestCase):
     def setUp(self):
@@ -1391,9 +1422,9 @@ class InputValidatorTestCase(unittest.TestCase):
 
     def test_validate_input_shape_shapes_match(self):
         # minibatched data
-        # self.plpy_mock_execute.return_value = [{'shape': [1,32,32,3]}]
-        # self.subject.validate_input_shape(
-        #     self.test_table, [self.ind_var], [[32,32,3]], 2, True)
+        self.plpy_mock_execute.return_value = [{'shape': [1,32,32,3]}]
+        self.subject.validate_input_shape(
+            self.test_table, [self.ind_var], [[32,32,3]], 2, True)
         # non-minibatched data
         self.plpy_mock_execute.return_value = [{'shape': [32,32,3]}]
         self.subject.validate_input_shape(
