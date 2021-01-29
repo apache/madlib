@@ -20,7 +20,7 @@
  *
  * @file madlib_keras_model_selection.sql_in
  *
- * @brief Generate configurations for model selection (hyperparams, architectures)
+ * @brief Generate configurations for model architecture search and hyperparameter tuning.
  * @date August 2020
  *
  *
@@ -30,26 +30,21 @@ m4_include(`SQLCommon.m4')
 /**
 @addtogroup grp_keras_setup_model_selection
 
-@brief Utility function to generate configurations for model architecture search
-and hyperparameter tuning.
-
-\warning <em> This MADlib method is still in early stage development.
-Interface and implementation are subject to change. </em>
+@brief Generate configurations for model architecture search and hyperparameter tuning.
 
 <div class="toc"><b>Contents</b><ul>
 <li class="level1"><a href="#gen_mst_configs">Generate Model Configurations</a></li>
 <li class="level1"><a href="#load_mst_table">Load Model Selection Table [Deprecated]</a></li>
 <li class="level1"><a href="#example">Examples</a></li>
-<li class="level1"><a href="#notes">Notes</a></li>
 <li class="level1"><a href="#related">Related Topics</a></li>
 </ul></div>
 
-This module generates model configurations
-for training multiple models at the same time
-using <a href="group__grp__keras__run__model__selection.html">Run Model Selection</a>.
+This module generates model configurations using grid search or random search.
+
+Once the configurations are defined, they can be used by the fit function
+in <a href="group__grp__keras__run__model__selection.html">Train Model Configurations</a>.
 By model configurations we mean both hyperparameters and
-model architectures. Grid search or random search
-can be used to generate the configurations.
+model architectures. 
 The output table from this module
 defines the combinations of model architectures,
 compile and fit parameters to be trained in parallel.
@@ -77,7 +72,7 @@ generate_model_configs(
   <dt>model_arch_table</dt>
   <dd>VARCHAR. Table containing model architectures and weights.
   For more information on this table
-  refer to the module <a href="group__grp__keras__model__arch.html">Load Models</a>.
+  refer to the module <a href="group__grp__keras__model__arch.html">Define Model Architectures</a>.
   </dd>
 
   <dt>model_selection_table</dt>
@@ -119,13 +114,22 @@ generate_model_configs(
   which are very sensitive to changes near 1.  It has the effect of producing more values near 1
   than regular log-based sampling.
 
-  In the case of grid search, omit the sample type and just put the grid points in the list.
-  For custom loss functions, custom metrics, and custom top k categorical accuracy,
-  list the custom function name and provide the name of the
-  table where the serialized Python objects reside using the
-  parameter 'object_table' below. See the examples section later on this page.
-  For more information on custom functions, please
-  see <a href="group__grp__custom__function.html">Load Custom Functions</a>.
+  In the case of grid search, omit the sampling type and just put the grid points in the list.
+
+  @note
+  - Custom loss functions and custom metrics can be used as defined in
+  <a href="group__grp__custom__function.html">Define Custom Functions.</a>
+  List the custom function name and provide the name of the table where the 
+  serialized Python objects reside using the parameter 'object_table' below.
+  - The following loss function is
+  not supported: <em>sparse_categorical_crossentropy</em>.
+  The following metrics are not
+  supported: <em>sparse_categorical_accuracy, sparse_top_k_categorical_accuracy</em>.
+  - The Keras accuracy parameter <em>top_k_categorical_accuracy</em> returns top 5 accuracy by 
+  default.  If you want a different top k value, use the helper function
+  <a href="group__grp__custom__function.html#top_k_function">Top k Accuracy Function</a> 
+  to create a custom
+  Python function to compute the top k accuracy that you want.
   </dd>
 
   <dt>fit_params_grid</dt>
@@ -142,6 +146,10 @@ generate_model_configs(
     }
   $$
   </pre>
+  @note
+  Callbacks are not currently supported except for TensorBoard
+  which you can specify in the usual way,
+  e.g., 'callbacks': ['[TensorBoard(log_dir="/tmp/logs/fit")]']
   </dd>
 
   <dt>search_type</dt>
@@ -171,6 +179,10 @@ generate_model_configs(
   <dd>VARCHAR, default: NULL. Name of the table containing
   Python objects in the case that custom loss functions or
   custom metrics are specified in the 'compile_params_grid'.
+  Note that this table has to be created by 
+  the <a href="group__grp__custom__function.html">Define Custom Functions</a> method. It is
+  not allowed to pass a schema name, since it will be automatically pulled from
+  this functions associated madlib schema.
   </dd>
 
 </dl>
@@ -243,7 +255,7 @@ load_model_selection_table(
   <dt>model_arch_table</dt>
   <dd>VARCHAR. Table containing model architectures and weights.
   For more information on this table
-  refer to <a href="group__grp__keras__model__arch.html">Load Model</a>.
+  refer to <a href="group__grp__keras__model__arch.html">Define Model Architectures</a>.
   </dd>
 
   <dt>model_selection_table</dt>
@@ -271,7 +283,9 @@ load_model_selection_table(
   <dt>fit_params_list</dt>
   <dd>VARCHAR[].  Array of fit parameters to be tested.  Each element
   of the array should consist of a string of fit parameters
-  exactly as it is to be passed to Keras.
+  exactly as it is to be passed to Keras.  Callbacks are not currently supported 
+  except for TensorBoard which you can specify in the usual way, 
+  e.g., callbacks=[TensorBoard(log_dir="/tmp/logs/fit")]
   </dd>
 
   <dt>object_table (optional)</dt>
@@ -288,9 +302,9 @@ load_model_selection_table(
 so we first create a model architecture table with two different models.  Use Keras to define
 a model architecture with 1 hidden layer:
 <pre class="example">
-import keras
-from keras.models import Sequential
-from keras.layers import Dense
+from tensorflow import keras
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense
 model1 = Sequential()
 model1.add(Dense(10, activation='relu', input_shape=(4,)))
 model1.add(Dense(10, activation='relu'))
@@ -677,7 +691,7 @@ SELECT * FROM mst_table_manual_summary;
 Let's say we have a table 'custom_function_table' that contains a custom loss
 function called 'my_custom_loss' and a custom accuracy function
 called 'my_custom_accuracy' based
-on <a href="group__grp__custom__function.html">Load Custom Functions.</a>
+on <a href="group__grp__custom__function.html">Define Custom Functions.</a>
 Generate the model configurations with:
 <pre class="example">
 DROP TABLE IF EXISTS mst_table, mst_table_summary;
@@ -724,7 +738,7 @@ SELECT * FROM mst_table ORDER BY mst_key;
 (16 rows)
 </pre>
 Similarly, if you created a custom top k categorical accuracy function 'top_3_accuracy'
-in <a href="group__grp__custom__function.html">Load Custom Functions</a>
+in <a href="group__grp__custom__function.html">Define Custom Functions</a>
 you can generate the model configurations as:
 <pre class="example">
 DROP TABLE IF EXISTS mst_table, mst_table_summary;
@@ -819,11 +833,6 @@ SELECT * FROM mst_table_summary;
  model_arch_library
 (1 row)
 </pre>
-
-@anchor notes
-@par Notes
-
-1. TBD
 
 @anchor related
 @par Related Topics

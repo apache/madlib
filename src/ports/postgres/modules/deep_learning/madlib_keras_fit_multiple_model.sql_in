@@ -20,7 +20,7 @@
  *
  * @file madlib_keras_model_selection.sql_in
  *
- * @brief SQL functions for model hopper distributed training
+ * @brief Explore network architectures and hyperparameters by training many models a time.
  * @date August 2019
  *
  *
@@ -44,12 +44,11 @@ m4_include(`SQLCommon.m4')
 <li class="level1"><a href="#related">Related Topics</a></li>
 </ul></div>
 
-\warning <em> This MADlib method is still in early stage development.
-Interface and implementation are subject to change. </em>
-
 This module allows you to explore network architectures and
 hyperparameters by training many models a time across the
-database cluster.  The aim is to support efficient empirical comparison of multiple
+database cluster.  
+
+The aim is to support efficient empirical comparison of multiple
 training configurations. This process is called model selection,
 and the implementation here is based on a parallel execution strategy
 called model hopper parallelism (MOP) [1,2].
@@ -59,19 +58,15 @@ network API written in Python.  It can run
 on top of different backends and the one that is currently
 supported by MADlib is TensorFlow [4].
 
-The main use case is image classification
+The main use case is classification
 using sequential models, which are made up of a
 linear stack of layers.  This includes multilayer perceptrons (MLPs)
 and convolutional neural networks (CNNs).  Regression is not
 currently supported.
 
-Before doing model selection in MADlib you will need to run
-the mini-batch preprocessor, and create a table with the various models
-and hyperparameters to try.
-
-You can mini-batch the training and evaluation datasets by using the
-<a href="group__grp__input__preprocessor__dl.html">Preprocessor
-for Images</a> which is a utility that prepares image data for
+Before using this model selection method, you will need to 
+<a href="group__grp__input__preprocessor__dl.html">Prepocess Data</a>
+which prepares data for
 use by models that support mini-batch as an optimization option.
 This is a one-time operation and you would only
 need to re-run the preprocessor if your input data has changed.
@@ -79,13 +74,10 @@ The advantage of using mini-batching is that it
 can perform better than stochastic gradient descent
 because it uses more than one training example at a time,
 typically resulting faster and smoother convergence [5].
-The input preprocessor also sets the distribution rules
-for the training data.  For example, you may only want
-to train models on segments that reside on hosts that are GPU enabled.
 
 You can set up the models and hyperparameters to try with the
-<a href="group__grp__keras__setup__model__selection.html">Setup
-Model Selection</a> utility to define the unique combinations
+<a href="group__grp__keras__setup__model__selection.html">Define Model
+Configurations</a> function to define the unique combinations
 of model architectures, compile and fit parameters.
 
 @note 1. If 'madlib_keras_fit_multiple_model()' is running on GPDB 5 and some versions
@@ -105,6 +97,9 @@ The default value for this timeout is 18 sec [8].  So the recommendation is:
 log out/reconnect to the session after every GPU query; or
 wait for gp_vmem_idle_resource_timeout before you run another GPU query (you can
 also set it to a lower value).
+
+@note 3. This method does not currently support multi-input or multi-output neural networks.
+
 
 @anchor keras_fit
 @par Fit
@@ -131,7 +126,7 @@ madlib_keras_fit_multiple_model(
   <dt>source_table</dt>
   <dd>TEXT. Name of the table containing the training data.
   This is the name of the output
-  table from the image preprocessor.  Independent
+  table from the data preprocessor.  Independent
   and dependent variables are specified in the preprocessor
   step which is why you do not need to explictly state
   them here as part of the fit function.</dd>
@@ -182,7 +177,7 @@ madlib_keras_fit_multiple_model(
   Note that the validation dataset must be preprocessed
   in the same way as the training dataset, so this
   is the name of the output
-  table from running the image preprocessor on the validation dataset.
+  table from running the data preprocessor on the validation dataset.
   Using a validation dataset can mean a
   longer training time, depending on its size.
   This can be controlled using the 'metrics_compute_frequency'
@@ -234,14 +229,14 @@ madlib_keras_fit_multiple_model(
   </DD>
 
   <DT>use_caching (optional)</DT>
-  <DD>BOOLEAN, default: FALSE. Use caching of images in memory on the
+  <DD>BOOLEAN, default: FALSE. Use caching of data in memory on the
   segment in order to speed up processing.
 
   @note
-  When set to TRUE, image byte arrays on each segment are maintained
+  When set to TRUE, byte arrays on each segment are maintained
   in cache (SD). This can speed up training significantly, however the
   memory usage per segment increases.  In effect, it
-  requires enough available memory on a segment so that all images
+  requires enough available memory on a segment so that all training data
   residing on that segment can be read into memory.
 </dl>
 
@@ -305,11 +300,17 @@ madlib_keras_fit_multiple_model(
         other metrics as a function of time.
         For example, if 'metrics_compute_frequency=5'
         this would be an array of elapsed time for every 5th
-        iteration, plus the last iteration.</td>
+        iteration, plus the last iteration.
+        Note that this field reports the time for training +
+        validation if there is a validation table provided.</td>
     </tr>
     <tr>
         <th>metrics_type</th>
         <td>Metric specified in the 'compile_params'.</td>
+    </tr>
+    <tr>
+        <th>loss_type</th>
+        <td>Loss specified in the 'compile_params'.</td>
     </tr>
     <tr>
         <th>training_metrics_final</th>
@@ -395,12 +396,12 @@ madlib_keras_fit_multiple_model(
     <tr>
         <th>dependent_varname</th>
         <td>Dependent variable column from the original
-        source table in the image preprocessing step.</td>
+        source table in the data preprocessing step.</td>
     </tr>
     <tr>
         <th>independent_varname</th>
         <td>Independent variables column from the original
-        source table in the image preprocessing step.</td>
+        source table in the data preprocessing step.</td>
     </tr>
     <tr>
         <th>model_arch_table</th>
@@ -447,8 +448,9 @@ madlib_keras_fit_multiple_model(
         <td>Count of distinct classes values used.</td>
     </tr>
     <tr>
-        <th>class_values</th>
-        <td>Array of actual class values used.</td>
+        <th><dependent_varname>_class_values</th>
+        <td>Array of actual class values used for a particular dependent
+        variable. A column will be generated for each dependent variable.</td>
     </tr>
     <tr>
         <th>dependent_vartype</th>
@@ -457,7 +459,7 @@ madlib_keras_fit_multiple_model(
     <tr>
         <th>normalizing_constant</th>
         <td>Normalizing constant used from the
-        image preprocessing step.</td>
+        data preprocessing step.</td>
     </tr>
     <tr>
         <th>metrics_iters</th>
@@ -484,7 +486,8 @@ madlib_keras_evaluate(
     model_table,
     test_table,
     output_table,
-    use_gpus
+    use_gpus,
+    mst_key
     )
 </pre>
 
@@ -501,7 +504,7 @@ madlib_keras_evaluate(
   Note that test/validation data must be preprocessed in the same
   way as the training dataset, so
   this is the name of the output
-  table from the image preprocessor.  Independent
+  table from the data preprocessor.  Independent
   and dependent variables are specified in the preprocessor
   step which is why you do not need to explictly state
   them here as part of the fit function.</dd>
@@ -512,7 +515,8 @@ madlib_keras_evaluate(
     <table class="output">
       <tr>
         <th>loss</th>
-        <td>Loss value on evaluation dataset.</td>
+        <td>Loss value on evaluation dataset, where 'loss_type'
+        below identifies the type of loss.</td>
       </tr>
       <tr>
         <th>metric</th>
@@ -521,7 +525,15 @@ madlib_keras_evaluate(
       </tr>
       <tr>
         <th>metrics_type</th>
-        <td>Type of metric used that was used in the training step.</td>
+        <td>Type of metric used that was used in the training step.
+        (It means you cannot have a different metric in evaluate compared
+        to training.)</td>
+      </tr>
+      <tr>
+        <th>loss_type</th>
+        <td>Type of loss function that was used in the training step.
+        (It means you cannot have a different loss in evaluate compared
+        to training.)</td>
       </tr>
 
   <DT>use_gpus (optional)</DT>
@@ -540,6 +552,12 @@ madlib_keras_evaluate(
     GPU on each host. The current recommended
     configuration is 1 GPU per segment.
   </DD>
+
+  <DT>mst_key (optional)</DT>
+  <DD>INTEGER, default: NULL. ID that defines a unique tuple for
+  model architecture-compile parameters-fit parameters as defined in the model
+  selection table.
+  </DD>
 </DL>
 
 @anchor keras_predict
@@ -553,7 +571,8 @@ madlib_keras_predict(
     independent_varname,
     output_table,
     pred_type,
-    use_gpus
+    use_gpus,    
+    mst_key
     )
 </pre>
 
@@ -591,31 +610,41 @@ madlib_keras_predict(
     <table class="output">
       <tr>
         <th>id</th>
-        <td>Gives the 'id' for each prediction, corresponding to each row from the test_table.</td>
+        <td>Gives the 'id' for each prediction, corresponding to each row from
+        the test_table.</td>
       </tr>
       <tr>
-        <th>estimated_COL_NAME</th>
+        <th>class_name</th>
         <td>
-        (For pred_type='response') The estimated class
-         for classification, where
-         COL_NAME is the name of the column to be
-         predicted from test data.
+        The estimated variable.
         </td>
       </tr>
       <tr>
-        <th>prob_CLASS</th>
+        <th>class_value</th>
         <td>
-        (For pred_type='prob' for classification) The
-        probability of a given class.
-        There will be one column for each class
-        in the training data.
+        The estimated class for classification.
+        </td>
+      </tr>
+      <tr>
+        <th>prob</th>
+        <td>
+        Probability of a given class.
+        </td>
+      </tr>
+      <tr>
+        <th>rank</th>
+        <td>
+        The rank of a given class based on the ordering of probabilities.
         </td>
       </tr>
 
   <DT>pred_type (optional)</DT>
-  <DD>TEXT, default: 'response'. The type of output
-  desired, where 'response' gives the actual prediction
-  and 'prob' gives the probability value for each class.
+  <DD>TEXT or INTEGER or DOUBLE PRECISION default: 'prob'.
+  The type and range of output desired. This parameter allows the following options.
+  - 'response': the actual prediction
+  - 'prob': the probability value for each class
+  - 0<value<1: the lower limit for the probability (double precision)
+  - 1<=value: the lower limit for the rank of the prediction (integer)
   </DD>
 
   <DT>use_gpus (optional)</DT>
@@ -630,6 +659,12 @@ madlib_keras_predict(
     and evaluate() functions that support GPUs on only some of the hosts (heterogeneous cluster).
     Therefore, if you have GPUs only on some of the hosts, or an uneven numbers of GPUs per host, then
     set this parameter to FALSE to use CPUs.
+  </DD>
+
+  <DT>mst_key (optional)</DT>
+  <DD>INTEGER, default: NULL. ID that defines a unique tuple for
+  model architecture-compile parameters-fit parameters as defined in the model
+  selection table.
   </DD>
 </DL>
 
@@ -879,9 +914,9 @@ num_classes         | 3
 -# Define and load model architecture.  Use Keras to define
 the model architecture with 1 hidden layer:
 <pre class="example">
-import keras
-from keras.models import Sequential
-from keras.layers import Dense
+from tensorflow import keras
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense
 model1 = Sequential()
 model1.add(Dense(10, activation='relu', input_shape=(4,)))
 model1.add(Dense(10, activation='relu'))
@@ -1027,23 +1062,25 @@ SELECT * FROM iris_multi_model_summary;
 </pre>
 <pre class="result">
 source_table              | iris_train_packed
-validation_table          |
+validation_table          | 
 model                     | iris_multi_model
 model_info                | iris_multi_model_info
-dependent_varname         | class_text
-independent_varname       | attributes
+dependent_varname         | {class_text}
+independent_varname       | {attributes}
 model_arch_table          | model_arch_library
+model_selection_table     | mst_table
+object_table              | 
 num_iterations            | 10
 metrics_compute_frequency | 10
 warm_start                | f
-name                      |
-description               |
-start_training_time       | 2019-12-16 18:54:33.826414
-end_training_time         | 2019-12-16 18:56:19.106321
-madlib_version            | 1.17.0
-num_classes               | 3
-class_values              | {Iris-setosa,Iris-versicolor,Iris-virginica}
-dependent_vartype         | character varying
+name                      | 
+description               | 
+start_training_time       | 2021-02-05 00:40:42.695613
+end_training_time         | 2021-02-05 00:42:20.796712
+madlib_version            | 1.18.0-dev
+num_classes               | {1}
+class_text_class_values   | {Iris-setosa,Iris-versicolor,Iris-virginica}
+dependent_vartype         | {"character varying"}
 normalizing_const         | 1
 metrics_iters             | {10}
 </pre>
@@ -1052,20 +1089,20 @@ View results for each model:
 SELECT * FROM iris_multi_model_info ORDER BY training_metrics_final DESC, training_loss_final;
 </pre>
 <pre class="result">
- mst_key | model_id |                                 compile_params                                  |      fit_params       |  model_type  |  model_size  | metrics_elapsed_time | metrics_type | training_metrics_final | training_loss_final |  training_metrics   |    training_loss    | validation_metrics_final | validation_loss_final | validation_metrics | validation_loss
----------+----------+---------------------------------------------------------------------------------+-----------------------+--------------+--------------+----------------------+--------------+------------------------+---------------------+---------------------+---------------------+--------------------------+-----------------------+--------------------+-----------------
-       9 |        2 | loss='categorical_crossentropy', optimizer='Adam(lr=0.01)',metrics=['accuracy'] | batch_size=4,epochs=1 | madlib_keras | 1.2197265625 | {119.42963886261}    | {accuracy}   |         0.983333349228 |       0.07286978513 | {0.983333349227905} | {0.072869785130024} |                          |                       |                    |
-      10 |        2 | loss='categorical_crossentropy', optimizer='Adam(lr=0.01)',metrics=['accuracy'] | batch_size=8,epochs=1 | madlib_keras | 1.2197265625 | {118.485460996628}   | {accuracy}   |         0.975000023842 |     0.0798489004374 | {0.975000023841858} | {0.079848900437355} |                          |                       |                    |
-       4 |        1 | loss='categorical_crossentropy', optimizer='Adam(lr=0.01)',metrics=['accuracy'] | batch_size=8,epochs=1 | madlib_keras | 0.7900390625 | {118.707404851913}   | {accuracy}   |         0.975000023842 |      0.143356323242 | {0.975000023841858} | {0.143356323242188} |                          |                       |                    |
-      11 |        2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy'] | batch_size=4,epochs=1 | madlib_keras | 1.2197265625 | {118.224883794785}   | {accuracy}   |         0.958333313465 |      0.636615753174 | {0.958333313465118} | {0.636615753173828} |                          |                       |                    |
-       2 |        1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']   | batch_size=8,epochs=1 | madlib_keras | 0.7900390625 | {117.732690811157}   | {accuracy}   |         0.925000011921 |      0.161811202765 | {0.925000011920929} | {0.161811202764511} |                          |                       |                    |
-       5 |        1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy'] | batch_size=4,epochs=1 | madlib_keras | 0.7900390625 | {120.357484817505}   | {accuracy}   |         0.833333313465 |        0.5542948246 | {0.833333313465118} | {0.55429482460022}  |                          |                       |                    |
-       3 |        1 | loss='categorical_crossentropy', optimizer='Adam(lr=0.01)',metrics=['accuracy'] | batch_size=4,epochs=1 | madlib_keras | 0.7900390625 | {118.928852796555}   | {accuracy}   |         0.824999988079 |      0.301002770662 | {0.824999988079071} | {0.301002770662308} |                          |                       |                    |
-       6 |        1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy'] | batch_size=8,epochs=1 | madlib_keras | 0.7900390625 | {120.566634893417}   | {accuracy}   |         0.816666662693 |      0.875298440456 | {0.816666662693024} | {0.87529844045639}  |                          |                       |                    |
-      12 |        2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy'] | batch_size=8,epochs=1 | madlib_keras | 1.2197265625 | {119.182703018188}   | {accuracy}   |         0.774999976158 |      0.785651266575 | {0.774999976158142} | {0.78565126657486}  |                          |                       |                    |
-       1 |        1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']   | batch_size=4,epochs=1 | madlib_keras | 0.7900390625 | {119.643137931824}   | {accuracy}   |         0.508333325386 |      0.762569189072 | {0.508333325386047} | {0.762569189071655} |                          |                       |                    |
-       7 |        2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']   | batch_size=4,epochs=1 | madlib_keras | 1.2197265625 | {120.15305685997}    | {accuracy}   |         0.333333343267 |       1.09794270992 | {0.333333343267441} | {1.09794270992279}  |                          |                       |                    |
-       8 |        2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']   | batch_size=8,epochs=1 | madlib_keras | 1.2197265625 | {119.911739826202}   | {accuracy}   |         0.333333343267 |       1.10344016552 | {0.333333343267441} | {1.10344016551971}  |                          |                       |                    |
+  mst_key | model_id |                                 compile_params                                  |      fit_params       |  model_type  | model_size | metrics_elapsed_time | metrics_type |        loss_type         | training_metrics_final | training_loss_final |  training_metrics   |    training_loss     | validation_metrics_final | validation_loss_final | validation_metrics | validation_loss 
+---------+----------+---------------------------------------------------------------------------------+-----------------------+--------------+------------+----------------------+--------------+--------------------------+------------------------+---------------------+---------------------+----------------------+--------------------------+-----------------------+--------------------+-----------------
+       2 |        1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']   | batch_size=8,epochs=1 | madlib_keras | 0.75390625 | {96.2744579315186}   | {accuracy}   | categorical_crossentropy |      0.966666638851166 |  0.0771341994404793 | {0.966666638851166} | {0.0771341994404793} |                          |                       |                    | 
+       3 |        1 | loss='categorical_crossentropy', optimizer='Adam(lr=0.01)',metrics=['accuracy'] | batch_size=4,epochs=1 | madlib_keras | 0.75390625 | {95.0798950195312}   | {accuracy}   | categorical_crossentropy |      0.958333313465118 |    0.14112713932991 | {0.958333313465118} | {0.14112713932991}   |                          |                       |                    | 
+      10 |        2 | loss='categorical_crossentropy', optimizer='Adam(lr=0.01)',metrics=['accuracy'] | batch_size=8,epochs=1 | madlib_keras | 1.18359375 | {95.7743279933929}   | {accuracy}   | categorical_crossentropy |      0.949999988079071 |   0.126085489988327 | {0.949999988079071} | {0.126085489988327}  |                          |                       |                    | 
+       5 |        1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy'] | batch_size=4,epochs=1 | madlib_keras | 0.75390625 | {97.8191220760345}   | {accuracy}   | categorical_crossentropy |      0.866666674613953 |   0.459462374448776 | {0.866666674613953} | {0.459462374448776}  |                          |                       |                    | 
+       4 |        1 | loss='categorical_crossentropy', optimizer='Adam(lr=0.01)',metrics=['accuracy'] | batch_size=8,epochs=1 | madlib_keras | 0.75390625 | {96.7445840835571}   | {accuracy}   | categorical_crossentropy |      0.858333349227905 |   0.279698997735977 | {0.858333349227905} | {0.279698997735977}  |                          |                       |                    | 
+       9 |        2 | loss='categorical_crossentropy', optimizer='Adam(lr=0.01)',metrics=['accuracy'] | batch_size=4,epochs=1 | madlib_keras | 1.18359375 | {95.3640351295471}   | {accuracy}   | categorical_crossentropy |      0.824999988079071 |   0.325970768928528 | {0.824999988079071} | {0.325970768928528}  |                          |                       |                    | 
+       7 |        2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']   | batch_size=4,epochs=1 | madlib_keras | 1.18359375 | {94.8350050449371}   | {accuracy}   | categorical_crossentropy |      0.800000011920929 |   0.458843886852264 | {0.800000011920929} | {0.458843886852264}  |                          |                       |                    | 
+      12 |        2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy'] | batch_size=8,epochs=1 | madlib_keras | 1.18359375 | {96.0411529541016}   | {accuracy}   | categorical_crossentropy |      0.783333361148834 |   0.766786217689514 | {0.783333361148834} | {0.766786217689514}  |                          |                       |                    | 
+      11 |        2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy'] | batch_size=4,epochs=1 | madlib_keras | 1.18359375 | {98.098680973053}    | {accuracy}   | categorical_crossentropy |      0.683333337306976 |   0.607033967971802 | {0.683333337306976} | {0.607033967971802}  |                          |                       |                    | 
+       6 |        1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy'] | batch_size=8,epochs=1 | madlib_keras | 0.75390625 | {96.5071561336517}   | {accuracy}   | categorical_crossentropy |      0.683333337306976 |   0.704851150512695 | {0.683333337306976} | {0.704851150512695}  |                          |                       |                    | 
+       8 |        2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']   | batch_size=8,epochs=1 | madlib_keras | 1.18359375 | {97.4749901294708}   | {accuracy}   | categorical_crossentropy |      0.641666650772095 |   0.473412454128265 | {0.641666650772095} | {0.473412454128265}  |                          |                       |                    | 
+       1 |        1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']   | batch_size=4,epochs=1 | madlib_keras | 0.75390625 | {96.9749960899353}   | {accuracy}   | categorical_crossentropy |      0.358333319425583 |    1.09744954109192 | {0.358333319425583} | {1.09744954109192}   |                          |                       |                    | 
 (12 rows)
 </pre>
 
@@ -1081,9 +1118,9 @@ SELECT madlib.madlib_keras_evaluate('iris_multi_model',  -- model
 SELECT * FROM iris_validate;
 </pre>
 <pre class="result">
-       loss        |      metric       | metrics_type
--------------------+-------------------+--------------
- 0.103803977370262 | 0.966666638851166 | {accuracy}
+        loss        | metric | metrics_type |        loss_type         
+--------------------+--------+--------------+--------------------------
+ 0.0789926201105118 |      1 | {accuracy}   | categorical_crossentropy
 </pre>
 
 -# Predict.  Now predict using one of the models we built. We will use the validation data set
@@ -1103,62 +1140,60 @@ SELECT madlib.madlib_keras_predict('iris_multi_model', -- model
 SELECT * FROM iris_predict ORDER BY id;
 </pre>
 <pre class="result">
- id  | estimated_class_text
------+----------------------
-   9 | Iris-setosa
-  18 | Iris-setosa
-  22 | Iris-setosa
-  26 | Iris-setosa
-  35 | Iris-setosa
-  38 | Iris-setosa
-  42 | Iris-setosa
-  43 | Iris-setosa
-  45 | Iris-setosa
-  46 | Iris-setosa
-  50 | Iris-setosa
-  53 | Iris-versicolor
-  60 | Iris-versicolor
-  68 | Iris-versicolor
-  77 | Iris-versicolor
-  78 | Iris-versicolor
-  79 | Iris-versicolor
-  81 | Iris-versicolor
-  82 | Iris-versicolor
-  85 | Iris-virginica
-  95 | Iris-versicolor
-  97 | Iris-versicolor
-  98 | Iris-versicolor
- 113 | Iris-virginica
- 117 | Iris-virginica
- 118 | Iris-virginica
- 127 | Iris-virginica
- 136 | Iris-virginica
- 143 | Iris-virginica
- 145 | Iris-virginica
+ id  | class_name |   class_value   |    prob    
+-----+------------+-----------------+------------
+   8 | class_text | Iris-setosa     |  0.9979984
+  15 | class_text | Iris-setosa     | 0.99929357
+  20 | class_text | Iris-setosa     |  0.9985701
+  21 | class_text | Iris-setosa     |  0.9984106
+  22 | class_text | Iris-setosa     |  0.9983991
+  27 | class_text | Iris-setosa     | 0.99763095
+  28 | class_text | Iris-setosa     |   0.998376
+  33 | class_text | Iris-setosa     | 0.99901116
+  37 | class_text | Iris-setosa     | 0.99871385
+  38 | class_text | Iris-setosa     | 0.99740535
+  46 | class_text | Iris-setosa     |  0.9968368
+  51 | class_text | Iris-versicolor | 0.93798196
+  57 | class_text | Iris-versicolor | 0.73391247
+  58 | class_text | Iris-versicolor |  0.9449931
+  59 | class_text | Iris-versicolor |  0.8938894
+  64 | class_text | Iris-versicolor |  0.6563309
+  65 | class_text | Iris-versicolor | 0.95828146
+  72 | class_text | Iris-versicolor |    0.94206
+  75 | class_text | Iris-versicolor | 0.93305194
+  87 | class_text | Iris-versicolor |  0.8458596
+  95 | class_text | Iris-versicolor | 0.76850986
+  97 | class_text | Iris-versicolor |  0.8467575
+  98 | class_text | Iris-versicolor |  0.9081358
+ 120 | class_text | Iris-virginica  | 0.86913925
+ 121 | class_text | Iris-virginica  | 0.96328884
+ 122 | class_text | Iris-virginica  |  0.9474733
+ 123 | class_text | Iris-virginica  | 0.97997576
+ 140 | class_text | Iris-virginica  |  0.8721462
+ 144 | class_text | Iris-virginica  |  0.9745266
+ 147 | class_text | Iris-virginica  |  0.8978669
 (30 rows)
 </pre>
 Count missclassifications:
 <pre class="example">
 SELECT COUNT(*) FROM iris_predict JOIN iris_test USING (id)
-WHERE iris_predict.estimated_class_text != iris_test.class_text;
-</pre>
-<pre class="result">
- count
+WHERE iris_predict.class_value != iris_test.class_text;
+ count 
 -------+
-     1
+     0
 </pre>
-Percent missclassifications:
+Accuracy:
 <pre class="example">
 SELECT round(count(*)*100/(150*0.2),2) as test_accuracy_percent from
-    (select iris_test.class_text as actual, iris_predict.estimated_class_text as estimated
+    (select iris_test.class_text as actual, iris_predict.class_value as estimated
      from iris_predict inner join iris_test
      on iris_test.id=iris_predict.id) q
 WHERE q.actual=q.estimated;
 </pre>
 <pre class="result">
- test_accuracy_percent
+ test_accuracy_percent 
 -----------------------+
-                 96.67
+                100.00
 </pre>
 
 <h4>Classification with Other Parameters</h4>
@@ -1167,7 +1202,7 @@ WHERE q.actual=q.estimated;
 and compute metrics every 3rd iteration using
 the 'metrics_compute_frequency' parameter. This can
 help reduce run time if you do not need metrics
-computed at every iteration.  Also turn on image caching.
+computed at every iteration.  Also turn on caching.
 <pre class="example">
 DROP TABLE IF EXISTS iris_multi_model, iris_multi_model_summary, iris_multi_model_info;
 SELECT madlib.madlib_keras_fit_multiple_model('iris_train_packed',    -- source_table
@@ -1188,24 +1223,27 @@ View the model summary:
 SELECT * FROM iris_multi_model_summary;
 </pre>
 <pre class="result">
+-[ RECORD 1 ]-------------+---------------------------------------------
 source_table              | iris_train_packed
 validation_table          | iris_test_packed
 model                     | iris_multi_model
 model_info                | iris_multi_model_info
-dependent_varname         | class_text
-independent_varname       | attributes
+dependent_varname         | {class_text}
+independent_varname       | {attributes}
 model_arch_table          | model_arch_library
+model_selection_table     | mst_table
+object_table              | 
 num_iterations            | 10
 metrics_compute_frequency | 3
 warm_start                | f
 name                      | Sophie L.
 description               | Model selection for iris dataset
-start_training_time       | 2019-12-16 19:28:16.219137
-end_training_time         | 2019-12-16 19:30:19.238692
-madlib_version            | 1.17.0
-num_classes               | 3
-class_values              | {Iris-setosa,Iris-versicolor,Iris-virginica}
-dependent_vartype         | character varying
+start_training_time       | 2021-02-05 01:03:11.337798
+end_training_time         | 2021-02-05 01:05:14.988912
+madlib_version            | 1.18.0-dev
+num_classes               | {1}
+class_text_class_values   | {Iris-setosa,Iris-versicolor,Iris-virginica}
+dependent_vartype         | {"character varying"}
 normalizing_const         | 1
 metrics_iters             | {3,6,9,10}
 </pre>
@@ -1214,20 +1252,19 @@ View results for each model:
 SELECT * FROM iris_multi_model_info ORDER BY training_metrics_final DESC, training_loss_final;
 </pre>
 <pre class="result">
- mst_key | model_id |                                 compile_params                                  |      fit_params       |  model_type  |  model_size  |                         metrics_elapsed_time                          | metrics_type | training_metrics_final | training_loss_final |                             training_metrics                              |                               training_loss                               | validation_metrics_final | validation_loss_final |                            validation_metrics                             |                              validation_loss
----------+----------+---------------------------------------------------------------------------------+-----------------------+--------------+--------------+-----------------------------------------------------------------------+--------------+------------------------+---------------------+---------------------------------------------------------------------------+---------------------------------------------------------------------------+--------------------------+-----------------------+---------------------------------------------------------------------------+---------------------------------------------------------------------------
-       4 |        1 | loss='categorical_crossentropy', optimizer='Adam(lr=0.01)',metrics=['accuracy'] | batch_size=8,epochs=1 | madlib_keras | 0.7900390625 | {37.0420558452606,78.2046208381653,116.242669820786,134.287139892578} | {accuracy}   |         0.975000023842 |      0.165132269263 | {0.75,0.958333313465118,0.958333313465118,0.975000023841858}              | {0.618549585342407,0.319452553987503,0.223872095346451,0.165132269263268} |           0.966666638851 |        0.213689729571 | {0.733333349227905,0.933333337306976,0.933333337306976,0.966666638851166} | {0.683791160583496,0.370491921901703,0.255890935659409,0.213689729571342}
-       2 |        1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']   | batch_size=8,epochs=1 | madlib_keras | 0.7900390625 | {36.3931469917297,77.5780539512634,115.430645942688,133.599857807159} | {accuracy}   |         0.966666638851 |      0.277698725462 | {0.591666638851166,0.966666638851166,0.666666686534882,0.966666638851166} | {0.634598553180695,0.334936827421188,0.615665555000305,0.27769872546196}  |           0.966666638851 |         0.34405490756 | {0.5,0.966666638851166,0.566666662693024,0.966666638851166}               | {0.643225967884064,0.41021603345871,0.805291295051575,0.344054907560349}
-      10 |        2 | loss='categorical_crossentropy', optimizer='Adam(lr=0.01)',metrics=['accuracy'] | batch_size=8,epochs=1 | madlib_keras | 1.2197265625 | {36.8482949733734,78.0155048370361,115.83317399025,134.079672813416}  | {accuracy}   |         0.958333313465 |      0.122385449708 | {0.883333325386047,0.941666662693024,0.858333349227905,0.958333313465118} | {0.291894346475601,0.146935686469078,0.270052850246429,0.122385449707508} |           0.933333337307 |        0.181496843696 | {0.766666650772095,0.866666674613953,0.899999976158142,0.933333337306976} | {0.395013928413391,0.245234906673431,0.301119148731232,0.181496843695641}
-       3 |        1 | loss='categorical_crossentropy', optimizer='Adam(lr=0.01)',metrics=['accuracy'] | batch_size=4,epochs=1 | madlib_keras | 0.7900390625 | {37.2318170070648,78.3925468921661,116.45490694046,134.491376876831}  | {accuracy}   |         0.941666662693 |      0.193545326591 | {0.966666638851166,0.941666662693024,0.941666662693024,0.941666662693024} | {0.39665362238884,0.213271111249924,0.190151125192642,0.193545326590538}  |           0.933333337307 |        0.151459023356 | {1,0.966666638851166,0.933333337306976,0.933333337306976}                 | {0.464315593242645,0.198051139712334,0.138570576906204,0.151459023356438}
-       9 |        2 | loss='categorical_crossentropy', optimizer='Adam(lr=0.01)',metrics=['accuracy'] | batch_size=4,epochs=1 | madlib_keras | 1.2197265625 | {37.6678929328918,78.820240020752,116.939878940582,134.959810972214}  | {accuracy}   |         0.925000011921 |      0.192344605923 | {0.824999988079071,0.774999976158142,0.966666638851166,0.925000011920929} | {0.434513121843338,0.326292037963867,0.131333693861961,0.192344605922699} |           0.899999976158 |        0.209528595209 | {0.800000011920929,0.766666650772095,0.966666638851166,0.899999976158142} | {0.52033931016922,0.344535797834396,0.170280396938324,0.209528595209122}
-       8 |        2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']   | batch_size=8,epochs=1 | madlib_keras | 1.2197265625 | {38.0689258575439,79.4995639324188,117.36315202713,135.380483865738}  | {accuracy}   |         0.866666674614 |      0.390509605408 | {0.691666662693024,0.691666662693024,0.633333325386047,0.866666674613953} | {0.490214675664902,0.444783747196198,0.627961099147797,0.390509605407715} |           0.933333337307 |        0.376114845276 | {0.566666662693024,0.566666662693024,0.533333361148834,0.933333337306976} | {0.575542628765106,0.54660427570343,0.785183191299438,0.376114845275879}
-       5 |        1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy'] | batch_size=4,epochs=1 | madlib_keras | 0.7900390625 | {38.474328994751,79.9709329605103,117.766183853149,135.803887844086}  | {accuracy}   |         0.841666638851 |      0.576696753502 | {0.616666674613953,0.699999988079071,0.758333325386047,0.841666638851166} | {0.90448260307312,0.750164151191711,0.616493880748749,0.576696753501892}  |           0.899999976158 |        0.631914675236 | {0.666666686534882,0.699999988079071,0.733333349227905,0.899999976158142} | {0.871200919151306,0.780709445476532,0.665971457958221,0.631914675235748}
-      11 |        2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy'] | batch_size=4,epochs=1 | madlib_keras | 1.2197265625 | {36.6214678287506,77.7987759113312,115.631717920303,133.83836388588}  | {accuracy}   |         0.758333325386 |      0.881635427475 | {0.308333337306976,0.316666662693024,0.75,0.758333325386047}              | {1.12997460365295,1.02749967575073,0.923768699169159,0.881635427474976}   |           0.766666650772 |        0.878168046474 | {0.433333337306976,0.433333337306976,0.766666650772095,0.766666650772095} | {1.07487094402313,0.974115014076233,0.916269063949585,0.878168046474457}
-       7 |        2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']   | batch_size=4,epochs=1 | madlib_keras | 1.2197265625 | {38.2849600315094,79.7524738311768,117.580325841904,135.606695890427} | {accuracy}   |         0.691666662693 |      0.444524824619 | {0.908333361148834,0.391666680574417,0.691666662693024,0.691666662693024} | {0.335082054138184,2.02327847480774,0.444351017475128,0.444524824619293}  |           0.566666662693 |        0.539750337601 | {0.800000011920929,0.266666680574417,0.566666662693024,0.566666662693024} | {0.433189332485199,2.3276960849762,0.534160375595093,0.539750337600708}
-       6 |        1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy'] | batch_size=8,epochs=1 | madlib_keras | 0.7900390625 | {38.6593668460846,80.1789360046387,117.957875013351,135.995815992355} | {accuracy}   |         0.683333337307 |      0.841839790344 | {0.316666662693024,0.366666674613953,0.666666686534882,0.683333337306976} | {1.07646071910858,0.963329672813416,0.87216705083847,0.841839790344238}   |           0.666666686535 |        0.840192914009 | {0.433333337306976,0.533333361148834,0.666666686534882,0.666666686534882} | {1.02845978736877,0.941896677017212,0.861787617206573,0.840192914009094}
-       1 |        1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']   | batch_size=4,epochs=1 | madlib_keras | 0.7900390625 | {37.8553328514099,79.2480089664459,117.139881849289,135.155915975571} | {accuracy}   |         0.358333319426 |       1.11013436317 | {0.358333319425583,0.333333343267441,0.333333343267441,0.358333319425583} | {1.10554325580597,1.11694586277008,1.09756696224213,1.11013436317444}     |           0.233333334327 |         1.17629003525 | {0.233333334326744,0.333333343267441,0.333333343267441,0.233333334326744} | {1.16081762313843,1.14324629306793,1.11625325679779,1.1762900352478}
-      12 |        2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy'] | batch_size=8,epochs=1 | madlib_keras | 1.2197265625 | {37.4500079154968,78.6058378219604,116.700626850128,134.72905087471}  | {accuracy}   |         0.308333337307 |       1.06241953373 | {0.150000005960464,0.333333343267441,0.333333343267441,0.308333337306976} | {1.13338851928711,1.09694564342499,1.07030868530273,1.06241953372955}     |           0.433333337307 |         1.03659796715 | {0.16666667163372,0.333333343267441,0.433333337306976,0.433333337306976}  | {1.06262242794037,1.07252764701843,1.05843663215637,1.03659796714783}
+ ---------+----------+---------------------------------------------------------------------------------+-----------------------+--------------+------------+-----------------------------------------------------------------------+--------------+--------------------------+------------------------+---------------------+---------------------------------------------------------------------------+---------------------------------------------------------------------------+--------------------------+-----------------------+---------------------------------------------------------------------------+------------------------------------------------------------------------------
+      10 |        2 | loss='categorical_crossentropy', optimizer='Adam(lr=0.01)',metrics=['accuracy'] | batch_size=8,epochs=1 | madlib_keras | 1.18359375 | {34.347088098526,69.4049510955811,105.285098075867,121.389348983765}  | {accuracy}   | categorical_crossentropy |      0.975000023841858 |   0.166684880852699 | {0.949999988079071,0.949999988079071,0.908333361148834,0.975000023841858} | {0.615781545639038,0.269571483135223,0.242876216769218,0.166684880852699} |                        1 |     0.107727721333504 | {1,1,0.966666638851166,1}                                                 | {0.620104968547821,0.227639734745026,0.155238434672356,0.107727721333504}
+       3 |        1 | loss='categorical_crossentropy', optimizer='Adam(lr=0.01)',metrics=['accuracy'] | batch_size=4,epochs=1 | madlib_keras | 0.75390625 | {33.7874810695648,68.735356092453,104.679323911667,120.741965055466}  | {accuracy}   | categorical_crossentropy |      0.958333313465118 |   0.151768147945404 | {0.958333313465118,0.816666662693024,0.941666662693024,0.958333313465118} | {0.232924744486809,0.356248170137405,0.160927340388298,0.151768147945404} |                        1 |    0.0933234840631485 | {1,0.866666674613953,0.966666638851166,1}                                 | {0.197644680738449,0.244517579674721,0.0969053283333778,0.0933234840631485}
+       4 |        1 | loss='categorical_crossentropy', optimizer='Adam(lr=0.01)',metrics=['accuracy'] | batch_size=8,epochs=1 | madlib_keras | 0.75390625 | {35.5827050209045,70.4194140434265,106.230206012726,122.374103069305} | {accuracy}   | categorical_crossentropy |      0.941666662693024 |   0.146068558096886 | {0.824999988079071,0.958333313465118,0.941666662693024,0.941666662693024} | {0.339193284511566,0.171411842107773,0.154963329434395,0.146068558096886} |                        1 |    0.0618178397417068 | {0.933333337306976,1,1,1}                                                 | {0.302341401576996,0.0991373136639595,0.0709080845117569,0.0618178397417068}
+       5 |        1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy'] | batch_size=4,epochs=1 | madlib_keras | 0.75390625 | {36.3988909721375,71.1546559333801,107.219161987305,123.366652965546} | {accuracy}   | categorical_crossentropy |      0.908333361148834 |   0.656857788562775 | {0.358333319425583,0.683333337306976,0.766666650772095,0.908333361148834} | {0.996901094913483,0.852809607982635,0.694450318813324,0.656857788562775} |        0.899999976158142 |     0.630161166191101 | {0.233333334326744,0.600000023841858,0.633333325386047,0.899999976158142} | {1.05581676959991,0.876067101955414,0.700714349746704,0.630161166191101}
+       2 |        1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']   | batch_size=8,epochs=1 | madlib_keras | 0.75390625 | {35.0734770298004,69.949450969696,105.773796081543,121.901873111725}  | {accuracy}   | categorical_crossentropy |      0.866666674613953 |    0.26227542757988 | {0.558333337306976,0.683333337306976,0.708333313465118,0.866666674613953} | {0.755041897296906,0.551798105239868,0.504159986972809,0.26227542757988}  |        0.899999976158142 |     0.156955525279045 | {0.633333325386047,0.600000023841858,0.633333325386047,0.899999976158142} | {0.663675665855408,0.674827337265015,0.613502621650696,0.156955525279045}
+       6 |        1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy'] | batch_size=8,epochs=1 | madlib_keras | 0.75390625 | {35.3355600833893,70.1827409267426,106.000793933868,122.135368108749} | {accuracy}   | categorical_crossentropy |      0.858333349227905 |   0.403681367635727 | {0.708333313465118,0.850000023841858,0.783333361148834,0.858333349227905} | {0.609176814556122,0.488206028938293,0.425172030925751,0.403681367635727} |        0.899999976158142 |     0.393621385097504 | {0.600000023841858,0.833333313465118,0.800000011920929,0.899999976158142} | {0.624664425849915,0.48302897810936,0.428876429796219,0.393621385097504}
+       9 |        2 | loss='categorical_crossentropy', optimizer='Adam(lr=0.01)',metrics=['accuracy'] | batch_size=4,epochs=1 | madlib_keras | 1.18359375 | {34.0762810707092,69.0332140922546,105.02664899826,121.034147024155}  | {accuracy}   | categorical_crossentropy |      0.816666662693024 |    0.40071240067482 | {0.716666638851166,0.975000023841858,0.941666662693024,0.816666662693024} | {0.530809044837952,0.112755678594112,0.178483173251152,0.40071240067482}  |        0.899999976158142 |     0.160617485642433 | {0.666666686534882,1,1,0.899999976158142}                                 | {0.510058879852295,0.0435655005276203,0.0271952152252197,0.160617485642433}
+      11 |        2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy'] | batch_size=4,epochs=1 | madlib_keras | 1.18359375 | {36.664577960968,71.4262120723724,107.501835107803,123.646811962128}  | {accuracy}   | categorical_crossentropy |      0.816666662693024 |   0.683901190757751 | {0.358333319425583,0.574999988079071,0.758333325386047,0.816666662693024} | {0.969602465629578,0.828204095363617,0.7138671875,0.683901190757751}      |        0.833333313465118 |     0.720155417919159 | {0.233333334326744,0.466666668653488,0.666666686534882,0.833333313465118} | {1.04192113876343,0.878720223903656,0.755707621574402,0.720155417919159}
+       1 |        1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']   | batch_size=4,epochs=1 | madlib_keras | 0.75390625 | {35.8240220546722,70.6528959274292,106.680663108826,122.609847068787} | {accuracy}   | categorical_crossentropy |      0.683333337306976 |   0.479730814695358 | {0.675000011920929,0.683333337306976,0.683333337306976,0.683333337306976} | {0.507641136646271,0.467351347208023,0.507468938827515,0.479730814695358} |        0.600000023841858 |     0.503782331943512 | {0.600000023841858,0.600000023841858,0.600000023841858,0.600000023841858} | {0.504352450370789,0.448328793048859,0.561446607112885,0.503782331943512}
+       7 |        2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']   | batch_size=4,epochs=1 | madlib_keras | 1.18359375 | {33.5537171363831,68.2605030536652,104.443753004074,120.498863935471} | {accuracy}   | categorical_crossentropy |      0.683333337306976 |   0.940275907516479 | {0.733333349227905,0.641666650772095,0.933333337306976,0.683333337306976} | {0.419289141893387,0.746466338634491,0.25556743144989,0.940275907516479}  |        0.600000023841858 |       1.1002448797226 | {0.633333325386047,0.766666650772095,0.966666638851166,0.600000023841858} | {0.457020550966263,0.510054171085358,0.249405279755592,1.1002448797226}
+      12 |        2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy'] | batch_size=8,epochs=1 | madlib_keras | 1.18359375 | {34.8103830814362,69.698233127594,105.547440052032,121.659696102142}  | {accuracy}   | categorical_crossentropy |      0.633333325386047 |   0.711242735385895 | {0.458333343267441,0.5,0.683333337306976,0.633333325386047}               | {1.71241450309753,0.98362809419632,0.776128530502319,0.711242735385895}   |        0.566666662693024 |     0.721668004989624 | {0.433333337306976,0.5,0.600000023841858,0.566666662693024}               | {1.30801546573639,0.950868666172028,0.841940879821777,0.721668004989624}
+       8 |        2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']   | batch_size=8,epochs=1 | madlib_keras | 1.18359375 | {36.0954039096832,70.921669960022,106.977710008621,123.112148046494}  | {accuracy}   | categorical_crossentropy |      0.358333319425583 |    1.10370969772339 | {0.324999988079071,0.358333319425583,0.358333319425583,0.358333319425583} | {1.10047388076782,1.09791541099548,1.09736382961273,1.10370969772339}     |        0.233333334326744 |      1.11518168449402 | {0.366666674613953,0.233333334326744,0.233333334326744,0.233333334326744} | {1.09480428695679,1.1150735616684,1.10827457904816,1.11518168449402}
 (12 rows)
 </pre>
 
@@ -1243,42 +1280,101 @@ SELECT madlib.madlib_keras_predict('iris_multi_model', -- model
                                     FALSE,             -- use gpus
                                     3                  -- mst_key to use
                                    );
-SELECT * FROM iris_predict ORDER BY id;
+SELECT * FROM iris_predict ORDER BY id, rank;
 </pre>
 <pre class="result">
- id  | prob_Iris-setosa | prob_Iris-versicolor | prob_Iris-virginica
------+------------------+----------------------+---------------------
-   9 |       0.99931216 |        0.00068789057 |       6.2587335e-10
-  18 |       0.99984336 |        0.00015656587 |        7.969957e-12
-  22 |        0.9998497 |        0.00015029701 |       6.4133347e-12
-  26 |        0.9995004 |        0.00049964694 |       2.2795305e-10
-  35 |       0.99964666 |        0.00035332117 |       9.4490485e-11
-  38 |       0.99964666 |        0.00035332117 |       9.4490485e-11
-  42 |        0.9985154 |         0.0014845316 |        5.293262e-09
-  43 |       0.99964476 |         0.0003552362 |        9.701174e-11
-  45 |        0.9997311 |        0.00026883607 |        3.076166e-11
-  46 |        0.9995486 |        0.00045140853 |       1.6814435e-10
-  50 |        0.9997856 |        0.00021441824 |       2.1316622e-11
-  53 |     9.837335e-06 |           0.97109175 |         0.028898403
-  60 |    0.00014028326 |           0.96552837 |         0.034331344
-  68 |    0.00087942625 |            0.9883348 |         0.010785843
-  77 |      6.08114e-06 |           0.94356424 |         0.056429718
-  78 |     7.116364e-07 |            0.8596206 |          0.14037873
-  79 |    1.3918722e-05 |           0.94052655 |          0.05945957
-  81 |    0.00045687397 |            0.9794796 |         0.020063542
-  82 |     0.0015463434 |           0.98768973 |         0.010763981
-  85 |    1.0929693e-05 |           0.87866926 |         0.121319845
-  95 |    6.3600986e-05 |           0.95264935 |         0.047287125
-  97 |    0.00020298029 |             0.981617 |         0.018180028
-  98 |    0.00019721613 |           0.98902065 |          0.01078211
- 113 |    1.0388683e-09 |           0.23626474 |           0.7637353
- 117 |     4.598902e-09 |           0.25669694 |           0.7433031
- 118 |    3.7139156e-11 |           0.13193987 |           0.8680601
- 127 |    2.1297862e-07 |             0.670349 |          0.32965073
- 136 |    7.1760774e-12 |           0.07074605 |            0.929254
- 143 |    1.2568385e-09 |          0.113820426 |           0.8861796
- 145 |      6.17019e-11 |          0.117578305 |          0.88242173
-(30 rows)
+-----+------------+-----------------+---------------+------
+   8 | class_text | Iris-setosa     |    0.99961567 |    1
+   8 | class_text | Iris-versicolor | 0.00038426166 |    2
+   8 | class_text | Iris-virginica  | 5.4132368e-08 |    3
+  15 | class_text | Iris-setosa     |     0.9999677 |    1
+  15 | class_text | Iris-versicolor |  3.235117e-05 |    2
+  15 | class_text | Iris-virginica  | 7.5747697e-10 |    3
+  20 | class_text | Iris-setosa     |    0.99956757 |    1
+  20 | class_text | Iris-versicolor |  0.0004323488 |    2
+  20 | class_text | Iris-virginica  | 6.8698306e-08 |    3
+  21 | class_text | Iris-setosa     |    0.99978334 |    1
+  21 | class_text | Iris-versicolor | 0.00021666527 |    2
+  21 | class_text | Iris-virginica  |  1.741537e-08 |    3
+  22 | class_text | Iris-setosa     |    0.99955314 |    1
+  22 | class_text | Iris-versicolor | 0.00044669537 |    2
+  22 | class_text | Iris-virginica  |  8.287442e-08 |    3
+  27 | class_text | Iris-setosa     |      0.999393 |    1
+  27 | class_text | Iris-versicolor | 0.00060693553 |    2
+  27 | class_text | Iris-virginica  | 1.4125514e-07 |    3
+  28 | class_text | Iris-setosa     |     0.9997589 |    1
+  28 | class_text | Iris-versicolor | 0.00024109415 |    2
+  28 | class_text | Iris-virginica  | 2.3418018e-08 |    3
+  33 | class_text | Iris-setosa     |    0.99966764 |    1
+  33 | class_text | Iris-versicolor | 0.00033237415 |    2
+  33 | class_text | Iris-virginica  | 3.2712443e-08 |    3
+  37 | class_text | Iris-setosa     |     0.9999347 |    1
+  37 | class_text | Iris-versicolor | 6.5290136e-05 |    2
+  37 | class_text | Iris-virginica  | 2.6893372e-09 |    3
+  38 | class_text | Iris-setosa     |    0.99963343 |    1
+  38 | class_text | Iris-versicolor |  0.0003665546 |    2
+  38 | class_text | Iris-virginica  | 4.7346873e-08 |    3
+  46 | class_text | Iris-setosa     |     0.9995722 |    1
+  46 | class_text | Iris-versicolor | 0.00042761036 |    2
+  46 | class_text | Iris-virginica  | 8.4179504e-08 |    3
+  51 | class_text | Iris-versicolor |     0.9678325 |    1
+  51 | class_text | Iris-virginica  |   0.031179406 |    2
+  51 | class_text | Iris-setosa     |  0.0009880556 |    3
+  57 | class_text | Iris-versicolor |     0.7971095 |    1
+  57 | class_text | Iris-virginica  |    0.20281655 |    2
+  57 | class_text | Iris-setosa     |  7.402597e-05 |    3
+  58 | class_text | Iris-versicolor |    0.93808955 |    1
+  58 | class_text | Iris-virginica  |   0.045088027 |    2
+  58 | class_text | Iris-setosa     |   0.016822474 |    3
+  59 | class_text | Iris-versicolor |    0.95377713 |    1
+  59 | class_text | Iris-virginica  |   0.045621604 |    2
+  59 | class_text | Iris-setosa     |  0.0006012956 |    3
+  64 | class_text | Iris-versicolor |     0.8078371 |    1
+  64 | class_text | Iris-virginica  |    0.19210756 |    2
+  64 | class_text | Iris-setosa     | 5.5370016e-05 |    3
+  65 | class_text | Iris-versicolor |      0.946594 |    1
+  65 | class_text | Iris-virginica  |    0.04081257 |    2
+  65 | class_text | Iris-setosa     |   0.012593448 |    3
+  72 | class_text | Iris-versicolor |     0.9616088 |    1
+  72 | class_text | Iris-virginica  |      0.033955 |    2
+  72 | class_text | Iris-setosa     |   0.004436169 |    3
+  75 | class_text | Iris-versicolor |    0.96245867 |    1
+  75 | class_text | Iris-virginica  |    0.03556654 |    2
+  75 | class_text | Iris-setosa     |  0.0019747794 |    3
+  87 | class_text | Iris-versicolor |     0.9264334 |    1
+  87 | class_text | Iris-virginica  |    0.07328824 |    2
+  87 | class_text | Iris-setosa     | 0.00027841402 |    3
+  95 | class_text | Iris-versicolor |    0.85156035 |    1
+  95 | class_text | Iris-virginica  |    0.14813933 |    2
+  95 | class_text | Iris-setosa     | 0.00030031145 |    3
+  97 | class_text | Iris-versicolor |    0.87470025 |    1
+  97 | class_text | Iris-virginica  |     0.1248041 |    2
+  97 | class_text | Iris-setosa     |  0.0004957556 |    3
+  98 | class_text | Iris-versicolor |     0.9439469 |    1
+  98 | class_text | Iris-virginica  |    0.05491364 |    2
+  98 | class_text | Iris-setosa     |   0.001139452 |    3
+ 120 | class_text | Iris-virginica  |    0.58107394 |    1
+ 120 | class_text | Iris-versicolor |    0.41892523 |    2
+ 120 | class_text | Iris-setosa     | 8.7891783e-07 |    3
+ 121 | class_text | Iris-virginica  |    0.90112364 |    1
+ 121 | class_text | Iris-versicolor |   0.098876335 |    2
+ 121 | class_text | Iris-setosa     | 5.8106266e-09 |    3
+ 122 | class_text | Iris-virginica  |     0.8664512 |    1
+ 122 | class_text | Iris-versicolor |    0.13354866 |    2
+ 122 | class_text | Iris-setosa     |  8.255242e-08 |    3
+ 123 | class_text | Iris-virginica  |    0.90162355 |    1
+ 123 | class_text | Iris-versicolor |    0.09837647 |    2
+ 123 | class_text | Iris-setosa     |  2.745874e-10 |    3
+ 140 | class_text | Iris-virginica  |     0.7306292 |    1
+ 140 | class_text | Iris-versicolor |     0.2693706 |    2
+ 140 | class_text | Iris-setosa     | 1.9480031e-07 |    3
+ 144 | class_text | Iris-virginica  |    0.92295665 |    1
+ 144 | class_text | Iris-versicolor |    0.07704339 |    2
+ 144 | class_text | Iris-setosa     | 1.6369142e-09 |    3
+ 147 | class_text | Iris-virginica  |    0.69545543 |    1
+ 147 | class_text | Iris-versicolor |    0.30454406 |    2
+ 147 | class_text | Iris-setosa     | 4.5714978e-07 |    3
+(90 rows)
 </pre>
 
 -# Warm start.  Next, use the warm_start parameter
@@ -1301,24 +1397,27 @@ SELECT madlib.madlib_keras_fit_multiple_model('iris_train_packed',    -- source_
 SELECT * FROM iris_multi_model_summary;
 </pre>
 <pre class="result">
+-[ RECORD 1 ]-------------+---------------------------------------------
 source_table              | iris_train_packed
 validation_table          | iris_test_packed
 model                     | iris_multi_model
 model_info                | iris_multi_model_info
-dependent_varname         | class_text
-independent_varname       | attributes
+dependent_varname         | {class_text}
+independent_varname       | {attributes}
 model_arch_table          | model_arch_library
+model_selection_table     | mst_table
+object_table              | 
 num_iterations            | 3
 metrics_compute_frequency | 1
 warm_start                | t
 name                      | Sophie L.
 description               | Simple MLP for iris dataset
-start_training_time       | 2019-12-16 20:07:41.488587
-end_training_time         | 2019-12-16 20:08:27.20651
-madlib_version            | 1.17.0
-num_classes               | 3
-class_values              | {Iris-setosa,Iris-versicolor,Iris-virginica}
-dependent_vartype         | character varying
+start_training_time       | 2021-02-05 01:17:19.432839
+end_training_time         | 2021-02-05 01:18:09.062384
+madlib_version            | 1.18.0-dev
+num_classes               | {1}
+class_text_class_values   | {Iris-setosa,Iris-versicolor,Iris-virginica}
+dependent_vartype         | {"character varying"}
 normalizing_const         | 1
 metrics_iters             | {1,2,3}
 </pre>
@@ -1327,20 +1426,20 @@ View results for each model:
 SELECT * FROM iris_multi_model_info ORDER BY training_metrics_final DESC, training_loss_final;
 </pre>
 <pre class="result">
- mst_key | model_id |                                 compile_params                                  |      fit_params       |  model_type  |  model_size  |                 metrics_elapsed_time                 | metrics_type | training_metrics_final | training_loss_final |                    training_metrics                     |                      training_loss                       | validation_metrics_final | validation_loss_final |                   validation_metrics                    |                     validation_loss
----------+----------+---------------------------------------------------------------------------------+-----------------------+--------------+--------------+------------------------------------------------------+--------------+------------------------+---------------------+---------------------------------------------------------+----------------------------------------------------------+--------------------------+-----------------------+---------------------------------------------------------+---------------------------------------------------------
-       5 |        1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy'] | batch_size=4,epochs=1 | madlib_keras | 0.7900390625 | {19.451014995575,37.2563629150391,54.7182998657227}  | {accuracy}   |         0.975000023842 |      0.490673750639 | {0.958333313465118,0.691666662693024,0.975000023841858} | {0.541427075862885,0.517450392246246,0.490673750638962}  |           0.933333337307 |        0.557333409786 | {0.933333337306976,0.666666686534882,0.933333337306976} | {0.60710871219635,0.570206344127655,0.557333409786224}
-       9 |        2 | loss='categorical_crossentropy', optimizer='Adam(lr=0.01)',metrics=['accuracy'] | batch_size=4,epochs=1 | madlib_keras | 0.7900390625 | {18.2973220348358,36.3793680667877,54.0178129673004} | {accuracy}   |         0.966666638851 |     0.0894369781017 | {0.966666638851166,0.966666638851166,0.966666638851166} | {0.133233144879341,0.111788973212242,0.0894369781017303} |           0.899999976158 |        0.195293620229 | {0.933333337306976,0.966666638851166,0.899999976158142} | {0.156044512987137,0.132803827524185,0.195293620228767}
-       4 |        1 | loss='categorical_crossentropy', optimizer='Adam(lr=0.01)',metrics=['accuracy'] | batch_size=8,epochs=1 | madlib_keras | 1.2197265625 | {17.6080539226532,35.6788699626923,53.3836889266968} | {accuracy}   |         0.966666638851 |      0.147051945329 | {0.908333361148834,0.958333313465118,0.966666638851166} | {0.225205257534981,0.168186634778976,0.147051945328712}  |           0.866666674614 |        0.250319689512 | {0.899999976158142,0.933333337306976,0.866666674613953} | {0.23467344045639,0.182851999998093,0.250319689512253}
-       8 |        2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']   | batch_size=8,epochs=1 | madlib_keras | 1.2197265625 | {18.7529940605164,36.8255958557129,54.3704080581665} | {accuracy}   |         0.966666638851 |      0.244641214609 | {0.691666662693024,0.891666650772095,0.966666638851166} | {0.939713299274445,0.462556451559067,0.244641214609146}  |           0.966666638851 |        0.298279434443 | {0.566666662693024,0.966666638851166,0.966666638851166} | {1.30671143531799,0.412235885858536,0.29827943444252}
-      10 |        2 | loss='categorical_crossentropy', optimizer='Adam(lr=0.01)',metrics=['accuracy'] | batch_size=8,epochs=1 | madlib_keras | 0.7900390625 | {17.4004180431366,35.4556438922882,53.1877279281616} | {accuracy}   |         0.958333313465 |      0.123381219804 | {0.949999988079071,0.766666650772095,0.958333313465118} | {0.0919980704784393,0.576169073581696,0.123381219804287} |           0.933333337307 |        0.203262642026 | {0.866666674613953,0.766666650772095,0.933333337306976} | {0.199721112847328,0.959742486476898,0.203262642025948}
-       3 |        1 | loss='categorical_crossentropy', optimizer='Adam(lr=0.01)',metrics=['accuracy'] | batch_size=4,epochs=1 | madlib_keras | 1.2197265625 | {17.81547498703,35.8978669643402,53.5737180709839}   | {accuracy}   |         0.933333337307 |      0.150664463639 | {0.941666662693024,0.925000011920929,0.933333337306976} | {0.117781177163124,0.163000836968422,0.150664463639259}  |           0.833333313465 |        0.365329563618 | {0.866666674613953,0.833333313465118,0.833333313465118} | {0.249404579401016,0.375173389911652,0.365329563617706}
-       6 |        1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy'] | batch_size=8,epochs=1 | madlib_keras | 1.2197265625 | {19.686233997345,37.4543249607086,54.8708770275116}  | {accuracy}   |         0.858333349228 |      0.743227303028 | {0.675000011920929,0.708333313465118,0.858333349227905} | {0.808507084846497,0.774080872535706,0.743227303028107}  |           0.966666638851 |        0.770158529282 | {0.666666686534882,0.666666686534882,0.966666638851166} | {0.808504283428192,0.791898012161255,0.770158529281616}
-      11 |        2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy'] | batch_size=4,epochs=1 | madlib_keras | 1.2197265625 | {17.1583528518677,35.0312390327454,52.96133685112}   | {accuracy}   |         0.816666662693 |      0.739802956581 | {0.774999976158142,0.816666662693024,0.816666662693024} | {0.83727890253067,0.792884111404419,0.739802956581116}   |           0.800000011921 |        0.758302807808 | {0.766666650772095,0.800000011920929,0.800000011920929} | {0.837629973888397,0.801746726036072,0.758302807807922}
-       2 |        1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']   | batch_size=8,epochs=1 | madlib_keras | 1.2197265625 | {16.9146749973297,34.794900894165,52.7328250408173}  | {accuracy}   |         0.808333337307 |      0.303489625454 | {0.683333337306976,0.966666638851166,0.808333337306976} | {1.05107569694519,0.189959138631821,0.303489625453949}   |           0.866666674614 |        0.285375326872 | {0.666666686534882,0.966666638851166,0.866666674613953} | {1.01942157745361,0.238933652639389,0.285375326871872}
-      12 |        2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy'] | batch_size=8,epochs=1 | madlib_keras | 0.7900390625 | {18.0590150356293,36.1394078731537,53.7930529117584} | {accuracy}   |         0.699999988079 |       1.02253305912 | {0.550000011920929,0.691666662693024,0.699999988079071} | {1.0493084192276,1.03803598880768,1.02253305912018}      |           0.666666686535 |         1.02013540268 | {0.633333325386047,0.600000023841858,0.666666686534882} | {1.03952574729919,1.03439521789551,1.02013540267944}
-       7 |        2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']   | batch_size=4,epochs=1 | madlib_keras | 1.2197265625 | {19.2141709327698,37.0566499233246,54.5629329681396} | {accuracy}   |         0.691666662693 |      0.448221176863 | {0.691666662693024,0.691666662693024,0.691666662693024} | {0.447027385234833,0.444605946540833,0.448221176862717}  |           0.566666662693 |        0.555035352707 | {0.566666662693024,0.566666662693024,0.566666662693024} | {0.551217257976532,0.540408432483673,0.555035352706909}
-       1 |        1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']   | batch_size=4,epochs=1 | madlib_keras | 1.2197265625 | {18.501914024353,36.5938439369202,54.194118976593}   | {accuracy}   |         0.358333319426 |       1.09730923176 | {0.333333343267441,0.333333343267441,0.358333319425583} | {1.09999334812164,1.10405397415161,1.09730923175812}     |           0.233333334327 |         1.12532019615 | {0.333333343267441,0.333333343267441,0.233333334326744} | {1.12446486949921,1.13782525062561,1.12532019615173}
+  mst_key | model_id |                                 compile_params                                  |      fit_params       |  model_type  | model_size |                 metrics_elapsed_time                 | metrics_type |        loss_type         | training_metrics_final | training_loss_final |                    training_metrics                     |                      training_loss                      | validation_metrics_final | validation_loss_final |                   validation_metrics                    |                      validation_loss                      
+---------+----------+---------------------------------------------------------------------------------+-----------------------+--------------+------------+------------------------------------------------------+--------------+--------------------------+------------------------+---------------------+---------------------------------------------------------+---------------------------------------------------------+--------------------------+-----------------------+---------------------------------------------------------+-----------------------------------------------------------
+      10 |        2 | loss='categorical_crossentropy', optimizer='Adam(lr=0.01)',metrics=['accuracy'] | batch_size=8,epochs=1 | madlib_keras | 1.18359375 | {15.5192940235138,31.2597029209137,47.3274641036987} | {accuracy}   | categorical_crossentropy |      0.966666638851166 |   0.122704714536667 | {0.925000011920929,0.808333337306976,0.966666638851166} | {0.172832280397415,0.354962348937988,0.122704714536667} |                        1 |    0.0603121444582939 | {1,0.866666674613953,1}                                 | {0.100369863212109,0.210344776511192,0.0603121444582939}
+       4 |        1 | loss='categorical_crossentropy', optimizer='Adam(lr=0.01)',metrics=['accuracy'] | batch_size=8,epochs=1 | madlib_keras | 0.75390625 | {16.485249042511,32.207494020462,48.3005399703979}   | {accuracy}   | categorical_crossentropy |      0.958333313465118 |   0.104984156787395 | {0.949999988079071,0.866666674613953,0.958333313465118} | {0.126872479915619,0.29683381319046,0.104984156787395}  |                        1 |    0.0291607566177845 | {1,0.933333337306976,1}                                 | {0.0433581434190273,0.127146035432816,0.0291607566177845}
+       3 |        1 | loss='categorical_crossentropy', optimizer='Adam(lr=0.01)',metrics=['accuracy'] | batch_size=4,epochs=1 | madlib_keras | 0.75390625 | {14.8933939933777,30.7211890220642,46.7588970661163} | {accuracy}   | categorical_crossentropy |      0.958333313465118 |   0.107885278761387 | {0.941666662693024,0.966666638851166,0.958333313465118} | {0.155905768275261,0.129546254873276,0.107885278761387} |                        1 |    0.0387893654406071 | {1,1,1}                                                 | {0.087645135819912,0.0574964620172977,0.0387893654406071}
+       7 |        2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']   | batch_size=4,epochs=1 | madlib_keras | 1.18359375 | {14.657429933548,30.4864449501038,46.5082159042358}  | {accuracy}   | categorical_crossentropy |      0.958333313465118 |   0.215500101447105 | {0.891666650772095,0.649999976158142,0.958333313465118} | {0.2352494597435,0.490339070558548,0.215500101447105}   |                        1 |     0.194652214646339 | {0.899999976158142,0.766666650772095,1}                 | {0.235657200217247,0.335934072732925,0.194652214646339}
+       6 |        1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy'] | batch_size=8,epochs=1 | madlib_keras | 0.75390625 | {16.2535049915314,31.9760749340057,48.0661840438843} | {accuracy}   | categorical_crossentropy |      0.941666662693024 |   0.354692339897156 | {0.975000023841858,0.908333361148834,0.941666662693024} | {0.38957467675209,0.367432981729507,0.354692339897156}  |                        1 |     0.321579396724701 | {1,0.966666638851166,1}                                 | {0.348732680082321,0.345716863870621,0.321579396724701}
+       2 |        1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']   | batch_size=8,epochs=1 | madlib_keras | 0.75390625 | {16.0124208927155,31.7479128837585,47.8348250389099} | {accuracy}   | categorical_crossentropy |      0.933333337306976 |   0.238343968987465 | {0.975000023841858,0.975000023841858,0.933333337306976} | {0.17331151664257,0.0775784701108932,0.238343968987465} |        0.966666638851166 |     0.182112962007523 | {0.966666638851166,1,0.966666638851166}                 | {0.114220358431339,0.0159573350101709,0.182112962007523}
+       9 |        2 | loss='categorical_crossentropy', optimizer='Adam(lr=0.01)',metrics=['accuracy'] | batch_size=4,epochs=1 | madlib_keras | 1.18359375 | {15.1569800376892,30.9868409633636,47.0489699840546} | {accuracy}   | categorical_crossentropy |      0.908333361148834 |   0.254226505756378 | {0.858333349227905,0.833333313465118,0.908333361148834} | {0.450037389993668,0.500195503234863,0.254226505756378} |        0.966666638851166 |    0.0769383609294891 | {0.899999976158142,0.899999976158142,0.966666638851166} | {0.163723081350327,0.211927503347397,0.0769383609294891}
+      11 |        2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy'] | batch_size=4,epochs=1 | madlib_keras | 1.18359375 | {17.7095139026642,33.4267060756683,49.6263670921326} | {accuracy}   | categorical_crossentropy |      0.899999976158142 |   0.602623522281647 | {0.824999988079071,0.899999976158142,0.899999976158142} | {0.65915185213089,0.633350729942322,0.602623522281647}  |        0.899999976158142 |     0.626452326774597 | {0.833333313465118,0.899999976158142,0.899999976158142} | {0.695301294326782,0.661069989204407,0.626452326774597}
+       5 |        1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy'] | batch_size=4,epochs=1 | madlib_keras | 0.75390625 | {17.4354989528656,33.1478018760681,49.3430600166321} | {accuracy}   | categorical_crossentropy |      0.741666674613953 |   0.532543838024139 | {0.916666686534882,0.875,0.741666674613953}             | {0.610130310058594,0.571656167507172,0.532543838024139} |        0.633333325386047 |     0.540634453296661 | {0.966666638851166,0.899999976158142,0.633333325386047} | {0.601030588150024,0.567581355571747,0.540634453296661}
+      12 |        2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.001)',metrics=['accuracy'] | batch_size=8,epochs=1 | madlib_keras | 1.18359375 | {15.7747659683228,31.5215599536896,47.6013031005859} | {accuracy}   | categorical_crossentropy |      0.675000011920929 |   0.581513583660126 | {0.683333337306976,0.683333337306976,0.675000011920929} | {0.660648465156555,0.623969316482544,0.581513583660126} |        0.600000023841858 |     0.594986796379089 | {0.600000023841858,0.600000023841858,0.600000023841858} | {0.694275736808777,0.665920257568359,0.594986796379089}
+       1 |        1 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']   | batch_size=4,epochs=1 | madlib_keras | 0.75390625 | {16.8983609676361,32.4361009597778,48.5357549190521} | {accuracy}   | categorical_crossentropy |      0.608333349227905 |   0.687089145183563 | {0.583333313465118,0.699999988079071,0.608333349227905} | {0.816642761230469,0.455933183431625,0.687089145183563} |        0.533333361148834 |     0.692391216754913 | {0.533333361148834,0.600000023841858,0.533333361148834} | {0.85290253162384,0.465981602668762,0.692391216754913}
+       8 |        2 | loss='categorical_crossentropy',optimizer='Adam(lr=0.1)',metrics=['accuracy']   | batch_size=8,epochs=1 | madlib_keras | 1.18359375 | {17.1899569034576,32.8988509178162,49.0880739688873} | {accuracy}   | categorical_crossentropy |      0.358333319425583 |    1.11154329776764 | {0.358333319425583,0.324999988079071,0.358333319425583} | {1.09858739376068,1.09980893135071,1.11154329776764}    |        0.233333334326744 |      1.16109442710876 | {0.233333334326744,0.366666674613953,0.233333334326744} | {1.12281405925751,1.10376691818237,1.16109442710876}
 (12 rows)
 </pre>
 Note that the loss and accuracy values pick up from where the previous run left off.
@@ -1383,7 +1482,7 @@ least as many model selection tuples as segments. This is because model state is
 segment to segment and training takes place in parallel [1,2]. If you have fewer model
 selection tuples to train than segments, then some
 segments may not be busy 100% of the time so speedup will not necessarily increase
-on a larger cluster. Inference (predict) is an embarrassingly parallel operation so
+on a larger cluster. Inference (prediction) is an embarrassingly parallel operation so
 inference runtimes will be proportionally faster as the number of segments increases.
 
 @anchor literature

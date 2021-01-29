@@ -20,7 +20,7 @@
  *
  * @file madlib_keras_automl.sql_in
  *
- * @brief SQL functions for training with autoML methods
+ * @brief Functions to run automated machine learning (autoML) methods for model architecture search and hyperparameter tuning.
  * @date August 2020
  *
  *
@@ -36,9 +36,6 @@ m4_include(`SQLCommon.m4')
 @brief Functions to run automated machine learning (autoML) methods for
 model architecture search and hyperparameter tuning.
 
-\warning <em> This MADlib method is still in early stage development.
-Interface and implementation are subject to change. </em>
-
 <div class="toc"><b>Contents</b><ul>
 <li class="level1"><a href="#madlib_keras_automl">AutoML Function</a></li>
 <li class="level1"><a href="#hyperband_schedule">Print Hyperband Schedule</a></li>
@@ -49,12 +46,14 @@ Interface and implementation are subject to change. </em>
 </ul></div>
 
 This module contains automated machine learning (autoML) methods for
-model architecture search and hyperparameter tuning.  The goal of autoML when
+model architecture search and hyperparameter tuning.  
+
+The goal of autoML when
 training deep nets is to reduce the amount of hand-tuning by data scientists
 to produce a model of acceptable accuracy, compared to manual
 methods like grid or random search.  The two autoML methods implemented
 here are Hyperband and Hyperopt.  If you want to use grid or random search,
-please refer to <a href="group__grp__keras__setup__model__selection.html">Generate
+please refer to <a href="group__grp__keras__setup__model__selection.html">Define
 Model Configurations</a>.
 
 Hyperband is an effective model selection algorithm that utilizes the idea
@@ -71,6 +70,8 @@ Hyperopt is meta-modeling approach for automated hyperparameter optimization [2]
 It intelligently explores the search space while narrowing down to the best
 estimated parameters.  Within Hyperopt we support random search and Tree
 of Parzen Estimators (TPE) approach.
+
+@note AutoML methods do not currently support multi-input or multi-output neural networks.
 
 @anchor madlib_keras_automl
 @par AutoML
@@ -118,7 +119,7 @@ madlib_keras_automl(
   <dt>model_arch_table</dt>
   <dd>VARCHAR. Table containing model architectures and weights.
   For more information on this table
-  refer to <a href="group__grp__keras__model__arch.html">Load Models</a>.
+  refer to <a href="group__grp__keras__model__arch.html">Define Model Architectures</a>.
   </dd>
 
   <dt>model_selection_table</dt>
@@ -160,10 +161,20 @@ madlib_keras_automl(
   than regular log-based sampling. However, 'log_near_one' is only supported
   for Hyperband, not for Hyperopt.
 
-  For custom loss functions, metrics or top k categorical accuracy,
-  list the custom function name and provide the name of the
-  table where the serialized Python objects reside using the
-  parameter 'object_table' below.
+  @note
+  - Custom loss functions and custom metrics can be used as defined in
+  <a href="group__grp__custom__function.html">Define Custom Functions.</a>
+  List the custom function name and provide the name of the table where the 
+  serialized Python objects reside using the parameter 'object_table' below.
+  - The following loss function is
+  not supported: <em>sparse_categorical_crossentropy</em>.
+  The following metrics are not
+  supported: <em>sparse_categorical_accuracy, sparse_top_k_categorical_accuracy</em>.
+  - The Keras accuracy parameter <em>top_k_categorical_accuracy</em> returns top 5 accuracy by 
+  default.  If you want a different top k value, use the helper function
+  <a href="group__grp__custom__function.html#top_k_function">Top k Accuracy Function</a> 
+  to create a custom
+  Python function to compute the top k accuracy that you want.
   </dd>
 
   <dt>fit_params_grid</dt>
@@ -180,6 +191,11 @@ madlib_keras_automl(
     }
   $$
   </pre>
+
+  @note
+  Callbacks are not currently supported except for TensorBoard
+  which you can specify in the usual way,
+  e.g., 'callbacks': ['[TensorBoard(log_dir="/tmp/logs/fit")]']
   </dd>
 
   <dt>automl_method (optional)</dt>
@@ -471,7 +487,13 @@ madlib_keras_automl(
         If 'num_iterations=5'
         and 'metrics_compute_frequency=1', then 'metrics_iters' value
         would be {1,2,3,4,5} indicating that metrics were computed
-        at every iteration.</td>
+        at every iteration.
+
+        Note that 'metrics_iters' values are for the overall iterations.
+        For some models, the count might start at a later iteration based on
+        the schedule. This representation is selected to simplify representing
+        the results in iteration-metric graphs.
+        </td>
     </tr>
     <tr>
         <th>s</th>
@@ -571,8 +593,9 @@ madlib_keras_automl(
         <td>Count of distinct classes values used.</td>
     </tr>
     <tr>
-        <th>class_values</th>
-        <td>Array of actual class values used.</td>
+        <th><dependent_varname>_class_values</th>
+        <td>Array of actual class values used for a particular dependent
+        variable. A column will be generated for each dependent variable.</td>
     </tr>
     <tr>
         <th>dependent_vartype</th>
@@ -900,9 +923,9 @@ num_classes         | 3
 -# Define and load model architecture.  Use Keras to define
 the model architecture with 1 hidden layer:
 <pre class="example">
-import keras
-from keras.models import Sequential
-from keras.layers import Dense
+from tensorflow import keras
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense
 model1 = Sequential()
 model1.add(Dense(10, activation='relu', input_shape=(4,)))
 model1.add(Dense(10, activation='relu'))
@@ -991,14 +1014,14 @@ $$
 -# Print Hyperband schedule for example input parameters 'R=9' and 'eta=3':
 <pre class="example">
 DROP TABLE IF EXISTS hb_schedule;
-SELECT madlib.hyperband_schedule ('hb_schedule', 
+SELECT madlib.hyperband_schedule ('hb_schedule',
                                    81,
                                    3,
                                    0);
 SELECT * FROM hb_schedule ORDER BY s DESC, i;
 </pre>
 <pre class="result">
- s | i | n_i | r_i 
+ s | i | n_i | r_i
 ---+---+-----+-----
  4 | 0 |  81 |   1
  4 | 1 |  27 |   3
@@ -1026,8 +1049,8 @@ SELECT madlib.madlib_keras_automl('iris_train_packed',                -- source 
                                   'automl_mst_table',                 -- model selection output table
                                   ARRAY[1,2],                         -- model IDs
                                   $${
-                                      'loss': ['categorical_crossentropy'], 
-                                      'optimizer_params_list': [ 
+                                      'loss': ['categorical_crossentropy'],
+                                      'optimizer_params_list': [
                                           {'optimizer': ['Adam'],'lr': [0.001, 0.1, 'log']},
                                           {'optimizer': ['RMSprop'],'lr': [0.001, 0.1, 'log']}
                                       ],
@@ -1060,12 +1083,12 @@ model_arch_table          | model_arch_library
 model_selection_table     | automl_mst_table
 automl_method             | hyperband
 automl_params             | R=9, eta=3, skip_last=0
-random_state              | 
-object_table              | 
+random_state              |
+object_table              |
 use_gpus                  | f
 metrics_compute_frequency | 1
-name                      | 
-description               | 
+name                      |
+description               |
 start_training_time       | 2021-01-16 01:20:17
 end_training_time         | 2021-01-16 01:21:47
 madlib_version            | 1.18.0-dev
@@ -1155,8 +1178,8 @@ SELECT madlib.madlib_keras_automl('iris_train_packed',                -- source 
                                   'automl_mst_table',                 -- model selection output table
                                   ARRAY[1,2],                         -- model IDs
                                   $${
-                                      'loss': ['categorical_crossentropy'], 
-                                      'optimizer_params_list': [ 
+                                      'loss': ['categorical_crossentropy'],
+                                      'optimizer_params_list': [
                                           {'optimizer': ['Adam'],'lr': [0.001, 0.1, 'log']},
                                           {'optimizer': ['RMSprop'],'lr': [0.001, 0.1, 'log']}
                                       ],
@@ -1189,12 +1212,12 @@ model_arch_table          | model_arch_library
 model_selection_table     | automl_mst_table
 automl_method             | hyperopt
 automl_params             | num_configs=20, num_iterations=10, algorithm=tpe
-random_state              | 
-object_table              | 
+random_state              |
+object_table              |
 use_gpus                  | f
 metrics_compute_frequency | 1
-name                      | 
-description               | 
+name                      |
+description               |
 start_training_time       | 2020-10-23 00:24:43
 end_training_time         | 2020-10-23 00:28:41
 madlib_version            | 1.18.0-dev
@@ -1282,7 +1305,7 @@ SELECT madlib.madlib_keras_predict('automl_output',    -- model
 SELECT * FROM iris_predict ORDER BY id;
 </pre>
 <pre class="result">
- id  |   class_text    |    prob    
+ id  |   class_text    |    prob
 -----+-----------------+------------
    5 | Iris-setosa     |  0.9998704
    7 | Iris-setosa     | 0.99953365

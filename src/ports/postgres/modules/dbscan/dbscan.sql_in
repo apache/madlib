@@ -34,16 +34,18 @@
 <li class="level1"><a href="#assignment">Cluster Assignment</a></li>
 <li class="level1"><a href="#examples">Examples</a></li>
 <li class="level1"><a href="#literature">Literature</a></li>
-<li class="level1"><a href="#related">Related Topics</a></li>
 </ul>
 </div>
 
 @brief Partitions a set of observations into clusters of arbitrary
 shape based on the density of nearby neighbors.
 
+\warning <em> This MADlib method is still in early stage development.
+Interface and implementation are subject to change. </em>
+
 Density-based spatial clustering of applications with noise (DBSCAN)
 is a data clustering algorithm designed to discover clusters of arbitrary
-shape [1]. It places minimum requirements on domain knowledge to determine
+shape [1,2]. It places minimum requirements on domain knowledge to determine
 input parameters and has good efficiency on large databases.
 
 Given a set of points, DBSCAN groups together points that are closely packed with many
@@ -52,6 +54,10 @@ low-density regions with few nearby neighbors (\em border).  Other points in the
 that are not core or border are considered as \em noise.
 This method tends to be good for data which contains clusters
 of similar density.
+
+Currently only a brute force approach is implemented, suitable for small datasets.  
+Other approaches for larger datasets will be implemented in 
+a future release.
 
 @anchor cluster
 @par Clustering Function
@@ -64,8 +70,7 @@ dbscan( source_table,
         eps,
         min_samples,
         metric,
-        algorithm,
-        algorithm_params
+        algorithm
       )
 </pre>
 
@@ -125,26 +130,15 @@ performance reasons.</li>
 <li><b>\ref dist_tanimoto</b>: tanimoto (element-wise mean of normalized points)</li>
 </dd>
 
-<dt>algorithm TBD??? (optional)</dt>
+<dt>algorithm (optional)</dt>
 <dd>TEXT, default: 'brute_force'. The name of the algorithm
-used to compute clusters. The following options are supported:
+used to compute clusters. Currently only brute force is supported:
 <ul>
 <li><b>\ref brute_force</b>: Produces an exact result by searching
 all points in the search space.  Brute force can be slow and is intended
 to be used for small datasets only.  You can also use a short
 form "b" or "brute" etc. to select brute force.</li>
-<li><b>\ref kd_tree</b>: Uses a tree structure to reduce the amount
-of search required to form clusters
-The depth of the kd-tree to search is specified
-by the "algorithm_params" below.
-You can also use a short
-form "k" or "kd" etc. to select kd-tree.</li></ul></dd>
-
-<dt>algorithm_params (optional)</dt>
-<dd>TEXT, default: 'depth=3'. This parameters apply to the
-kd-tree algorithm only.  Increasing the depth of the tree will
-decrease the run-time but reduce the accuracy. TBD???</dd>
-
+</ul></dd>
 </dl>
 
 <b>Output</b>
@@ -152,7 +146,7 @@ decrease the run-time but reduce the accuracy. TBD???</dd>
 The output table for DBSCAN module has the following columns:
 <table class="output">
     <tr>
-        <th>id_in</th>
+        <th>id_column</th>
         <td>INTEGER. Test data point id.</td>
     </tr>
     <tr>
@@ -167,7 +161,7 @@ The output table for DBSCAN module has the following columns:
         table.</td>
     </tr>
     <tr>
-        <th>points</th>
+        <th>__points__</th>
         <td>TEXT. Column or expression for the data point.</td>
     </tr>
 </table>
@@ -196,7 +190,6 @@ dbscan_predict( dbscan_table,
 <dd>TEXT. Name of the table containing the input data points.
 </dd>
 
-
 <dt>id_column</dt>
 <dd>TEXT. Name of the column containing a unique integer id for each training point.
 </dd>
@@ -209,8 +202,9 @@ or an expression that evaluates to an array of point coordinates.
 <dt>output_table</dt>
 <dd>TEXT. Name of the table containing the clustering results.
 </dd>
+</dl>
 
-<b>Output TBD</b>
+<b>Output</b>
 <br>
 The output is a table with the following columns:
 <table class="output">
@@ -227,6 +221,7 @@ The output is a table with the following columns:
       <td>DOUBLE PRECISION. Distance to the cluster centroid.</td>
     </tr>
 </table>
+
 
 @anchor examples
 @par Examples
@@ -331,10 +326,8 @@ SELECT * FROM dbscan_result_summary;
 -----------+------+------------
  pid       | 1.75 | dist_norm2
 </pre>
--#  Find the cluster assignment.  In this example we use the same source
-points for demonstration purposes:
+-#  Find the cluster assignment for the test data points:
 <pre class="example">
-
 SELECT madlib.dbscan_predict(
                         'dbscan_result',        -- from DBSCAN run
                         'dbscan_test_data',     -- test dataset
@@ -342,36 +335,34 @@ SELECT madlib.dbscan_predict(
                         'points',               -- data point
                         'dbscan_predict_out'    -- output table
                         );
-
+SELECT * FROM dbscan_predict_out ORDER BY pid;
 </pre>
 <pre class="result">
-TBD???
-</pre>
--#  Now let's run DBSCAN using the kd-tree method with a Euclidean
-distance function:
-<pre class="example">
-DROP TABLE IF EXISTS dbscan_result_kd, dbscan_result_kd_summary;
-SELECT madlib.dbscan(
-                'dbscan_train_data',    -- source table
-                'dbscan_result_kd',     -- output table
-                'pid',                  -- point id column
-                'points',               -- data point
-                 1.75,                  -- epsilon
-                 4,                     -- min samples
-                'dist_norm2',           -- metric
-                'kd_tree',              -- algorithm
-                'depth=3');             -- depth of kd-tree
-SELECT * FROM dbscan_result_kd ORDER BY pid;
-</pre>
-<pre class="result">
-TBD???
+ pid | cluster_id | distance 
+-----+------------+----------
+   1 |          0 |        0
+   2 |          0 |        0
+   3 |          0 |        1
+   4 |          0 |        0
+  10 |          1 |        1
+  13 |          2 |        0
+  14 |          2 |        0
+  15 |          2 |        0
+(8 rows)
 </pre>
 
 @anchor literature
 @literature
 
-@anchor related
-@par Related Topics
+[1] Martin Ester, Hans-Peter Kriegel, Jörg Sander, Xiaowei Xu,
+"A Density-Based Algorithm for Discovering Clusters
+in Large Spatial Databases with Noise", KDD-96 Proceedings, 
+https://www.aaai.org/Papers/KDD/1996/KDD96-037.pdf
+
+[2] Erich Schubert, Jörg Sander, Martin Ester, Hans-Peter Kriegel, Xiaowei Xu,
+"DBSCAN Revisited, Revisited: Why and How You Should (Still) Use DBSCAN",
+ACM Transactions on Database Systems, July 2017, Article No. 19,
+https://dl.acm.org/doi/10.1145/3068335
 
 */
 
