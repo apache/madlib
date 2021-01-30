@@ -168,15 +168,6 @@ class FitMultipleModel(object):
         self.msts = self.fit_validator_train.msts
         self.model_arch_table = self.fit_validator_train.model_arch_table
         self.object_table = self.fit_validator_train.object_table
-        self.columns_dict = {}
-        self.columns_dict['mb_dep_var_cols'] = self.fit_validator_train.dependent_varname
-        self.columns_dict['mb_indep_var_cols'] = self.fit_validator_train.independent_varname
-        self.columns_dict['dep_shape_cols'] = self.fit_validator_train.dep_shape_cols
-        self.columns_dict['ind_shape_cols'] = self.fit_validator_train.ind_shape_cols
-        self.columns_dict['val_dep_var'] = self.fit_validator_train.val_dep_var
-        self.columns_dict['val_ind_var'] = self.fit_validator_train.val_ind_var
-        self.columns_dict['val_dep_shape_cols'] = self.fit_validator_train.val_dep_shape_cols
-        self.columns_dict['val_ind_shape_cols'] = self.fit_validator_train.val_ind_shape_cols
 
         self.metrics_iters = []
         self.object_map_col = 'object_map'
@@ -188,17 +179,19 @@ class FitMultipleModel(object):
         if CUDA_VISIBLE_DEVICES_KEY in os.environ:
             self.original_cuda_env = os.environ[CUDA_VISIBLE_DEVICES_KEY]
 
+        shape_col = self.fit_validator_train.dependent_shape_varname[0]
         self.dist_key_mapping, self.images_per_seg_train = \
             get_image_count_per_seg_for_minibatched_data_from_db(
-                self.source_table, self.fit_validator_train.dep_shape_cols[0])
+                self.source_table, shape_col)
 
         if self.validation_table:
+            shape_col = self.fit_validator_train.val_dependent_shape_varname[0]
             self.valid_mst_metric_eval_time = defaultdict(list)
             self.valid_mst_loss = defaultdict(list)
             self.valid_mst_metric = defaultdict(list)
             self.dist_key_mapping_valid, self.images_per_seg_valid = \
                 get_image_count_per_seg_for_minibatched_data_from_db(
-                    self.validation_table, self.fit_validator_train.val_dep_shape_cols[0])
+                    self.validation_table, shape_col)
 
         self.dist_keys = query_dist_keys(self.source_table, self.dist_key_col)
         self.max_dist_key = sorted(self.dist_keys)[-1]
@@ -312,16 +305,17 @@ class FitMultipleModel(object):
     def evaluate_model(self, iter, table, is_train):
         if is_train:
             label = "training"
-        else:
-            label = "validation"
-
-        if is_train:
+            dependent_varname = self.fit_validator_train.dependent_varname
+            independent_varname = self.fit_validator_train.independent_varname
             mst_metric_eval_time = self.train_mst_metric_eval_time
             mst_loss = self.train_mst_loss
             mst_metric = self.train_mst_metric
             seg_ids = self.dist_key_mapping
             images_per_seg = self.images_per_seg_train
         else:
+            label = "validation"
+            dependent_varname = self.fit_validator_train.val_dependent_varname
+            independent_varname = self.fit_validator_train.val_independent_varname
             mst_metric_eval_time = self.valid_mst_metric_eval_time
             mst_loss = self.valid_mst_loss
             mst_metric = self.valid_mst_metric
@@ -333,21 +327,20 @@ class FitMultipleModel(object):
             model_arch = get_model_arch(self.model_arch_table, mst[self.model_id_col])
             DEBUG.start_timing('eval_compute_loss_and_metrics')
             eval_compute_time, metric, loss = compute_loss_and_metrics(
-                self.schema_madlib, table, self.columns_dict,
-                    "$madlib${0}$madlib$".format(
+                self.schema_madlib, table, dependent_varname, independent_varname,
+                "$madlib${0}$madlib$".format(
                     mst[self.compile_params_col]),
-                    model_arch,
-                    None,
-                    self.use_gpus,
-                    self.accessible_gpus_for_seg,
-                    self.segments_per_host,
+                model_arch,
+                None,
+                self.use_gpus,
+                self.accessible_gpus_for_seg,
+                self.segments_per_host,
                 seg_ids,
                 images_per_seg,
                 [], [], True,
                 mst[self.object_map_col],
                 self.model_output_tbl,
-                mst[self.mst_key_col],
-                    is_train)
+                mst[self.mst_key_col])
             total_eval_compute_time += eval_compute_time
             mst_metric_eval_time[mst[self.mst_key_col]] \
                 .append(self.metrics_elapsed_time_offset + (time.time() - self.metrics_elapsed_start_time))
@@ -683,7 +676,7 @@ class FitMultipleModel(object):
 
         class_values_colnames = [add_postfix(i, "_class_values") for i in self.fit_validator_train.dependent_varname]
         # class_values = src_summary_dict['class_values']
-        class_values_type =[get_expr_type(i, source_summary_table) for i in class_values_colnames]
+        # class_values_type =[get_expr_type(i, source_summary_table) for i in class_values_colnames]
         # class_values_type = src_summary_dict['class_values_type']
 
         dependent_varname = src_summary_dict['dependent_varname']
@@ -865,8 +858,8 @@ class FitMultipleModel(object):
             """.format(self=self))
 
         #TODO: Fix these to add multi io
-        dep_shape_col = self.fit_validator_train.dep_shape_cols[0]
-        ind_shape_col = self.fit_validator_train.ind_shape_cols[0]
+        dep_shape_col = self.fit_validator_train.dependent_shape_varname[0]
+        ind_shape_col = self.fit_validator_train.independent_shape_varname[0]
         dep_var_col = self.fit_validator_train.dependent_varname[0]
         indep_var_col = self.fit_validator_train.independent_varname[0]
         source_table = self.source_table

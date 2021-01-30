@@ -514,3 +514,27 @@ SELECT madlib_keras_fit(
 	FALSE
 );
 SELECT assert(sum(get_gd_keys_len()) = 0, 'GD was not cleared properly!') m4_ifdef(<!__POSTGRESQL__!>, <!!>, <! FROM gp_dist_random('gp_id') !>);
+
+--- Test when source table and validation table have different column names
+DROP TABLE IF EXISTS iris_data_2;
+CREATE TABLE iris_data_2 as SELECT id, attributes as val_attributes, class_text as val_class_text FROM iris_data;
+DROP TABLE IF EXISTS iris_data_val_packed_2, iris_data_val_packed_2_summary;
+SELECT validation_preprocessor_dl('iris_data_2',    -- Source table
+                                'iris_data_val_packed_2',  -- Output table
+                                'val_class_text',     -- Dependent variable
+                                'val_attributes',     -- Independent variable
+                                'iris_data_packed'    -- Training preprocessed table
+                                );
+
+DROP TABLE if exists iris_model, iris_model_summary;
+SELECT madlib_keras_fit(
+	'iris_data_packed',
+	'iris_model',
+	'iris_model_arch',
+	1,
+	$$loss='categorical_crossentropy', optimizer='Adam(lr=0.01)', metrics=['accuracy']$$,
+  $$batch_size=16, epochs=1$$,
+	3,
+	FALSE,
+    'iris_data_val_packed_2'
+);
