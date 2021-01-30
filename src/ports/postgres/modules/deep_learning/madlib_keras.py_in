@@ -120,27 +120,10 @@ def fit(schema_madlib, source_table, model, model_arch_table,
         num_iterations, metrics_compute_frequency, warm_start,
         use_gpus, accessible_gpus_for_seg, object_table)
 
-    columns_dict = {}
-    columns_dict['mb_dep_var_cols'] = fit_validator.dependent_varname
-    columns_dict['mb_indep_var_cols'] = fit_validator.independent_varname
-    columns_dict['dep_shape_cols'] = fit_validator.dep_shape_cols
-    columns_dict['ind_shape_cols'] = fit_validator.ind_shape_cols
-    columns_dict['val_dep_var'] = fit_validator.val_dep_var
-    columns_dict['val_ind_var'] = fit_validator.val_ind_var
-    columns_dict['val_dep_shape_cols'] = fit_validator.val_dep_shape_cols
-    columns_dict['val_ind_shape_cols'] = fit_validator.val_ind_shape_cols
     multi_dep_count = len(fit_validator.dependent_varname)
-
-    # fit_validator.dependent_varname = columns_dict['mb_dep_var_cols']
-    # fit_validator.independent_varname = columns_dict['mb_indep_var_cols']
-    # fit_validator.dep_shape_col = columns_dict['dep_shape_cols']
-    # fit_validator.ind_shape_col = columns_dict['ind_shape_cols']
     src_summary_dict = fit_validator.src_summary_dict
-    class_values_colnames = [add_postfix(i, "_class_values") for i in columns_dict['mb_dep_var_cols']]
-    src_summary_dict['class_values_type'] =[ get_expr_type(
-        i, fit_validator.source_summary_table) for i in class_values_colnames]
-    src_summary_dict['norm_const_type'] = get_expr_type(
-        NORMALIZING_CONST_COLNAME, fit_validator.source_summary_table)
+    class_values_colnames = [add_postfix(i, "_class_values") for i in
+                             fit_validator.dependent_varname]
 
     if metrics_compute_frequency is None:
         metrics_compute_frequency = num_iterations
@@ -172,10 +155,16 @@ def fit(schema_madlib, source_table, model, model_arch_table,
     serialized_weights = get_initial_weights(model, model_arch, model_weights,
                                              warm_start, accessible_gpus_for_seg)
     # Compute total images on each segment
-    dist_key_mapping, images_per_seg_train = get_image_count_per_seg_for_minibatched_data_from_db(source_table, columns_dict['dep_shape_cols'][0])
+    shape_col = fit_validator.dependent_shape_varname[0]
+    dist_key_mapping, images_per_seg_train = \
+        get_image_count_per_seg_for_minibatched_data_from_db(source_table,
+                                                             shape_col)
 
     if validation_table:
-        dist_key_mapping_val, images_per_seg_val = get_image_count_per_seg_for_minibatched_data_from_db(validation_table, columns_dict['dep_shape_cols'][0])
+        shape_col = fit_validator.val_dependent_shape_varname[0]
+        dist_key_mapping_val, images_per_seg_val = \
+            get_image_count_per_seg_for_minibatched_data_from_db(validation_table,
+                                                                 shape_col)
 
     # Construct validation dataset if provided
     validation_set_provided = bool(validation_table)
@@ -198,31 +187,31 @@ def fit(schema_madlib, source_table, model, model_arch_table,
         plpy.error("Object table not specified for function {0} in compile_params".format(custom_fn_list))
 
     # Use the smart interface
-    if (len(columns_dict['mb_dep_var_cols']) <= 5 and
-        len(columns_dict['mb_indep_var_cols']) <= 5):
+    if (len(fit_validator.dependent_varname) <= 5 and
+        len(fit_validator.independent_varname) <= 5):
 
         dep_var_array = 5 * ["NULL"]
         indep_var_array = 5 * ["NULL"]
 
-        for counter, var in enumerate(columns_dict['mb_dep_var_cols']):
+        for counter, var in enumerate(fit_validator.dependent_varname):
             dep_var_array[counter] = var
 
-        for counter, var in enumerate(columns_dict['mb_indep_var_cols']):
+        for counter, var in enumerate(fit_validator.independent_varname):
             indep_var_array[counter] = var
         mb_dep_var_cols_sql = ', '.join(dep_var_array)
         mb_indep_var_cols_sql = ', '.join(indep_var_array)
     else:
 
         mb_dep_var_cols_sql = ', '.join(["dependent_var_{0}".format(i)
-                                    for i in columns_dict['mb_dep_var_cols']])
+                                    for i in fit_validator.dependent_varname])
         mb_dep_var_cols_sql = "ARRAY[{0}]".format(mb_dep_var_cols_sql)
 
         mb_indep_var_cols_sql = ', '.join(["independent_var_{0}".format(i)
-                                    for i in columns_dict['mb_indep_var_cols']])
+                                    for i in fit_validator.independent_varname])
         mb_indep_var_cols_sql = "ARRAY[{0}]".format(mb_indep_var_cols_sql)
 
-    dep_shape_cols_sql = ', '.join(columns_dict['dep_shape_cols'])
-    ind_shape_cols_sql = ', '.join(columns_dict['ind_shape_cols'])
+    dep_shape_cols_sql = ', '.join(fit_validator.dependent_shape_varname)
+    ind_shape_cols_sql = ', '.join(fit_validator.independent_shape_varname)
 
     run_training_iteration = plpy.prepare("""
         SELECT {schema_madlib}.fit_step(
@@ -295,7 +284,8 @@ def fit(schema_madlib, source_table, model, model_arch_table,
                 should_clear_session = is_final_iteration
 
             compute_out = compute_loss_and_metrics(schema_madlib, source_table,
-                                                   columns_dict,
+                                                   fit_validator.dependent_varname,
+                                                   fit_validator.independent_varname,
                                                    compile_params_to_pass,
                                                    model_arch,
                                                    serialized_weights, use_gpus,
@@ -314,7 +304,8 @@ def fit(schema_madlib, source_table, model, model_arch_table,
                 # Compute loss/accuracy for validation data.
                 val_compute_out = compute_loss_and_metrics(schema_madlib,
                                                            validation_table,
-                                                           columns_dict,
+                                                           fit_validator.val_dependent_varname,
+                                                           fit_validator.val_independent_varname,
                                                            compile_params_to_pass,
                                                            model_arch,
                                                            serialized_weights,
@@ -337,9 +328,7 @@ def fit(schema_madlib, source_table, model, model_arch_table,
     end_training_time = datetime.datetime.now()
 
     version = madlib_version(schema_madlib)
-    class_values_type = src_summary_dict['class_values_type']
     norm_const = src_summary_dict['normalizing_const']
-    norm_const_type = src_summary_dict['norm_const_type']
     dep_vartype = src_summary_dict['dependent_vartype']
     dependent_varname = src_summary_dict['dependent_varname']
     independent_varname = src_summary_dict['independent_varname']
@@ -504,33 +493,32 @@ def get_source_summary_table_dict(source_summary_table):
 
     return source_summary
 
-def compute_loss_and_metrics(schema_madlib, table, columns_dict, compile_params,
+def compute_loss_and_metrics(schema_madlib, table, dependent_varname,
+                             independent_varname, compile_params,
                              model_arch, serialized_weights, use_gpus,
                              accessible_gpus_for_seg, segments_per_host,
                              dist_key_mapping, images_per_seg_val, metrics_list,
                              loss_list, should_clear_session, custom_fn_map,
-                             model_table=None, mst_key=None, is_train=True):
+                             model_table=None, mst_key=None):
     """
     Compute the loss and metric using a given model (serialized_weights) on the
     given dataset (table.)
     """
     start_val = time.time()
-    evaluate_result = get_loss_metric_from_keras_eval(schema_madlib,
-                                                   table,
-                                                   columns_dict,
-                                                   compile_params,
-                                                   model_arch,
-                                                   serialized_weights,
-                                                   use_gpus,
-                                                   accessible_gpus_for_seg,
-                                                   segments_per_host,
-                                                   dist_key_mapping,
-                                                   images_per_seg_val,
-                                                   should_clear_session,
-                                                   custom_fn_map,
-                                                   model_table,
-                                                   mst_key,
-                                                   is_train)
+    evaluate_result = get_loss_metric_from_keras_eval(schema_madlib, table,
+                                                      dependent_varname,
+                                                      independent_varname,
+                                                      compile_params,
+                                                      model_arch,
+                                                      serialized_weights,
+                                                      use_gpus,
+                                                      accessible_gpus_for_seg,
+                                                      segments_per_host,
+                                                      dist_key_mapping,
+                                                      images_per_seg_val,
+                                                      should_clear_session,
+                                                      custom_fn_map, model_table,
+                                                      mst_key)
     end_val = time.time()
     loss = evaluate_result[0]
     metric = evaluate_result[1]
@@ -882,14 +870,11 @@ def evaluate(schema_madlib, model_table, test_table, output_table,
     # independent_varname = model_summary_dict['independent_varname']
     # ind_shape_cols = [add_postfix(i, "_shape") for i in independent_varname]
 
-    columns_dict = {}
-    columns_dict['mb_dep_var_cols'] = model_summary_dict['dependent_varname']
-    columns_dict['mb_indep_var_cols'] = model_summary_dict['independent_varname']
-    columns_dict['dep_shape_cols'] = [add_postfix(i, "_shape") for i in columns_dict['mb_dep_var_cols']]
-    columns_dict['ind_shape_cols'] = [add_postfix(i, "_shape") for i in columns_dict['mb_indep_var_cols']]
+    dep_varname = model_summary_dict['dependent_varname']
+    indep_varname = model_summary_dict['independent_varname']
 
     InputValidator.validate_input_shape(
-        test_table, columns_dict['mb_indep_var_cols'], input_shape, 2, True)
+        test_table, indep_varname, input_shape, 2, True)
 
     compile_params_query = "SELECT compile_params, metrics_type, object_table FROM {0}".format(model_summary_table)
     res = plpy.execute(compile_params_query)[0]
@@ -902,11 +887,13 @@ def evaluate(schema_madlib, model_table, test_table, output_table,
         custom_fn_list = get_custom_functions_list(res['compile_params'])
         custom_function_map = query_custom_functions_map(object_table, custom_fn_list)
 
-    dist_key_mapping, images_per_seg = get_image_count_per_seg_for_minibatched_data_from_db(test_table, columns_dict['ind_shape_cols'][0])
+    shape_col = add_postfix(dep_varname[0], "_shape")
+    dist_key_mapping, images_per_seg = \
+        get_image_count_per_seg_for_minibatched_data_from_db(test_table, shape_col)
 
     loss_metric = \
         get_loss_metric_from_keras_eval(
-            schema_madlib, test_table, columns_dict, compile_params, model_arch,
+            schema_madlib, test_table, dep_varname, indep_varname, compile_params, model_arch,
             model_weights, use_gpus, accessible_gpus_for_seg, segments_per_host,
             dist_key_mapping, images_per_seg, custom_function_map=custom_function_map)
 
@@ -951,12 +938,13 @@ def validate_evaluate(module_name, model_table, model_summary_table, test_table,
     for i in dependent_varname:
         validate_bytea_var_for_minibatch(test_table, i)
 
-def get_loss_metric_from_keras_eval(schema_madlib, table, columns_dict, compile_params,
+def get_loss_metric_from_keras_eval(schema_madlib, table, dependent_varname,
+                                    independent_varname, compile_params,
                                     model_arch, serialized_weights, use_gpus,
                                     accessible_gpus_for_seg, segments_per_host,
                                     dist_key_mapping, images_per_seg,
                                     should_clear_session=True, custom_function_map=None,
-                                    model_table=None, mst_key=None, is_train=True):
+                                    model_table=None, mst_key=None):
     """
     This function will call the internal keras evaluate function to get the loss
     and accuracy of each tuple which then gets averaged to get the final result.
@@ -971,17 +959,12 @@ def get_loss_metric_from_keras_eval(schema_madlib, table, columns_dict, compile_
     """
     use_gpus = use_gpus if use_gpus else False
 
-    if is_train:
-        mb_dep_var_cols_sql = ', '.join(columns_dict['mb_dep_var_cols'])
-        mb_indep_var_cols_sql = ', '.join(columns_dict['mb_indep_var_cols'])
-        dep_shape_cols_sql = ', '.join(columns_dict['dep_shape_cols'])
-        ind_shape_cols_sql = ', '.join(columns_dict['ind_shape_cols'])
-    else:
-        mb_dep_var_cols_sql = ', '.join(columns_dict['val_dep_var'])
-        mb_indep_var_cols_sql = ', '.join(columns_dict['val_ind_var'])
-        dep_shape_cols_sql = ', '.join(columns_dict['val_dep_shape_cols'])
-        ind_shape_cols_sql = ', '.join(columns_dict['val_ind_shape_cols'])
-
+    mb_dep_var_cols_sql = ', '.join(dependent_varname)
+    mb_indep_var_cols_sql = ', '.join(independent_varname)
+    dep_shape_cols = [add_postfix(i, "_shape") for i in dependent_varname]
+    ind_shape_cols = [add_postfix(i, "_shape") for i in independent_varname]
+    dep_shape_cols_sql = ', '.join(dep_shape_cols)
+    ind_shape_cols_sql = ', '.join(ind_shape_cols)
 
     eval_sql = """
         select ({schema_madlib}.internal_keras_evaluate(
