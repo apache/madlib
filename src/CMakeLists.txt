@@ -34,21 +34,25 @@ set(EIGEN_BASE_URL
 # running cmake:
 # "-DBOOST_TAR_SOURCE=/path/to/boost_x_x_x.tar.gz"
 
-set(BOOST_TAR_VERSION "1.61.0")
-set(BOOST_TAR_MD5 874805ba2e2ee415b1877ef3297bf8ad)
-
-string(REPLACE "." "_" _BOOST_TAR_VERSION_UNDERSCORES ${BOOST_TAR_VERSION})
-set(BOOST_TAR "boost_${_BOOST_TAR_VERSION_UNDERSCORES}.tar.gz")
-set(BOOST_URL "${SOURCEFORGE_BASE_URL}/boost/files/${BOOST_TAR}")
+if (CXX11)
+    set(BOOST_TAR_VERSION "1.75.0")  # If CXX11 is enabled, we can use latest version of Boost
+    set(BOOST_TAR_MD5 38813f6feb40387dfe90160debd71251)
+else(CXX11)
+    set(BOOST_TAR_VERSION "1.61.0")   # Most recent version that includes TR1 (necessary for old C++ compilers)
+    set(BOOST_TAR_MD5 874805ba2e2ee415b1877ef3297bf8ad)
+endif(CXX11)
+    string(REPLACE "." "_" _BOOST_TAR_VERSION_UNDERSCORES ${BOOST_TAR_VERSION})
+    set(BOOST_TAR "boost_${_BOOST_TAR_VERSION_UNDERSCORES}.tar.gz")
+    set(BOOST_URL "${SOURCEFORGE_BASE_URL}/boost/files/${BOOST_TAR}")
 
 if(NOT BOOST_TAR_SOURCE)
-    find_file(BOOST_TAR_SOURCE ${BOOST_TAR}
+    find_file(BOOST_TAR_SOURCE ${BOOST_TAR}  # If not user-specified, try finding in downloads dir
         PATHS ${MAD_THIRD_PARTY}/downloads)
-endif(NOT BOOST_TAR_SOURCE)
 
-if(NOT BOOST_TAR_SOURCE)
-    set(BOOST_TAR_SOURCE ${BOOST_URL})
-endif (NOT BOOST_TAR_SOURCE)
+    if (NOT BOOST_TAR_SOURCE)
+        set(BOOST_TAR_SOURCE ${BOOST_URL})   # If not found locally, download
+    endif()
+endif(NOT BOOST_TAR_SOURCE)
 
 # We always download Eigen (unless it is already present in
 # ${CMAKE_CURRENT_BINARY_DIR}/third_party/downloads). It is also possible to
@@ -104,19 +108,7 @@ set(MAD_MODULE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/modules)
 # try this at home.
 # ==============================================================================
 
-# -- Third-party dependencies: Find or download Boost --------------------------
-
-# set(Boost_INCLUDE_DIRS "/usr/local/opt/boost/include")
-find_package(Boost 1.47)
-if(Boost_FOUND)
-    # We use BOOST_ASSERT_MSG, which only exists in Boost 1.47 and later.
-    if(Boost_MACRO_VERSION LESS 104700)
-        set(Boost_FOUND FALSE)
-    else(Boost_MACRO_VERSION LESS 104700)
-        message(STATUS "Actual version of Boost found: ${Boost_VERSION_STRING}")
-    endif(Boost_MACRO_VERSION LESS 104700)
-endif(Boost_FOUND)
-
+# -- Third-party dependencies: Download the Boost if not previously detected
 if(Boost_FOUND)
     message(STATUS "Boost include directory ${Boost_INCLUDE_DIRS}")
     include_directories(${Boost_INCLUDE_DIRS})
@@ -134,7 +126,6 @@ else(Boost_FOUND)
     )
     include_directories(BEFORE SYSTEM ${MAD_THIRD_PARTY}/src/EP_boost)
 endif(Boost_FOUND)
-
 
 # -- Third-party dependencies: Download the C++ linear-algebra library Eigen ---
 ExternalProject_Add(EP_eigen
