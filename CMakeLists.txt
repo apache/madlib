@@ -57,6 +57,32 @@ if(NOT CMAKE_BUILD_TYPE)
       FORCE)
 endif(NOT CMAKE_BUILD_TYPE)
 
+# The C++11 standard overlaps a lot with older versions of Boost.
+# So before deciding what standard to use for the whole project, we
+#  first detect Boost to see what version is on the system.
+#
+# C++11 is required for recent versions of Boost but will cause problems
+# for older versions of Boost.  Therefore, we detect it here intstead of
+# in src/CMakeLists.txt where the other 3rd party libraries are detected.
+#
+find_package(Boost)
+if(Boost_FOUND)
+    # We use BOOST_ASSERT_MSG, which only exists in Boost 1.47 and later.
+    if(Boost_VERSION_MACRO LESS 104700)
+        message(STATUS "Found Boost ${Boost_VERSION_STRING}, but too old for MADlib")
+        set(Boost_FOUND FALSE)
+    elseif(CXX11 AND (Boost_VERSION_MACRO LESS 106500))
+        message(STATUS "Found Boost ${Boost_VERSION_STRING}, but too old for C++11")
+        set(Boost_FOUND FALSE)
+    else()
+        message(STATUS "Found Boost ${Boost_VERSION_STRING}")
+        if(106500 LESS Boost_VERSION_MACRO)
+            message(STATUS "Auto-enabling -DCXX11, because Boost >= v1.65 requires C++11")
+            set(CXX11 TRUE)
+        endif(106500 LESS Boost_VERSION_MACRO)
+    endif()
+endif(Boost_FOUND)
+
 if(CMAKE_COMPILER_IS_GNUCC)
     # Let's store the gcc version in a variable
     execute_process(COMMAND ${CMAKE_C_COMPILER} -dumpversion
@@ -70,9 +96,7 @@ if(CMAKE_COMPILER_IS_GNUCC)
     # http://pubs.opengroup.org/onlinepubs/9699919799/functions/V2_chap02.html#tag_15_02_01_01
     # We specify that we are POSIX.1-2001 compliant and XSI-conforming. We only
     # need to specify _XOPEN_SOURCE as _POSIX_C_SOURCE will be set implicitly.
-    set(CMAKE_C_FLAGS "-std=c99 -D_GLIBCXX_USE_CXX11_ABI=0 -pedantic -Wall -Wextra -Wno-clobbered -D_XOPEN_SOURCE=600"
-        CACHE STRING
-        "Flags used by the compiler during all build types." FORCE)
+    set(CMAKE_C_FLAGS "-pedantic -Wall -Wextra -Wno-clobbered -D_XOPEN_SOURCE=600")
     if((CMAKE_C_COMPILER_VERSION VERSION_EQUAL 5.0) OR (CMAKE_C_COMPILER_VERSION VERSION_GREATER 5.0))
         # Versions 5+ fail with the "Release" build type i.e. when optimization
         # level is -O3 or greater.
@@ -86,7 +110,7 @@ if(CMAKE_COMPILER_IS_GNUCC)
 elseif(CMAKE_C_COMPILER_ID STREQUAL "SunPro")
     set(CMAKE_C_FLAGS "-xc99=%all")
 endif()
-
+ 
 if(CMAKE_COMPILER_IS_GNUCXX)
     # Let's store the gcc version in a variable
     execute_process(COMMAND ${CMAKE_CXX_COMPILER} -dumpversion
@@ -100,15 +124,29 @@ if(CMAKE_COMPILER_IS_GNUCXX)
         set(SSE_DISABLE_OPTIONS "-mno-sse2")
     endif()
 
-    # We need the 1998 standard plus amendments (ISO/IEC 14882:2003) plus TR1
-    # Unfortunately, we only get this with gnu++98
-    # Special notes:
-    # - long long is not part of the C++ 1998/2003 standard, but it is such a
-    # common (and useful) extension that we do not want to hear warnings about
-    # it.
-    set(CMAKE_CXX_FLAGS "-std=gnu++98 -D_GLIBCXX_USE_CXX11_ABI=0 -fdiagnostics-show-option -Wall -Wextra -pedantic -Wconversion -Wno-long-long -Wno-clobbered ${SSE_DISABLE_OPTIONS} -fstrict-aliasing"
-        CACHE STRING
-        "Flags used by the compiler during all build types." FORCE)
+    set(CMAKE_CXX_FLAGS "-fdiagnostics-show-option -Wall -Wextra -pedantic -Wconversion -Wno-long-long -Wno-clobbered ${SSE_DISABLE_OPTIONS} -fstrict-aliasing"
+    )
+    if (CXX11)
+        set(CMAKE_CXX_FLAGS "-std=gnu++11 ${CMAKE_CXX_FLAGS}"
+            CACHE STRING
+            "Flags used by the compiler during all build types." FORCE)
+        set(CMAKE_C_FLAGS "-std=gnu11 ${CMAKE_C_FLAGS}"
+            CACHE STRING
+            "Flags used by the compiler during all build types." FORCE)
+    else(CXX11)
+        # We need the 1998 standard plus amendments (ISO/IEC 14882:2003) plus TR1
+        # Unfortunately, we only get this with gnu++98
+        # Special notes:
+        # - long long is not part of the C++ 1998/2003 standard, but it is such a
+        # common (and useful) extension that we do not want to hear warnings about
+        # it.
+        set(CMAKE_CXX_FLAGS "-std=gnu++98 ${CMAKE_CXX_FLAGS}"
+            CACHE STRING
+            "Flags used by the compiler during all build types." FORCE)
+        set(CMAKE_C_FLAGS "-std=gnu99 ${CMAKE_C_FLAGS}"
+            CACHE STRING
+            "Flags used by the compiler during all build types." FORCE)
+    endif(CXX11)
 
     if((CMAKE_CXX_COMPILER_VERSION VERSION_EQUAL 5.0) OR (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 5.0))
         # Versions 5+ fail with the "Release" build type i.e. when optimization
@@ -122,12 +160,24 @@ if(CMAKE_COMPILER_IS_GNUCXX)
         set(CMAKE_INCLUDE_SYSTEM_FLAG_CXX "-isystem ")
     endif(APPLE)
 elseif(CMAKE_C_COMPILER_ID MATCHES "Clang")
-if (CXX11)
-    set(CMAKE_CXX_FLAGS "-stdlib=libc++ -std=c++11 -D_GLIBCXX_USE_CXX11_ABI=1")
-else (CXX11)
-    set(CMAKE_CXX_FLAGS "-stdlib=libstdc++ -D_GLIBCXX_USE_CXX11_ABI=0")
-endif(CXX11)
+    if(CXX11)
+        set(CMAKE_CXX_FLAGS "-stdlib=libc++ -std=c++11"
+            CACHE STRING
+            "Flags used by the compiler during all build types." FORCE)
+    else(CXX11)
+        set(CMAKE_CXX_FLAGS "-stdlib=libstdc++"
+            CACHE STRING
+            "Flags used by the compiler during all build types." FORCE)
+    endif(CXX11)
 endif(CMAKE_COMPILER_IS_GNUCXX)
+
+if(CXX11)
+    add_definitions("-D_GLIBCXX_USE_CXX11_ABI=1")
+    # TODO: for recent cmake, add_compile_definitions("_GLIBCXX_USE_CXX11_ABI=1")
+else(CXX11)
+    add_definitions("-D_GLIBCXX_USE_CXX11_ABI=0")
+    # TODO: for recent cmake, add_compile_definitions("_GLIBCXX_USE_CXX11_ABI=0")
+endif(CXX11)
 
 # force a `m4_' prefix to all builtins
 if(FREEBSD)

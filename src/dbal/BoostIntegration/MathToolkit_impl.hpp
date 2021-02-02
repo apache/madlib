@@ -57,14 +57,12 @@ user_domain_error(const char*, const char* inMessage, const T& inVal) {
     int prec = 2 + (std::numeric_limits<T>::digits * 30103UL) / 100000UL;
 #endif // _GLIBCXX_USE_CXX11_ABI
 
-    throw std::domain_error(inMessage);
-
      std:: string *msg = new std::string(
         (boost::format(inMessage)
             % boost::io::group(std::setprecision(prec), inVal)
         ).str()
      );
- 
+
     // Some Boost error messages contain a space before the punctuation mark,
     // which we will remove.
     std::string::iterator lastChar = msg->end() - 1;
