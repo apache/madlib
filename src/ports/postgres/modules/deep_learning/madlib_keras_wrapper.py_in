@@ -31,6 +31,8 @@ from madlib_keras_custom_function import update_builtin_metrics
 
 from utilities.utilities import _assert
 from utilities.utilities import is_platform_pg
+from utilities.utilities import current_user
+from utilities.utilities import is_superuser
 
 import tensorflow as tf
 from tensorflow.keras import backend as K
@@ -296,7 +298,7 @@ def parse_optimizer(compile_dict):
 
 
 # Parse the fit parameters into a dictionary.
-def parse_and_validate_fit_params(fit_param_str):
+def parse_and_validate_fit_params(fit_param_str, current_seg_id=0):
 
     if fit_param_str:
         fit_params_dict = convert_string_of_args_to_dict(fit_param_str, strip_quotes=False)
@@ -309,6 +311,8 @@ def parse_and_validate_fit_params(fit_param_str):
                                                          literal_eval_fit_params,
                                                          accepted_fit_params)
         if 'callbacks' in fit_params_dict:
+            if not is_superuser(current_user()):
+                plpy.error("Only a superuser may use callbacks.")
             try:
                 callbacks=fit_params_dict['callbacks']
                 tree = ast.parse(callbacks, mode='eval')
@@ -326,7 +330,8 @@ def parse_and_validate_fit_params(fit_param_str):
             accepted_tb_params = [ 'log_dir', 'histogram_freq', 'batch_size', 'update_freq',
                                    'write_graph', 'write_grad', 'write_images' ]
             tb_params_dict = validate_and_literal_eval_keys(tb_params_dict, accepted_tb_params, accepted_tb_params)
-            fit_params_dict['callbacks'] = [TensorBoard(tb_params_dict)]
+            tb_params_dict['log_dir'] = tb_params_dict['log_dir']+"{0}".format(current_seg_id)
+            fit_params_dict['callbacks'] = [TensorBoard(**tb_params_dict)]
 
         return fit_params_dict
     else:
