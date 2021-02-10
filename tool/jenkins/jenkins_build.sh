@@ -50,9 +50,9 @@ docker pull madlib/postgres_10:jenkins
 # Launch docker container with volume mounted from workdir
 echo "-------------------------------"
 cat <<EOF
-docker run -d -e POSTGRES_PASSWORD=postgres --name madlib -v "${workdir}/${reponame}":/madlib madlib/postgres_10:jenkins | tee logs/docker_setup.log
+docker run -d -e POSTGRES_PASSWORD=postgres --name madlib -v "${workdir}":/madlib madlib/postgres_10:jenkins | tee logs/docker_setup.log
 EOF
-docker run -d -e POSTGRES_PASSWORD=postgres --name madlib -v "${workdir}/${reponame}":/madlib madlib/postgres_10:jenkins | tee logs/docker_setup.log
+docker run -d -e POSTGRES_PASSWORD=postgres --name madlib -v "${workdir}":/madlib madlib/postgres_10:jenkins | tee logs/docker_setup.log
 echo "-------------------------------"
 
 ## This sleep is required since it takes a couple of seconds for the docker
@@ -69,9 +69,9 @@ docker exec madlib bash -c 'apt-get update; apt-get install -y python-pip; pip i
 echo "---------- Building package -----------"
 # cmake, make, make install, and make package
 cat <<EOF
-docker exec madlib bash -c 'rm -rf /build; mkdir /build; cd /build; cmake ../madlib; make clean; make; make install; make package' | tee $workdir/logs/madlib_compile.log
+docker exec madlib bash -c 'rm -rf /build; mkdir /build; cd /build; cmake ../madlib; make clean; make -j$(nproc); make -j$(nproc); make install; make package' | tee $workdir/logs/madlib_compile.log
 EOF
-docker exec madlib bash -c 'rm -rf /build; mkdir /build; cd /build; cmake ../madlib; make clean; make; make install; make package' | tee $workdir/logs/madlib_compile.log
+docker exec madlib bash -c 'rm -rf /build; mkdir /build; cd /build; cmake ../madlib; make clean; make -j$(nproc); make -j$(nproc); make install; make package' | tee $workdir/logs/madlib_compile.log
 
 echo "---------- Installing and running dev-check --------------------"
 # Install MADlib and run dev check
@@ -108,6 +108,6 @@ echo "-------------------------------"
 
 # convert dev-check test results to junit format for reporting
 cat <<EOF
-python ${reponame}/tool/jenkins/junit_export.py $workdir/logs/madlib_dev_check.log $workdir/logs/madlib_dev_check.xml
+python tool/jenkins/junit_export.py $workdir/logs/madlib_dev_check.log $workdir/logs/madlib_dev_check.xml
 EOF
-python ${reponame}/tool/jenkins/junit_export.py $workdir $workdir/logs/madlib_dev_check.log $workdir/logs/madlib_dev_check.xml
+python tool/jenkins/junit_export.py $workdir $workdir/logs/madlib_dev_check.log $workdir/logs/madlib_dev_check.xml
