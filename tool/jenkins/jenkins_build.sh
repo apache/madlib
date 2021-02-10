@@ -19,12 +19,10 @@
 #####################################################################################
 workdir=`pwd`
 user_name=`whoami`
-reponame=${REPONAME:=madlib}
 
 echo "======================================================================"
 echo "Build user: $user_name"
 echo "Work directory: $workdir"
-echo "Git reponame: $reponame"
 echo "----------------------------------------------------------------------"
 echo "ls -la"
 ls -la
