@@ -4,7 +4,7 @@
 It provides data-parallel implementations of mathematical, statistical and
 machine learning methods for structured and unstructured data.
 
-[![master build status](https://builds.apache.org/buildStatus/icon?job=madlib-master-build&style=plastic)](https://builds.apache.org/job/madlib-master-build)
+[![Build Status](https://ci-builds.apache.org/job/Madlib/job/madlib-build/job/master/badge/icon)](https://ci-builds.apache.org/job/Madlib/job/madlib-build/job/master/)
 
 Installation and Contribution
 ==============================
