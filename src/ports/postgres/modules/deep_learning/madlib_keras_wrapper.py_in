@@ -302,7 +302,6 @@ def parse_and_validate_fit_params(fit_param_str, current_seg_id=0):
 
     if fit_param_str:
         fit_params_dict = convert_string_of_args_to_dict(fit_param_str, strip_quotes=False)
-
         literal_eval_fit_params = ['batch_size','epochs','verbose', 'shuffle',
                                    'class_weight','initial_epoch','steps_per_epoch']
         accepted_fit_params = literal_eval_fit_params + ['callbacks']
@@ -310,32 +309,38 @@ def parse_and_validate_fit_params(fit_param_str, current_seg_id=0):
         fit_params_dict = validate_and_literal_eval_keys(fit_params_dict,
                                                          literal_eval_fit_params,
                                                          accepted_fit_params)
-        if 'callbacks' in fit_params_dict:
-            if not is_superuser(current_user()):
-                plpy.error("Only a superuser may use callbacks.")
-            try:
-                callbacks=fit_params_dict['callbacks']
-                tree = ast.parse(callbacks, mode='eval')
-                assert(type(tree.body) == ast.List)
-                assert(len(tree.body.elts) == 1)
-                assert(type(tree.body.elts[0]) == ast.Call)
-                assert(tree.body.elts[0].func.id == 'TensorBoard')
-                tb_params = tree.body.elts[0].keywords
-                tb_params_dict = { tb_params[i].arg : tb_params[i].value \
-                                for i in range(len(tb_params)) }
-            except:
-                plpy.error("Invalid callbacks fit param.  Currently, "
-                            "only TensorBoard callbacks are accepted.")
 
-            accepted_tb_params = [ 'log_dir', 'histogram_freq', 'batch_size', 'update_freq',
-                                   'write_graph', 'write_grad', 'write_images' ]
-            tb_params_dict = validate_and_literal_eval_keys(tb_params_dict, accepted_tb_params, accepted_tb_params)
-            tb_params_dict['log_dir'] = tb_params_dict['log_dir']+"{0}".format(current_seg_id)
-            fit_params_dict['callbacks'] = [TensorBoard(**tb_params_dict)]
+        if 'callbacks' in fit_params_dict:
+            fit_params_dict['callbacks'] = parse_callbacks(fit_params_dict['callbacks'], current_seg_id)
 
         return fit_params_dict
     else:
         return {}
+
+# Parse the callback fit params and create the TensorBoard object in the dictionary
+def parse_callbacks(callbacks, current_seg_id=0):
+    callbacks = callbacks.strip("'")
+    if not is_superuser(current_user()):
+        plpy.error("Only a superuser may use callbacks.")
+    try:
+        tree = ast.parse(callbacks, mode='eval')
+        assert(type(tree.body) == ast.List)
+        assert(len(tree.body.elts) == 1)
+        assert(type(tree.body.elts[0]) == ast.Call)
+        assert(tree.body.elts[0].func.id == 'TensorBoard')
+        tb_params = tree.body.elts[0].keywords
+        tb_params_dict = { tb_params[i].arg : tb_params[i].value \
+                        for i in range(len(tb_params)) }
+    except:
+        plpy.error("Invalid callbacks fit param.  Currently, "
+                    "only TensorBoard callbacks are accepted.")
+
+    accepted_tb_params = [ 'log_dir', 'histogram_freq', 'batch_size', 'update_freq',
+                           'write_graph', 'write_grad', 'write_images' ]
+    tb_params_dict = validate_and_literal_eval_keys(tb_params_dict, accepted_tb_params, accepted_tb_params)
+    tb_params_dict['log_dir'] = tb_params_dict['log_dir']+"{0}".format(current_seg_id)
+
+    return [TensorBoard(**tb_params_dict)]
 
 # Validate the keys of the given dictionary and run literal_eval on the
 # user-defined subset
