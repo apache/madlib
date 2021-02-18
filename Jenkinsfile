@@ -38,6 +38,7 @@ pipeline {
                         steps {
                                 echo 'Building src and running dev-check and unit tests'
                                 sh './tool/jenkins/jenkins_build.sh'
+				junit 'logs/madlib_dev_check.xml'
                         }
                 }
         }
