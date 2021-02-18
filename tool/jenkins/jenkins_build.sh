@@ -86,9 +86,9 @@ EOF
 
 docker exec madlib bash -c 'mkdir -p /tmp'
 # Run dev check
-docker exec madlib bash -c '/build/src/bin/madpack -s mad -p postgres  -c postgres/postgres@localhost:5432/postgres -d /tmp dev-check' | tee $workdir/logs/madlib_dev_check.log
+docker exec madlib bash -c '/build/src/bin/madpack -s mad -p postgres  -c postgres/postgres@localhost:5432/postgres -d /tmp dev-check -t deep_learning/madlib_keras_fit' | tee $workdir/logs/madlib_dev_check.log
 # Run unit tests, and append output to dev_check's log file
-docker exec madlib bash -c '/build/src/bin/madpack -s mad -p postgres  -c postgres/postgres@localhost:5432/postgres -d /tmp unit-test' | tee -a $workdir/logs/madlib_dev_check.log
+#docker exec madlib bash -c '/build/src/bin/madpack -s mad -p postgres  -c postgres/postgres@localhost:5432/postgres -d /tmp unit-test' | tee -a $workdir/logs/madlib_dev_check.log
 
 echo "--------- Copying packages -----------------"
 echo "docker cp madlib:build $workdir"
