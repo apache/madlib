@@ -30,7 +30,7 @@ pipeline {
                 stage('Ratcheck') {
                         steps {
                               echo 'Running rat check tests'
-                              sh "mvn apache-rat:check"
+                              sh 'mvn apache-rat:check'
                               sh './tool/jenkins/rat_check.sh'
                         }
                 }
@@ -38,6 +38,7 @@ pipeline {
                         steps {
                                 echo 'Building src and running dev-check and unit tests'
                                 sh './tool/jenkins/jenkins_build.sh'
+                                junit 'logs/madlib_dev_check.xml'
                         }
                 }
         }
