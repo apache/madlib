@@ -65,21 +65,34 @@ endif(NOT CMAKE_BUILD_TYPE)
 # for older versions of Boost.  Therefore, we detect it here intstead of
 # in src/CMakeLists.txt where the other 3rd party libraries are detected.
 #
+# https://cmake.org/cmake/help/git-stage/policy/CMP0093.html
+# cmake < 3.15 does not define Boost_VERSION_MACRO but stores the version in
+# Boost_VERSION in the format 104700. But cmake > 3.15 stores the version in Boost_VERSION
+# in 1.47.0(x.y.z) format which is unsuitable for our comparison. So for cmake > 3.15
+# we need to use Boost_VERSION_MACRO instead.
 find_package(Boost)
 if(Boost_FOUND)
+    if(Boost_VERSION_MACRO)
+        set(LOCAL_Boost_VERSION ${Boost_VERSION_MACRO})
+    else(Boost_VERSION_MACRO)
+        set(LOCAL_Boost_VERSION ${Boost_VERSION})
+    endif(Boost_VERSION_MACRO)
+
     # We use BOOST_ASSERT_MSG, which only exists in Boost 1.47 and later.
-    if(Boost_VERSION_MACRO LESS 104700)
-        message(STATUS "Found Boost ${Boost_VERSION_STRING}, but too old for MADlib")
+    if(LOCAL_Boost_VERSION LESS 104700)
+        message(STATUS "Found Boost ${Boost_VERSION_STRING}, but too old for MADlib. Will download a compatible version")
         set(Boost_FOUND FALSE)
-    elseif(CXX11 AND (Boost_VERSION_MACRO LESS 106500))
-        message(STATUS "Found Boost ${Boost_VERSION_STRING}, but too old for C++11")
+    elseif(CXX11 AND (LOCAL_Boost_VERSION LESS 106500))
+        message(STATUS "Found Boost ${Boost_VERSION_STRING}, but too old for C++11. Will download a compatible version")
         set(Boost_FOUND FALSE)
     else()
         message(STATUS "Found Boost ${Boost_VERSION_STRING}")
-        if(106500 LESS Boost_VERSION_MACRO)
-            message(STATUS "Auto-enabling -DCXX11, because Boost >= v1.65 requires C++11")
-            set(CXX11 TRUE)
-        endif(106500 LESS Boost_VERSION_MACRO)
+        if(106500 LESS LOCAL_Boost_VERSION)
+            if(NOT CXX11)
+                message(STATUS "Auto-enabling -DCXX11, because Boost >= v1.65 requires C++11")
+                set(CXX11 TRUE)
+            endif(NOT CXX11)
+        endif(106500 LESS LOCAL_Boost_VERSION)
     endif()
 endif(Boost_FOUND)
 
