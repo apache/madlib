@@ -113,7 +113,6 @@ if(Boost_FOUND)
     message(STATUS "Boost include directory ${Boost_INCLUDE_DIRS}")
     include_directories(${Boost_INCLUDE_DIRS})
 else(Boost_FOUND)
-    message(STATUS "No sufficiently recent version (>= 1.47) of Boost was found. Will download.")
     ExternalProject_Add(EP_boost
         PREFIX ${MAD_THIRD_PARTY}
         DOWNLOAD_DIR ${MAD_THIRD_PARTY}/downloads
