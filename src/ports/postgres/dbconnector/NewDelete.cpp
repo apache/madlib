@@ -26,11 +26,6 @@
 // the search paths, which might point to a port-specific dbconnector.hpp
 #include <dbconnector/dbconnector.hpp>
 
-#ifdef _LIBCPP_COMPILER_CLANG
-#define _GLIBCXX_THROW(a) throw(a)
-#define _GLIBCXX_USE_NOEXCEPT noexcept
-#endif
-
 /**
  * @brief operator new for PostgreSQL. Throw on fail.
  *
@@ -39,7 +34,7 @@
  * that size.
  */
 void*
-operator new(std::size_t size) _GLIBCXX_THROW (std::bad_alloc) {
+operator new(std::size_t size) throw (std::bad_alloc) {
     return madlib::defaultAllocator().allocate<
         madlib::dbal::FunctionContext,
         madlib::dbal::DoNotZero,
@@ -47,7 +42,7 @@ operator new(std::size_t size) _GLIBCXX_THROW (std::bad_alloc) {
 }
 
 void*
-operator new[](std::size_t size) _GLIBCXX_THROW (std::bad_alloc) {
+operator new[](std::size_t size) throw (std::bad_alloc) {
     return madlib::defaultAllocator().allocate<
         madlib::dbal::FunctionContext,
         madlib::dbal::DoNotZero,
@@ -63,12 +58,12 @@ operator new[](std::size_t size) _GLIBCXX_THROW (std::bad_alloc) {
  * <tt>operator new(std::size_t)</tt>.
  */
 void
-operator delete(void *ptr) _GLIBCXX_USE_NOEXCEPT {
+operator delete(void *ptr) throw() {
     madlib::defaultAllocator().free<madlib::dbal::FunctionContext>(ptr);
 }
 
 void
-operator delete[](void *ptr) _GLIBCXX_USE_NOEXCEPT {
+operator delete[](void *ptr) throw() {
     madlib::defaultAllocator().free<madlib::dbal::FunctionContext>(ptr);
 }
 
@@ -80,7 +75,7 @@ operator delete[](void *ptr) _GLIBCXX_USE_NOEXCEPT {
  * indication, instead of a bad_alloc exception.
  */
 void*
-operator new(std::size_t size, const std::nothrow_t&) _GLIBCXX_USE_NOEXCEPT {
+operator new(std::size_t size, const std::nothrow_t&) throw() {
     return madlib::defaultAllocator().allocate<
         madlib::dbal::FunctionContext,
         madlib::dbal::DoNotZero,
@@ -88,7 +83,7 @@ operator new(std::size_t size, const std::nothrow_t&) _GLIBCXX_USE_NOEXCEPT {
 }
 
 void*
-operator new[](std::size_t size, const std::nothrow_t&) _GLIBCXX_USE_NOEXCEPT {
+operator new[](std::size_t size, const std::nothrow_t&) throw() {
     return madlib::defaultAllocator().allocate<
         madlib::dbal::FunctionContext,
         madlib::dbal::DoNotZero,
@@ -102,11 +97,11 @@ operator new[](std::size_t size, const std::nothrow_t&) _GLIBCXX_USE_NOEXCEPT {
  * <tt>operator new(std::size_t, const std::nothrow_t&)</tt>.
  */
 void
-operator delete(void *ptr, const std::nothrow_t&) _GLIBCXX_USE_NOEXCEPT {
+operator delete(void *ptr, const std::nothrow_t&) throw() {
     madlib::defaultAllocator().free<madlib::dbal::FunctionContext>(ptr);
 }
 
 void
-operator delete[](void *ptr, const std::nothrow_t&) _GLIBCXX_USE_NOEXCEPT {
+operator delete[](void *ptr, const std::nothrow_t&) throw() {
     madlib::defaultAllocator().free<madlib::dbal::FunctionContext>(ptr);
 }
