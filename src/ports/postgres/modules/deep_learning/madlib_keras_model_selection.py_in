@@ -32,7 +32,7 @@ from madlib_keras_wrapper import parse_and_validate_fit_params
 from madlib_keras_wrapper import parse_and_validate_compile_params
 from utilities.control import MinWarning
 from utilities.utilities import add_postfix, _assert, _assert_equal, extract_keyvalue_params
-from utilities.utilities import quote_ident, get_schema
+from utilities.utilities import quote_ident, get_schema, is_platform_pg
 from utilities.validate_args import table_exists, drop_tables
 
 from tensorflow.keras import losses as losses
@@ -154,6 +154,8 @@ class MstLoader():
     def create_mst_table(self):
         """Initialize the output mst table.
         """
+        with_query = "" if is_platform_pg() else """
+            with(appendonly=false)"""
         create_query = """
                         CREATE TABLE {self.model_selection_table} (
                             {mst_key} SERIAL,
@@ -161,12 +163,13 @@ class MstLoader():
                             {compile_params} VARCHAR,
                             {fit_params} VARCHAR,
                             unique ({model_id}, {compile_params}, {fit_params})
-                        );
+                        ) {with_query};
                        """.format(self=self,
                                   mst_key=ModelSelectionSchema.MST_KEY,
                                   model_id=ModelSelectionSchema.MODEL_ID,
                                   compile_params=ModelSelectionSchema.COMPILE_PARAMS,
-                                  fit_params=ModelSelectionSchema.FIT_PARAMS)
+                                  fit_params=ModelSelectionSchema.FIT_PARAMS,
+                                  with_query=with_query)
         with MinWarning('warning'):
             plpy.execute(create_query)
 
@@ -547,7 +550,8 @@ class MstSearch():
     def create_mst_table(self):
         """Initialize the output mst table, if it doesn't exist (for incremental loading).
         """
-
+        with_query = "" if is_platform_pg() else """
+            with(appendonly=false)"""
         create_query = """
                         CREATE TABLE {self.model_selection_table} (
                             {mst_key} SERIAL,
@@ -555,12 +559,14 @@ class MstSearch():
                             {compile_params} VARCHAR,
                             {fit_params} VARCHAR,
                             unique ({model_id}, {compile_params}, {fit_params})
-                        );
+                        ) {with_query};
                        """.format(self=self,
                                   mst_key=ModelSelectionSchema.MST_KEY,
                                   model_id=ModelSelectionSchema.MODEL_ID,
                                   compile_params=ModelSelectionSchema.COMPILE_PARAMS,
-                                  fit_params=ModelSelectionSchema.FIT_PARAMS)
+                                  fit_params=ModelSelectionSchema.FIT_PARAMS,
+                                  with_query=with_query)
+
         with MinWarning('warning'):
             plpy.execute(create_query)
 
