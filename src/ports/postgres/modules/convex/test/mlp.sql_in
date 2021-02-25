@@ -308,6 +308,63 @@ SELECT mlp_predict(
     'mlp_prediction_output',
     'output');
 
+-- Test for passing NUMERIC row_weights with grouping
+DROP TABLE IF EXISTS iris_data_row_weight;
+CREATE TABLE iris_data_row_weight
+  AS SELECT *, id::NUMERIC AS row_weight FROM iris_data;
+DROP TABLE IF EXISTS mlp_class, mlp_class_summary, mlp_class_standardization;
+SELECT mlp_classification(
+    'iris_data_row_weight',    -- Source table
+    'mlp_class',    -- Desination table
+    'attributes',   -- Input features
+    'class',        -- Label
+    ARRAY[5],   -- Number of units per layer
+    'learning_rate_init=0.1,
+    learning_rate_policy=constant,
+    n_iterations=5,
+    n_tries=3,
+    tolerance=0',
+    'sigmoid',
+    'row_weight',
+    False,
+    False,
+    'grp'
+);
+DROP TABLE IF EXISTS mlp_prediction_output;
+SELECT mlp_predict(
+    'mlp_class',
+    'iris_data',
+    'id',
+    'mlp_prediction_output',
+    'output');
+
+-- Test for passing NUMERIC row_weights without grouping
+DROP TABLE IF EXISTS iris_data_row_weight;
+CREATE TABLE iris_data_row_weight
+  AS SELECT *, id::NUMERIC AS row_weight FROM iris_data;
+DROP TABLE IF EXISTS mlp_class, mlp_class_summary, mlp_class_standardization;
+SELECT mlp_classification(
+    'iris_data_row_weight',    -- Source table
+    'mlp_class',    -- Desination table
+    'attributes',   -- Input features
+    'class',        -- Label
+    ARRAY[5],   -- Number of units per layer
+    'learning_rate_init=0.1,
+    learning_rate_policy=constant,
+    n_iterations=5,
+    n_tries=3,
+    tolerance=0',
+    'sigmoid',
+    'row_weight'
+);
+DROP TABLE IF EXISTS mlp_prediction_output;
+SELECT mlp_predict(
+    'mlp_class',
+    'iris_data',
+    'id',
+    'mlp_prediction_output',
+    'output');
+
 -- minibatch without grouping and without warm_start
 DROP TABLE IF EXISTS mlp_class_batch, mlp_class_batch_summary, mlp_class_batch_standardization;
 SELECT mlp_classification(
@@ -1004,6 +1061,66 @@ SELECT assert(
               __to_char(pg_typeof(estimated_y)) = 'double precision[]',
               'Estimated y should be an array. Actual ' || __to_char(pg_typeof(estimated_y))
              )
+FROM mlp_prediction_regress  LIMIT 1;
+
+-- with weights with grouping without minibatch  without warm start
+CREATE TABLE lin_housing_wi_with_row_weight AS SELECT *, (id%3) +1 AS row_weight FROM lin_housing_wi;
+DROP TABLE IF EXISTS mlp_regress, mlp_regress_summary, mlp_regress_standardization;
+SELECT mlp_regression(
+               'lin_housing_wi_with_row_weight',           -- Source table
+               'mlp_regress',              -- Desination table
+               'x',                        -- Input features
+               'y',                        -- Dependent variable
+               ARRAY[40],                 -- Number of units per layer
+               'learning_rate_init=0.015,
+               learning_rate_policy=inv,
+               n_iterations=5, n_tries=3,
+               tolerance=0',
+               'sigmoid',
+               'row_weight',
+               False,
+               False,
+               'grp');
+DROP TABLE IF EXISTS mlp_prediction_regress;
+SELECT mlp_predict(
+               'mlp_regress',
+               'lin_housing_wi',
+               'id',
+               'mlp_prediction_regress',
+               'output');
+SELECT assert(
+                   __to_char(pg_typeof(estimated_y)) = 'double precision[]',
+                   'Estimated y should be an array. Actual ' || __to_char(pg_typeof(estimated_y))
+           )
+FROM mlp_prediction_regress  LIMIT 1;
+
+-- with weights without grouping without minibatch  without warm start
+DROP TABLE IF EXISTS mlp_regress, mlp_regress_summary, mlp_regress_standardization;
+SELECT mlp_regression(
+               'lin_housing_wi_with_row_weight',           -- Source table
+               'mlp_regress',              -- Desination table
+               'x',                        -- Input features
+               'y',                        -- Dependent variable
+               ARRAY[40],                 -- Number of units per layer
+               'learning_rate_init=0.015,
+               learning_rate_policy=inv,
+               n_iterations=5, n_tries=3,
+               tolerance=0',
+               'sigmoid',
+               'row_weight',
+               False,
+               False);
+DROP TABLE IF EXISTS mlp_prediction_regress;
+SELECT mlp_predict(
+               'mlp_regress',
+               'lin_housing_wi',
+               'id',
+               'mlp_prediction_regress',
+               'output');
+SELECT assert(
+                   __to_char(pg_typeof(estimated_y)) = 'double precision[]',
+                   'Estimated y should be an array. Actual ' || __to_char(pg_typeof(estimated_y))
+           )
 FROM mlp_prediction_regress  LIMIT 1;
 
 -- minibatch without grouping and without warm start
