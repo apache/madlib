@@ -64,7 +64,7 @@ if (CXX11)
     SET(CMAKE_CXX_FLAGS_RELEASE "-O1 -DNDEBUG"
         CACHE STRING
         "Flags used by the CXX compiler during RELEASE builds." FORCE)
-    SET(CMAKE_CXX_FLAGS_DEBUG  "-O0 -g"
+    SET(CMAKE_CXX_FLAGS_DEBUG  "-Og -g"
         CACHE STRING
         "Flags used by the CXX compiler during DEBUG builds." FORCE)
     SET(CMAKE_CXX_FLAGS_MINSIZEREL "-Os -DNDEBUG"
@@ -129,7 +129,9 @@ if(CMAKE_COMPILER_IS_GNUCC)
     if((CMAKE_C_COMPILER_VERSION VERSION_EQUAL 5.0) OR (CMAKE_C_COMPILER_VERSION VERSION_GREATER 5.0))
         # Versions 5+ fail with the "Release" build type i.e. when optimization
         # level is -O3 or greater.
-        add_compile_options("-O2")
+        # For CXX11, we've already limited it to -O1 for similar reasons (causes crash)
+        SET(CMAKE_C_FLAGS_RELEASE "-O2 -DNDEBUG" CACHE STRING
+        "Flags used by the C compiler during RELEASE builds." FORCE)
     endif()
 
     # See comments below for C++:
@@ -175,13 +177,14 @@ if(CMAKE_COMPILER_IS_GNUCXX)
         set(CMAKE_C_FLAGS "-std=gnu99 ${CMAKE_C_FLAGS}"
             CACHE STRING
             "Flags used by the compiler during all build types." FORCE)
+        if((CMAKE_CXX_COMPILER_VERSION VERSION_EQUAL 5.0) OR (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 5.0))
+            # Versions 5+ fail with the "Release" build type i.e. when optimization
+            # level is -O3 or greater.
+            SET(CMAKE_CXX_FLAGS_RELEASE "-O2 -DNDEBUG" CACHE STRING
+            "Flags used by the CXX compiler during RELEASE builds." FORCE)
+        endif()
     endif(CXX11)
 
-    if((CMAKE_CXX_COMPILER_VERSION VERSION_EQUAL 5.0) OR (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 5.0))
-        # Versions 5+ fail with the "Release" build type i.e. when optimization
-        # level is -O3 or greater.
-        add_compile_options("-O2")
-    endif()
     # We want to include some header files as system header files in order to
     # disable warnings. However, on Mac OS X, a CMake variable is not set
     # correctly on Mac OS X. http://www.cmake.org/Bug/view.php?id=10837
