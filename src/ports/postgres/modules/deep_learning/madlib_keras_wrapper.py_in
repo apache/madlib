@@ -31,11 +31,14 @@ from madlib_keras_custom_function import update_builtin_metrics
 
 from utilities.utilities import _assert
 from utilities.utilities import is_platform_pg
+from utilities.utilities import current_user
+from utilities.utilities import is_superuser
 
 import tensorflow as tf
 from tensorflow.keras import backend as K
 from tensorflow.keras import utils as keras_utils
 from tensorflow.keras.optimizers import *
+from tensorflow.keras.callbacks import TensorBoard
 
 import tensorflow.keras.optimizers as opt
 import tensorflow.keras.losses as losses
@@ -141,9 +144,10 @@ def set_model_weights(segment_model, serialized_weights):
 
 """
 Used to convert compile_params and fit_params to actual argument dictionaries
+If strip_quotes is True, each value in the dictionary will be stripped of quotes
 """
 
-def convert_string_of_args_to_dict(str_of_args):
+def convert_string_of_args_to_dict(str_of_args, strip_quotes=True):
     """Uses parenthases matching algorithm to intelligently convert
     a string with valid python code into an argument dictionary"""
     stack = []
@@ -164,16 +168,23 @@ def convert_string_of_args_to_dict(str_of_args):
                 stack.pop(-1)
             result_str += char
         elif not stack and char == "=":
-            key_str = result_str
+            key_str = result_str.strip()
             result_str = ""
         elif not stack and char == ",":
             value_str = result_str
             result_str = ""
-            compile_dict[key_str.strip()]=value_str.strip().strip('\'')
+            key_str = key_str.strip()
+            value_str = value_str.strip()
+            if strip_quotes:
+                value_str = value_str.strip('"\'')
+            compile_dict[key_str]=value_str
         else:
             result_str += char
     value_str = result_str
-    compile_dict[key_str.strip()]=value_str.strip().strip('\'')
+    value_str = value_str.strip()
+    if strip_quotes:
+        value_str = value_str.strip('"\'')
+    compile_dict[key_str]=value_str
     return compile_dict
 
 def get_metrics_from_compile_param(str_of_args):
@@ -286,26 +297,49 @@ def parse_optimizer(compile_dict):
 
 
 # Parse the fit parameters into a dictionary.
-def parse_and_validate_fit_params(fit_param_str):
+def parse_and_validate_fit_params(fit_param_str, current_seg_id=-1):
 
     if fit_param_str:
-        fit_params_dict = convert_string_of_args_to_dict(fit_param_str)
-
-        literal_eval_fit_params = ['batch_size','epochs','verbose',
+        fit_params_dict = convert_string_of_args_to_dict(fit_param_str, strip_quotes=False)
+        literal_eval_fit_params = ['batch_size','epochs','verbose', 'shuffle',
                                    'class_weight','initial_epoch','steps_per_epoch']
-        accepted_fit_params = literal_eval_fit_params + ['shuffle']
+        accepted_fit_params = literal_eval_fit_params + ['callbacks']
 
         fit_params_dict = validate_and_literal_eval_keys(fit_params_dict,
                                                          literal_eval_fit_params,
                                                          accepted_fit_params)
-        if 'shuffle' in fit_params_dict:
-            shuffle_value = fit_params_dict['shuffle']
-            if shuffle_value == 'True' or shuffle_value == 'False':
-                fit_params_dict['shuffle'] = bool(shuffle_value)
+
+        if 'callbacks' in fit_params_dict:
+            fit_params_dict['callbacks'] = parse_callbacks(fit_params_dict['callbacks'], current_seg_id)
 
         return fit_params_dict
     else:
         return {}
+
+# Parse the callback fit params and create the TensorBoard object in the dictionary
+def parse_callbacks(callbacks, current_seg_id=-1):
+    callbacks = callbacks.strip("'")
+    if not is_superuser(current_user()):
+        plpy.error("Only a superuser may use callbacks.")
+    try:
+        tree = ast.parse(callbacks, mode='eval')
+        assert(type(tree.body) == ast.List)
+        assert(len(tree.body.elts) == 1)
+        assert(type(tree.body.elts[0]) == ast.Call)
+        assert(tree.body.elts[0].func.id == 'TensorBoard')
+        tb_params = tree.body.elts[0].keywords
+        tb_params_dict = { tb_params[i].arg : tb_params[i].value \
+                        for i in range(len(tb_params)) }
+    except:
+        plpy.error("Invalid callbacks fit param.  Currently, "
+                    "only TensorBoard callbacks are accepted.")
+
+    accepted_tb_params = [ 'log_dir', 'histogram_freq', 'batch_size', 'update_freq',
+                           'write_graph', 'write_grad', 'write_images' ]
+    tb_params_dict = validate_and_literal_eval_keys(tb_params_dict, accepted_tb_params, accepted_tb_params)
+    tb_params_dict['log_dir'] = "{0}{1}".format(tb_params_dict['log_dir'],(current_seg_id))
+
+    return [TensorBoard(**tb_params_dict)]
 
 # Validate the keys of the given dictionary and run literal_eval on the
 # user-defined subset
@@ -317,8 +351,8 @@ def validate_and_literal_eval_keys(keys_dict, literal_eval_list, accepted_list):
             try:
                 keys_dict[ckey] = ast.literal_eval(keys_dict[ckey])
             except ValueError:
-                plpy.error(("invalid input value for parameter {0}, "
-                            "please refer to the documentation").format(ckey))
+                plpy.error(("invalid input value for parameter {0}={1}, "
+                            "please refer to the documentation").format(ckey, keys_dict[ckey]))
     return keys_dict
 
 # Split and strip the whitespace of key=value formatted strings
