@@ -52,10 +52,26 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
 endif(${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
 
 if(NOT CMAKE_BUILD_TYPE)
-  set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING
-      "Choose the type of build, options are: None Debug Release RelWithDebInfo MinSizeRel."
-      FORCE)
+    set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING
+        "Choose the type of build, options are: None Debug Release RelWithDebInfo MinSizeRel."
+        FORCE)
 endif(NOT CMAKE_BUILD_TYPE)
+
+if (CXX11)
+    SET(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O1 -g"
+        CACHE STRING
+        "Flags used by the CXX compiler during RELWITHDEBINFO builds." FORCE)
+    SET(CMAKE_CXX_FLAGS_RELEASE "-O1 -DNDEBUG"
+        CACHE STRING
+        "Flags used by the CXX compiler during RELEASE builds." FORCE)
+    SET(CMAKE_CXX_FLAGS_DEBUG  "-O0 -g"
+        CACHE STRING
+        "Flags used by the CXX compiler during DEBUG builds." FORCE)
+    SET(CMAKE_CXX_FLAGS_MINSIZEREL "-Os -DNDEBUG"
+        CACHE STRING
+        "Flags used by the CXX compiler during MINSIZEREL builds." FORCE)
+endif(CXX11)
+
 
 # The C++11 standard overlaps a lot with older versions of Boost.
 # So before deciding what standard to use for the whole project, we
@@ -174,7 +190,7 @@ if(CMAKE_COMPILER_IS_GNUCXX)
     endif(APPLE)
 elseif(CMAKE_C_COMPILER_ID MATCHES "Clang")
     if(CXX11)
-        set(CMAKE_CXX_FLAGS "-stdlib=libc++ -std=c++11"
+        SET(CMAKE_CXX_FLAGS "-stdlib=libc++ -std=c++11"
             CACHE STRING
             "Flags used by the compiler during all build types." FORCE)
     else(CXX11)
