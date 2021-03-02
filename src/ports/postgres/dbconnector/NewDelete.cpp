@@ -26,6 +26,14 @@
 // the search paths, which might point to a port-specific dbconnector.hpp
 #include <dbconnector/dbconnector.hpp>
 
+#if _GLIBCXX_USE_CXX11_ABI
+#define THROW_BAD_ALLOC
+#define NOEXCEPT noexcept
+#else
+#define THROW_BAD_ALLOC throw (std::bad_alloc)
+#define NOEXCEPT throw()
+#endif
+
 /**
  * @brief operator new for PostgreSQL. Throw on fail.
  *
@@ -34,7 +42,7 @@
  * that size.
  */
 void*
-operator new(std::size_t size) throw (std::bad_alloc) {
+operator new(std::size_t size) THROW_BAD_ALLOC {
     return madlib::defaultAllocator().allocate<
         madlib::dbal::FunctionContext,
         madlib::dbal::DoNotZero,
@@ -42,7 +50,7 @@ operator new(std::size_t size) throw (std::bad_alloc) {
 }
 
 void*
-operator new[](std::size_t size) throw (std::bad_alloc) {
+operator new[](std::size_t size) THROW_BAD_ALLOC {
     return madlib::defaultAllocator().allocate<
         madlib::dbal::FunctionContext,
         madlib::dbal::DoNotZero,
@@ -58,12 +66,12 @@ operator new[](std::size_t size) throw (std::bad_alloc) {
  * <tt>operator new(std::size_t)</tt>.
  */
 void
-operator delete(void *ptr) throw() {
+operator delete(void *ptr) NOEXCEPT {
     madlib::defaultAllocator().free<madlib::dbal::FunctionContext>(ptr);
 }
 
 void
-operator delete[](void *ptr) throw() {
+operator delete[](void *ptr) NOEXCEPT {
     madlib::defaultAllocator().free<madlib::dbal::FunctionContext>(ptr);
 }
 
@@ -75,7 +83,7 @@ operator delete[](void *ptr) throw() {
  * indication, instead of a bad_alloc exception.
  */
 void*
-operator new(std::size_t size, const std::nothrow_t&) throw() {
+operator new(std::size_t size, const std::nothrow_t&) NOEXCEPT {
     return madlib::defaultAllocator().allocate<
         madlib::dbal::FunctionContext,
         madlib::dbal::DoNotZero,
@@ -83,7 +91,7 @@ operator new(std::size_t size, const std::nothrow_t&) throw() {
 }
 
 void*
-operator new[](std::size_t size, const std::nothrow_t&) throw() {
+operator new[](std::size_t size, const std::nothrow_t&) NOEXCEPT {
     return madlib::defaultAllocator().allocate<
         madlib::dbal::FunctionContext,
         madlib::dbal::DoNotZero,
@@ -97,11 +105,11 @@ operator new[](std::size_t size, const std::nothrow_t&) throw() {
  * <tt>operator new(std::size_t, const std::nothrow_t&)</tt>.
  */
 void
-operator delete(void *ptr, const std::nothrow_t&) throw() {
+operator delete(void *ptr, const std::nothrow_t&) NOEXCEPT {
     madlib::defaultAllocator().free<madlib::dbal::FunctionContext>(ptr);
 }
 
 void
-operator delete[](void *ptr, const std::nothrow_t&) throw() {
+operator delete[](void *ptr, const std::nothrow_t&) NOEXCEPT {
     madlib::defaultAllocator().free<madlib::dbal::FunctionContext>(ptr);
 }
