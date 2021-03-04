@@ -237,8 +237,15 @@ output table 'iris_model' from a previous run
 of 'madlib_keras_fit()' :
 <pre class="example">
 UPDATE model_arch_library SET model_weights = model_weights FROM iris_model WHERE model_id = 2;
+SELECT model_id, name, description, (model_weights IS NOT NULL) AS has_model_weights FROM model_arch_library ORDER BY model_id;
 </pre>
-To load weights from Keras using a PL/Python function,
+<pre class="result">
+ model_id |  name  |     description     | has_model_weights 
+----------+--------+---------------------+-------------------
+        1 | Sophie | A simple model      | f
+        2 | Maria  | Also a simple model | t
+</pre>
+-# To load weights from Keras using a PL/Python function,
 we need to flatten then serialize the weights to store
 as a PostgreSQL binary data type. Byte format is more
 efficient on space and memory compared to a numeric array.
@@ -273,15 +280,16 @@ plpy.execute(load_query, [model.to_json(), weights_bytea])
 $$ language plpythonu;
 -- Call load function
 SELECT load_weights();
--- Check weights loaded OK
-SELECT COUNT(*) FROM model_arch_library WHERE model_weights IS NOT NULL;
+SELECT model_id, name, description, (model_weights IS NOT NULL) AS has_model_weights FROM model_arch_library ORDER BY model_id;
 </pre>
 <pre class="result">
- count
--------+
-     1
+ model_id |  name  |     description     | has_model_weights 
+----------+--------+---------------------+-------------------
+        1 | Sophie | A simple model      | f
+        2 | Maria  | Also a simple model | t
+        3 | Ella   | Model x             | t
 </pre>
-Load weights from Keras using psycopg2.  (Psycopg is a PostgreSQL database adapter for the
+-# Load weights from Keras using psycopg2.  (Psycopg is a PostgreSQL database adapter for the
 Python programming language.) As above we need to flatten then serialize the weights to store as a
 PostgreSQL binary data type.  Note that the psycopg2.Binary function used below will increase the size of the
 Python object for the weights, so if your model is large it might be better to use a PL/Python function as above.
@@ -310,27 +318,29 @@ weights_bytea = psycopg2.Binary(weights1d.tostring())
 query = "SELECT madlib.load_keras_model('model_arch_library', %s,%s)"
 cur.execute(query,[model.to_json(),weights_bytea])
 conn.commit()
-</pre>
-From SQL check if weights loaded OK:
-<pre class="example">
-SELECT COUNT(*) FROM model_arch_library WHERE model_weights IS NOT NULL;
+SELECT model_id, name, description, (model_weights IS NOT NULL) AS has_model_weights FROM model_arch_library ORDER BY model_id;
 </pre>
 <pre class="result">
- count
--------+
-     2
+ model_id |  name  |     description     | has_model_weights 
+----------+--------+---------------------+-------------------
+        1 | Sophie | A simple model      | f
+        2 | Maria  | Also a simple model | t
+        3 | Ella   | Model x             | t
+        4 | Grace  | Model y             | t
 </pre>
 -# Delete one of the models:
 <pre class="example">
 SELECT madlib.delete_keras_model('model_arch_library',   -- Output table
                                   1                      -- Model id
                                 );
-SELECT COUNT(*) FROM model_arch_library;
+SELECT model_id, name, description, (model_weights IS NOT NULL) AS has_model_weights FROM model_arch_library ORDER BY model_id;
 </pre>
 <pre class="result">
- count
--------+
-     2
+ model_id | name  |     description     | has_model_weights 
+----------+-------+---------------------+-------------------
+        2 | Maria | Also a simple model | t
+        3 | Ella  | Model x             | t
+        4 | Grace | Model y             | t
 </pre>
 
 @anchor related
