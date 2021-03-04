@@ -41,6 +41,15 @@ m4_include(`SQLCommon.m4')
 <li class="level1"><a href="#related">Related Topics</a></li>
 </ul></div>
 
+\warning <em> 
+For security reasons there are controls on custom functions in MADlib.
+You must be a superuser to create custom functions because they
+could theoretically allow execution of any untrusted Python code.
+Regular users with MADlib USAGE permission can use existing custom 
+functions but cannot create new ones or update existing ones.
+See references [1] and [2] for information 
+on privileges in Greenplum and PostgreSQL. </em>
+
 This function loads custom Python functions
 into a table for use by deep learning algorithms.
 
@@ -48,9 +57,9 @@ Custom functions can be useful if, for example, you need loss functions
 or metrics that are not built into the standard libraries.
 The functions to be loaded must be in the form of serialized Python objects
 created using Dill, which extends Python's pickle module to the majority
-of the built-in Python types [1].
+of the built-in Python types [3].
 
-Custom functions are also used to return top k categorical accuracy rate
+Custom functions can also be used to return top k categorical accuracy
 in the case that you want a different k value than the default from Keras.
 This module includes a helper function to create the custom function
 automatically for a specified k.
@@ -58,12 +67,18 @@ automatically for a specified k.
 There is also a utility function to delete a function
 from the table.
 
+@note
+Do not specify a schema for the argument 'object_table' containing the Python objects, 
+because the 'object_table' is automatically put in the MADlib schema.
+Also, any subsequent SQL queries on this table by regular users must 
+specify '<madlib_schema>.object_table' in the usual way.
+
 @anchor load_function
 @par Load Function
 
 <pre class="syntax">
 load_custom_function(
-    object table,
+    object_table,
     object,
     name,
     description
@@ -71,10 +86,12 @@ load_custom_function(
 </pre>
 \b Arguments
 <dl class="arglist">
-  <dt>object table</dt>
+  <dt>object_table</dt>
   <dd>VARCHAR. Table to load serialized Python objects.  If this table
   does not exist, it will be created.  If this table already
   exists, a new row is inserted into the existing table.
+  Do not specify schema as part of the object table name, since
+  it will be put in the MADlib schema automatically.
   </dd>
 
   <dt>object</dt>
@@ -84,7 +101,7 @@ load_custom_function(
 
   @note
   The Dill package must be installed on all segments of the
-  database cluster [1].
+  database cluster [3].
   </dd>
 
   <dt>name</dt>
@@ -148,6 +165,7 @@ delete_custom_function(
 <dl class="arglist">
   <dt>object_table</dt>
     <dd>VARCHAR. Table containing Python object to be deleted.
+    Do not specify schema as part of the object table name.
   </dd>
   <dt>id</dt>
     <dd>INTEGER. The id of the object to be deleted.
@@ -161,22 +179,24 @@ delete_custom_function(
 @par Top k Accuracy Function
 
 Create and load a custom function for a specific k into the custom functions table.
-The Keras accuracy parameter 'top_k_categorical_accuracy' returns top 5 accuracy by default [2].
+The Keras accuracy parameter 'top_k_categorical_accuracy' returns top 5 accuracy by default [4].
 If you want a different top k value, use this helper function to create a custom
 Python function to compute the top k accuracy that you specify.
 
 <pre class="syntax">
 load_top_k_accuracy_function(
-    object table,
+    object_table,
     k
     )
 </pre>
 \b Arguments
 <dl class="arglist">
-  <dt>object table</dt>
+  <dt>object_table</dt>
   <dd>VARCHAR. Table to load serialized Python objects.  If this table
   does not exist, it will be created.  If this table already
   exists, a new row is inserted into the existing table.
+  Do not specify schema as part of the object table name, since
+  it will be put in the MADlib schema automatically.
   </dd>
 
   <dt>k</dt>
@@ -236,14 +256,14 @@ def rmse(y_true, y_pred):
     return K.sqrt(K.mean(K.square(y_pred - y_true), axis=-1))
 pb_rmse=dill.dumps(rmse)
 \# call load function
-cur.execute("DROP TABLE IF EXISTS custom_function_table")
+cur.execute("DROP TABLE IF EXISTS madlib.custom_function_table")
 cur.execute("SELECT madlib.load_custom_function('custom_function_table',  %s,'squared_error', 'squared error')", [p2.Binary(pb_squared_error)])
 cur.execute("SELECT madlib.load_custom_function('custom_function_table',  %s,'rmse', 'root mean square error')", [p2.Binary(pb_rmse)])
 conn.commit()
 </pre>
 List table to see objects:
 <pre class="example">
-SELECT id, name, description FROM custom_function_table ORDER BY id;
+SELECT id, name, description FROM madlib.custom_function_table ORDER BY id;
 </pre>
 <pre class="result">
  id |     name      |      description
@@ -276,7 +296,7 @@ $$ language plpythonu;
 </pre>
 Now call loader:
 <pre class="result">
-DROP TABLE IF EXISTS custom_function_table;
+DROP TABLE IF EXISTS madlib.custom_function_table;
 SELECT madlib.load_custom_function('custom_function_table',
                                    custom_function_squared_error(),
                                    'squared_error',
@@ -289,7 +309,7 @@ SELECT madlib.load_custom_function('custom_function_table',
 -# Delete an object by id:
 <pre class="example">
 SELECT madlib.delete_custom_function( 'custom_function_table', 1);
-SELECT id, name, description FROM custom_function_table ORDER BY id;
+SELECT id, name, description FROM madlib.custom_function_table ORDER BY id;
 </pre>
 <pre class="result">
  id | name |      description
@@ -309,7 +329,7 @@ SELECT madlib.load_top_k_accuracy_function('custom_function_table',
                                            3);
 SELECT madlib.load_top_k_accuracy_function('custom_function_table',
                                            10);
-SELECT id, name, description FROM custom_function_table ORDER BY id;
+SELECT id, name, description FROM madlib.custom_function_table ORDER BY id;
 </pre>
 <pre class="result">
  id |      name       |       description
@@ -320,9 +340,13 @@ SELECT id, name, description FROM custom_function_table ORDER BY id;
 @anchor literature
 @literature
 
-[1] Python catalog for Dill package https://pypi.org/project/dill/
+[1] https://gpdb.docs.pivotal.io/latest/admin_guide/roles_privs.html
 
-[2] https://keras.io/api/metrics/accuracy_metrics/#topkcategoricalaccuracy-class
+[2] https://www.postgresql.org/docs/current/ddl-priv.html
+
+[3] Python catalog for Dill package https://pypi.org/project/dill/
+
+[4] https://keras.io/api/metrics/accuracy_metrics/#topkcategoricalaccuracy-class
 
 @anchor related
 @par Related Topics
