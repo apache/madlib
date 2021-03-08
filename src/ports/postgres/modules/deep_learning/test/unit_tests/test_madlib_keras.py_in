@@ -1410,7 +1410,7 @@ class InputValidatorTestCase(unittest.TestCase):
         self.model.add(Dense(1599))
         with self.assertRaises(plpy.PLPYException) as error:
             self.subject.validate_class_values(
-                self.module_name, [range(1599), range(1598)], 'prob', self.model.to_json())
+                self.module_name, [range(1599)], 'prob', self.model.to_json())
         self.assertIn('1600', str(error.exception))
 
     def test_validate_class_values_valid_class_values_prob(self):
@@ -1486,6 +1486,70 @@ class InputValidatorTestCase(unittest.TestCase):
         with self.assertRaises(plpy.PLPYException) as error:
             obj = self.subject._validate_gpu_config(self.module_name, 'foo', [1,0,0,1])
         self.assertIn('does not have gpu', str(error.exception).lower())
+
+    def test_validate_class_values_last_layer_not_dense(self):
+        num_classes = 3
+        model = Sequential()
+        model.add(Conv2D(2, kernel_size=(1, 1), activation='relu',
+                         input_shape=(1,1,1,), padding='same'))
+        model.add(Dense(num_classes))
+        model.add(Activation('relu'))
+        model.add(Activation('softmax'))
+
+        self.subject.validate_class_values(
+            self.module_name, [range(num_classes)], 'prob', model.to_json())
+
+    def test_validate_class_values_last_layer_not_dense_multiio(self):
+        num_classes = 3
+        model = Sequential()
+        model.add(Conv2D(2, kernel_size=(1, 1), activation='relu',
+                         input_shape=(1,1,1,), padding='same'))
+        model.add(Dense(num_classes))
+        model.add(Dense(num_classes))
+        model.add(Activation('relu'))
+        model.add(Activation('softmax'))
+
+        self.subject.validate_class_values(
+            self.module_name, [range(num_classes), range(num_classes)], 'prob', model.to_json())
+
+    def test_validate_class_values_mismatch(self):
+        expected_error_regex = ".*do not match.*architecture"
+        num_classes = 3
+
+        # only one dense layer but len(dep_var) = 2
+        model = Sequential()
+        model.add(Conv2D(2, kernel_size=(1, 1), activation='relu',
+                         input_shape=(1,1,1,), padding='same'))
+        model.add(Dense(num_classes))
+        model.add(Activation('relu'))
+        with self.assertRaisesRegexp(plpy.PLPYException, expected_error_regex):
+            self.subject.validate_class_values(
+                self.module_name, [range(num_classes), range(num_classes)], 'prob', model.to_json())
+
+        # two dense layers
+        model = Sequential()
+        model.add(Conv2D(2, kernel_size=(1, 1), activation='relu',
+                         input_shape=(1,1,1,), padding='same'))
+        model.add(Dense(2))
+        model.add(Dense(num_classes))
+        with self.assertRaisesRegexp(plpy.PLPYException, expected_error_regex):
+            self.subject.validate_class_values(
+                self.module_name, [range(num_classes), range(num_classes)], 'prob', model.to_json())
+
+    def test_validate_class_values_no_units(self):
+        expected_error_regex = ".*Unable.*classes.*architecture"
+        num_classes = 3
+        #model arch is missing a dense layer
+        model = Sequential()
+        model.add(Activation('relu'))
+        model.add(Conv2D(2, kernel_size=(1, 1), activation='relu',
+                         input_shape=(1,1,1,), padding='same'))
+        with self.assertRaisesRegexp(plpy.PLPYException, expected_error_regex):
+            self.subject.validate_class_values(
+                self.module_name, [range(num_classes)], 'prob', model.to_json())
+        with self.assertRaisesRegexp(plpy.PLPYException, expected_error_regex):
+            self.subject.validate_class_values(
+                self.module_name, [range(num_classes), range(num_classes)], 'prob', model.to_json())
 
 
 class MadlibSerializerTestCase(unittest.TestCase):
