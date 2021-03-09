@@ -28,6 +28,7 @@ import madlib_keras_serializer
 import madlib_keras_gpu_info
 from madlib_keras_custom_function import CustomFunctionSchema
 from madlib_keras_custom_function import update_builtin_metrics
+from madlib_keras_custom_function import update_builtin_losses
 
 from utilities.utilities import _assert
 from utilities.utilities import is_platform_pg
@@ -228,14 +229,14 @@ def parse_and_validate_compile_params(str_of_args, additional_params=[]):
                                                   literal_eval_compile_params,
                                                   accepted_compile_params)
     if len(additional_params) == 0:
-        # optimizer is not a required parameter for keras compile
+        # optimizer is a required parameter for keras compile
         _assert('optimizer' in compile_dict, "optimizer is a required parameter for compile")
         opt_name, opt_args = parse_optimizer(compile_dict)
     else:
         opt_name, opt_args = None, None
 
     _assert('loss' in compile_dict, "loss is a required parameter for compile")
-    unsupported_loss_list = ['sparse_categorical_crossentropy']
+    unsupported_loss_list = ['sparse_categorical_crossentropy', 'serialize', 'deserialize', 'get' ]
     _assert(compile_dict['loss'] not in unsupported_loss_list,
             "Loss function {0} is not supported.".format(compile_dict['loss']))
     validate_compile_param_types(compile_dict)
@@ -251,7 +252,10 @@ def _validate_metrics(compile_dict):
     if 'metrics' in compile_dict and compile_dict['metrics']:
         unsupported_metrics_list = ['sparse_categorical_accuracy',
                                     'sparse_categorical_crossentropy',
-                                    'sparse_top_k_categorical_accuracy']
+                                    'sparse_top_k_categorical_accuracy',
+                                    'serialize'
+                                    'deserialize'
+                                    'get']
         _assert(len(compile_dict['metrics']) == 1,
                 "Only one metric at a time is supported.")
         _assert(compile_dict['metrics'][0] not in unsupported_metrics_list,
@@ -474,16 +478,23 @@ def get_custom_functions_list(compile_params):
 
     """
     compile_dict = convert_string_of_args_to_dict(compile_params)
-    builtin_losses = dir(losses)
+    builtin_losses = update_builtin_losses(dir(losses))
     builtin_metrics = update_builtin_metrics(dir(metrics))
 
     custom_fn_list = []
+
     local_loss = compile_dict['loss'].lower() if 'loss' in compile_dict else None
-    local_metric = compile_dict['metrics'].lower()[2:-2] if 'metrics' in compile_dict else None
+    try:
+        metrics_list = ast.literal_eval(compile_dict['metrics']) \
+                                        if 'metrics' in compile_dict else []
+    except ValueError:
+        plpy.error(("Invalid input value for parameter {0}, "
+                    "please refer to the documentation").format(compile_dict['metrics']))
+    local_metric = metrics_list[0].lower() if (len(metrics_list) > 0) else None
+
     if local_loss and (local_loss not in [a.lower() for a in builtin_losses]):
         custom_fn_list.append(local_loss)
     if local_metric and (local_metric not in [a.lower() for a in builtin_metrics]):
-        if 'top_k_categorical_accuracy' not in local_metric:
-            custom_fn_list.append(local_metric)
+        custom_fn_list.append(local_metric)
 
     return custom_fn_list

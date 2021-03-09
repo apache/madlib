@@ -49,6 +49,8 @@ from utilities.validate_args import input_tbl_valid
 from utilities.validate_args import output_tbl_valid
 from madlib_keras_wrapper import parse_and_validate_fit_params
 from madlib_keras_wrapper import parse_and_validate_compile_params
+from madlib_keras_custom_function import update_builtin_metrics
+from madlib_keras_custom_function import update_builtin_losses
 import tensorflow.keras.losses as losses
 import tensorflow.keras.metrics as metrics
 
@@ -541,18 +543,18 @@ class MstLoaderInputValidator():
                     """.format(fit_params, str(e)))
         if not self.compile_params_list:
             plpy.error( "compile_params_list cannot be NULL")
-        custom_fn_name = []
-        ## Initialize builtin loss/metrics functions
-        builtin_losses = dir(losses)
-        builtin_metrics = dir(metrics)
-        # Default metrics, since it is not part of the builtin metrics list
-        builtin_metrics.append('accuracy')
+        custom_fn_names = []
+
+        # Initialize builtin loss/metrics functions
+        builtin_losses = update_builtin_losses(dir(losses))
+        builtin_metrics = update_builtin_metrics(dir(metrics))
+
         if self.object_table is not None:
 
             res = plpy.execute("SELECT {0} from {1}".format(CustomFunctionSchema.FN_NAME,
                                                             self.object_table))
             for r in res:
-                custom_fn_name.append(r[CustomFunctionSchema.FN_NAME])
+                custom_fn_names.append(r[CustomFunctionSchema.FN_NAME])
         for compile_params in self.compile_params_list:
             try:
                 _, _, res = parse_and_validate_compile_params(compile_params)
@@ -563,11 +565,11 @@ class MstLoaderInputValidator():
                 if self.object_table is not None:
                     error_suffix = "is not defined in object table '{0}'!".format(self.object_table)
 
-                _assert(res['loss'] in custom_fn_name or res['loss'] in builtin_losses,
+                _assert(res['loss'] in custom_fn_names or res['loss'] in builtin_losses,
                         "custom function '{0}' used in compile params "\
                         "{1}".format(res['loss'], error_suffix))
                 if 'metrics' in res:
-                    _assert((len(set(res['metrics']).intersection(custom_fn_name)) > 0
+                    _assert((len(set(res['metrics']).intersection(custom_fn_names)) > 0
                             or len(set(res['metrics']).intersection(builtin_metrics)) > 0),
                             "custom function '{0}' used in compile params " \
                             "{1}".format(res['metrics'], error_suffix))
