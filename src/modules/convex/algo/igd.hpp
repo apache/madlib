@@ -36,6 +36,7 @@ public:
     static void transition(state_type &state, const tuple_type &tuple);
     static void merge(state_type &state, const_state_type &otherState);
     static void transitionInMiniBatch(state_type &state, const tuple_type &tuple);
+    static void transitionInMiniBatchWithALR(state_type &state, const tuple_type &tuple);
     static void mergeInPlace(state_type &state, const_state_type &otherState);
     static void final(state_type &state);
 };
@@ -85,7 +86,6 @@ IGD<State, ConstState, Task>::merge(state_type &state,
     state.algo.incrModel *= static_cast<double>(otherState.algo.numRows) /
         static_cast<double>(totalNumRows);
 }
-
 
 /**
   * @brief Update the transition state in mini-batches
@@ -148,6 +148,87 @@ IGD<State, ConstState, Task>::merge(state_type &state,
             }
             loss += Task::getLossAndUpdateModel(
                 state.model, X_batch, Y_batch, state.stepsize);
+        }
+
+        if (max_loss < loss) max_loss = loss;
+    }
+    // Be pessimistic and report the maximum loss
+    state.loss += max_loss;
+    return;
+ }
+
+/**
+  * @brief Update the transition state in mini-batches using adaptive learning
+  *        rate solvers.
+  *
+  * Note: We assume that
+  *     1. Task defines a model_eigen_type
+  *     2. A batch of tuple.indVar is a Matrix
+  *     3. A batch of tuple.depVar is a ColumnVector
+  *     4. Task defines a getLossAndUpdateModel method
+  *
+ */
+ template <class State, class ConstState, class Task>
+ void
+ IGD<State, ConstState, Task>::transitionInMiniBatchWithALR(
+        state_type &state,
+        const tuple_type &tuple) {
+
+    madlib_assert(tuple.indVar.rows() == tuple.depVar.rows(),
+                  std::runtime_error("Invalid data. Independent and dependent "
+                                     "batches don't have same number of rows."));
+
+    uint16_t batch_size = state.batchSize;
+    uint16_t n_epochs = state.nEpochs;
+
+    // n_rows/n_ind_cols are the rows/cols in a transition tuple.
+    Index n_rows = tuple.indVar.rows();
+    size_t n_batches = n_rows < batch_size ? 1 :
+                        size_t(n_rows / batch_size) + size_t(n_rows % batch_size > 0);
+
+    double max_loss = 0.0;
+    std::vector<Matrix> m(state.model.num_layers);
+    std::vector<Matrix> v(state.model.num_layers);
+    int t = 0;
+    for (Index k=0; k < state.model.num_layers; ++k) {
+        m[k] = Matrix::Zero(state.model.u[k].rows(), state.model.u[k].cols());
+        v[k] = Matrix::Zero(state.model.u[k].rows(), state.model.u[k].cols());
+    }
+    for (int curr_epoch=0; curr_epoch < n_epochs; curr_epoch++) {
+        double loss = 0.0;
+        /*
+            Randomizing the input data before every iteration is good for
+            minibatch gradient descent convergence. Since we don't do that,
+            we are randomizing the order in which every batch is visited in
+            a buffer. Note that this still does not randomize rows within
+            a batch.
+        */
+        std::vector<size_t> random_curr_batch(n_batches, 0);
+        for(size_t i=0; i < n_batches; i++) {
+            random_curr_batch[i] = i;
+        }
+        std::random_shuffle(&random_curr_batch[0], &random_curr_batch[n_batches]);
+
+        for (size_t i = 0; i < n_batches; i++) {
+            size_t curr_batch = random_curr_batch[i];
+            Index curr_batch_row_index = static_cast<Index>(curr_batch * batch_size);
+            Matrix X_batch;
+            Matrix Y_batch;
+            if (curr_batch == n_batches-1) {
+               // last batch
+               X_batch = tuple.indVar.bottomRows(n_rows - curr_batch_row_index);
+               Y_batch = tuple.depVar.bottomRows(n_rows - curr_batch_row_index);
+            } else {
+                X_batch = tuple.indVar.block(curr_batch_row_index, 0,
+                                             batch_size, tuple.indVar.cols());
+                Y_batch = tuple.depVar.block(curr_batch_row_index, 0,
+                                             batch_size, tuple.depVar.cols());
+            }
+            t++;
+            loss += Task::getLossAndUpdateModelALR(state.model, X_batch, Y_batch,
+                                                state.stepsize, state.opt_code,
+                                                state.rho, m, state.beta1,
+                                                state.beta2, v, t, state.eps);
         }
 
         if (max_loss < loss) max_loss = loss;

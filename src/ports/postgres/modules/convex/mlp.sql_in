@@ -54,8 +54,7 @@ feature belongs to a specific class.
 
 MLP can be used with or without mini-batching.
 The advantage of using mini-batching is that it
-can perform better than stochastic gradient descent
-(default MADlib optimizer)
+can perform better than the default MADlib optimizer,
 because it uses more than one training example at a time,
 typically resulting faster and smoother convergence [3].
 
@@ -366,7 +365,8 @@ format "<param_name> = <value>" to specify the value of a parameter, otherwise
 the parameter is ignored.
 
 <pre class="syntax">
-  'learning_rate_init = &lt;value>,
+  'solver = &lt;value>,
+   learning_rate_init = &lt;value>,
    learning_rate_policy = &lt;value>,
    gamma = &lt;value>,
    power = &lt;value>,
@@ -378,10 +378,28 @@ the parameter is ignored.
    batch_size = &lt;value>,
    n_epochs = &lt;value>,
    momentum = &lt;value>,
-   nesterov = &lt;value>'
+   nesterov = &lt;value>',
+   rho = &lt;value>,
+   beta1 = &lt;value>,
+   beta2 = &lt;value>,
+   eps = &lt;value>'
 </pre>
 \b Optimizer \b Parameters
 <DL class="arglist">
+
+<DT>solver</dt>
+<DD>Default: sgd.
+One of 'sgd', 'rmsprop' or 'adam' or any prefix of these (e.g., 'rmsp' means 'rmsprop').
+These are defined below:
+ - 'sgd': stochastic gradient descent
+ - 'rmsprop': RMSprop algorithm  proposed by Hinton et al. [3]
+ - 'adam': Adam algorithm proposed by Kingma and Ba [4]
+
+@note
+rmsprop and adam solvers only work with minibatched data. In addition, they do
+not support momentum. Please see the references for the explanations on
+these constraints.
+</DD>
 
 <DT>learning_rate_init</dt>
 <DD>Default: 0.001.
@@ -394,7 +412,7 @@ practice one often tunes this parameter.
 <DT>learning_rate_policy</dt>
 <DD>Default: constant.
 One of 'constant', 'exp', 'inv' or 'step' or any prefix of these (e.g., 's' means 'step').
-These are defined below, where 'iter' is the current iteration of SGD:
+These are defined below, where 'iter' is the current iteration:
  - 'constant': learning_rate = learning_rate_init
  - 'exp': learning_rate = learning_rate_init * gamma^(iter)
  - 'inv': learning_rate = learning_rate_init * (iter+1)^(-power)
@@ -470,6 +488,22 @@ nesterov we first update the model and then compute the gradient from the
 updated position.
 </DD>
 
+<DT>rho</dt>
+<DD>Default: 0.9. Moving average parameter for the RMSprop solver.
+</DD>
+
+<DT>beta1</dt>
+<DD>Default: 0.9. The exponential decay rate for the first moment estimates.
+</DD>
+
+<DT>beta2</dt>
+<DD>Default: 0.999. The exponential decay rate for the second moment estimates.
+</DD>
+
+<DT>eps</dt>
+<DD>Default: 1e-7.
+Constant for numerical stability in adam and rmsprop solvers.
+</DD>
 </DL>
 
 @anchor predict
@@ -960,6 +994,37 @@ learned three different models starting with a different set of initial weights
 for the coefficients, and chose the best model among them as the initial
 weights for the coefficients when run with warm start.
 
+-# Next, test adam solver for adaptive learning rates. Note that we are using the
+minibatched dataset.
+<pre class="example">
+SELECT madlib.mlp_classification(
+    'iris_data_packed',      -- Output table from mini-batch preprocessor
+    'mlp_model',             -- Destination table
+    'independent_varname',   -- Hardcode to this, from table iris_data_packed
+    'dependent_varname',     -- Hardcode to this, from table iris_data_packed
+    ARRAY[5],                -- Number of units per layer
+    'learning_rate_init=0.1,
+    n_iterations=500,
+    tolerance=0.0001,
+    solver=adam',            -- Optimizer params
+    'tanh',                  -- Activation function
+    NULL,                    -- Default weight (1)
+    FALSE,                   -- No warm start
+    FALSE                    -- Not verbose
+);
+</pre>
+View the model:
+<pre class="example">
+\\x on
+SELECT * FROM mlp_model;
+</pre>
+<pre class="result">
+-[ RECORD 1 ]--+------------------------------------------------------------------------------------
+coeff          | {5.39258022025872,0.674679083739714,-2.59002712311116 ...
+loss           | 0.155612432637527
+num_iterations | 500
+</pre>
+
 <h4>Classification with Grouping</h4>
 
 -# Next, group the training data by state, and learn a different model for each state.
@@ -1412,6 +1477,9 @@ http://homepages.cae.wisc.edu/~ece539/videocourse/notes/pdf/lec%2011%20MLP%20(3)
 Geoffrey Hinton with Nitish Srivastava and Kevin Swersky,
 http://www.cs.toronto.edu/~tijmen/csc321/slides/lecture_slides_lec6.pdf
 
+[4] Kingma, D. P., & Ba, J. L. (2015), "Adam: a Method for Stochastic Optimization,"
+International Conference on Learning Representations, 1–13.
+
 @anchor related
 @par Related Topics
 
@@ -1467,6 +1535,30 @@ RETURNS DOUBLE PRECISION[]
 AS 'MODULE_PATHNAME'
 LANGUAGE C IMMUTABLE;
 
+CREATE FUNCTION MADLIB_SCHEMA.mlp_alr_transition(
+        state              DOUBLE PRECISION[],
+        ind_var            DOUBLE PRECISION[],
+        dep_var            DOUBLE PRECISION[],
+        previous_state     DOUBLE PRECISION[],
+        layer_sizes        DOUBLE PRECISION[],
+        learning_rate_init DOUBLE PRECISION,
+        activation         INTEGER,
+        is_classification  INTEGER,
+        weight             DOUBLE PRECISION,
+        warm_start_coeff   DOUBLE PRECISION[],
+        lambda             DOUBLE PRECISION,
+        batch_size         INTEGER,
+        n_epochs           INTEGER,
+        opt_code           INTEGER,
+        rho                DOUBLE PRECISION,
+        beta1              DOUBLE PRECISION,
+        beta2              DOUBLE PRECISION,
+        eps                DOUBLE PRECISION
+    )
+RETURNS DOUBLE PRECISION[]
+AS 'MODULE_PATHNAME'
+LANGUAGE C IMMUTABLE;
+
 CREATE FUNCTION MADLIB_SCHEMA.mlp_igd_merge(
         state1 DOUBLE PRECISION[],
         state2 DOUBLE PRECISION[])
@@ -1488,6 +1580,19 @@ AS 'MODULE_PATHNAME'
 LANGUAGE C IMMUTABLE STRICT;
 
 CREATE FUNCTION MADLIB_SCHEMA.mlp_minibatch_final(
+        state DOUBLE PRECISION[])
+RETURNS DOUBLE PRECISION[]
+AS 'MODULE_PATHNAME'
+LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION MADLIB_SCHEMA.mlp_alr_merge(
+        state1 DOUBLE PRECISION[],
+        state2 DOUBLE PRECISION[])
+RETURNS DOUBLE PRECISION[]
+AS 'MODULE_PATHNAME'
+LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION MADLIB_SCHEMA.mlp_alr_final(
         state DOUBLE PRECISION[])
 RETURNS DOUBLE PRECISION[]
 AS 'MODULE_PATHNAME'
@@ -1545,6 +1650,36 @@ CREATE AGGREGATE MADLIB_SCHEMA.mlp_minibatch_step(
     FINALFUNC=MADLIB_SCHEMA.mlp_minibatch_final,
     INITCOND='{0,0,0,0,0,0,0,0,0,0,0,0,0,0}'
 );
+
+/**
+ * @internal
+ * @brief Perform one iteration of backprop
+ */
+CREATE AGGREGATE MADLIB_SCHEMA.mlp_alr_step(
+        /* ind_var */             DOUBLE PRECISION[],
+        /* dep_var */             DOUBLE PRECISION[],
+        /* previous_state */      DOUBLE PRECISION[],
+        /* layer_sizes */         DOUBLE PRECISION[],
+        /* learning_rate_init */  DOUBLE PRECISION,
+        /* activation */          INTEGER,
+        /* is_classification */   INTEGER,
+        /* weight */              DOUBLE PRECISION,
+        /* warm_start_coeff */    DOUBLE PRECISION[],
+        /* lambda */              DOUBLE PRECISION,
+        /* batch_size */          INTEGER,
+        /* n_epochs */            INTEGER,
+        /* opt_code */            INTEGER,
+        /* rho */                 DOUBLE PRECISION,
+        /* beta1 */               DOUBLE PRECISION,
+        /* beta2 */               DOUBLE PRECISION,
+        /* eps */                 DOUBLE PRECISION
+        )(
+    STYPE=DOUBLE PRECISION[],
+    SFUNC=MADLIB_SCHEMA.mlp_alr_transition,
+    m4_ifdef(`__POSTGRESQL__', `', `prefunc=MADLIB_SCHEMA.mlp_alr_merge,')
+    FINALFUNC=MADLIB_SCHEMA.mlp_alr_final,
+    INITCOND='{0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}'
+);
 -------------------------------------------------------------------------
 
 CREATE FUNCTION MADLIB_SCHEMA.internal_mlp_igd_distance(
@@ -1561,6 +1696,12 @@ RETURNS MADLIB_SCHEMA.mlp_result AS
 LANGUAGE c IMMUTABLE STRICT;
 
 CREATE FUNCTION MADLIB_SCHEMA.internal_mlp_minibatch_result(
+    /*+ state */ DOUBLE PRECISION[])
+RETURNS MADLIB_SCHEMA.mlp_result AS
+'MODULE_PATHNAME'
+LANGUAGE c IMMUTABLE STRICT;
+
+CREATE FUNCTION MADLIB_SCHEMA.internal_mlp_alr_result(
     /*+ state */ DOUBLE PRECISION[])
 RETURNS MADLIB_SCHEMA.mlp_result AS
 'MODULE_PATHNAME'

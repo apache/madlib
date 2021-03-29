@@ -26,6 +26,7 @@
 #ifndef MADLIB_MODULES_CONVEX_TASK_MLP_HPP_
 #define MADLIB_MODULES_CONVEX_TASK_MLP_HPP_
 
+#include <math.h>
 #include <dbconnector/dbconnector.hpp>
 
 namespace madlib {
@@ -58,6 +59,20 @@ public:
             const Matrix                        &y,
             const double                        &stepsize);
 
+    static double getLossAndUpdateModelALR(
+            model_type              &model,
+            const Matrix            &x_batch,
+            const Matrix            &y_true_batch,
+            const double            &stepsize,
+            const int               &opt_code,
+            const double            &rho,
+            std::vector<Matrix>     &m,
+            const double            &beta1,
+            const double            &beta2,
+            std::vector<Matrix>     &v,
+            const int               &t,
+            const double            &eps);
+
     static double getLossAndGradient(
             model_type                    &model,
             const Matrix                        &x,
@@ -87,6 +102,10 @@ public:
     static double lambda;
 
 private:
+
+    const static int IS_RMSPROP = 1;
+    const static int IS_ADAM = 2;
+
     static double sigmoid(const double &xi) {
         return 1. / (1. + std::exp(-xi));
     }
@@ -215,6 +234,86 @@ MLP<Model, Tuple>::getLossAndUpdateModel(
         }
     }
 
+    return total_loss;
+}
+
+template <class Model, class Tuple>
+double
+MLP<Model, Tuple>::getLossAndUpdateModelALR(
+        model_type              &model,
+        const Matrix            &x_batch,
+        const Matrix            &y_true_batch,
+        const double            &stepsize,
+        const int               &opt_code,
+        const double            &rho,
+        std::vector<Matrix>     &m,
+        const double            &beta1,
+        const double            &beta2,
+        std::vector<Matrix>     &v,
+        const int               &t,
+        const double            &eps) {
+
+    double total_loss = 0.;
+
+    // initialize gradient vector
+    std::vector<Matrix> total_gradient_per_layer(model.num_layers);
+    Matrix g, v_bias_corr, sqr_bias_corr;
+    for (Index k=0; k < model.num_layers; ++k) {
+        total_gradient_per_layer[k] = Matrix::Zero(model.u[k].rows(),
+                                                   model.u[k].cols());
+    }
+
+    std::vector<ColumnVector> net, o, delta;
+    Index num_rows_in_batch = x_batch.rows();
+
+    for (Index i=0; i < num_rows_in_batch; i++){
+        // gradient and loss added over the batch
+        ColumnVector x = x_batch.row(i);
+        ColumnVector y_true = y_true_batch.row(i);
+
+        feedForward(model, x, net, o);
+        backPropogate(y_true, o.back(), net, model, delta);
+
+        // compute the gradient
+        for (Index k=0; k < model.num_layers; k++){
+                total_gradient_per_layer[k] += o[k] * delta[k].transpose();
+        }
+
+        // compute the loss
+        total_loss += getLoss(y_true, o.back(), model.is_classification);
+    }
+
+    for (Index k=0; k < model.num_layers; k++){
+        // convert gradient to a gradient update vector
+        //  1. normalize to per row update
+        //  2. discount by stepsize
+        //  3. add regularization
+        Matrix regularization = MLP<Model, Tuple>::lambda * model.u[k];
+        regularization.row(0).setZero(); // Do not update bias
+
+        g = total_gradient_per_layer[k] / static_cast<double>(num_rows_in_batch);
+        g += regularization;
+        if (opt_code == IS_RMSPROP){
+
+            m[k] = rho * m[k] + (1.0 - rho) * square(g);
+            total_gradient_per_layer[k] = (-stepsize * g).array() /
+                                          (m[k].array().sqrt() + eps);
+        }
+        else if (opt_code == IS_ADAM){
+
+            v[k] = beta1 * v[k] + (1.0-beta1) * g;
+            m[k] = beta2 * m[k] + (1.0 - beta2) * square(g);
+
+            v_bias_corr = v[k] / (1. - pow(beta1,t));
+            sqr_bias_corr = m[k] / (1. - pow(beta2,t));
+
+            total_gradient_per_layer[k] = (-stepsize * v_bias_corr).array() /
+                                          (sqr_bias_corr.array().sqrt() + eps);
+
+        }
+        model.u[k] += total_gradient_per_layer[k];
+
+    }
     return total_loss;
 }
 
