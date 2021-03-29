@@ -67,6 +67,13 @@ static trans(const Eigen::MatrixBase<Derived>& mat) {
     return mat.transpose();
 }
 
+template <typename Derived>
+inline
+Matrix
+static square(const Eigen::MatrixBase<Derived>& mat) {
+    return mat.cwiseAbs2();
+}
+
 template <typename Derived, typename OtherDerived>
 inline
 typename Eigen::internal::scalar_product_traits<

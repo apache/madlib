@@ -50,6 +50,9 @@ typedef IGD<MLPIGDState<MutableArrayHandle<double> >, MLPIGDState<ArrayHandle<do
 typedef IGD<MLPMiniBatchState<MutableArrayHandle<double> >, MLPMiniBatchState<ArrayHandle<double> >,
         MLP<MLPModel<MutableArrayHandle<double> >, MiniBatchTuple > > MLPMiniBatchAlgorithm;
 
+typedef IGD<MLPALRState<MutableArrayHandle<double> >, MLPALRState<ArrayHandle<double> >,
+        MLP<MLPModel<MutableArrayHandle<double> >, MiniBatchTuple > > MLPALRAlgorithm;
+
 typedef Loss<MLPIGDState<MutableArrayHandle<double> >, MLPIGDState<ArrayHandle<double> >,
         MLP<MLPModel<MutableArrayHandle<double> >, MLPTuple > > MLPLossAlgorithm;
 
@@ -187,6 +190,7 @@ mlp_minibatch_transition::run(AnyType &args) {
     // For the first tuple: args[0] is nothing more than a marker that
     // indicates that we should do some initial operations.
     // For other tuples: args[0] holds the computation state until last tuple
+
     MLPMiniBatchState<MutableArrayHandle<double> > state = args[0];
 
     // initialize the state if first tuple
@@ -305,6 +309,137 @@ mlp_minibatch_final::run(AnyType &args) {
 }
 
 /**
+ * @brief Perform the multilayer perceptron minibatch transition step
+ *
+ * Called for each tuple.
+ */
+AnyType
+mlp_alr_transition::run(AnyType &args) {
+    // For the first tuple: args[0] is nothing more than a marker that
+    // indicates that we should do some initial operations.
+    // For other tuples: args[0] holds the computation state until last tuple
+
+    MLPALRState<MutableArrayHandle<double> > state = args[0];
+
+    // initialize the state if first tuple
+    if (state.numRows == 0) {
+        if (!args[3].isNull()) {
+            MLPALRState<ArrayHandle<double> > previousState = args[3];
+            state.allocate(*this, previousState.numberOfStages,
+                           previousState.numbersOfUnits);
+            state = previousState;
+        } else {
+            // configuration parameters
+            ArrayHandle<double> numbersOfUnits = args[4].getAs<ArrayHandle<double> >();
+            uint16_t numberOfStages = static_cast<uint16_t>(numbersOfUnits.size() - 1);
+            state.allocate(*this, numberOfStages,
+                           reinterpret_cast<const double *>(numbersOfUnits.ptr()));
+            state.stepsize = args[5].getAs<double>();
+            state.model.activation = static_cast<double>(args[6].getAs<int>());
+            state.model.is_classification = static_cast<double>(args[7].getAs<int>());
+            // args[8] is for weighting the input row, which is populated later.
+            if (!args[9].isNull()){
+                // initial coefficients are provided copy warm start into the model
+                MappedColumnVector warm_start_coeff = args[9].getAs<MappedColumnVector>();
+                Index layer_start = 0;
+                for (size_t k = 0; k < numberOfStages; ++k){
+                    for (Index j=0; j < state.model.u[k].cols(); ++j){
+                        for (Index i=0; i < state.model.u[k].rows(); ++i){
+                            state.model.u[k](i, j) = warm_start_coeff(
+                                layer_start + j * state.model.u[k].rows() + i);
+                        }
+                    }
+                    layer_start += state.model.u[k].rows() * state.model.u[k].cols();
+                }
+            } else {
+                // initialize the model with appropriate coefficients
+                state.model.initialize(
+                    numberOfStages,
+                    reinterpret_cast<const double *>(numbersOfUnits.ptr()));
+            }
+
+            state.lambda = args[10].getAs<double>();
+            MLPTask::lambda = state.lambda;
+            state.batchSize = static_cast<uint16_t>(args[11].getAs<int>());
+            state.nEpochs = static_cast<uint16_t>(args[12].getAs<int>());
+            state.opt_code = static_cast<uint16_t>(args[13].getAs<int>());
+            state.rho = args[14].getAs<double>();
+            state.beta1 = args[15].getAs<double>();
+            state.beta2 = args[16].getAs<double>();
+            state.eps = args[17].getAs<double>();
+        }
+        // resetting in either case
+        state.reset();
+    }
+
+    MiniBatchTuple tuple;
+    try {
+        // Ideally there should be no NULLs in the pre-processed input data,
+        // but keep it in a try block in case the user has modified the
+        // pre-processed data in any way.
+        // The matrices are by default read as column-major. We will have to
+        // transpose it to get back the matrix like how it is in the database.
+        tuple.indVar = trans(args[1].getAs<MappedMatrix>());
+        tuple.depVar = trans(args[2].getAs<MappedMatrix>());
+    } catch (const ArrayWithNullException &e) {
+        return args[0];
+    }
+
+    tuple.weight = args[8].getAs<double>();
+
+    /*
+        Note that the IGD version uses the model in Task (model from the
+        previous iteration) to compute the loss.
+        Minibatch uses the model from Algo (the model based on current
+        iteration) to compute the loss. The difference in loss based on one
+        iteration is not too much, hence doing so here. We therefore don't
+        need to maintain another copy of the model (from previous iteration)
+        in the state. The model for the current iteration, and the loss are
+        both computed in one function now.
+    */
+    MLPALRAlgorithm::transitionInMiniBatchWithALR(state, tuple);
+    state.numRows += tuple.indVar.rows();
+    return state;
+}
+/**
+ * @brief Perform the perliminary aggregation function: Merge transition states
+ */
+AnyType
+mlp_alr_merge::run(AnyType &args) {
+    MLPALRState<MutableArrayHandle<double> > stateLeft = args[0];
+    MLPALRState<ArrayHandle<double> > stateRight = args[1];
+
+    if (stateLeft.numRows == 0) { return stateRight; }
+    else if (stateRight.numRows == 0) { return stateLeft; }
+
+    MLPALRAlgorithm::mergeInPlace(stateLeft, stateRight);
+
+    // The following numRows update, cannot be put above, because the model
+    // averaging depends on their original values
+    stateLeft.numRows += stateRight.numRows;
+    stateLeft.loss += stateRight.loss;
+
+    return stateLeft;
+}
+
+/**
+ * @brief Perform the multilayer perceptron final step
+ */
+AnyType
+mlp_alr_final::run(AnyType &args) {
+    // We request a mutable object. Depending on the backend, this might perform
+    // a deep copy.
+    MLPALRState<MutableArrayHandle<double> > state = args[0];
+    // Aggregates that haven't seen any data just return Null.
+    if (state.numRows == 0) { return Null(); }
+
+    L2<MLPModelType>::lambda = state.lambda;
+    state.loss = state.loss/static_cast<double>(state.numRows);
+    state.loss += L2<MLPModelType>::loss(state.model);
+    return state;
+}
+
+/**
  * @brief Return the difference in RMSE between two states
  */
 AnyType
@@ -319,6 +454,14 @@ AnyType
 internal_mlp_minibatch_distance::run(AnyType &args) {
     MLPMiniBatchState<ArrayHandle<double> > stateLeft = args[0];
     MLPMiniBatchState<ArrayHandle<double> > stateRight = args[1];
+
+    return std::abs(stateLeft.loss - stateRight.loss);
+}
+
+AnyType
+internal_mlp_alr_distance::run(AnyType &args) {
+    MLPALRState<ArrayHandle<double> > stateLeft = args[0];
+    MLPALRState<ArrayHandle<double> > stateRight = args[1];
 
     return std::abs(stateLeft.loss - stateRight.loss);
 }
@@ -346,6 +489,22 @@ internal_mlp_igd_result::run(AnyType &args) {
 AnyType
 internal_mlp_minibatch_result::run(AnyType &args) {
     MLPMiniBatchState<ArrayHandle<double> > state = args[0];
+    HandleTraits<ArrayHandle<double> >::ColumnVectorTransparentHandleMap flattenU;
+    flattenU.rebind(&state.model.u[0](0, 0),
+                    state.model.coeffArraySize(state.numberOfStages,
+                                          state.numbersOfUnits));
+    AnyType tuple;
+    tuple << flattenU
+          << static_cast<double>(state.loss);
+    return tuple;
+}
+
+/**
+ * @brief Return the coefficients and diagnostic statistics of the state
+ */
+AnyType
+internal_mlp_alr_result::run(AnyType &args) {
+    MLPALRState<ArrayHandle<double> > state = args[0];
     HandleTraits<ArrayHandle<double> >::ColumnVectorTransparentHandleMap flattenU;
     flattenU.rebind(&state.model.u[0](0, 0),
                     state.model.coeffArraySize(state.numberOfStages,

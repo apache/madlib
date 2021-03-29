@@ -819,11 +819,13 @@ private:
      * - N + 4: is_classification (do classification)
      * - N + 5: activation (activation function)
      * - N + 6: coeff (coefficients, design doc: u)
+     * - N + 7: momentum
+     * - N + 8: is_nesterov
 // model is done, now bind numRows
-     * - N + 6 + sizeOfModel: numRows (number of rows processed in this iteration)
-     * - N + 7 + sizeOfModel: batchSize (number of rows processed in this iteration)
-     * - N + 8 + sizeOfModel: nEpochs (number of rows processed in this iteration)
-     * - N + 9 + sizeOfModel: loss (loss value, the sum of squared errors)
+     * - N + 8 + sizeOfModel: numRows (number of rows processed in this iteration)
+     * - N + 9 + sizeOfModel: batchSize (number of rows processed in this iteration)
+     * - N + 10 + sizeOfModel: nEpochs (number of rows processed in this iteration)
+     * - N + 11 + sizeOfModel: loss (loss value, the sum of squared errors)
      */
     void rebind() {
         numberOfStages.rebind(&mStorage[0]);
@@ -867,6 +869,177 @@ public:
 
 };
 
+
+template <class Handle>
+class MLPALRState {
+    template <class OtherHandle>
+    friend class MLPALRState;
+
+public:
+    MLPALRState(const AnyType &inArray) : mStorage(inArray.getAs<Handle>()) {
+        rebind();
+    }
+
+    /**
+     * @brief Reset the intra-iteration fields.
+     */
+    inline void reset() {
+        numRows = 0;
+        loss = 0.;
+    }
+
+    /**
+     * @brief Convert to backend representation
+     *
+     * We define this function so that we can use State in the
+     * argument list and as a return type.
+     */
+    inline operator AnyType() const {
+        return mStorage;
+    }
+
+    /**
+     * @brief Allocating the incremental gradient state.
+     */
+    inline void allocate(const Allocator &inAllocator,
+                         const uint16_t &inNumberOfStages,
+                         const double *inNumbersOfUnits) {
+        mStorage = inAllocator.allocateArray<double, dbal::AggregateContext,
+                dbal::DoZero, dbal::ThrowBadAlloc>(
+                        arraySize(inNumberOfStages, inNumbersOfUnits));
+
+        // This rebind is for the following lines of code to take
+        // effect. I can also do something like "mStorage[0] = N",
+        // but I am not clear about the type binding/alignment
+        rebind();
+        numberOfStages = inNumberOfStages;
+        uint16_t N = inNumberOfStages;
+        uint16_t k;
+        for (k = 0; k <= N; k ++) {
+            numbersOfUnits[k] = inNumbersOfUnits[k];
+        }
+
+        // This time all the member fields are correctly binded
+        rebind();
+    }
+
+    /**
+     * @brief We need to support assigning the previous state
+     */
+    template <class OtherHandle>
+    MLPALRState &operator=(const MLPALRState<OtherHandle> &inOtherState) {
+        for (size_t i = 0; i < mStorage.size(); i++) {
+            mStorage[i] = inOtherState.mStorage[i];
+        }
+
+        return *this;
+    }
+
+    static inline uint32_t arraySize(const uint16_t &inNumberOfStages,
+                                     const double *inNumbersOfUnits) {
+        uint32_t sizeOfModel =
+            MLPModel<Handle>::arraySize(inNumberOfStages, inNumbersOfUnits);
+        return 1                        // numberOfStages = N
+            + (inNumberOfStages + 1)    // numbersOfUnits: size is (N + 1)
+            + 1                         // stepsize
+            + 1                         // lambda
+            + 1                         // is_classification
+            + 1                         // activation
+            + 1                          // momentum
+            + 1                          // is_nesterov
+            + sizeOfModel               // model
+            + 1                         // numRows
+            + 1                         // batchSize
+            + 1                         // nEpochs
+            + 1                         // loss
+            + 1                         // opt_code
+            + 1                         // beta
+            + 1                         // beta1
+            + 1                         // beta2
+            + 1                         // eps
+            ;
+    }
+
+    Handle mStorage;
+private:
+    /**
+     * @brief Rebind to a new storage array.
+     *
+     * Array layout (iteration refers to one aggregate-function call):
+     * Inter-iteration components (updated in final function):
+     * - 0: numberOfStages (number of stages (layers), design doc: N)
+     * - 1: numbersOfUnits (numbers of activation units, design doc: n_0,...,n_N)
+     * - N + 2: stepsize (step size of gradient steps)
+     * - N + 3: lambda (regularization term)
+// is_classification, activation, and coeff together form the model
+     * - N + 4: is_classification (do classification)
+     * - N + 5: activation (activation function)
+     * - N + 6: coeff (coefficients, design doc: u)
+     * - N + 7: momentum
+     * - N + 8: is_nesterov
+// model is done, now bind numRows
+     * - N + 8 + sizeOfModel: numRows (number of rows processed in this iteration)
+     * - N + 9 + sizeOfModel: batchSize (number of rows processed in this iteration)
+     * - N + 10 + sizeOfModel: nEpochs (number of rows processed in this iteration)
+     * - N + 11 + sizeOfModel: loss (loss value, the sum of squared errors)
+     * - N + 12 + sizeOfModel: opt_code
+     * - N + 13 + sizeOfModel: beta
+     * - N + 14 + sizeOfModel: beta1
+     * - N + 15 + sizeOfModel: beta2
+     * - N + 16 + sizeOfModel: eps
+     */
+    void rebind() {
+        numberOfStages.rebind(&mStorage[0]);
+        size_t N = numberOfStages;
+
+        numbersOfUnits =
+            reinterpret_cast<dimension_pointer_type>(&mStorage[1]);
+        stepsize.rebind(&mStorage[N + 2]);
+        lambda.rebind(&mStorage[N + 3]);
+        size_t sizeOfModel = model.rebind(&mStorage[N + 4],
+                                          &mStorage[N + 5],
+                                          &mStorage[N + 6],
+                                          &mStorage[N + 7],
+                                          &mStorage[N + 8],
+                                          numberOfStages,
+                                          numbersOfUnits);
+
+        numRows.rebind(&mStorage[N + 8 + sizeOfModel]);
+        batchSize.rebind(&mStorage[N + 9 + sizeOfModel]);
+        nEpochs.rebind(&mStorage[N + 10 + sizeOfModel]);
+        opt_code.rebind(&mStorage[N + 11 + sizeOfModel]);
+        rho.rebind(&mStorage[N + 12 + sizeOfModel]);
+        beta1.rebind(&mStorage[N + 13 + sizeOfModel]);
+        beta2.rebind(&mStorage[N + 14 + sizeOfModel]);
+        eps.rebind(&mStorage[N + 15 + sizeOfModel]);
+        loss.rebind(&mStorage[N + 16 + sizeOfModel]);
+    }
+
+
+    typedef typename HandleTraits<Handle>::ReferenceToUInt16 dimension_type;
+    typedef typename HandleTraits<Handle>::DoublePtr dimension_pointer_type;
+    typedef typename HandleTraits<Handle>::ReferenceToUInt64 count_type;
+    typedef typename HandleTraits<Handle>::ReferenceToDouble numeric_type;
+
+public:
+    dimension_type numberOfStages;
+    dimension_pointer_type numbersOfUnits;
+    numeric_type stepsize;
+    numeric_type lambda;
+    MLPModel<Handle> model;
+
+    count_type numRows;
+    dimension_type batchSize;
+    dimension_type nEpochs;
+    numeric_type loss;
+    dimension_type opt_code;
+    numeric_type rho;
+    numeric_type beta1;
+    numeric_type beta2;
+    numeric_type eps;
+
+
+};
 
 } // namespace convex
 

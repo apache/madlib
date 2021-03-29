@@ -91,6 +91,22 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
                    dependent_varname, hidden_layer_sizes, optimizer_params,
                    warm_start, activation, grouping_col)
 
+    optimizer_params["solver"], opt_code = _get_opt_code(optimizer_params["solver"])
+    solver = optimizer_params["solver"]
+
+    # Optimizer specific defaults and validations
+    _validate_solver_params(optimizer_params)
+    if solver == "sgd":
+        optimizer_params['momentum'] = 0.9 if optimizer_params['momentum'] == "NULL" else optimizer_params['momentum']
+        optimizer_params['nesterov'] = True if optimizer_params['nesterov'] == "NULL" else optimizer_params['nesterov']
+    else:
+        optimizer_params['momentum'] = 0.0
+        optimizer_params['nesterov'] = False
+        optimizer_params['eps'] = 1.e-7 if optimizer_params['eps'] == "NULL" else optimizer_params['eps']
+        optimizer_params['rho'] = 0.9 if optimizer_params['rho'] == "NULL" else optimizer_params['rho']
+        optimizer_params['beta1'] = 0.9 if optimizer_params['beta1'] == "NULL" else optimizer_params['beta1']
+        optimizer_params['beta2'] = 0.999 if optimizer_params['beta2'] == "NULL" else optimizer_params['beta2']
+
     tolerance = optimizer_params['tolerance']
     n_iterations = optimizer_params['n_iterations']
     step_size_init = optimizer_params['learning_rate_init']
@@ -105,6 +121,10 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
     n_epochs = optimizer_params['n_epochs']
     momentum = optimizer_params['momentum']
     is_nesterov = optimizer_params['nesterov']
+    rho = optimizer_params['rho']
+    beta1 = optimizer_params['beta1']
+    beta2 = optimizer_params['beta2']
+    eps = optimizer_params['eps']
 
     # Note that we don't support weights with mini batching yet, so validate
     # this based on is_minibatch_enabled.
@@ -256,7 +276,12 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
         "n_epochs": n_epochs,
         "start_coeff": start_coeff,
         "momentum": momentum,
-        "is_nesterov": is_nesterov
+        "is_nesterov": is_nesterov,
+        "opt_code": opt_code,
+        "rho": rho,
+        "beta1": beta1,
+        "beta2": beta2,
+        "eps": eps
     }
     # variables to be used by GroupIterationController
     it_args.update({
@@ -296,7 +321,29 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
                     step_size = step_size_init * gamma**(
                         math.floor(it.iteration / iterations_per_step))
                 it.kwargs['step_size'] = step_size
-                if is_minibatch_enabled:
+                if solver != "sgd" :
+                    train_sql = """
+                        {schema_madlib}.mlp_alr_step(
+                            ({independent_varname})::DOUBLE PRECISION[],
+                            ({dependent_varname})::DOUBLE PRECISION[],
+                            {rel_state}.{col_grp_state},
+                            {layer_sizes},
+                            ({step_size})::FLOAT8,
+                            {activation},
+                            {is_classification},
+                            ({weights})::DOUBLE PRECISION,
+                            ({start_coeff})::DOUBLE PRECISION[],
+                            {lambda_},
+                            {batch_size}::integer,
+                            {n_epochs}::integer,
+                            {opt_code}::integer,
+                            {rho}::FLOAT8,
+                            {beta1}::FLOAT8,
+                            {beta2}::FLOAT8,
+                            {eps}::FLOAT8
+                        )
+                        """
+                elif is_minibatch_enabled:
                     train_sql = """
                         {schema_madlib}.mlp_minibatch_step(
                             ({independent_varname})::DOUBLE PRECISION[],
@@ -336,7 +383,6 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
                 if it.kwargs['state_size'] == -1:
                     it.kwargs['state_size'] = it.get_state_size()
 
-
                 if it.test("""
                         {iteration} >= {n_iterations}
                             OR
@@ -357,7 +403,7 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
                               format(it.iteration, ', '.join(map(str, loss))))
             it.final()
         _update_temp_model_table(it_args, it.iteration, temp_output_table,
-                                 is_minibatch_enabled, first_try)
+                                 is_minibatch_enabled, solver, first_try)
         first_try = False
     layer_sizes_str = PY2SQL(layer_sizes, array_type="integer")
 
@@ -505,11 +551,16 @@ def _create_summary_table(args):
             dependent_varname TEXT,
             {minibatch_summary_col_names}
             {dependent_vartype_colname} TEXT,
+            solver TEXT,
             tolerance FLOAT,
             learning_rate_init FLOAT,
             learning_rate_policy TEXT,
             momentum FLOAT,
             nesterov BOOLEAN,
+            rho FLOAT,
+            beta1 FLOAT,
+            beta2 FLOAT,
+            eps FLOAT,
             n_iterations INTEGER,
             n_tries INTEGER,
             layer_sizes INTEGER[],
@@ -529,11 +580,16 @@ def _create_summary_table(args):
             $__madlib__${dependent_varname_backup}$__madlib__$::TEXT,
             {minibatch_summary_col_vals}
             '{dependent_vartype}',
+            '{solver}',
             {tolerance},
             {step_size_init},
             '{learning_rate_policy}',
             {momentum},
             {is_nesterov},
+            {rho},
+            {beta1},
+            {beta2},
+            {eps},
             {n_iterations},
             {n_tries},
             {layer_sizes_str},
@@ -573,7 +629,7 @@ def _create_output_table(output_table, temp_output_table,
 
 
 def _update_temp_model_table(args, iteration, temp_output_table,
-                             is_minibatch_enabled, first_try):
+                             is_minibatch_enabled, solver, first_try):
     insert_or_create_str = "INSERT INTO {0}"
     if first_try:
         insert_or_create_str = "CREATE TEMP TABLE {0} as"
@@ -593,7 +649,10 @@ def _update_temp_model_table(args, iteration, temp_output_table,
                 ) grouping_q
                 {using_clause}
             """.format(**args)
-    if is_minibatch_enabled:
+
+    if solver != "sgd":
+        internal_result_udf = "internal_mlp_alr_result"
+    elif is_minibatch_enabled:
         internal_result_udf = "internal_mlp_minibatch_result"
     else:
         internal_result_udf = "internal_mlp_igd_result"
@@ -621,6 +680,7 @@ def _update_temp_model_table(args, iteration, temp_output_table,
 
 def _get_optimizer_params(param_str):
     params_defaults = {
+        "solver": ("sgd", str),
         "learning_rate_init": (0.001, float),
         "n_iterations": (100, int),
         "n_tries": (1, int),
@@ -632,8 +692,14 @@ def _get_optimizer_params(param_str):
         "lambda": (0, float),
         "n_epochs": (1, int),
         "batch_size": (1, int),
-        "momentum": (0.9, float),
-        "nesterov": (True, bool)
+        "momentum": ("NULL", float),
+        "nesterov": ("NULL", bool),
+        "is_rmsprop": (False, bool),
+        "is_adam": (False, bool),
+        "rho": ("NULL", float),
+        "beta1": ("NULL", float),
+        "beta2": ("NULL", float),
+        "eps": ("NULL", float)
     }
     param_defaults = dict([(k, v[0]) for k, v in params_defaults.items()])
     param_types = dict([(k, v[1]) for k, v in params_defaults.items()])
@@ -744,6 +810,32 @@ def _validate_params_based_on_minibatch(source_table, independent_varname,
     _validate_dependent_var(source_table, dependent_varname,
                             is_classification, is_minibatch_enabled)
 
+def _validate_solver_params(optimizer_params):
+
+    if optimizer_params['solver'] == "sgd":
+        _assert(optimizer_params['rho'] == "NULL",
+            "MLP: optimizer_param rho cannot be used with sgd.")
+        _assert(optimizer_params['beta1'] == "NULL",
+            "MLP: optimizer_param beta1 cannot be used with sgd.")
+        _assert(optimizer_params['beta2'] == "NULL",
+            "MLP: optimizer_param beta2 cannot be used with sgd.")
+        _assert(optimizer_params['eps'] == "NULL",
+            "MLP: optimizer_param eps cannot be used with sgd.")
+    else:
+        _assert(optimizer_params['momentum'] == "NULL",
+            "MLP: optimizer_param momentum cannot be used with rmsprop or adam.")
+        _assert(optimizer_params['nesterov'] == "NULL",
+            "MLP: optimizer_param nesterov cannot be used with rmsprop or adam.")
+        if optimizer_params['solver'] == "rmsprop":
+            _assert(optimizer_params['beta1'] == "NULL",
+                "MLP: optimizer_param beta1 cannot be used with rmsprop.")
+            _assert(optimizer_params['beta2'] == "NULL",
+                "MLP: optimizer_param beta2 cannot be used with rmsprop.")
+        elif optimizer_params['solver'] == "adam":
+            _assert(optimizer_params['rho'] == "NULL",
+                "MLP: optimizer_param rho cannot be used with adam.")
+
+
 def _validate_args(source_table, output_table, summary_table,
                    standardization_table, independent_varname,
                    dependent_varname, hidden_layer_sizes, optimizer_params,
@@ -797,15 +889,27 @@ def _validate_args(source_table, output_table, summary_table,
             "MLP error: batch_size should be greater than 0.")
     _assert(optimizer_params["n_epochs"] > 0,
             "MLP error: n_epochs should be greater than 0.")
-    _assert(0 <= optimizer_params["momentum"] <= 1,
-            "MLP error: momentum should be in the range [0, 1].")
+    if optimizer_params["momentum"] != "NULL":
+        _assert(0 <= optimizer_params["momentum"] <= 1,
+                "MLP error: momentum should be in the range [0, 1].")
+    if optimizer_params["rho"] != "NULL":
+        _assert(0 < optimizer_params["rho"] < 1,
+                "MLP error: rho should be in the range (0, 1).")
+    if optimizer_params["beta1"] != "NULL":
+        _assert(0 < optimizer_params["beta1"] < 1,
+                "MLP error: beta1 should be in the range (0, 1).")
+    if optimizer_params["beta2"] != "NULL":
+        _assert(0 < optimizer_params["beta2"] < 1,
+                "MLP error: beta2 should be in the range (0, 1).")
+    if optimizer_params["eps"] != "NULL":
+        _assert(0 < optimizer_params["eps"] < 1,
+                "MLP error: eps should be in the range (0, 1).")
 
     if grouping_col:
         cols_in_tbl_valid(source_table,
                           _string_to_array_with_quotes(grouping_col),
                           'MLP',
                           invalid_names=[independent_varname, dependent_varname])
-
 
 def _get_learning_rate_policy_name(learning_rate_policy):
     if not learning_rate_policy:
@@ -824,6 +928,22 @@ def _get_learning_rate_policy_name(learning_rate_policy):
                        ', '.join(supported_learning_rate_policies)))
     return learning_rate_policy
 
+def _get_opt_code(solver):
+    if not solver:
+        opt_code = 0
+    else:
+        supported_solvers = ['sgd', 'rmsprop', 'adam']
+        try:
+            opt_code = next(
+                ind for ind, x in enumerate(supported_solvers)
+                if x.startswith(solver))
+        except StopIteration:
+            plpy.error(
+                "MLP Error: Invalid solver: "
+                "{0}. Supported learning rate policies are ({1}).".
+                format(solver,
+                       ', '.join(supported_solvers)))
+    return supported_solvers[opt_code], opt_code
 
 def _get_activation_function_name(activation):
     if not activation:
@@ -1231,6 +1351,11 @@ def mlp_help(schema_madlib, message, is_classification):
     ------------------------------------------------------------------------------------------------
                                                OPTIMIZER PARAMS
     ------------------------------------------------------------------------------------------------
+    solver VARCHAR                       -- Default 'sgd'
+                                            Solver algorithm to use. One of 'sgd', 'rmsprop' or 'adam'
+                                            - 'sgd': stochastic gradient descent
+                                            - 'rmsprop': RMSprop algorithm  proposed by Hinton et al. [3]
+                                            - 'adam': Adam algorithm proposed by Kingma and Ba [4]
     learning_rate_init DOUBLE PRECISION, -- Default: 0.001
                                             Initial learning rate
     learning_rate_policy VARCHAR,        -- Default: 'constant'
@@ -1289,6 +1414,12 @@ def mlp_help(schema_madlib, message, is_classification):
                                             updating the model whereas in nesterov we first update
                                             the model and then compute the gradient from the
                                             updated position.
+    rho                                 --  Default: 0.9 Moving average parameter for the
+                                            RMSprop solver.
+    beta1                               --  Default: 0.9 The exponential decay rate for the
+                                            first moment estimates.
+    beta1                               --  Default: 0.999 The exponential decay rate for the
+                                            second moment estimates.
     """.format(**args)
 
     if not message:
