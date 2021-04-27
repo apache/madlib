@@ -5,7 +5,7 @@ Docker Images
 
 1) Dockerfile_postgres_9_6: Plese use this configuration for development purposes. Please refer to the [top level README](https://github.com/apache/madlib/blob/master/README.md) for setup instructions.
 
-2) Dockerfile_postgres_9_6_Jenkins: This configuration is used by the Jenkins builds (https://builds.apache.org/job/madlib-master-build and https://builds.apache.org/job/madlib-pr-build).
+2) Dockerfile_postgres_11_Jenkins: This configuration is used by the Jenkins builds (https://ci-builds.apache.org/job/Madlib/job/madlib-build/job/master and https://ci-builds.apache.org/job/Madlib/job/madlib-build/view/change-requests/).
 
 ## The rest of the configs are based on CentOS images:
 

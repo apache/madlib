@@ -43,14 +43,14 @@ docker rm madlib
 
 echo "Creating docker container"
 # Pull down the base docker images
-echo "docker pull madlib/postgres_10:jenkins"
-docker pull madlib/postgres_10:jenkins
+echo "docker pull madlib/postgres_11:jenkins"
+docker pull madlib/postgres_11:jenkins
 # Launch docker container with volume mounted from workdir
 echo "-------------------------------"
 cat <<EOF
-docker run -d -e POSTGRES_PASSWORD=postgres --name madlib -v "${workdir}":/madlib madlib/postgres_10:jenkins | tee logs/docker_setup.log
+docker run -d -e POSTGRES_PASSWORD=postgres --name madlib -v "${workdir}":/madlib madlib/postgres_11:jenkins | tee logs/docker_setup.log
 EOF
-docker run -d -e POSTGRES_PASSWORD=postgres --name madlib -v "${workdir}":/madlib madlib/postgres_10:jenkins | tee logs/docker_setup.log
+docker run -d -e POSTGRES_PASSWORD=postgres --name madlib -v "${workdir}":/madlib madlib/postgres_11:jenkins | tee logs/docker_setup.log
 echo "-------------------------------"
 
 ## This sleep is required since it takes a couple of seconds for the docker
