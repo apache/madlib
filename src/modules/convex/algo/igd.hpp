@@ -146,6 +146,7 @@ IGD<State, ConstState, Task>::merge(state_type &state,
                 Y_batch = tuple.depVar.block(curr_batch_row_index, 0,
                                              batch_size, tuple.depVar.cols());
             }
+            Task::lambda = state.lambda;
             loss += Task::getLossAndUpdateModel(
                 state.model, X_batch, Y_batch, state.stepsize);
         }
@@ -225,6 +226,7 @@ IGD<State, ConstState, Task>::merge(state_type &state,
                                              batch_size, tuple.depVar.cols());
             }
             t++;
+            Task::lambda = state.lambda;
             loss += Task::getLossAndUpdateModelALR(state.model, X_batch, Y_batch,
                                                 state.stepsize, state.opt_code,
                                                 state.rho, m, state.beta1,
