@@ -17,7 +17,7 @@
 
 __all__ = ['Reader', 'ReaderError']
 
-from error import YAMLError, Mark
+from .error import YAMLError, Mark
 
 import codecs, re
 
@@ -96,7 +96,7 @@ class Reader(object):
         self.stream = None
         self.stream_pointer = 0
         self.eof = True
-        self.buffer = u''
+        self.buffer = ''
         self.pointer = 0
         self.raw_buffer = None
         self.raw_decode = None
@@ -104,10 +104,10 @@ class Reader(object):
         self.index = 0
         self.line = 0
         self.column = 0
-        if isinstance(stream, unicode):
+        if isinstance(stream, str):
             self.name = "<unicode string>"
             self.check_printable(stream)
-            self.buffer = stream+u'\0'
+            self.buffer = stream+'\0'
         elif isinstance(stream, str):
             self.name = "<string>"
             self.raw_buffer = stream
@@ -138,11 +138,11 @@ class Reader(object):
             ch = self.buffer[self.pointer]
             self.pointer += 1
             self.index += 1
-            if ch in u'\n\x85\u2028\u2029'  \
-                    or (ch == u'\r' and self.buffer[self.pointer] != u'\n'):
+            if ch in '\n\x85\u2028\u2029'  \
+                    or (ch == '\r' and self.buffer[self.pointer] != '\n'):
                 self.line += 1
                 self.column = 0
-            elif ch != u'\uFEFF':
+            elif ch != '\uFEFF':
                 self.column += 1
             length -= 1
 
@@ -157,7 +157,7 @@ class Reader(object):
     def determine_encoding(self):
         while not self.eof and len(self.raw_buffer) < 2:
             self.update_raw()
-        if not isinstance(self.raw_buffer, unicode):
+        if not isinstance(self.raw_buffer, str):
             if self.raw_buffer.startswith(codecs.BOM_UTF16_LE):
                 self.raw_decode = utf_16_le_decode
                 self.encoding = 'utf-16-le'
@@ -169,7 +169,7 @@ class Reader(object):
                 self.encoding = 'utf-8'
         self.update(1)
 
-    NON_PRINTABLE = re.compile(u'[^\x09\x0A\x0D\x20-\x7E\x85\xA0-\uD7FF\uE000-\uFFFD]')
+    NON_PRINTABLE = re.compile('[^\x09\x0A\x0D\x20-\x7E\x85\xA0-\uD7FF\uE000-\uFFFD]')
     def check_printable(self, data):
         match = self.NON_PRINTABLE.search(data)
         if match:
@@ -190,7 +190,7 @@ class Reader(object):
                 try:
                     data, converted = self.raw_decode(self.raw_buffer,
                             'strict', self.eof)
-                except UnicodeDecodeError, exc:
+                except UnicodeDecodeError as exc:
                     character = exc.object[exc.start]
                     if self.stream is not None:
                         position = self.stream_pointer-len(self.raw_buffer)+exc.start
@@ -205,7 +205,7 @@ class Reader(object):
             self.buffer += data
             self.raw_buffer = self.raw_buffer[converted:]
             if self.eof:
-                self.buffer += u'\0'
+                self.buffer += '\0'
                 self.raw_buffer = None
                 break
 

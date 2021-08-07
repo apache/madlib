@@ -42,27 +42,27 @@ new_vers = sys.argv[3]
 ch_filename = sys.argv[4]
 
 if os.path.exists(ch_filename):
-    print "{0} already exists".format(ch_filename)
+    print("{0} already exists".format(ch_filename))
     raise SystemExit
 
 err1 = os.system("""psql {0} -l > /dev/null""".format(database))
 if err1 != 0:
-    print "Database {0} does not exist".format(database)
+    print("Database {0} does not exist".format(database))
     raise SystemExit
 
 err1 = os.system("""psql {0} -c "select madlib_old_vers.version()" > /dev/null
                  """.format(database))
 if err1 != 0:
-    print "MADlib is not installed in the madlib_old_vers schema. Please refer to the Prequisites."
+    print("MADlib is not installed in the madlib_old_vers schema. Please refer to the Prequisites.")
     raise SystemExit
 
 err1 = os.system("""psql {0} -c "select madlib.version()" > /dev/null
                  """.format(database))
 if err1 != 0:
-    print "MADlib is not installed in the madlib schema. Please refer to the Prequisites."
+    print("MADlib is not installed in the madlib schema. Please refer to the Prequisites.")
     raise SystemExit
 
-print "Creating changelist {0}".format(ch_filename)
+print("Creating changelist {0}".format(ch_filename))
 os.system("""
     rm -f /tmp/madlib_tmp_nm.txt \
     /tmp/madlib_tmp_udf.txt \
@@ -77,7 +77,7 @@ try:
     # Find the new modules using the git diff
     err1 = os.system("git diff {old_vers} {new_vers} --name-only --diff-filter=A > /tmp/madlib_tmp_nm.txt".format(**locals()))
     if err1 != 0:
-        print "Git diff failed. Please ensure that branches/tags are fetched."
+        print("Git diff failed. Please ensure that branches/tags are fetched.")
         raise SystemExit
 
     f = open("/tmp/madlib_tmp_cl.yaml", "w")
@@ -322,7 +322,7 @@ try:
     os.system("cp /tmp/madlib_tmp_cl.yaml {0}".format(ch_filename))
 
 except:
-    print "Something went wrong! The changelist might be wrong/corrupted."
+    print("Something went wrong! The changelist might be wrong/corrupted.")
     raise
 finally:
     os.system("""

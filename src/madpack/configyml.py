@@ -18,6 +18,16 @@ class MadPackConfigError(Exception):
      def __str__(self):
          return repr(self.value)
 
+##
+# Convert dict key and value from bytes to str
+##
+def convert(data):
+    if isinstance(data, bytes):  return data.decode()
+    if isinstance(data, dict):   return dict(map(convert, data.items()))
+    if isinstance(data, tuple):  return tuple(map(convert, data))
+    if isinstance(data, list):   return list(map(convert, data))
+    return data
+
 ## 
 # Load version string from Version.yml file.
 # Typical Version.yml file:
@@ -29,35 +39,39 @@ def get_version(configdir):
     try:
         conf = yaml.load(open(configdir + '/Version.yml'))
     except:
-        print "configyml : ERROR : missing or malformed Version.yml"
+        print("configyml : ERROR : missing or malformed Version.yml")
         exit(2)
 
+    # XXX
+    conf = convert(conf)
     try:
         conf['version']
     except:
-        print "configyml : ERROR : malformed Version.yml"
+        print("configyml : ERROR : malformed Version.yml")
         exit(2)
         
-    return str( conf['version'])
+    return conf['version']
 
     
 ## 
 # Load Ports.yml file
-# @param configdir the directory where we can find Version.yml
+# @param configdir the directory where we can find Ports.yml
 ##
 def get_ports(configdir):
 
     try:
         conf = yaml.load(open(configdir + '/Ports.yml'))
     except:
-        print "configyml : ERROR : missing or malformed Ports.yml"
+        print("configyml : ERROR : missing or malformed Ports.yml")
         exit(2)
 
+    # XXX
+    conf = convert(conf)
     for port in conf:
         try:
             conf[port]['name']
         except:
-            print "configyml : ERROR : malformed Ports.yml: no name element for port " + port
+            print("configyml : ERROR : malformed Ports.yml: no name element for port " + port)
             exit(2)
         
     return conf
@@ -69,23 +83,25 @@ def get_ports(configdir):
 # @param id the ID of the specific DB port
 # @param src the directory of the source code for a specific port
 ##
-def get_modules( confdir):
+def get_modules(confdir):
 
     fname = "Modules.yml"
     
     try:
         conf = yaml.load( open( confdir + '/' + fname))
     except:
-        print "configyml : ERROR : missing or malformed " + confdir + '/' + fname
+        print("configyml : ERROR : missing or malformed " + confdir + '/' + fname)
         raise Exception
 
+    # XXX
+    conf = convert(conf)
     try:
         conf['modules']
     except:
-        print "configyml : ERROR : missing modules section in " + fname
+        print("configyml : ERROR : missing modules section in " + fname)
         raise Exception
-        
-    conf = topsort_modules( conf)
+
+    conf = topsort_modules(conf)
     
     return conf
 
@@ -110,9 +126,9 @@ def topsort(depdict):
         found = 0  # flag to check if we find anything new this iteration
         newdepdict = dict()
         # find the keys with no values
-        keynoval = filter(lambda t: t[1] == [], depdict.iteritems())
+        keynoval = [t for t in iter(depdict.items()) if t[1] == []]
         # find the values that are not keys
-        valnotkey = set(flatten(depdict.itervalues())) - set(depdict.iterkeys())
+        valnotkey = set(flatten(iter(depdict.values()))) - set(depdict.keys())
 
         candidates = set([k[0] for k in keynoval]) | valnotkey
         for c in candidates:
@@ -120,9 +136,9 @@ def topsort(depdict):
                 found += 1
                 out[c] = curlevel
 
-        for k in depdict.iterkeys():
+        for k in depdict.keys():
             if depdict[k] != []:
-                newdepdict[k] = filter(lambda v: v not in valnotkey, depdict[k])
+                newdepdict[k] = [v for v in depdict[k] if v not in valnotkey]
         # newdepdict = dict(newdepdict)
         if newdepdict == depdict:
             raise MadPackConfigError(str(depdict))
@@ -149,17 +165,18 @@ def topsort_modules(conf):
         module_dict = topsort(depdict)
     except MadPackConfigError as e:
         raise MadPackConfigError("invalid cyclic dependency between modules: " + e.value + "; check Modules.yml files")
+
     missing = set(module_dict.keys()) - set(depdict.keys())
     inverted = dict()
     if len(missing) > 0:
-        for k in depdict.iterkeys():
+        for k in depdict.keys():
             for v in depdict[k]:
                 if v not in inverted:
                     inverted[v] = set()
                 inverted[v].add(k)
-        print "configyml : ERROR : required modules missing from Modules.yml: " 
+        print("configyml : ERROR : required modules missing from Modules.yml: ")
         for m in missing:
-            print  "    " + m + " (required by " + str(list(inverted[m])) + ")"
+            print("    " + m + " (required by " + str(list(inverted[m])) + ")")
         exit(2)
     conf['modules'] = sorted(conf['modules'], key=lambda m:module_dict[m['name']])
     return conf

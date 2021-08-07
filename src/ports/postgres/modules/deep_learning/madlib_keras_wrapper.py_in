@@ -24,11 +24,9 @@ import plpy
 from collections import defaultdict
 from math import ceil
 
-import madlib_keras_serializer
-import madlib_keras_gpu_info
-from madlib_keras_custom_function import CustomFunctionSchema
-from madlib_keras_custom_function import update_builtin_metrics
-from madlib_keras_custom_function import update_builtin_losses
+from deep_learning.madlib_keras_custom_function import CustomFunctionSchema
+from deep_learning.madlib_keras_custom_function import update_builtin_metrics
+from deep_learning.madlib_keras_custom_function import update_builtin_losses
 
 from utilities.utilities import _assert
 from utilities.utilities import is_platform_pg
@@ -36,19 +34,19 @@ from utilities.utilities import current_user
 from utilities.utilities import is_superuser
 
 import tensorflow as tf
-from tensorflow.keras import backend as K
-from tensorflow.keras import utils as keras_utils
-from tensorflow.keras.optimizers import *
-from tensorflow.keras.callbacks import TensorBoard
+from keras import backend as K
+from keras.optimizers import *
+from keras.callbacks import TensorBoard
 
-import tensorflow.keras.optimizers as opt
-import tensorflow.keras.losses as losses
-import tensorflow.keras.metrics as metrics
+import keras.optimizers as opt
+import keras.losses as losses
+import keras.metrics as metrics
 
 CUDA_VISIBLE_DEVICES_KEY = 'CUDA_VISIBLE_DEVICES'
 #######################################################################
 ########### Keras specific functions #####
 #######################################################################
+
 
 def set_cuda_env(value):
     """
@@ -56,6 +54,7 @@ def set_cuda_env(value):
     :return:
     """
     os.environ[CUDA_VISIBLE_DEVICES_KEY] = value
+
 
 def reset_cuda_env(value):
     """
@@ -69,12 +68,14 @@ def reset_cuda_env(value):
         if CUDA_VISIBLE_DEVICES_KEY in os.environ:
             del os.environ[CUDA_VISIBLE_DEVICES_KEY]
 
+
 def enable_xla():
     os.environ['TF_XLA_FLAGS'] = '--tf_xla_auto_jit=2 --tf_xla_cpu_global_jit'
     try:
         tf.config.optimizer.set_jit(True)
     except:
         plpy.warning("This version of tensorflow does not fully support XLA auto-cluster JIT optimization.  HINT:  upgrading to tensorflow 1.14.0 may improve performance.")
+
 
 def get_device_name_and_set_cuda_env(gpu_count, seg):
     if gpu_count > 0:
@@ -89,9 +90,11 @@ def get_device_name_and_set_cuda_env(gpu_count, seg):
         set_cuda_env('-1')
     return device_name
 
+
 def set_keras_session(device_name, gpu_count, segments_per_host):
     session = get_keras_session(device_name, gpu_count, segments_per_host)
     K.set_session(session)
+
 
 def get_keras_session(device_name, gpu_count, segments_per_host):
     config = tf.ConfigProto()
@@ -102,6 +105,7 @@ def get_keras_session(device_name, gpu_count, segments_per_host):
     session = tf.Session(config=config)
     enable_xla()
     return session
+
 
 def clear_keras_session(sess = None):
     if sess is None:
@@ -120,11 +124,13 @@ def get_gpu_memory_fraction(gpu_count, segments_per_host):
     """
     return 0.9 / ceil(1.0 * segments_per_host / gpu_count)
 
+
 def get_model_shapes(model):
     model_shapes = []
     for a in model.get_weights():
         model_shapes.append(a.shape)
     return model_shapes
+
 
 def compile_and_set_weights(segment_model, compile_params, device_name,
                             serialized_weights):
@@ -148,6 +154,7 @@ Used to convert compile_params and fit_params to actual argument dictionaries
 If strip_quotes is True, each value in the dictionary will be stripped of quotes
 """
 
+
 def convert_string_of_args_to_dict(str_of_args, strip_quotes=True):
     """Uses parenthases matching algorithm to intelligently convert
     a string with valid python code into an argument dictionary"""
@@ -161,10 +168,10 @@ def convert_string_of_args_to_dict(str_of_args, strip_quotes=True):
     key_str = ""
     compile_dict = {}
     for char in str_of_args:
-        if char in dual.keys():
+        if char in list(dual.keys()):
             stack.append(char)
             result_str += char
-        elif char in dual.values() and stack:
+        elif char in list(dual.values()) and stack:
             if dual[stack[-1]] == char:
                 stack.pop(-1)
             result_str += char
@@ -188,6 +195,7 @@ def convert_string_of_args_to_dict(str_of_args, strip_quotes=True):
     compile_dict[key_str]=value_str
     return compile_dict
 
+
 def get_metrics_from_compile_param(str_of_args):
     compile_dict = convert_string_of_args_to_dict(str_of_args)
     metrics = None
@@ -200,6 +208,7 @@ def get_metrics_from_compile_param(str_of_args):
                         "please refer to the documentation"))
     return metrics
 
+
 def get_loss_from_compile_param(str_of_args):
     compile_dict = convert_string_of_args_to_dict(str_of_args)
     loss = None
@@ -209,6 +218,7 @@ def get_loss_from_compile_param(str_of_args):
         plpy.error(("Invalid input value for parameter 'loss', "
                     "please refer to the documentation"))
     return loss
+
 
 # Parse the compile parameters and the optimizer.
 def parse_and_validate_compile_params(str_of_args, additional_params=[]):
@@ -243,8 +253,9 @@ def parse_and_validate_compile_params(str_of_args, additional_params=[]):
     _validate_metrics(compile_dict)
     return (opt_name, opt_args, compile_dict)
 
+
 def _validate_metrics(compile_dict):
-    _assert('metrics' not in compile_dict.keys() or
+    _assert('metrics' not in list(compile_dict.keys()) or
             compile_dict['metrics'] is None or
             type(compile_dict['metrics']) is list,
             "wrong input type for compile parameter metrics: multi-output model"
@@ -261,6 +272,7 @@ def _validate_metrics(compile_dict):
         _assert(compile_dict['metrics'][0] not in unsupported_metrics_list,
                 "Metric {0} is not supported.".format(compile_dict['metrics'][0]))
 
+
 # Parse the optimizer name and params.
 def parse_optimizer(compile_dict):
     """
@@ -273,7 +285,7 @@ def parse_optimizer(compile_dict):
     opt_split = compile_dict['optimizer'].split('(')
     opt_name = opt_split[0]
     optimizers = get_optimizers()
-    _assert(opt_name.lower() in [o.lower() for o in optimizers.keys()],
+    _assert(opt_name.lower() in [o.lower() for o in list(optimizers.keys())],
             "model_keras error: invalid optimizer name: {0}".format(opt_name))
 
     # If we use only the optimizer name
@@ -286,11 +298,11 @@ def parse_optimizer(compile_dict):
     else:
         opt_params = opt_split[1][:-1]
         opt_params_array = opt_params.split(',')
-        opt_params_clean = map(split_and_strip, opt_params_array)
+        opt_params_clean = list(map(split_and_strip, opt_params_array))
         key_value_params = { x[0] : x[1] for x in opt_params_clean}
 
         final_args = {}
-        for key,value in key_value_params.iteritems():
+        for key,value in key_value_params.items():
             if value == 'None':
                 final_args[key] = None
             elif value == 'True' or value == 'False':
@@ -320,6 +332,7 @@ def parse_and_validate_fit_params(fit_param_str, current_seg_id=-1):
     else:
         return {}
 
+
 # Parse the callback fit params and create the TensorBoard object in the dictionary
 def parse_callbacks(callbacks, current_seg_id=-1):
     callbacks = callbacks.strip("'")
@@ -345,10 +358,11 @@ def parse_callbacks(callbacks, current_seg_id=-1):
 
     return [TensorBoard(**tb_params_dict)]
 
+
 # Validate the keys of the given dictionary and run literal_eval on the
 # user-defined subset
 def validate_and_literal_eval_keys(keys_dict, literal_eval_list, accepted_list):
-    for ckey in keys_dict.keys():
+    for ckey in list(keys_dict.keys()):
         _assert(ckey in accepted_list,
                 "{0} is not currently accepted as a parameter. ".format(ckey))
         if ckey in literal_eval_list:
@@ -359,10 +373,12 @@ def validate_and_literal_eval_keys(keys_dict, literal_eval_list, accepted_list):
                             "please refer to the documentation").format(ckey, keys_dict[ckey]))
     return keys_dict
 
+
 # Split and strip the whitespace of key=value formatted strings
 def split_and_strip(x):
     y = x.split('=')
     return (y[0].strip(),y[1].strip())
+
 
 # Return the list of keras optimizers
 def get_optimizers():
@@ -375,6 +391,7 @@ def get_optimizers():
             'tensorflow.python.keras.optimizer' in optimizer.__module__:
             optimizers[n] = optimizer
     return optimizers
+
 
 # Run the keras.compile with the given parameters
 def compile_model(model, compile_params, custom_function_map=None):
@@ -397,24 +414,26 @@ def compile_model(model, compile_params, custom_function_map=None):
     compile_dict['optimizer'] = optimizers[opt_name](**final_args) if final_args else opt_name
     model.compile(**compile_dict)
 
+
 def validate_compile_param_types(compile_dict):
-    _assert('loss_weights' not in compile_dict.keys() or
+    _assert('loss_weights' not in list(compile_dict.keys()) or
             compile_dict['loss_weights'] is None or
             type(compile_dict['loss_weights']) is list or
             type(compile_dict['loss_weights']) is dict,
             "wrong input type for compile parameter loss_weights: only list "
             "and dictionary are supported.")
 
-    _assert('weighted_metrics' not in compile_dict.keys() or
+    _assert('weighted_metrics' not in list(compile_dict.keys()) or
             compile_dict['weighted_metrics'] is None or
             type(compile_dict['weighted_metrics']) is list,
             "wrong input type for compile parameter weighted_metrics: only list "
             "is supported.")
 
-    _assert('sample_weight_mode' not in compile_dict.keys() or
+    _assert('sample_weight_mode' not in list(compile_dict.keys()) or
             compile_dict['sample_weight_mode'] is None or
             compile_dict['sample_weight_mode'] == "temporal",
             """compile parameter sample_weight_mode can only be "temporal" or None""")
+
 
 # Returns an object of custom function name and it corresponding object
 def query_custom_functions_map(object_table, custom_fn_names):
@@ -459,6 +478,7 @@ def query_custom_functions_map(object_table, custom_fn_names):
         custom_fn_map[r[CustomFunctionSchema.FN_NAME]] = dill.loads(r[custom_obj_col_name])
     custom_fn_map_obj = dill.dumps(custom_fn_map)
     return custom_fn_map_obj
+
 
 def get_custom_functions_list(compile_params):
     """

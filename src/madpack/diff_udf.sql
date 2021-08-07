@@ -8,7 +8,7 @@ RETURNS text AS $$
     if argstr is None:
         return "NULL"
     return argstr.replace(schema_name + ".", '')
-$$ LANGUAGE plpythonu;
+$$ LANGUAGE plpython3u;
 
 
 CREATE OR REPLACE FUNCTION get_functions(table_name text, schema_name text,
@@ -84,7 +84,7 @@ plpy.execute("""
     WHERE retype LIKE '{type_filter}' OR retype LIKE '{type_filter}[]'
     """.format(table_name=table_name, schema_name=schema_name,
         type_filter=type_filter, proisagg_wrapper=proisagg_wrapper))
-$$ LANGUAGE plpythonu;
+$$ LANGUAGE plpython3u;
 
 
 DROP TABLE IF EXISTS functions_madlib_old_version;

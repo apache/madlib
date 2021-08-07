@@ -2,12 +2,17 @@
 # PostgreSQL Port
 # ------------------------------------------------------------------------------
 
+message(STATUS "!!TODO Platform run in src/ports/postgres/CMakeLists.txt")
+message(STATUS "!!TODO Platform 's CMAKE_CURRENT_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}")
+
 set(PORT "PostgreSQL")
 string(TOUPPER ${PORT} PORT_UC)
 string(TOLOWER ${PORT} PORT_LC)
 set(PORT_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 get_filename_component(PORT_DIR_NAME "${PORT_SOURCE_DIR}" NAME)
 set(PORT_DEPLOY_SCRIPT "${CMAKE_BINARY_DIR}/deploy/Component_${PORT}.cmake")
+
+message(STATUS "!!TODO Platform 's PORT_DEPLOY_SCRIPT ${PORT_DEPLOY_SCRIPT}")
 
 list(APPEND CMAKE_MODULE_PATH
     ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
@@ -171,6 +176,7 @@ function(add_${PORT_LC}_library IN_PORT_VERSION)
     define_postgresql_features(${IN_PORT_VERSION} DBMS_FEATURES)
     define_m4_macros(M4_DEFINES_CMD_LINE M4_DEFINES_CODE ${DBMS_FEATURES})
 
+    message(STATUS "!!TODO run m4 ${DBMS_FEATURES}")
     add_python_files(
         PYTHON_TARGET_FILES
         "${PORT_SOURCE_DIR}/modules"
@@ -201,10 +207,11 @@ function(add_${PORT_LC}_library IN_PORT_VERSION)
 
     # END Legacy Code
 
-    configure_file("${PORT_SOURCE_DIR}/madpack/SQLCommon.m4_in"
-        "${CMAKE_CURRENT_BINARY_DIR}/madpack/SQLCommon.m4"
-        @ONLY
-    )
+    # TODO py3
+    #configure_file("${PORT_SOURCE_DIR}/madpack/SQLCommon.m4_in"
+    #    "${CMAKE_CURRENT_BINARY_DIR}/madpack/SQLCommon.m4"
+    #    @ONLY
+    #)
 
     add_custom_target(pythonFiles_${DBMS} ALL
         DEPENDS ${PYTHON_TARGET_FILES})
@@ -242,6 +249,9 @@ macro(add_current_${PORT_LC}_version)
     get_filename_component(_VERSION "${CMAKE_CURRENT_SOURCE_DIR}" NAME)
     string(REPLACE "." "_" _VERSION_UNDERSCORES ${_VERSION})
 
+    # TODO
+    # set(PostgreSQL_ADDITIONAL_VERSIONS _VERSION_UNDERSCORES)
+    # find_package(${PORT})
     find_package(${PORT}_${_VERSION_UNDERSCORES})
     if(${PORT_UC}_${_VERSION_UNDERSCORES}_FOUND)
         add_postgresql_library(${_VERSION})

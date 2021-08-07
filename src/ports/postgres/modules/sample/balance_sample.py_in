@@ -113,7 +113,7 @@ def _get_level_frequency_distribution(source_table, class_col,
         # key in a dictionary
         grp = tuple(each_row['group_values']) if is_grouping else None
         grp_levels, grp_counts = each_row['classes'], each_row['class_count']
-        actual_grp_level_counts[grp] = dict(zip(grp_levels, grp_counts))
+        actual_grp_level_counts[grp] = dict(list(zip(grp_levels, grp_counts)))
     return actual_grp_level_counts
 # ------------------------------------------------------------------------------
 
@@ -208,8 +208,8 @@ def _get_desired_target_level_counts(desired_level_counts,
     """
     target_grp_level_counts = defaultdict(dict)
     n_grp_values = len(actual_grp_level_counts)
-    for each_grp, actual_level_counts in actual_grp_level_counts.items():
-        for each_level, desired_count in desired_level_counts.items():
+    for each_grp, actual_level_counts in list(actual_grp_level_counts.items()):
+        for each_level, desired_count in list(desired_level_counts.items()):
             # actual_grp_level_counts are group specific, whereas
             # desired_level_counts are evenly split among all groups
             try:
@@ -268,7 +268,7 @@ def _get_supported_target_level_counts(sampling_strategy_str,
     """
     target_grp_level_counts = defaultdict(dict)
     n_grp_values = len(actual_grp_level_counts)
-    for each_grp, actual_level_counts in actual_grp_level_counts.items():
+    for each_grp, actual_level_counts in list(actual_grp_level_counts.items()):
         if sampling_strategy_str == UNIFORM:
             # UNIFORM: Ensure all level counts are same
             if output_table_size:
@@ -290,7 +290,7 @@ def _get_supported_target_level_counts(sampling_strategy_str,
                 raise RuntimeError("Balance sample: Invalid "
                                    "sampling_strategy_str encountered")
 
-        for each_level, actual_count in actual_level_counts.items():
+        for each_level, actual_count in list(actual_level_counts.items()):
             sample_strategy = _choose_strategy(actual_count, target_size_per_level)
             target_grp_level_counts[each_grp][each_level] = (
                 target_size_per_level, sample_strategy)
@@ -342,7 +342,7 @@ def _get_sampling_strategy_counts(target_class_sizes):
     undersample_level_counts = {}
     oversample_level_counts = {}
     nosample_level_counts = {}
-    for level, (count, strategy) in target_class_sizes.items():
+    for level, (count, strategy) in list(target_class_sizes.items()):
         if strategy == UNDERSAMPLE:
             undersample_level_counts[level] = count
         elif strategy == OVERSAMPLE:
@@ -364,7 +364,7 @@ def _get_nosample_subquery(source_table, class_col, nosample_levels,
                                    for level in nosample_levels if level])
     if grp_dict:
         grp_filter = ' AND ' + ' AND '.join("{0} = '{1}'".format(k, v)
-                                            for k, v in grp_dict.items())
+                                            for k, v in list(grp_dict.items()))
     else:
         grp_filter = ''
     return """
@@ -392,7 +392,7 @@ def _get_without_replacement_subquery(schema_madlib, source_table, class_col,
     null_value_string = "'{0}'".format(NULL_IDENTIFIER)
     desired_level_count_pairs = (','.join("({0}, {1})".
                                  format("'{0}'::text".format(k) if k else null_value_string, v)
-                                 for k, v in desired_level_counts.items()))
+                                 for k, v in list(desired_level_counts.items())))
     desired_level_counts_str = "VALUES " + desired_level_count_pairs
     # Subquery q2 is used to figure out the number of rows to select for each
     # class level. That is used with row_number to order the input rows randomly,
@@ -403,7 +403,7 @@ def _get_without_replacement_subquery(schema_madlib, source_table, class_col,
     #    contains: (class_level, the_desired_number_of_rows)
     if grp_dict:
         grp_filter = ' AND ' + ' AND '.join("{0} = '{1}'".format(k, v)
-                                            for k, v in grp_dict.items())
+                                            for k, v in list(grp_dict.items()))
     else:
         grp_filter = ''
     subquery = """
@@ -451,7 +451,7 @@ def _get_with_replacement_subquery(schema_madlib, source_table, class_col,
     desired_and_actual_count = (','.join("({0}, {1}, {2})".
                                 format("'{0}'::text".format(k) if k else null_value_string,
                                        v, actual_level_counts[k])
-                                for k, v in desired_level_counts.items()))
+                                for k, v in list(desired_level_counts.items())))
     desired_and_actual_level_count_str = "VALUES " + desired_and_actual_count
 
     # q1 and q2 are two sub queries we create to generate the required number of
@@ -470,7 +470,7 @@ def _get_with_replacement_subquery(schema_madlib, source_table, class_col,
     # The WHERE clause is used to join the two subqueries to obtain the result.
     if grp_dict:
         grp_filter = 'WHERE ' + ' AND '.join("{0} = '{1}'".format(k, v)
-                                             for k, v in grp_dict.items())
+                                             for k, v in list(grp_dict.items()))
     else:
         grp_filter = ''
     subquery = """
@@ -578,7 +578,7 @@ def balance_sample(schema_madlib, source_table, output_table, class_col,
         else:
             sampling_strategy_str = None
             try:
-                for each_level, each_class_size in parsed_class_sizes.items():
+                for each_level, each_class_size in list(parsed_class_sizes.items()):
                     _assert(each_level in distinct_levels,
                             "Sample: Invalid class value specified ({0})".
                             format(each_level))
@@ -607,7 +607,7 @@ def balance_sample(schema_madlib, source_table, output_table, class_col,
         grp_cols_list = grp_col_str.split(',') if grp_cols else []
 
         # for each group
-        for grp_vals, actual_level_counts in actual_grp_level_counts.items():
+        for grp_vals, actual_level_counts in list(actual_grp_level_counts.items()):
             target_class_sizes = target_grp_class_sizes[grp_vals]
 
             (undersample_level_counts,
@@ -616,14 +616,14 @@ def balance_sample(schema_madlib, source_table, output_table, class_col,
 
             # grp_dict represents each grouping column and its value
             # for current iteration
-            grp_dict = dict(zip(grp_cols_list, grp_vals)) if grp_cols else None
+            grp_dict = dict(list(zip(grp_cols_list, grp_vals))) if grp_cols else None
 
             # Get subqueries for each sampling strategy and union together in
             # one big query.
 
             # NOSAMPLE are levels that are to be retained in output without sampling
             nosample_subquery = _get_nosample_subquery(
-                new_source_table, class_col, nosample_level_counts.keys(), grp_dict)
+                new_source_table, class_col, list(nosample_level_counts.keys()), grp_dict)
             # OVERSAMPLE are levels that to be sampled more than existing count
             # (always with replacement)
             oversample_subquery = _get_with_replacement_subquery(

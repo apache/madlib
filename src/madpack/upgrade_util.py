@@ -178,9 +178,9 @@ class ChangeHandler(UpgradeBase):
         _return_obj = defaultdict(list) if not output_config_dict else output_config_dict
         if config_iterable is not None:
             for each_config in config_iterable:
-                for obj_name, obj_details in each_config.iteritems():
+                for obj_name, obj_details in each_config.items():
                     formatted_obj = {}
-                    for k, v in obj_details.items():
+                    for k, v in list(obj_details.items()):
                         v = v.lower().replace('schema_madlib', self._schema) if v else ""
                         formatted_obj[k] = v
                     _return_obj[obj_name].append(formatted_obj)
@@ -195,7 +195,7 @@ class ChangeHandler(UpgradeBase):
         Iterable.
         """
         if src_dict:
-            for k, v in src_dict.items():
+            for k, v in list(src_dict.items()):
                 if k in dest_dict:
                     if (isinstance(dest_dict[k], Iterable) and isinstance(v, Iterable)):
                         dest_dict[k] += v
@@ -349,7 +349,7 @@ class ChangeHandler(UpgradeBase):
         ret = []
 
         changed_ops = set()
-        for op, li in self._udo.items():
+        for op, li in list(self._udo.items()):
             for e in li:
                 changed_ops.add((op, e['leftarg'], e['rightarg']))
 
@@ -375,7 +375,7 @@ class ChangeHandler(UpgradeBase):
         ret = []
 
         changed_opcs = set()
-        for opc, li in self._udoc.items():
+        for opc, li in list(self._udoc.items()):
             for e in li:
                 changed_opcs.add((opc, e['index']))
         gte_gpdb5 = (self._portid == 'greenplum' and
@@ -626,12 +626,12 @@ class ViewDependency(UpgradeBase):
     def _filter_recursive_view_dependency(self):
         # Get initial list
         checklist = []
-        checklist.extend(self._view2proc.keys())
-        checklist.extend(self._view2op.keys())
+        checklist.extend(list(self._view2proc.keys()))
+        checklist.extend(list(self._view2op.keys()))
 
         while True:
             new_checklist = []
-            for depender, dependeelist in self._view2view.iteritems():
+            for depender, dependeelist in self._view2view.items():
                 for dependee in dependeelist:
                     if dependee in checklist and depender not in checklist:
                         new_checklist.append(depender)
@@ -643,7 +643,7 @@ class ViewDependency(UpgradeBase):
 
         # Filter recursive dependencies not related with MADLib UDF/UDAs
         filtered_view2view = defaultdict(list)
-        for depender, dependeelist in self._view2view.iteritems():
+        for depender, dependeelist in self._view2view.items():
             filtered_dependeelist = [r for r in dependeelist if r in checklist]
             if len(filtered_dependeelist) > 0:
                 filtered_view2view[depender] = filtered_dependeelist
@@ -718,7 +718,7 @@ class ViewDependency(UpgradeBase):
         @brief Get the depended UDF/UDA signatures for comparison
         """
         res = {}
-        for procs in self._view2proc.values():
+        for procs in list(self._view2proc.values()):
             for proc in procs:
                 if proc[2] == tag and (self._schema, proc) not in res:
                     funcinfo = self._get_function_info(proc[1])
@@ -733,7 +733,7 @@ class ViewDependency(UpgradeBase):
         @brief Get the depended UDO OIDs for comparison
         """
         res = set()
-        for depended_ops in self._view2op.values():
+        for depended_ops in list(self._view2op.values()):
             for op_entry in depended_ops:
                 res.add(op_entry[1])
 
@@ -741,7 +741,7 @@ class ViewDependency(UpgradeBase):
 
     def get_proc_w_dependency(self, tag='UDA'):
         res = []
-        for procs in self._view2proc.values():
+        for procs in list(self._view2proc.values()):
             for proc in procs:
                 if proc[2] == tag and (self._schema, proc) not in res:
                     res.append((self._schema, proc))
@@ -935,7 +935,7 @@ class TableDependency(UpgradeBase):
         @brief Get the list of depended UDOC OIDs
         """
         res = set()
-        for depended_opcs in self._index2opclass.values():
+        for depended_opcs in list(self._index2opclass.values()):
             for opc_entry in depended_opcs:
                 res.add(opc_entry[0])
 
@@ -1070,7 +1070,7 @@ class ScriptCleaner(UpgradeBase):
         self._get_existing_udo()  # from the old version
         operator_patterns = []
         # for all, pass the changed ones, add others to ret
-        for each_udo, udo_details in self._existing_udo.items():
+        for each_udo, udo_details in list(self._existing_udo.items()):
             for each_item in udo_details:
                 if each_udo in self._ch.udo:
                     if each_item in self._ch.udo[each_udo]:
@@ -1097,7 +1097,7 @@ class ScriptCleaner(UpgradeBase):
         self._get_existing_udoc()  # from the old version
         opclass_patterns = []
         # for all, pass the changed ones, add others to ret
-        for each_udoc, udoc_details in self._existing_udoc.items():
+        for each_udoc, udoc_details in list(self._existing_udoc.items()):
             for each_item in udoc_details:
                 if each_udoc in self._ch.udoc:
                     if each_item in self._ch.udoc[each_udoc]:
@@ -1122,7 +1122,7 @@ class ScriptCleaner(UpgradeBase):
         self._get_existing_uda()
         aggregate_patterns = []
 
-        for each_uda, uda_details in self._existing_uda.iteritems():
+        for each_uda, uda_details in self._existing_uda.items():
             for each_item in uda_details:
                 if each_uda in self._ch.uda:
                     if each_item in self._ch.uda[each_uda]:
@@ -1343,7 +1343,7 @@ class TestChangeHandler(unittest.TestCase):
         ch = ChangeHandler(self._dummy_schema, self._dummy_portid,
                            self._dummy_con_args, self.maddir,
                            '1.9.1', upgrade_to=get_rev_num('1.12'))
-        self.assertEqual(ch.newmodule.keys(),
+        self.assertEqual(list(ch.newmodule.keys()),
                          ['knn', 'sssp', 'apsp', 'measures', 'stratified_sample',
                           'encode_categorical', 'bfs', 'mlp', 'pagerank',
                           'train_test_split', 'wcc'])

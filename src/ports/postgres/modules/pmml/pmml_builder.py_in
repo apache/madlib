@@ -3,7 +3,7 @@ import plpy
 from binding import *
 import binding
 from pyxb.utils.domutils import BindingDOMSupport as bds
-from formula import Formula
+from pmml.formula import Formula
 
 from glm.glm import __extract_family_params as extract_family_params
 
@@ -529,10 +529,10 @@ class MultinomRegressionPMMLBuilder(MultiClassRegressionPMMLBuilder):
             grp_val = tuple([r[k] for k in self.grouping_keys])
             # grouping values -> { category -> coef}
             coef_dict[grp_val].update({r['category']: r['coef']})
-        self.grouped_coefs = [dict(zip(self.grouping_keys, grp_val)+[('coef', coef)])
-                              for grp_val, coef in coef_dict.iteritems()]
-        self.coef0 = coef_dict.values()[0]
-        self.n_coef = len(self.coef0.values()[0])
+        self.grouped_coefs = [dict(list(zip(self.grouping_keys, grp_val))+[('coef', coef)])
+                              for grp_val, coef in coef_dict.items()]
+        self.coef0 = list(coef_dict.values())[0]
+        self.n_coef = len(list(self.coef0.values())[0])
 
     def _create_single_model(self, coef):
         self._build_mining_schema()
@@ -542,7 +542,7 @@ class MultinomRegressionPMMLBuilder(MultiClassRegressionPMMLBuilder):
 
         # pcells
         pcell_forest = []
-        for cate, coef_per_cate in coef.iteritems():
+        for cate, coef_per_cate in coef.items():
             pcell_forest.append(PCell(parameterName="p0",
                                       beta=0, df='1', targetCategory=cate))
             for i, c in enumerate(coef_per_cate):
@@ -661,7 +661,7 @@ class DecisionTreePMMLBuilder(PMMLBuilder):
                               for g in self.output]
         for i in range(len(self.output)):
             self.grouped_coefs[i].update(
-                dict((k, v) for k, v in self.output[i].items()
+                dict((k, v) for k, v in list(self.output[i].items())
                      if k not in ['frame', 'cat_levels_in_text',
                                   'cat_n_levels', 'thresholds']))
         self.coef0 = self.grouped_coefs[0]['coef']
@@ -732,7 +732,7 @@ class DecisionTreePMMLBuilder(PMMLBuilder):
         # all node information, see madlib.rpart, double[][]
         frame = self._get_one_frame_matrix(coef['frame'])
         row_id = self._frame_row_id(frame)
-        id_to_row = dict((rid, i) for rid, i in zip(row_id, range(len(frame))))
+        id_to_row = dict((rid, i) for rid, i in zip(row_id, list(range(len(frame)))))
         split_var = self._frame_row_names(frame)
 
         cat_n = coef['cat_n']           # number of categorical levels, int[]
@@ -742,7 +742,7 @@ class DecisionTreePMMLBuilder(PMMLBuilder):
         thresh = self._get_one_thresh_matrix(coef['thresholds'])
 
         cat_name_to_id = dict((var, i) for var, i in
-                              zip(self.cat_features, range(len(cat_levels))))
+                              zip(self.cat_features, list(range(len(cat_levels)))))
 
         # Map from row number to indices of the primary and all surrogates
         row_to_thresh = {}
@@ -750,8 +750,8 @@ class DecisionTreePMMLBuilder(PMMLBuilder):
         for row in range(len(frame)):
             if frame[row][0] >= 0:
                 n_surr = int(frame[row][7])
-                row_to_thresh[row] = range(curr_thresh_index,
-                                           1 + n_surr + curr_thresh_index)
+                row_to_thresh[row] = list(range(curr_thresh_index,
+                                           1 + n_surr + curr_thresh_index))
                 curr_thresh_index += 1 + n_surr
         # plpy.info("thresh:\n" + str(thresh))
         # plpy.info("row_to_thresh:\n" + str(row_to_thresh))
@@ -803,9 +803,9 @@ class DecisionTreePMMLBuilder(PMMLBuilder):
             if is_split_categorical:
                 levels = cat_levels[thresh_row[0]]
                 if is_left:
-                    selected_level_indices = range(int(thresh_row[1]+1), len(levels))
+                    selected_level_indices = list(range(int(thresh_row[1]+1), len(levels)))
                 else:
-                    selected_level_indices = range(0, int(thresh_row[1]+1))
+                    selected_level_indices = list(range(0, int(thresh_row[1]+1)))
                 simple_predicates = [
                     SimplePredicate(field=self.x[thresh_row[0]],
                                     operator="equal",
@@ -1064,7 +1064,7 @@ class RandomForestPMMLBuilder(DecisionTreePMMLBuilder):
                        'gid': g['gid']})
             self.grouped_coefs[gid - 1]['coef'] = dl
             self.grouped_coefs[gid - 1].update(
-                dict((k, v) for k, v in g.items()
+                dict((k, v) for k, v in list(g.items())
                      if k not in ['frame', 'cat_levels_in_text',
                                   'cat_n_levels', 'thresholds', 'gid']))
 

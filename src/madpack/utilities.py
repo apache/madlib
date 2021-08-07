@@ -21,12 +21,15 @@
 # Madpack utilities
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 
-from itertools import izip_longest
+from itertools import zip_longest
 import os
 import re
 import sys
 import subprocess
 import unittest
+
+# Import MADlib python modules
+import configyml
 
 # Some read-only variables
 this = os.path.basename(sys.argv[0])    # name of this script
@@ -46,7 +49,7 @@ def error_(src_name, msg, stop=False):
         @param stop program exit flag
     """
     # Print to stdout
-    print("{0}: ERROR : {1}".format(src_name, msg))
+    print(("{0}: ERROR : {1}".format(src_name, msg)))
     # stack trace is not printed
     if stop:
         exit(2)
@@ -60,7 +63,7 @@ def info_(src_name, msg, verbose=True):
         @param verbose prints only if True (prevents caller from performing a check)
     """
     if verbose:
-        print("{0}: INFO : {1}".format(src_name, msg))
+        print(("{0}: INFO : {1}".format(src_name, msg)))
 # ------------------------------------------------------------------------------
 
 def remove_comments_from_sql(sql):
@@ -112,7 +115,8 @@ def run_query(sql, con_args, show_error=True):
     if err:
         if show_error:
             error_("SQL command failed: \nSQL: %s \n%s" % (sql, err), False)
-        if 'password' in err:
+        # XXX py3
+        if 'password' in err.decode():
             raise EnvironmentError
         else:
             raise Exception
@@ -121,6 +125,8 @@ def run_query(sql, con_args, show_error=True):
     results = []  # list of rows
     i = 0
     for line in std.splitlines():
+        # XXX py3
+        line = line.decode()
         if i == 0:
             cols = [name for name in line.split(delimiter)]
         else:
@@ -175,7 +181,7 @@ def get_db_madlib_version(con_args, schema):
 def get_dbver(con_args, portid):
     """ Read version number from database (of form X.Y) """
     try:
-        versionStr = run_query("SELECT pg_catalog.version()", con_args, True)[0]['version']
+        versionStr = run_query("SELECT pg_catalog.version();", con_args, True)[0]['version']
         if portid == 'postgres':
             match = re.search("PostgreSQL[a-zA-Z\s]*(\d+\.\d+)", versionStr)
         elif portid == 'greenplum':
@@ -223,7 +229,7 @@ def is_rev_gte(left, right):
     if all_numeric(left) and all_numeric(right):
         return left >= right
     else:
-        for i, (l_e, r_e) in enumerate(izip_longest(left, right)):
+        for i, (l_e, r_e) in enumerate(zip_longest(left, right)):
             if isinstance(l_e, int) and isinstance(r_e, int):
                 if l_e == r_e:
                     continue
@@ -272,7 +278,7 @@ def get_rev_num(rev):
         num += [0] * (3 - len(num))  # normalize num to be of length 3
         # get identifier part of the version string
         if len(rev_parts) > 1:
-            num.extend(map(str, rev_parts[1:]))
+            num.extend(list(map(str, rev_parts[1:])))
         if not num:
             num = [0]
         return num

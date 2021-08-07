@@ -7,7 +7,7 @@
 @namespace decision_tree
 """
 
-from __future__ import division
+
 import plpy
 from math import sqrt
 from operator import itemgetter
@@ -269,7 +269,7 @@ def _get_tree_states(schema_madlib, is_classification, split_criterion,
                                           for i, c in enumerate(dep_list)]) +
                            "\nEND)")
     else:
-        n_rows = long(plpy.execute("SELECT count(*)::bigint "
+        n_rows = int(plpy.execute("SELECT count(*)::bigint "
                                    "FROM {src} "
                                    "WHERE {filter}".
                                    format(src=training_table_name,
@@ -325,10 +325,10 @@ def _get_tree_states(schema_madlib, is_classification, split_criterion,
                 tree_states = _tree_train_grps_using_bins(**locals())
                 for tree in tree_states:
                     grp_key = tree['grp_key']
-                    if len(grp_key_to_cp.values()) == 1:
+                    if len(list(grp_key_to_cp.values())) == 1:
                         # for train w/out CV, the cp value remains the same for
                         # all groups. This is passed as a single-element list.
-                        tree['cp'] = grp_key_to_cp.values()[0]
+                        tree['cp'] = list(grp_key_to_cp.values())[0]
                     else:
                         tree['cp'] = grp_key_to_cp[grp_key]
 
@@ -409,7 +409,7 @@ def _build_tree(schema_madlib, is_classification, split_criterion,
 
         n_all_rows = plpy.execute("select count(*) from " + training_table_name
                                   )[0]['count']
-        cp = grp_key_to_cp.values()[0]
+        cp = list(grp_key_to_cp.values())[0]
 
         # _create_output_tables(...) is a general function
         # we need to let it know that right now it is called from CV.
@@ -600,7 +600,7 @@ def _get_n_and_deplist(training_table_name, dependent_variable, filter_null):
                    filter_null=filter_null)
     r = plpy.execute(sql)[0]
     r['n_rows'] = 0 if r['n_rows'] is None else r['n_rows']
-    return long(r['n_rows']), r['dep']
+    return int(r['n_rows']), r['dep']
 # ------------------------------------------------------------
 
 
@@ -756,15 +756,15 @@ def _get_bins(schema_madlib, training_table_name,
                        filter_str=filter_str,
                        union_null_proxy=union_null_proxy)
 
-        all_col_expressions = dict(zip(cat_features, explicit_bool_to_text(
-            training_table_name, cat_features, schema_madlib)))
+        all_col_expressions = dict(list(zip(cat_features, explicit_bool_to_text(
+            training_table_name, cat_features, schema_madlib))))
 
         sql_all_cats = ' UNION '.join(
             sql_cat_levels.format(
                 col=expr,
                 col_name=col_name,
                 order_fun=expr if col_name in ordered_cat_features else order_fun)
-            for col_name, expr in all_col_expressions.items())
+            for col_name, expr in list(all_col_expressions.items()))
         all_levels = plpy.execute(sql_all_cats)
         col_to_row = dict((row['colname'], i) for i, row in enumerate(all_levels))
 
@@ -987,14 +987,14 @@ def _get_bins_grps(
                 ) s1
                 """.format(**locals())
 
-        all_col_expressions = dict(zip(cat_features, explicit_bool_to_text(
-            training_table_name, cat_features, schema_madlib)))
+        all_col_expressions = dict(list(zip(cat_features, explicit_bool_to_text(
+            training_table_name, cat_features, schema_madlib))))
         sql_all_cats = ' UNION ALL '.join(
             sql_cat_levels.format(
                 col=expr,
                 col_name=col_name,
                 order_fun=expr if col_name in ordered_cat_features else order_fun)
-            for col_name, expr in all_col_expressions.items())
+            for col_name, expr in list(all_col_expressions.items()))
 
         all_levels = list(plpy.execute(sql_all_cats))
         all_levels.sort(key=itemgetter('grp_key'))
@@ -1015,7 +1015,7 @@ def _get_bins_grps(
         grp_to_col_to_levels = [
             (grp_key, dict((row['colname'], row['levels']) for row in items))
             for grp_key, items in groupby(all_levels, key=itemgetter('grp_key'))]
-        grp_to_cat_features = dict([(g, col_to_levels.keys())
+        grp_to_cat_features = dict([(g, list(col_to_levels.keys()))
                                     for (g, col_to_levels) in grp_to_col_to_levels])
         # Below statements collect the grp_to_col_to_levels into multiple variables
         # From above eg.
@@ -1079,13 +1079,13 @@ def _create_cat_features_info_table(cat_features_info_table, bins):
             cat_names_levels = [(c, col_to_levels[c]) for c in bins['cat_features']
                                 if c in col_to_levels]
             if cat_names_levels:
-                cat_names, cat_levels = zip(*cat_names_levels)
+                cat_names, cat_levels = list(zip(*cat_names_levels))
                 # categorical features in current group (expressed in an array)
                 cat_names_str = py_list_to_sql_string(
-                    map(quote_literal, cat_names), 'text', long_format=True)
+                    list(map(quote_literal, cat_names)), 'text', long_format=True)
                 # number of levels in each cat feature
                 cat_n_levels_str = py_list_to_sql_string(
-                    map(len, cat_levels), 'integer', long_format=True)
+                    list(map(len, cat_levels)), 'integer', long_format=True)
                 # flatten the levels across all cat features
                 cat_levels = [quote_literal(each_level)
                               for sublist in cat_levels
@@ -1105,10 +1105,10 @@ def _create_cat_features_info_table(cat_features_info_table, bins):
         # no grouping
         if bins['cat_features']:
             cat_names_str = py_list_to_sql_string(
-                map(quote_literal, bins['cat_features']), 'text', long_format=True)
+                list(map(quote_literal, bins['cat_features'])), 'text', long_format=True)
             cat_n_levels_str = py_list_to_sql_string(bins['cat_n'], 'integer', long_format=True)
             cat_levels_str = py_list_to_sql_string(
-                map(quote_literal, bins['cat_origin']), 'text', long_format=True)
+                list(map(quote_literal, bins['cat_origin'])), 'text', long_format=True)
         else:
             cat_names_str = cat_n_levels_str = cat_levels_str = "NULL"
         cat_features_info_values.append(
@@ -1629,7 +1629,7 @@ def _get_filter_str(dependent_variable, grouping_cols):
     else:
         group_filter = None
     dep_filter = '(' + dependent_variable + ") is not NULL"
-    return ' and '.join(filter(None, [group_filter, dep_filter]))
+    return ' and '.join([_f for _f in [group_filter, dep_filter] if _f])
 # -------------------------------------------------------------------------
 
 
@@ -1765,7 +1765,7 @@ def tree_predict(schema_madlib, model, source, output, pred_type='response',
                             "end)::BOOLEAN as {pred_name}")
         else:
             dep_cast_str = "{pred_name}::{dep_type}"
-        dep_levels_array_str = py_list_to_sql_string(map(quote_literal, dep_levels),
+        dep_levels_array_str = py_list_to_sql_string(list(map(quote_literal, dep_levels)),
                                                      'TEXT',
                                                      long_format=True)
         if pred_type == "response":
@@ -1882,7 +1882,7 @@ def tree_display(schema_madlib, model_table, dot_format=True, verbose=False,
 
     with MinWarning('warning'):
         for index, dtree in enumerate(grouped_trees):
-            grouping_keys = [k + ' = ' + str(dtree[k]) for k in dtree.keys()
+            grouping_keys = [k + ' = ' + str(dtree[k]) for k in list(dtree.keys())
                              if k not in ('tree', 'cat_features', 'con_features',
                                           'cat_n_levels', 'cat_levels_in_text')]
             if grouping_keys:
@@ -2211,7 +2211,7 @@ def _get_xvalidate_params(**kwargs):
         return "NULL" if s.upper() == 'NULL' else "'{0}'".format(s)
 
     quoted_args = {}
-    for k, v in kwargs.items():
+    for k, v in list(kwargs.items()):
         quoted_args[k] = _add_quote(v)
 
     modeling_params = [quoted_args['is_classification'],
