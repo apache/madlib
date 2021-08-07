@@ -19,24 +19,25 @@
 from ast import literal_eval
 from collections import OrderedDict
 from itertools import product as itertools_product
-from keras_model_arch_table import ModelArchSchema
+from deep_learning.keras_model_arch_table import ModelArchSchema
 import numpy as np
 import plpy
 from copy import deepcopy
 
-from madlib_keras_custom_function import CustomFunctionSchema
-from madlib_keras_helper import generate_row_string
-from madlib_keras_validator import MstLoaderInputValidator
-from madlib_keras_wrapper import convert_string_of_args_to_dict
-from madlib_keras_wrapper import parse_and_validate_fit_params
-from madlib_keras_wrapper import parse_and_validate_compile_params
+from deep_learning.madlib_keras_custom_function import CustomFunctionSchema
+from deep_learning.madlib_keras_helper import generate_row_string
+from deep_learning.madlib_keras_validator import MstLoaderInputValidator
+from deep_learning.madlib_keras_wrapper import convert_string_of_args_to_dict
+from deep_learning.madlib_keras_wrapper import parse_and_validate_fit_params
+from deep_learning.madlib_keras_wrapper import parse_and_validate_compile_params
 from utilities.control import MinWarning
 from utilities.utilities import add_postfix, _assert, _assert_equal, extract_keyvalue_params
 from utilities.utilities import quote_ident, get_schema, is_platform_pg
 from utilities.validate_args import table_exists, drop_tables
 
-from tensorflow.keras import losses as losses
-from tensorflow.keras import metrics as metrics
+from keras import losses as losses
+from keras import metrics as metrics
+
 
 class ModelSelectionSchema:
     MST_KEY = 'mst_key'
@@ -49,6 +50,7 @@ class ModelSelectionSchema:
     GRID_SEARCH='grid'
     RANDOM_SEARCH='random'
     OPTIMIZER_PARAMS_LIST = 'optimizer_params_list'
+
 
 @MinWarning("warning")
 class MstLoader():
@@ -130,7 +132,7 @@ class MstLoader():
                                 .format(x, d[x]) for x in sorted(d.keys()))
             dict_dedup[hash_tuple] = string
 
-        return dict_dedup.values()
+        return list(dict_dedup.values())
 
     def find_combinations(self):
         """Backtracking helper for generating the combinations.
@@ -142,7 +144,7 @@ class MstLoader():
         ])
 
         def find_combinations_helper(msts, p, i):
-            param_names = param_grid.keys()
+            param_names = list(param_grid.keys())
             if i < len(param_names):
                 for x in param_grid[param_names[i]]:
                     p[param_names[i]] = x
@@ -229,6 +231,7 @@ class MstLoader():
                                   object_table_name=ModelSelectionSchema.OBJECT_TABLE,
                                   **locals())
         plpy.execute(insert_summary_query)
+
 
 @MinWarning("warning")
 class MstSearch():
@@ -403,7 +406,7 @@ class MstSearch():
         if not compile_params_lst:
             plpy.error( "compile_params_list cannot be NULL")
         custom_fn_name = []
-        ## Initialize builtin loss/metrics functions
+        # Initialize builtin loss/metrics functions
         builtin_losses = dir(losses)
         builtin_metrics = dir(metrics)
         # Default metrics, since it is not part of the builtin metrics list
@@ -446,8 +449,8 @@ class MstSearch():
         # assuming optimizer_params_list is present
         if ModelSelectionSchema.OPTIMIZER_PARAMS_LIST in self.compile_params_dict:
             for opt_params_dict in self.compile_params_dict[ModelSelectionSchema.OPTIMIZER_PARAMS_LIST]:
-                keys, values = zip(*opt_params_dict.items())
-                opt_configs_params = [dict(zip(keys, v)) for v in itertools_product(*values)]
+                keys, values = list(zip(*list(opt_params_dict.items())))
+                opt_configs_params = [dict(list(zip(keys, v))) for v in itertools_product(*values)]
                 copied_compile_dict = deepcopy(self.compile_params_dict)
                 copied_compile_dict[ModelSelectionSchema.OPTIMIZER_PARAMS_LIST] = opt_configs_params
                 self.grid_combinations_helper(copied_compile_dict, self.fit_params_dict)
@@ -457,8 +460,8 @@ class MstSearch():
     def grid_combinations_helper(self, compile_dict, fit_dict):
         combined_dict = dict(compile_dict, **fit_dict)
         combined_dict[ModelSelectionSchema.MODEL_ID] = self.model_id_list
-        keys, values = zip(*combined_dict.items())
-        all_configs_params = [dict(zip(keys, v)) for v in itertools_product(*values)]
+        keys, values = list(zip(*list(combined_dict.items())))
+        all_configs_params = [dict(list(zip(keys, v))) for v in itertools_product(*values)]
 
         # to separate the compile and fit configs
         for config in all_configs_params:

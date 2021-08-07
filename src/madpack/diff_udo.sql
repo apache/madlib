@@ -25,14 +25,14 @@ RETURNS text AS $$
     if argstr is None:
         return "NULL"
     return argstr.replace(schema_name + ".", '')
-$$ LANGUAGE plpythonu;
+$$ LANGUAGE plpython3u;
 
 CREATE OR REPLACE FUNCTION alter_schema(argstr text, schema_name text)
 RETURNS text AS $$
     if argstr is None:
         return "NULL"
     return argstr.replace(schema_name + ".", 'schema_madlib.')
-$$ LANGUAGE plpythonu;
+$$ LANGUAGE plpython3u;
 
 
 CREATE OR REPLACE FUNCTION get_udos(table_name text, schema_name text,
@@ -63,7 +63,7 @@ $$
                   OR rettype LIKE 'schema_madlib.{type_filter}[]'
                   OR '{type_filter}' LIKE 'Full'
     """.format(table_name=table_name, schema_name=schema_name, type_filter=type_filter))
-$$ LANGUAGE plpythonu;
+$$ LANGUAGE plpython3u;
 
 
 DROP TABLE if exists udo_madlib_old_version;

@@ -20,14 +20,15 @@
 import math
 import plpy
 import time
-from madlib_keras_automl import KerasAutoML, AutoMLConstants
+from deep_learning.madlib_keras_automl import KerasAutoML, AutoMLConstants
 from utilities.utilities import get_current_timestamp, get_seg_number, get_segments_per_host, \
     unique_string, add_postfix, extract_keyvalue_params, _assert, _assert_equal, rename_table, \
     is_platform_pg
 from utilities.control import SetGUC
-from madlib_keras_fit_multiple_model import FitMultipleModel
-from madlib_keras_model_selection import MstSearch, ModelSelectionSchema
+from deep_learning.madlib_keras_fit_multiple_model import FitMultipleModel
+from deep_learning.madlib_keras_model_selection import MstSearch, ModelSelectionSchema
 from utilities.validate_args import table_exists, drop_tables, input_tbl_valid
+
 
 class HyperbandSchedule():
     """The utility class for loading a hyperband schedule table with algorithm inputs.
@@ -80,7 +81,7 @@ class HyperbandSchedule():
         Calculates the hyperband schedule (number of configs and allocated resources)
         in each round of each bracket and skips the number of last rounds specified in 'skip_last'
         """
-        for s in reversed(range(self.s_max+1)):
+        for s in reversed(list(range(self.s_max+1))):
             n = int(math.ceil(int((self.s_max+1)/(s+1))*math.pow(self.eta, s))) # initial number of configurations
             r = self.R * math.pow(self.eta, -s)
 
@@ -138,6 +139,7 @@ class HyperbandSchedule():
                                       r_i_col=AutoMLConstants.RESOURCES,
                                       **locals())
             plpy.execute(insert_query)
+
 
 class AutoMLHyperband(KerasAutoML):
     """
@@ -198,7 +200,7 @@ class AutoMLHyperband(KerasAutoML):
         initial_vals = {}
 
         # get hyper parameter configs for each s
-        for s in reversed(range(self.s_max+1)):
+        for s in reversed(list(range(self.s_max+1))):
             n = int(math.ceil(int((self.s_max+1)/(s+1))*math.pow(self.eta, s))) # initial number of configurations
             r = self.R * math.pow(self.eta, -s) # initial number of iterations to run configurations for
             initial_vals[s] = (n, int(round(r)))
@@ -222,7 +224,7 @@ class AutoMLHyperband(KerasAutoML):
         ranges_dict = self.mst_key_ranges_dict(initial_vals)
         # to store the bracket and round numbers
         s_dict, i_dict = {}, {}
-        for key, val in ranges_dict.items():
+        for key, val in list(ranges_dict.items()):
             for mst_key in range(val[0], val[1]+1):
                 s_dict[mst_key] = key
                 i_dict[mst_key] = -1
@@ -281,7 +283,7 @@ class AutoMLHyperband(KerasAutoML):
         executing a particular SHA bracket.
         """
         d = {}
-        for s_val in sorted(initial_vals.keys(), reverse=True): # going from s_max to 0
+        for s_val in sorted(list(initial_vals.keys()), reverse=True): # going from s_max to 0
             if s_val == self.s_max:
                 d[s_val] = (1, initial_vals[s_val][0])
             else:
@@ -387,7 +389,7 @@ class AutoMLHyperband(KerasAutoML):
         schedule.
         """
         # normalizing factor for metrics_iters due to warm start
-        epochs_factor = sum([n[1] for n in initial_vals.values()][::-1][:i]) # i & initial_vals args needed
+        epochs_factor = sum([n[1] for n in list(initial_vals.values())][::-1][:i]) # i & initial_vals args needed
         iters = plpy.execute("SELECT {AutoMLSchema.METRICS_ITERS} " \
                              "FROM {AutoMLSchema.MODEL_SUMMARY_TABLE}".format(AutoMLSchema=AutoMLConstants))
         metrics_iters_val = [epochs_factor+mi for mi in iters[0]['metrics_iters']] # global iteration counter

@@ -18,13 +18,13 @@
 # under the License.
 
 import numpy as np
-from model_arch_info import ModelArchSchema
+from deep_learning.model_arch_info import ModelArchSchema
 from utilities.utilities import add_postfix
 from utilities.utilities import get_seg_number
 from utilities.utilities import is_platform_pg
 from utilities.utilities import unique_string
 from utilities.validate_args import table_exists
-from madlib_keras_gpu_info import GPUInfoFunctions
+from deep_learning.madlib_keras_gpu_info import GPUInfoFunctions
 import plpy
 from math import isnan
 
@@ -57,21 +57,25 @@ INTERNAL_GPU_CONFIG = '__internal_gpu_config__'
 DISTRIBUTION_RULES_COLNAME = "distribution_rules"
 #####################################################################
 
+
 # Prepend a dimension to np arrays using expand_dims.
 def expand_input_dims(input_data):
     input_data = np.array(input_data, dtype=np.float32)
     input_data = np.expand_dims(input_data, axis=0)
     return input_data
 
+
 def np_array_float32(var, var_shape):
     arr = np.frombuffer(var, dtype=np.float32)
     arr.shape = var_shape
     return arr
 
+
 def np_array_int16(var, var_shape):
     arr = np.frombuffer(var, dtype=np.int16)
     arr.shape = var_shape
     return arr
+
 
 def strip_trailing_nulls_from_class_values(class_values):
     """
@@ -108,6 +112,7 @@ def strip_trailing_nulls_from_class_values(class_values):
         class_values = class_values[:num_of_valid_class_values]
     return class_values
 
+
 def get_image_count_per_seg_from_array(current_seg_id, images_per_seg):
     """
     Get the image count from the array containing all the images
@@ -115,6 +120,7 @@ def get_image_count_per_seg_from_array(current_seg_id, images_per_seg):
     This function is only called from inside the transition function.
     """
     return images_per_seg[current_seg_id]
+
 
 def get_image_count_per_seg_for_minibatched_data_from_db(table_name, shape_col):
     """
@@ -163,6 +169,7 @@ def get_image_count_per_seg_for_minibatched_data_from_db(table_name, shape_col):
 
     return dist_keys, images_per_seg
 
+
 def get_image_count_per_seg_for_non_minibatched_data_from_db(table_name):
     """
     Query the given non minibatch formatted table and return the total rows per segment.
@@ -195,6 +202,7 @@ def get_image_count_per_seg_for_non_minibatched_data_from_db(table_name):
     images_per_seg = [int(image["images_per_seg"]) for image in images_per_seg]
     return gp_segment_id_col, seg_ids, images_per_seg
 
+
 def parse_shape(shape):
     # Parse the shape format given by the sql into an int array
     # [1:10][1:32][1:3] -> [10, 32, 3]
@@ -221,6 +229,7 @@ def query_model_configs(model_selection_table, model_selection_summary_table,
     object_table = summary_res[0][object_table_col]
     return msts, model_arch_table, object_table
 
+
 def query_dist_keys(source_table, dist_key_col):
     """ Read distinct keys from the source table """
     dist_key_query = """
@@ -232,6 +241,7 @@ def query_dist_keys(source_table, dist_key_col):
     res = [x[dist_key_col] for x in res]
     return res
 
+
 def query_weights(model_output_table, model_weights_col, mst_key_col, mst_key):
     mlp_weights_query = """
                         SELECT {model_weights_col}, {mst_key_col}
@@ -242,6 +252,7 @@ def query_weights(model_output_table, model_weights_col, mst_key_col, mst_key):
     if not res:
         plpy.error("query_weights:  No weights in model output table for mst={}".format(mst_key))
     return res[0][model_weights_col]
+
 
 def create_summary_view(module_name, model_table, mst_key):
     tmp_view_summary = unique_string('tmp_view_summary')
@@ -302,7 +313,7 @@ def get_accessible_gpus_for_seg(schema_madlib, segments_per_host, module_name):
         accessible_gpus_for_seg = [0] * len(seg_query_result)
         warning_flag = True
         for i in seg_query_result:
-            if i['hostname'] in host_dict.keys():
+            if i['hostname'] in list(host_dict.keys()):
                 accessible_gpus_for_seg[i['segment_id']] = host_dict[i['hostname']]
             if 0 < accessible_gpus_for_seg[i['segment_id']] < segments_per_host[i['segment_id']] and warning_flag:
                 plpy.warning(
@@ -313,9 +324,11 @@ def get_accessible_gpus_for_seg(schema_madlib, segments_per_host, module_name):
                 warning_flag = False
         return accessible_gpus_for_seg
 
+
 class sqlnull:
     def __repr__(self):
         return 'NULL'
+
 
 class sqlfloat(float):
     """
@@ -330,6 +343,7 @@ class sqlfloat(float):
     def __str__(self):
         return self.__repr__()
 
+
 def py_to_sql(x):
     """
         Converts a float, list of floats, or multi-dimensional
@@ -339,11 +353,12 @@ def py_to_sql(x):
     if type(x) == float:
         return sqlfloat(x)
     elif type(x) == list:
-        return map(py_to_sql, x)
+        return list(map(py_to_sql, x))
     elif x is None:
         return sqlnull()
     else:
         return x
+
 
 def get_metrics_sql_string(metrics_list, is_metrics_specified=True):
     """
@@ -411,6 +426,7 @@ def generate_row_string(configs_dict):
     if result_row_string[0] == ',':
         return result_row_string[1:]
     return result_row_string
+
 
 def get_data_distribution_per_segment(table_name):
     """

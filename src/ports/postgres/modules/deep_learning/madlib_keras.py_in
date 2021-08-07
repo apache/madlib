@@ -23,13 +23,11 @@ import plpy
 import sys
 import time
 
-from madlib_keras_helper import *
-from madlib_keras_validator import *
-from madlib_keras_wrapper import *
-from model_arch_info import *
-import tensorflow as tf
-
-from madlib_keras_model_selection import ModelSelectionSchema
+from deep_learning.madlib_keras_helper import *
+from deep_learning.madlib_keras_validator import *
+from deep_learning.madlib_keras_wrapper import *
+from deep_learning.model_arch_info import *
+from deep_learning.madlib_keras_model_selection import ModelSelectionSchema
 
 from internal.db_utils import quote_literal
 from utilities.utilities import _assert
@@ -43,17 +41,17 @@ from utilities.validate_args import quote_ident
 from utilities.validate_args import input_tbl_valid
 from utilities.control import MinWarning
 
-import tensorflow as tf
 import utilities.debug as DEBUG
+
+from keras import backend as K
+from keras.layers import *
+from keras.models import *
+from keras.optimizers import *
+from keras.regularizers import *
 
 DEBUG.timings_enabled = False
 DEBUG.plpy_info_enabled = False
 
-from tensorflow.keras import backend as K
-from tensorflow.keras.layers import *
-from tensorflow.keras.models import *
-from tensorflow.keras.optimizers import *
-from tensorflow.keras.regularizers import *
 
 class GD_STORE:
     SESS = 'sess'
@@ -72,6 +70,7 @@ class GD_STORE:
         if GD_STORE.AGG_IMAGE_COUNT in GD:
             del GD[GD_STORE.AGG_IMAGE_COUNT]
 
+
 def get_init_model_and_sess(GD, device_name, gpu_count, segments_per_host,
                                model_architecture, compile_params, custom_function_map):
     # If a live session is present, re-use it. Otherwise, recreate it.
@@ -89,6 +88,7 @@ def get_init_model_and_sess(GD, device_name, gpu_count, segments_per_host,
         segment_model = init_model(model_architecture, compile_params, custom_function_map)
         GD_STORE.init(GD, sess, segment_model)
     return segment_model, sess
+
 
 @MinWarning("warning")
 def fit(schema_madlib, source_table, model, model_arch_table,
@@ -485,6 +485,7 @@ def get_initial_weights(model_table, model_arch, serialized_weights, warm_start,
                 model.get_weights())
     return serialized_weights
 
+
 def get_source_summary_table_dict(source_summary_table):
     source_summary = plpy.execute("""
             SELECT *
@@ -492,6 +493,7 @@ def get_source_summary_table_dict(source_summary_table):
         """.format(source_summary_table))[0]
 
     return source_summary
+
 
 def compute_loss_and_metrics(schema_madlib, table, dependent_varname,
                              independent_varname, compile_params,
@@ -526,6 +528,7 @@ def compute_loss_and_metrics(schema_madlib, table, dependent_varname,
     loss_list.append(loss)
     return end_val - start_val, metric, loss
 
+
 def should_compute_metrics_this_iter(curr_iter, metrics_compute_frequency,
                                      num_iterations):
     """
@@ -543,6 +546,7 @@ def should_compute_metrics_this_iter(curr_iter, metrics_compute_frequency,
     return (curr_iter)%metrics_compute_frequency == 0 or \
            curr_iter == num_iterations
 
+
 def init_model(model_architecture, compile_params, custom_function_map):
     """
         Should only be called at the first row of first iteration.
@@ -550,6 +554,7 @@ def init_model(model_architecture, compile_params, custom_function_map):
     segment_model = model_from_json(model_architecture)
     compile_model(segment_model, compile_params, custom_function_map)
     return segment_model
+
 
 def fit_transition_wide(state, dependent_var1, dependent_var2, dependent_var3,
                    dependent_var4, dependent_var5, independent_var1,
@@ -577,6 +582,7 @@ def fit_transition_wide(state, dependent_var1, dependent_var2, dependent_var3,
                    current_seg_id, segments_per_host, images_per_seg,
                    accessible_gpus_for_seg, prev_serialized_weights,
                    is_multiple_model, custom_function_map, **kwargs)
+
 
 def fit_transition(state, dependent_var, independent_var, dependent_var_shape,
                    independent_var_shape, model_architecture,
@@ -658,6 +664,7 @@ def fit_transition(state, dependent_var, independent_var, dependent_var_shape,
     DEBUG.plpy.info("|_fit_transition_time_|{}|".format(trans_exit_time - trans_enter_time))
 
     return return_state
+
 
 def fit_multiple_transition_caching(dependent_var, independent_var, dependent_var_shape,
                              independent_var_shape, model_architecture,
@@ -757,6 +764,7 @@ def fit_multiple_transition_caching(dependent_var, independent_var, dependent_va
 
     return return_state
 
+
 def get_state_to_return(segment_model, is_last_row, is_multiple_model, agg_image_count,
                         total_images=None):
     """
@@ -793,6 +801,7 @@ def get_state_to_return(segment_model, is_last_row, is_multiple_model, agg_image
 
     return new_state
 
+
 def fit_merge(state1, state2, **kwargs):
 
     # Return if called early
@@ -813,6 +822,7 @@ def fit_merge(state1, state2, **kwargs):
     return madlib_keras_serializer.serialize_state_with_1d_weights(
         image_count, total_weights)
 
+
 def fit_final(state, **kwargs):
     # Return if called early
     if not state:
@@ -824,6 +834,7 @@ def fit_final(state, **kwargs):
     # Averaging the weights
     weights /= image_count
     return madlib_keras_serializer.serialize_nd_weights(weights)
+
 
 def evaluate(schema_madlib, model_table, test_table, output_table,
              use_gpus, mst_key, **kwargs):
@@ -910,6 +921,7 @@ def evaluate(schema_madlib, model_table, test_table, output_table,
     if is_mult_model:
         plpy.execute("DROP VIEW IF EXISTS {0}".format(model_summary_table))
 
+
 def validate_evaluate(module_name, model_table, model_summary_table, test_table, test_summary_table, output_table, is_mult_model):
     def _validate_test_summary_tbl():
         input_tbl_valid(test_summary_table, module_name,
@@ -934,6 +946,7 @@ def validate_evaluate(module_name, model_table, model_summary_table, test_table,
         "dependent_varname", model_summary_table))[0]["dependent_varname"]
     for i in dependent_varname:
         validate_bytea_var_for_minibatch(test_table, i)
+
 
 def get_loss_metric_from_keras_eval(schema_madlib, table, dependent_varname,
                                     independent_varname, compile_params,
@@ -1004,6 +1017,7 @@ def get_loss_metric_from_keras_eval(schema_madlib, table, dependent_varname,
     else:
         loss_metric = res[0]['loss_metric']
     return loss_metric
+
 
 def internal_keras_eval_transition(state, dependent_var, independent_var,
                                    dependent_var_shape, independent_var_shape,
@@ -1118,6 +1132,7 @@ def internal_keras_eval_transition(state, dependent_var, independent_var,
 
     return state
 
+
 def internal_keras_eval_merge(state1, state2, **kwargs):
     # If either state is None, return the other one
     if not state1 or not state2:
@@ -1129,6 +1144,7 @@ def internal_keras_eval_merge(state1, state2, **kwargs):
 
     return merged_state
 
+
 def internal_keras_eval_final(state, **kwargs):
     image_count = state[-1]
 
@@ -1139,6 +1155,7 @@ def internal_keras_eval_final(state, **kwargs):
         state[i] = state[i]/image_count
 
     return state
+
 
 def fit_help(schema_madlib, message, **kwargs):
     """

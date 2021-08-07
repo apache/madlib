@@ -5,7 +5,7 @@ RETURNS text AS $$
     if argstr is None:
         return "NULL"
     return argstr.replace(schema_name + ".", '')
-$$ LANGUAGE plpythonu;
+$$ LANGUAGE plpython3u;
 
 CREATE OR REPLACE FUNCTION get_types(schema_name text)
 RETURNS VOID AS
@@ -25,7 +25,7 @@ $$
           AND n.nspname ~ '^({schema_name})$'
         ORDER BY 1, 2;
         """.format(schema_name=schema_name))
-$$ LANGUAGE plpythonu;
+$$ LANGUAGE plpython3u;
 
 
 CREATE OR REPLACE FUNCTION detect_changed_types(
@@ -72,7 +72,7 @@ $$
         if not res:
             changed_udt.append(name)
     return changed_udt
-$$ LANGUAGE plpythonu;
+$$ LANGUAGE plpython3u;
 
 -- Get UDTs
 DROP TABLE IF EXISTS types_madlib;

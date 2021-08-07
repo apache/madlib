@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 """
 @file sort-module.py
@@ -16,7 +16,7 @@ so you need change directory first to run it.
 import re
 import sys
 
-import configyml
+from . import configyml
 
 
 def get_modules_in_order():
@@ -64,7 +64,7 @@ def main(file_paths):
                 is of the form: '.../modules/<module_name>/...'.
     """
     file_order = sorted(file_paths, key=find_order)
-    print " ".join(file_order)
+    print(" ".join(file_order))
 
 
 if __name__ == '__main__':

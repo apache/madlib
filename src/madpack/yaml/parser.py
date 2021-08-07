@@ -61,10 +61,10 @@
 
 __all__ = ['Parser', 'ParserError']
 
-from error import MarkedYAMLError
-from tokens import *
-from events import *
-from scanner import *
+from .error import MarkedYAMLError
+from .tokens import *
+from .events import *
+from .scanner import *
 
 class ParserError(MarkedYAMLError):
     pass
@@ -76,8 +76,8 @@ class Parser(object):
     # language, you may replace all 'yield'-s with event handler calls.
 
     DEFAULT_TAGS = {
-        u'!':   u'!',
-        u'!!':  u'tag:yaml.org,2002:',
+        '!':   '!',
+        '!!':  'tag:yaml.org,2002:',
     }
 
     def __init__(self):
@@ -216,7 +216,7 @@ class Parser(object):
         self.tag_handles = {}
         while self.check_token(DirectiveToken):
             token = self.get_token()
-            if token.name == u'YAML':
+            if token.name == 'YAML':
                 if self.yaml_version is not None:
                     raise ParserError(None, None,
                             "found duplicate YAML directive", token.start_mark)
@@ -226,7 +226,7 @@ class Parser(object):
                             "found incompatible YAML document (version 1.* is required)",
                             token.start_mark)
                 self.yaml_version = token.value
-            elif token.name == u'TAG':
+            elif token.name == 'TAG':
                 handle, prefix = token.value
                 if handle in self.tag_handles:
                     raise ParserError(None, None,
@@ -312,7 +312,7 @@ class Parser(object):
             if start_mark is None:
                 start_mark = end_mark = self.peek_token().start_mark
             event = None
-            implicit = (tag is None or tag == u'!')
+            implicit = (tag is None or tag == '!')
             if indentless_sequence and self.check_token(BlockEntryToken):
                 end_mark = self.peek_token().end_mark
                 event = SequenceStartEvent(anchor, tag, implicit,
@@ -322,7 +322,7 @@ class Parser(object):
                 if self.check_token(ScalarToken):
                     token = self.get_token()
                     end_mark = token.end_mark
-                    if (token.plain and tag is None) or tag == u'!':
+                    if (token.plain and tag is None) or tag == '!':
                         implicit = (True, False)
                     elif tag is None:
                         implicit = (False, True)
@@ -354,7 +354,7 @@ class Parser(object):
                 elif anchor is not None or tag is not None:
                     # Empty scalars are allowed even if a tag or an anchor is
                     # specified.
-                    event = ScalarEvent(anchor, tag, (implicit, False), u'',
+                    event = ScalarEvent(anchor, tag, (implicit, False), '',
                             start_mark, end_mark)
                     self.state = self.states.pop()
                 else:
@@ -582,5 +582,5 @@ class Parser(object):
         return self.process_empty_scalar(self.peek_token().start_mark)
 
     def process_empty_scalar(self, mark):
-        return ScalarEvent(None, None, (True, False), u'', mark, mark)
+        return ScalarEvent(None, None, (True, False), '', mark, mark)
 

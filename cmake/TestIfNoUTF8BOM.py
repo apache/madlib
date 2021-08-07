@@ -5,7 +5,7 @@ import sys
 def detectBOM(inFileName):
     file = open(inFileName, 'r')
     file.seek(0)
-    head = map(ord, file.read(4))
+    head = list(map(ord, file.read(4)))
     if head == [0x00, 0x00, 0xFE, 0xFF]:
         return "utf_32_be"
     elif head == [0xFF, 0xFE, 0x00, 0x00]:
@@ -27,7 +27,7 @@ def main(argv=None):
     if BOM != "utf_8":
         return 0
     else:
-        print ('Detected byte-order mark (%s) in file "%s".' % (BOM, argv[1]))
+        print('Detected byte-order mark (%s) in file "%s".' % (BOM, argv[1]))
         return 1
 
 if __name__ == '__main__':
