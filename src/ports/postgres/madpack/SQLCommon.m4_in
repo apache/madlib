@@ -14,6 +14,47 @@
 m4_changequote(<!,!>)
 
 /*
+ * WithTracebackForwarding
+ *
+ * @param $1 python statement which might raise an exception
+ *
+ * Use this macro in the sql definition of a plpythonu function
+ *   that runs on the segments.  If the function raises an exception,
+ *   traceback information will be attached to the exception message
+ *   which gets forwarded back to the coordinator.
+ *
+ * On the coordinator side, to attach the message to the DETAIL of the
+ *   exception before displaying, you must call the segment UDF
+ *   or UDA like this:
+ *
+ *   DEBUG.plpy_execute(sql, ..., segment_traceback_reporting=True)
+ */
+m4_define(<!WithTracebackForwarding!>, <!
+    import traceback
+    from sys import exc_info
+    import plpy
+    try:
+        $1
+    except Exception as e:
+        global SD
+        global GD
+
+        for k in SD.keys():
+            del SD[k]
+        del SD
+        for k in GD.keys():
+            del GD[k]
+        del GD
+
+        etype, _, tb = exc_info()
+        detail = ''.join(traceback.format_exception(etype, e, tb))
+        message = e.message + 'SegmentTraceback' + detail
+        e.message = message
+        e.args = (message,)
+        raise e
+!>)
+
+/*
  * PythonFunction
  *
  * @param $1 directory
