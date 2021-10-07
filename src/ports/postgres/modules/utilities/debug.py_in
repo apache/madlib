@@ -19,11 +19,9 @@
 
 import plpy as plpy_orig
 import time
-from deep_learning.madlib_keras_model_selection import ModelSelectionSchema
-from deep_learning.madlib_keras_helper import DISTRIBUTION_KEY_COLNAME
 
-mst_key_col = ModelSelectionSchema.MST_KEY
-dist_key_col = DISTRIBUTION_KEY_COLNAME
+mst_key_col = 'mst_key'
+dist_key_col = '__dist_id__'
 
 start_times = dict()
 timings_enabled = False
@@ -120,19 +118,29 @@ def plpy_prepare(*args, **kwargs):
 
 plpy_execute_enabled = False
 def plpy_execute(*args, **kwargs):
-    """ debug.plpy.execute(q, ..., force=False)
+    """ debug.plpy.execute(q, ..., force=False, report_segment_tracebacks=False)
 
         Replace plpy.execute(q, ...) with
         debug.plpy.execute(q, ...) to debug
-        a query.  Shows the query itself, the
-        EXPLAIN of it, and how long the query
+        a query.  If enabled, shows the query itself,
+        the EXPLAIN of it, and how long the query
         takes to execute.
+
+        If report_segment_tracebacks=True, any tracebacks forwarded from
+        WithTracebackForwarding() on the segment will be attached to
+        the DETAILS of the ERROR message
+
     """
 
     force = False
     if 'force' in kwargs:
         force = kwargs['force']
         del kwargs['force']
+
+    report_segment_tracebacks=False
+    if 'report_segment_tracebacks' in kwargs:
+        report_segment_tracebacks = kwargs['report_segment_tracebacks']
+        del kwargs['report_segment_tracebacks']
 
     plpy = plpy_orig # override global plpy,
                      # to avoid infinite recursion
@@ -164,13 +172,31 @@ def plpy_execute(*args, **kwargs):
     explain_query = "EXPLAIN" + sql
     if prep:
         explain_query = plpy.prepare(explain_query, *prep.args, **prep.kwargs)
+
     res = plpy.execute(explain_query, *args[1:], **kwargs)
     for r in res:
         plpy.info(r['QUERY PLAN'])
 
     # Run actual sql command, with timing
     start = time.time()
-    res = plpy.execute(*args, **kwargs)
+    if report_segment_tracebacks:
+        try:
+            res = plpy.execute(*args, **kwargs)
+        except plpy.SPIError as e:
+            msg = e.message
+            if 'SegmentTraceback' in msg:
+                e.message, detail = msg.split('SegmentTraceback')
+            else:
+                raise e
+            # Extract Traceback from segment, add to
+            #  DETAIL of error message on coordinator
+            e.args = (e.message,)
+            spidata = list(e.spidata)
+            spidata[1] = detail
+            e.spidata = tuple(spidata)
+            raise e
+    else:
+        res = plpy.execute(*args, **kwargs)
 
     # Print how long execution of query took
     plpy.info("Query took {0}s".format(time.time() - start))
