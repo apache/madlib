@@ -50,7 +50,7 @@ this = os.path.basename(sys.argv[0])    # name of this script
 
 # Default directories
 maddir_conf = maddir + "/config"           # Config dir
-maddir_lib = maddir + "/lib/libmadlib.so"  # C/C++ libraries
+maddir_lib = "libmadlib.so"  # C/C++ libraries
 
 # Read the config files
 ports = configyml.get_ports(maddir_conf)  # object made of Ports.yml
@@ -179,6 +179,7 @@ def _run_m4_and_append(schema, maddir_mod_py, module, sqlfile,
                   '-DPLPYTHON_LIBDIR=' + maddir_mod_py,
                   '-DEXT_PYTHON_LIBDIR=' + maddir_ext_py,
                   '-DMODULE_PATHNAME=' + maddir_lib,
+                  '-DMADLIB_LIBRARY_PATH=' + madlib_library_path,
                   '-DMODULE_NAME=' + module,
                   '-I' + maddir_madpack,
                   sqlfile]
@@ -848,6 +849,13 @@ def _db_create_objects(schema, create_obj_handle, upgrade=False, sc=None):
         error_(this, "Cannot insert data into %s.migrationhistory table" % schema, False)
         raise Exception
 
+    try:
+        _write_to_file(create_obj_handle,
+                       """SET dynamic_library_path = '%s';
+                       """ % (dynamic_library_path))
+    except:
+        error_(this, "Cannot set dynamic_library_path to %s" % dynamic_library_path, False)
+        raise Exception
     # Run migration SQLs
     info_(this, "> Preparing objects for the following modules:", True)
     # We always create objects for all modules during install/reinstall/upgrade
@@ -1232,6 +1240,14 @@ def get_madlib_function_drop_str(schema):
     for idx in range(len(madlib_functions)):
 
         func = madlib_functions[idx]
+
+        # Filter out the DEFAULT value from the function arguments
+        # DROP FUNCTION statements do not need or allow default values:
+        # DROP FUNCTION foo(bar INTEGER DEFAULT 0);
+        func['args'] = func['args'].split(',')
+        func['args'] = [i.split('DEFAULT')[0] for i in func['args']]
+        func['args'] = ', '.join(func['args'])
+
         # We don't drop type related functions
         no_drop = ['bytea8', 'float8arr', 'svec']
         if not any(x in func['name'] for x in no_drop):
@@ -1266,6 +1282,45 @@ def get_madlib_operator_drop_str(schema):
         drop_str = drop_str + "DROP OPERATOR {0}.{1}({2},{3}); \n".format(
             schema, i['name'], i['left_op'], i['right_op'])
     return drop_str
+
+def find_madlib_library_path():
+
+    # Local build at ~/workspace/madlib/build/
+    if os.path.isfile(maddir + "/../src/ports/" + portid + "/" + dbver +
+                      "/lib/libmadlib.so"):
+        madlib_library_path = maddir + "/../src/ports/" + portid + "/" + dbver + \
+            "/lib"
+
+    # Package build at /usr/local/madlib/Versions or $GPHOME/madlib/Versions
+    elif os.path.isfile(maddir + "/../../Current/ports/" + portid + "/" + dbver +
+                      "/lib/libmadlib.so"):
+        madlib_library_path = maddir + "/../../Current/ports/" + portid + "/" + dbver + \
+            "/lib"
+    else:
+        madlib_library_path = maddir + "/lib"
+
+    return madlib_library_path
+
+def set_dynamic_library_path_in_database(dbver_split, madlib_library_path):
+
+    global dynamic_library_path
+    dynamic_library_path = _internal_run_query("SHOW dynamic_library_path", True)[0]['dynamic_library_path']
+
+    if madlib_library_path not in dynamic_library_path.split(":"):
+        dynamic_library_path = dynamic_library_path + ':' + madlib_library_path
+
+        if portid == 'greenplum':
+            if is_rev_gte(dbver_split, get_rev_num('6.0')):
+                os.system('gpconfig -c dynamic_library_path -v \'{0}\''.format(dynamic_library_path))
+            else:
+                os.system('gpconfig -c dynamic_library_path -v \'\\{0}\''.format(dynamic_library_path))
+            os.system('gpstop -u')
+        else:
+            _internal_run_query(
+                "ALTER SYSTEM SET dynamic_library_path TO '{0}'".format(dynamic_library_path), True)
+            pg_data_directory = _internal_run_query("SHOW data_directory", True)[0]['data_directory']
+            os.system('pg_ctl -D {0} reload'.format(pg_data_directory))
+
 
 def main(argv):
     args = parse_arguments()
@@ -1402,13 +1457,9 @@ def main(argv):
         else:
             maddir_conf = maddir + "/config"
 
-        global maddir_lib
-        if os.path.isfile(maddir + "/ports/" + portid + "/" + dbver +
-                          "/lib/libmadlib.so"):
-            maddir_lib = maddir + "/ports/" + portid + "/" + dbver + \
-                "/lib/libmadlib.so"
-        else:
-            maddir_lib = maddir + "/lib/libmadlib.so"
+        global madlib_library_path
+        madlib_library_path = find_madlib_library_path()
+        set_dynamic_library_path_in_database(dbver_split, madlib_library_path)
 
         # Get the list of modules for this port
         global portspecs
