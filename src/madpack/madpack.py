@@ -1232,13 +1232,6 @@ def get_madlib_function_drop_str(schema):
     for idx in range(len(madlib_functions)):
 
         func = madlib_functions[idx]
-
-        # Filter out the DEFAULT value from the function arguments
-        # DROP FUNCTION statements do not need or allow default values:
-        # DROP FUNCTION foo(bar INTEGER DEFAULT 0);
-        func['args'] = func['args'].split(',')
-        func['args'] = [i.split('DEFAULT')[0] for i in func['args']]
-        func['args'] = ', '.join(func['args'])
         # We don't drop type related functions
         no_drop = ['bytea8', 'float8arr', 'svec']
         if not any(x in func['name'] for x in no_drop):
@@ -1410,10 +1403,7 @@ def main(argv):
             maddir_conf = maddir + "/config"
 
         global maddir_lib
-        if portid == 'greenplum' and \
-           os.path.islink(maddir + "/../../../lib/postgresql/libmadlib.so"):
-           maddir_lib = '$libdir/libmadlib.so'
-        elif os.path.isfile(maddir + "/ports/" + portid + "/" + dbver +
+        if os.path.isfile(maddir + "/ports/" + portid + "/" + dbver +
                           "/lib/libmadlib.so"):
             maddir_lib = maddir + "/ports/" + portid + "/" + dbver + \
                 "/lib/libmadlib.so"
