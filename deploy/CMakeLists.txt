@@ -129,3 +129,15 @@ foreach(PORT_COMPONENT ${PORT_COMPONENTS})
     include("${PORT_COMPONENT}")
 endforeach(PORT_COMPONENT)
 
+if(APPLE)
+    configure_file(
+        link_madlib_folders.sh
+        "${CMAKE_CURRENT_BINARY_DIR}/link_madlib_folders.sh"
+        USE_SOURCE_PERMISSIONS
+    )
+    configure_file(
+        Readme_OSX
+        "${CMAKE_CURRENT_BINARY_DIR}/Readme_OSX"
+        @ONLY
+    )
+endif()

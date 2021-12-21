@@ -313,8 +313,14 @@ install(
     DESTINATION .
     COMPONENT core
 )
-
-
+if(APPLE)
+    install(
+        FILES
+            "${CMAKE_CURRENT_SOURCE_DIR}/deploy/Readme_OSX"
+            "${CMAKE_CURRENT_SOURCE_DIR}/deploy/link_madlib_folders.sh"
+        DESTINATION .
+    )
+endif()
 # -- Add subdirectories --------------------------------------------------------
 
 add_subdirectory(src)
@@ -383,3 +389,23 @@ install(CODE "
            )
 ")
 
+if(APPLE)
+    install(CODE "
+        EXECUTE_PROCESS(COMMAND mv
+               ${CMAKE_MADLIB_ROOT}/Current/Readme_OSX
+               ${CMAKE_MADLIB_ROOT}/Readme_OSX
+               )
+    ")
+    install(CODE "
+        EXECUTE_PROCESS(COMMAND mv
+               ${CMAKE_MADLIB_ROOT}/Current/link_madlib_folders.sh
+               ${CMAKE_MADLIB_ROOT}/link_madlib_folders.sh
+               )
+    ")
+    install(CODE "
+        EXECUTE_PROCESS(COMMAND chmod
+               a+x
+               ${CMAKE_MADLIB_ROOT}/link_madlib_folders.sh
+               )
+    ")
+endif()
