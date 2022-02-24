@@ -1311,15 +1311,19 @@ def set_dynamic_library_path_in_database(dbver_split, madlib_library_path):
 
         if portid == 'greenplum':
             if is_rev_gte(dbver_split, get_rev_num('6.0')):
-                os.system('gpconfig -c dynamic_library_path -v \'{0}\''.format(dynamic_library_path))
+                ret = os.system('gpconfig -c dynamic_library_path -v \'{0}\''.format(dynamic_library_path))
             else:
-                os.system('gpconfig -c dynamic_library_path -v \'\\{0}\''.format(dynamic_library_path))
-            os.system('gpstop -u')
+                ret = os.system('gpconfig -c dynamic_library_path -v \'\\{0}\''.format(dynamic_library_path))
+            ret = ret + os.system('gpstop -u')
+            if ret != 0:
+                error_(this, "cannot run gpconfig or gpstop", True)
         else:
             _internal_run_query(
                 "ALTER SYSTEM SET dynamic_library_path TO '{0}'".format(dynamic_library_path), True)
             pg_data_directory = _internal_run_query("SHOW data_directory", True)[0]['data_directory']
-            os.system('pg_ctl -D {0} reload'.format(pg_data_directory))
+            ret = os.system('pg_ctl -D {0} reload'.format(pg_data_directory))
+            if ret != 0:
+                error_(this, "cannot run pg_ctl", True)
 
 
 def main(argv):
