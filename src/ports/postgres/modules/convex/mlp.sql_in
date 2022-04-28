@@ -997,6 +997,7 @@ weights for the coefficients when run with warm start.
 -# Next, test adam solver for adaptive learning rates. Note that we are using the
 minibatched dataset.
 <pre class="example">
+DROP TABLE IF EXISTS mlp_model, mlp_model_summary, mlp_model_standardization;
 SELECT madlib.mlp_classification(
     'iris_data_packed',      -- Output table from mini-batch preprocessor
     'mlp_model',             -- Destination table
@@ -1071,6 +1072,7 @@ the state (grouping column) associated with the model.
 
 -# Prediction based on grouping using the state column:
 <pre class="example">
+\\x off
 DROP TABLE IF EXISTS mlp_prediction;
 SELECT madlib.mlp_predict(
          'mlp_model_group',   -- Model table
@@ -1215,6 +1217,7 @@ SELECT madlib.mlp_predict(
 </pre>
 View results:
 <pre class="example">
+\\x off
 SELECT * FROM lin_housing JOIN mlp_regress_prediction USING (id) ORDER BY id;
 </pre>
 <pre class="result">
@@ -1346,99 +1349,6 @@ JOIN mlp_regress_prediction USING (id);
 (1 row)
 </pre>
 
-<h4>Regression with Grouping and Mini-Batching</h4>
-
--# To use grouping and mini-batching, we must first
-re-run the preprocessor and specify grouping:
-<pre class="example">
-DROP TABLE IF EXISTS lin_housing_packed, lin_housing_packed_summary, lin_housing_packed_standardization;
-SELECT madlib.minibatch_preprocessor('lin_housing',         -- Source table
-                                     'lin_housing_packed',  -- Output table
-                                     'y',                   -- Dependent variable
-                                     'x',                   -- Independent variables
-                                     'zipcode'              -- Group by zipcode
-                                     );
-</pre>
-
--# Train regression model and group the training data by zipcode
-to learn a different model for each zipcode.
-<pre class="example">
-DROP TABLE IF EXISTS mlp_regress_group, mlp_regress_group_summary, mlp_regress_group_standardization;
--- Set seed so results are reproducible
-SELECT setseed(0);
-SELECT madlib.mlp_regression(
-    'lin_housing_packed',    -- Source table
-    'mlp_regress_group',     -- Desination table
-    'independent_varname',   -- Input features
-    'dependent_varname',     -- Dependent variable
-    ARRAY[25,25],     -- Number of units per layer
-    'learning_rate_init=0.001,
-    n_iterations=500,
-    lambda=0.001,
-    tolerance=0',            -- Optimizer params
-    'relu',                  -- Activation function
-    NULL,                    -- Default weight (1)
-    FALSE,                   -- No warm start
-    FALSE,                   -- Not verbose
-    'zipcode'                -- Grouping column
-);
-</pre>
-View regression model with grouping:
-<pre class="example">
-\\x on
-SELECT * FROM mlp_regress_group;
-</pre>
-<pre class="result">
--[ RECORD 1 ]--+------------------------------------------------------------------------------------
-zipcode        | 200001
-coeff          | {-0.193588485849,0.063428493184,-0.30440608833,-0.355695802004,-0.175942716164 ...
-loss           | 0.0904009145541
-num_iterations | 500
--[ RECORD 2 ]--+------------------------------------------------------------------------------------
-zipcode        | 94016
-coeff          | {-0.18965351506,0.0633650963628,-0.302423579808,-0.334367637252,-0.230043593847 ...
-loss           | 1.04772100552
-num_iterations | 500
-</pre>
-
--# Prediction using the regression model for each group based on the zipcode:
-<pre class="example">
-DROP TABLE IF EXISTS mlp_regress_prediction;
-SELECT madlib.mlp_predict(
-         'mlp_regress_group',         -- Model table
-         'lin_housing',             -- Test data table
-         'id',                        -- Id column in test table
-         'mlp_regress_prediction',    -- Output table for predictions
-         'response'                   -- Output values, not probabilities
-     );
-\\x off
-SELECT * FROM lin_housing JOIN mlp_regress_prediction USING (zipcode, id) ORDER BY zipcode, id;
-</pre>
-<pre class="result">
- zipcode | id |                                        x                                         |  y   |   estimated_y
----------+----+----------------------------------------------------------------------------------+------+------------------
-   20001 | 12 | {1,0.11747,12.50,7.870,0,0.5240,6.0090,82.90,6.2267,5,311.0,15.20,396.90,13.27}  | 18.9 | 19.2272848285357
-   20001 | 13 | {1,0.09378,12.50,7.870,0,0.5240,5.8890,39.00,5.4509,5,311.0,15.20,390.50,15.71}  | 21.7 | 21.3979318641202
-   20001 | 14 | {1,0.62976,0.00,8.140,0,0.5380,5.9490,61.80,4.7075,4,307.0,21.00,396.90,8.26}    | 20.4 | 19.7743403979155
-   20001 | 15 | {1,0.63796,0.00,8.140,0,0.5380,6.0960,84.50,4.4619,4,307.0,21.00,380.02,10.26}   | 18.2 | 18.7400800902121
-   20001 | 16 | {1,0.62739,0.00,8.140,0,0.5380,5.8340,56.50,4.4986,4,307.0,21.00,395.62,8.47}    | 19.9 | 19.6187933144569
-   20001 | 17 | {1,1.05393,0.00,8.140,0,0.5380,5.9350,29.30,4.4986,4,307.0,21.00,386.85,6.58}    | 23.1 | 23.3492239648177
-   20001 | 18 | {1,0.78420,0.00,8.140,0,0.5380,5.9900,81.70,4.2579,4,307.0,21.00,386.75,14.67}   | 17.5 | 17.0806608347814
-   20001 | 19 | {1,0.80271,0.00,8.140,0,0.5380,5.4560,36.60,3.7965,4,307.0,21.00,288.99,11.69}   | 20.2 | 20.1559086626409
-   20001 | 20 | {1,0.72580,0.00,8.140,0,0.5380,5.7270,69.50,3.7965,4,307.0,21.00,390.95,11.28}   | 18.2 | 18.6980897920022
-   94016 |  1 | {1,0.00632,18.00,2.310,0,0.5380,6.5750,65.20,4.0900,1,296.0,15.30,396.90,4.98}   |   24 | 23.9714991250013
-   94016 |  2 | {1,0.02731,0.00,7.070,0,0.4690,6.4210,78.90,4.9671,2,242.0,17.80,396.90,9.14}    | 21.6 | 22.3655180133895
-   94016 |  3 | {1,0.02729,0.00,7.070,0,0.4690,7.1850,61.10,4.9671,2,242.0,17.80,392.83,4.03}    | 34.7 | 33.8620767428645
-   94016 |  4 | {1,0.03237,0.00,2.180,0,0.4580,6.9980,45.80,6.0622,3,222.0,18.70,394.63,2.94}    | 33.4 | 35.3094157686524
-   94016 |  5 | {1,0.06905,0.00,2.180,0,0.4580,7.1470,54.20,6.0622,3,222.0,18.70,396.90,5.33}    | 36.2 | 35.0379122731818
-   94016 |  6 | {1,0.02985,0.00,2.180,0,0.4580,6.4300,58.70,6.0622,3,222.0,18.70,394.12,5.21}    | 28.7 | 27.5207943492151
-   94016 |  7 | {1,0.08829,12.50,7.870,0,0.5240,6.0120,66.60,5.5605,5,311.0,15.20,395.60,12.43}  | 22.9 | 24.9841422781166
-   94016 |  8 | {1,0.14455,12.50,7.870,0,0.5240,6.1720,96.10,5.9505,5,311.0,15.20,396.90,19.15}  | 27.1 | 24.5403994064793
-   94016 |  9 | {1,0.21124,12.50,7.870,0,0.5240,5.6310,100.00,6.0821,5,311.0,15.20,386.63,29.93} | 16.5 | 17.2588278443879
-   94016 | 10 | {1,0.17004,12.50,7.870,0,0.5240,6.0040,85.90,6.5921,5,311.0,15.20,386.71,17.10}  | 18.9 | 17.0600407532569
-   94016 | 11 | {1,0.22489,12.50,7.870,0,0.5240,6.3770,94.30,6.3467,5,311.0,15.20,392.52,20.45}  |   15 | 15.2284207930287
-(20 rows)
-</pre>
 Note that the results you get for all examples may vary with the database you are using.
 
 @anchor background
