@@ -10,6 +10,7 @@
 @brief driver functions shared by modules
 """
 import plpy
+import traceback
 
 from distutils.util import strtobool
 from functools import wraps
@@ -235,22 +236,12 @@ class AOControl(ContextDecorator):
         self.to_enable = enable
         self.was_ao_enabled = False
         self.guc_exists = True
-        self.storage_options_dict = dict()
-
-    def _parse_gp_default_storage_options(self, gp_default_storage_options_str):
-        """ Parse comma separated key=value pairs
-
-        Example:
-             appendonly=false,blocksize=32768,compresstype=none,checksum=true,orientation=row
-        """
-        self.storage_options_dict = extract_keyvalue_params(gp_default_storage_options_str)
-        self.storage_options_dict['appendonly'] = bool(
-            strtobool(self.storage_options_dict['appendonly']))
+        self.default_table_access_method = 'heap'
 
     @property
     def _gp_default_storage_options(self):
         return ','.join(['{0}={1}'.format(k, v)
-                        for k, v in self.storage_options_dict.iteritems()])
+                        for k, v in self.storage_options_dict.items()])
 
     def __enter__(self):
         # We first check if we can get the guc value from the database using the
@@ -259,26 +250,24 @@ class AOControl(ContextDecorator):
         # postgres, or platform is gpdb but the guc doesn't exist anymore.
         try:
             _storage_options_str = plpy.execute(
-                "show gp_default_storage_options")[0]["gp_default_storage_options"]
+                "show default_table_access_method")[0]["default_table_access_method"]
         except plpy.SPIError:
             self.guc_exists = False
             return self
 
-        if self.guc_exists:
-            self._parse_gp_default_storage_options(_storage_options_str)
-            # Set APPENDONLY=<enable> after backing up existing value
-            self.was_ao_enabled = self.storage_options_dict['appendonly']
-            self.storage_options_dict['appendonly'] = self.to_enable
-            plpy.execute("set gp_default_storage_options='{0}'".
-                         format(self._gp_default_storage_options))
+        if self.guc_exists and self.to_enable:
+            self.was_ao_enabled = _storage_options_str
+            self.default_table_access_method = 'ao_row'
+            plpy.execute("set default_table_access_method='{0}'".
+                         format(self.default_table_access_method))
 
         return self
 
     def __exit__(self, *args):
-        if self.guc_exists:
-            self.storage_options_dict['appendonly'] = self.was_ao_enabled
-            plpy.execute("set gp_default_storage_options='{0}'".
-                         format(self._gp_default_storage_options))
+        if self.guc_exists and self.to_enable:
+            self.default_table_access_method = self.was_ao_enabled
+            plpy.execute("set default_table_access_method='{0}'".
+                         format(self.default_table_access_method))
         if args and args[0]:
             # an exception was raised in code. We return False so that any
             # exception is re-raised after exit.

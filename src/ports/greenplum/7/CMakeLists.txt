@@ -1,4 +1,3 @@
-# coding=utf-8
 #
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
@@ -16,25 +15,5 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""
-@file gpu_info_from_tf.py_in
-
-@brief This file prints out the gpu descriptions using tensorflow API. This file
-is intended to be called using subprocess. See madlib_keras_gpu_info.py_in
-for more details.
-"""
-
-import tensorflow as tf
-from tensorflow.python.client import device_lib
-from tensorflow.keras import backend as K
-
-config = tf.ConfigProto()
-config.gpu_options.allow_growth = True
-sess = tf.Session(config=config)
-local_device_protos = device_lib.list_local_devices()
-K.clear_session()
-sess.close()
-if local_device_protos:
-    for x in local_device_protos:
-        if x.device_type == 'GPU':
-            print(x.physical_device_desc)
+#
+add_current_greenplum_version()

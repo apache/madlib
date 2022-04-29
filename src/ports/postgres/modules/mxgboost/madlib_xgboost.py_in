@@ -22,7 +22,7 @@ import re
 import pandas as pd
 import xgboost as xgb
 import numpy
-import cPickle as pickle
+import pickle
 import zlib
 import ast
 import collections
@@ -84,6 +84,7 @@ def takeClosest(myList, myNumber):
     pos = bisect_left(myList, myNumber)
     if pos == 0:
         return myList[0]
+
     if pos == len(myList):
         return myList[-1]
     before = myList[pos - 1]
@@ -126,8 +127,8 @@ def xgboost_train(schema_madlib, dframe, features_all, class_label, params,
 
     df = pickle.loads(zlib.decompress(dframe))
     features_all.append(id_column)
-    features = filter(lambda x: x in df.columns, features_all)
-    X = df[features].as_matrix()
+    features = [x for x in df.columns if x in features_all]
+    X = df[features].values
     y = df[class_label]
     class_list = numpy.unique(y).tolist()
 
@@ -136,8 +137,10 @@ def xgboost_train(schema_madlib, dframe, features_all, class_label, params,
         #We don't actually want the test set size to change. We want it to be constant as we change train set size so we can compare apples to apples
         #so lets lock it at 20% (only less if the train size is > 80%)
         test_set_size = min((1-train_set_size),0.2)
+
         X_test = X_test[range(0,int(len(y)*test_set_size)),]
         y_test = y_test.head(int(len(y)*test_set_size))
+
     else:
         split_indx = numpy.WHERE(features == train_set_split_var)[0]
         X = numpy.delete(X,split_indx,1)
@@ -147,6 +150,7 @@ def xgboost_train(schema_madlib, dframe, features_all, class_label, params,
         y_test = y[numpy.array(df[train_set_split_var]==0)]
 
     #save off and remove the id_column for later output. Make sure to get rid of id_column from features!
+
     test_ids = X_test [:,len(features)-1]
     X_train = numpy.delete(X_train,len(features)-1,1)
     X_test = numpy.delete(X_test,len(features)-1,1)
@@ -198,6 +202,7 @@ def xgboost_train(schema_madlib, dframe, features_all, class_label, params,
 
     #Calculate feature importance scores
     importance = gbm._Booster.get_fscore()
+
     if len(importance) == 0:
         plpy.error("No importance found for any feature")
     fnames_importances = sorted(
@@ -282,6 +287,7 @@ def xgboost_grid_search(schema_madlib, source_table, id_column, class_label,
 
 
     grid_size = len(params_grid)
+
     sql = """
         CREATE TEMP TABLE {grid_search_params_temp_tbl_df}
         AS
@@ -432,8 +438,8 @@ def xgboost_predict(schema_madlib, scoring_tbl, mdl_table, mdl_output_tbl,
     y_test = df[class_label] if class_label else None
 
     #Score the test set
-    y_pred_test = gbm.predict(X_test.as_matrix())
-    y_pred_proba_test = gbm.predict_proba(X_test.as_matrix())
+    y_pred_test = gbm.predict(X_test.values)
+    y_pred_proba_test = gbm.predict_proba(X_test.values)
     if(class_label):
         cmat_test = confusion_matrix(y_test, y_pred_test)
         scores = numpy.array(precision_recall_fscore_support(y_test, y_pred_test)).transpose()
@@ -445,7 +451,9 @@ def xgboost_predict(schema_madlib, scoring_tbl, mdl_table, mdl_output_tbl,
     predicted_class_label = class_label+'_predicted' if class_label else 'class_label_predicted'
     predicted_class_proba_label = class_label+'_proba_predicted' if class_label else 'class_label_proba_predicted'
     pred = pd.Series(y_pred_test, index = X_test.index).to_frame(predicted_class_label)
-    num_unique_classes = pd.DataFrame(data=pred[predicted_class_label]).apply(lambda x: len(x.unique()))
+
+    num_unique_classes = int(pd.DataFrame(data=pred[predicted_class_label]).apply(lambda x: len(x.unique())))
+
     if (range(num_unique_classes) == [0]):
         plpy.error('XGBoost: Every prediction is of the same class.')
 

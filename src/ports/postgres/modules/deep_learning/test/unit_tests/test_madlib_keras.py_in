@@ -45,6 +45,18 @@ except:
 def mult(k,arr):
     return [ k*a for a in arr ]
 
+class PlpyCustomMock(object):
+    def __init__(self, call_cnt):
+        self.calls = 0
+        self.call_cnt = call_cnt
+
+    def cnt_counter(self, arg1 = None, arg2 = None):
+        self.calls += 1
+        if self.calls == self.call_cnt :
+            return [{'count':10}]
+        else:
+            return DEFAULT
+
 class MadlibKerasFitEvalTransitionTestCase(unittest.TestCase):
     def setUp(self):
         self.plpy_mock = Mock(spec='error')
@@ -874,10 +886,12 @@ class MadlibKerasPredictBYOMTestCase(unittest.TestCase):
 
     def test_predictbyom_defaults_1(self):
         self.module.get_accessible_gpus_for_seg = Mock(return_value = [2,2,2])
+        self.plpy_mock_execute.side_effect = PlpyCustomMock(4).cnt_counter
         res = self.module.PredictBYOM('schema_madlib', 'model_arch_table',
                                  'model_id', 'test_table', 'id_col',
                                  'independent_varname', 'output_table', None,
                                  True, None, None, 1)
+        self.plpy_mock_execute.side_effect = DEFAULT
         self.assertEqual('prob', res.pred_type)
         self.assertEqual(2, res.gpus_per_host)
         self.assertEqual([[0,1,2,3,4]], res.class_values)
@@ -885,18 +899,21 @@ class MadlibKerasPredictBYOMTestCase(unittest.TestCase):
 
     def test_predictbyom_defaults_2(self):
         self.module.InputValidator.validate_class_values = Mock()
+        self.plpy_mock_execute.side_effect = PlpyCustomMock(4).cnt_counter
         res = self.module.PredictBYOM('schema_madlib', 'model_arch_table',
                                        'model_id', 'test_table', 'id_col',
                                        'independent_varname', 'output_table',
                                        self.pred_type, self.use_gpus,
                                        self.class_values, self.normalizing_const,
                                        self.dependent_count)
+        self.plpy_mock_execute.side_effect = DEFAULT
         self.assertEqual('prob', res.pred_type)
         self.assertEqual(0, res.gpus_per_host)
         self.assertEqual([['foo', 'bar', 'baaz', 'foo2', 'bar2']], res.class_values)
         self.assertEqual(255.0, res.normalizing_const)
 
     def test_predictbyom_exception_invalid_params(self):
+        self.plpy_mock_execute.side_effect = PlpyCustomMock(4).cnt_counter
         with self.assertRaises(plpy.PLPYException) as error:
             self.module.PredictBYOM('schema_madlib', 'model_arch_table',
                                      'model_id', 'test_table', 'id_col',
@@ -906,6 +923,7 @@ class MadlibKerasPredictBYOMTestCase(unittest.TestCase):
                                      self.dependent_count)
         self.assertIn('invalid_pred_type', str(error.exception))
 
+        self.plpy_mock_execute.side_effect = PlpyCustomMock(4).cnt_counter
         with self.assertRaises(plpy.PLPYException) as error:
             self.module.PredictBYOM('schema_madlib', 'model_arch_table',
                                      'model_id', 'test_table', 'id_col',
@@ -915,6 +933,7 @@ class MadlibKerasPredictBYOMTestCase(unittest.TestCase):
                                      self.dependent_count)
         self.assertIn('class values', str(error.exception).lower())
 
+        self.plpy_mock_execute.side_effect = PlpyCustomMock(4).cnt_counter
         with self.assertRaises(plpy.PLPYException) as error:
             self.module.PredictBYOM('schema_madlib', 'model_arch_table',
                                      'model_id', 'test_table', 'id_col',
@@ -922,6 +941,7 @@ class MadlibKerasPredictBYOMTestCase(unittest.TestCase):
                                      self.pred_type, self.use_gpus,
                                      self.class_values, 0,
                                      self.dependent_count)
+        self.plpy_mock_execute.side_effect = DEFAULT
         self.assertIn('normalizing const', str(error.exception).lower())
 
 
@@ -1251,7 +1271,7 @@ class MadlibKerasWrapperTestCase(unittest.TestCase):
                    " loss='categorical_crossentropy'"
         with self.assertRaises(ValueError) as error:
             self.subject.parse_and_validate_compile_params(test_str)
-        self.assertIn('invalid literal for float', str(error.exception))
+        self.assertIn('could not convert string to float', str(error.exception))
 
     def test_parse_and_validate_fit_params_invalid_optimizer_fail(self):
         test_str = "optimizer='SGD1', loss='categorical_crossentropy'"

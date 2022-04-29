@@ -81,7 +81,7 @@ class HyperbandSchedule():
         Calculates the hyperband schedule (number of configs and allocated resources)
         in each round of each bracket and skips the number of last rounds specified in 'skip_last'
         """
-        for s in reversed(list(range(self.s_max+1))):
+        for s in reversed(range(self.s_max+1)):
             n = int(math.ceil(int((self.s_max+1)/(s+1))*math.pow(self.eta, s))) # initial number of configurations
             r = self.R * math.pow(self.eta, -s)
 
@@ -199,11 +199,16 @@ class AutoMLHyperband(KerasAutoML):
         """
         initial_vals = {}
 
+        num_configs = 0
         # get hyper parameter configs for each s
-        for s in reversed(list(range(self.s_max+1))):
+        for s in reversed(range(self.s_max+1)):
             n = int(math.ceil(int((self.s_max+1)/(s+1))*math.pow(self.eta, s))) # initial number of configurations
             r = self.R * math.pow(self.eta, -s) # initial number of iterations to run configurations for
             initial_vals[s] = (n, int(round(r)))
+            if s >= self.skip_last:
+                num_configs += n
+
+
         self.start_training_time = get_current_timestamp(AutoMLConstants.TIME_FORMAT)
         random_search = MstSearch(self.schema_madlib,
                                   self.model_arch_table,
@@ -212,7 +217,7 @@ class AutoMLHyperband(KerasAutoML):
                                   self.compile_params_grid,
                                   self.fit_params_grid,
                                   'random',
-                                  sum([initial_vals[k][0] for k in initial_vals][self.skip_last:]),
+                                  num_configs,
                                   self.random_state,
                                   self.object_table)
         random_search.load() # for populating mst tables
@@ -330,7 +335,7 @@ class AutoMLHyperband(KerasAutoML):
 
         query = ""
         new_configs = True
-        for s_val in configs_prune_lookup:
+        for s_val in sorted(configs_prune_lookup):
             lower_bound, upper_bound = ranges_dict[s_val]
             if new_configs:
                 query += "INSERT INTO {AutoMLSchema.MST_TABLE} SELECT {ModelSelectionSchema.MST_KEY}, " \

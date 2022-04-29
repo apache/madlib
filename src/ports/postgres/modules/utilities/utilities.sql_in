@@ -456,10 +456,11 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA._gen_state(
     iteration   INTEGER[],
     state       DOUBLE PRECISION[])
 RETURNS SETOF MADLIB_SCHEMA._grp_state_type AS $$
+    from math import floor
     num_grp = len(grp_key)
     if num_grp == 0:
         return
-    num_var = len(state) / num_grp
+    num_var = floor(len(state) / num_grp)
     for i in range(num_grp):
         if iteration is None:
             yield (grp_key[i], None, state[i * num_var : (i + 1) * num_var] if len(state) > 0 else None)
@@ -547,11 +548,12 @@ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.test_error_msg(
   msg  TEXT
 )
 RETURNS BOOLEAN AS $$
+import plpy
 try:
     plpy.execute(stmt)
     return TRUE
 except Exception as ex:
-    return msg in ex.message
+    return msg in ex.args[0]
 $$ LANGUAGE plpython3u;
 
 CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.test_input_table(
@@ -572,18 +574,18 @@ $$ LANGUAGE SQL;
 -- are only available in either > pg 11 or > gpdb 6.5. Using this function we
 -- can make sure to run the guc assertion test (assert_guc_value) on the correct
 -- platform versions.
-CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.is_ver_greater_than_gp_640_or_pg_11()
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.is_ver_gp_640_700_or_pg_11()
 RETURNS BOOLEAN AS $$
 PythonFunctionBodyOnly(utilities, utilities, is_gp_version_less_than)
     from utilities.utilities import __mad_version
     from utilities.utilities import is_platform_pg
     from utilities.utilities import is_pg_major_version_less_than
-    if is_platform_pg:
+    if is_platform_pg():
         is_pg_major_less_than_12 = is_pg_major_version_less_than(None, 12)
         return not is_pg_major_less_than_12
     else:
-        is_ver_less_than_650 = __mad_version().is_gp_version_less_than('6.5.0')
-        return not is_ver_less_than_650
+        guc_not_available_gp = __mad_version().is_gp_version_less_than('6.5.0') or __mad_version().is_gp7()
+        return not guc_not_available_gp
 $$ LANGUAGE plpython3u VOLATILE
 m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `CONTAINS SQL', `');
 

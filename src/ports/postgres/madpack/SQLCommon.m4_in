@@ -36,15 +36,6 @@ m4_define(<!WithTracebackForwarding!>, <!
     try:
         $1
     except Exception as e:
-        global SD
-        global GD
-
-        for k in SD.keys():
-            del SD[k]
-        del SD
-        for k in GD.keys():
-            del GD[k]
-        del GD
 
         etype, _, tb = exc_info()
         detail = ''.join(traceback.format_exception(etype, e, tb))
@@ -122,6 +113,35 @@ m4_define(<!PythonFunctionBodyOnly!>, <!
          'WHERE p.oid = %s' % foid, 1)
 
     global schema_madlib
+    schema_madlib = rv[0]['nspname']
+    from utilities.control import AOControl,MinWarning
+!>)
+
+/*
+ * PythonFunctionBodyOnlyNoGlobalSchema
+ *
+ * @param $1 directory
+ * @param $2 python file (without suffix)
+ *
+ */
+m4_define(<!PythonFunctionBodyOnlyNoGlobalSchema!>, <!
+    import sys
+    from inspect import getframeinfo, currentframe
+    sys.path.insert(1, "EXT_PYTHON_LIBDIR")
+    sys.path.insert(1, "PLPYTHON_LIBDIR")
+    from $1 import $2
+
+    # Retrieve the schema name of the current function
+    # Make it available as variable: schema_madlib
+    fname = getframeinfo(currentframe()).function
+    foid  = fname.rsplit('_',1)[1]
+
+    # plpython names its functions "__plpython_procedure_<function name>_<oid>",
+    # of which we want the oid
+    rv = plpy.execute('SELECT nspname, proname FROM pg_proc p ' \
+         'JOIN pg_namespace n ON (p.pronamespace = n.oid) ' \
+         'WHERE p.oid = %s' % foid, 1)
+
     schema_madlib = rv[0]['nspname']
     from utilities.control import AOControl,MinWarning
 !>)

@@ -27,6 +27,7 @@ from deep_learning.madlib_keras_helper import *
 from deep_learning.madlib_keras_validator import *
 from deep_learning.madlib_keras_wrapper import *
 from deep_learning.model_arch_info import *
+from deep_learning.madlib_keras_serializer import *
 from deep_learning.madlib_keras_model_selection import ModelSelectionSchema
 
 from internal.db_utils import quote_literal
@@ -43,11 +44,11 @@ from utilities.control import MinWarning
 
 import utilities.debug as DEBUG
 
-from keras import backend as K
-from keras.layers import *
-from keras.models import *
-from keras.optimizers import *
-from keras.regularizers import *
+from tensorflow.keras import backend as K
+from tensorflow.keras.layers import *
+from tensorflow.keras.models import *
+from tensorflow.keras.optimizers import *
+from tensorflow.keras.regularizers import *
 
 DEBUG.timings_enabled = False
 DEBUG.plpy_info_enabled = False
@@ -249,18 +250,17 @@ def fit(schema_madlib, source_table, model, model_arch_table,
                                             [serialized_weights, custom_function_map]
                                             )[0]['iteration_result']
         except plpy.SPIError as e:
-            msg = e.message
+            msg = e.args[0]
             if 'TransAggDetail' in msg:
-                e.message, detail = msg.split('TransAggDetail')
+                e.args[0], detail = msg.split('TransAggDetail')
             elif 'MergeAggDetail' in msg:
-                e.message, detail = msg.split('MergeAggDetail')
+                e.args[0], detail = msg.split('MergeAggDetail')
             elif 'FinalAggDetail' in msg:
-                e.message, detail = msg.split('FinalAggDetail')
+                e.args[0], detail = msg.split('FinalAggDetail')
             else:
                 raise e
             # Extract Traceback from segment, add to
             #  DETAIL of error message on coordinator
-            e.args = (e.message,)
             spidata = list(e.spidata)
             spidata[1] = detail
             e.spidata = tuple(spidata)
@@ -481,7 +481,7 @@ def get_initial_weights(model_table, model_arch, serialized_weights, warm_start,
     else:
         if not serialized_weights:
             model = model_from_json(model_arch)
-            serialized_weights = madlib_keras_serializer.serialize_nd_weights(
+            serialized_weights = serialize_nd_weights(
                 model.get_weights())
     return serialized_weights
 
@@ -788,13 +788,13 @@ def get_state_to_return(segment_model, is_last_row, is_multiple_model, agg_image
     if is_multiple_model:
         if is_last_row:
             updated_model_weights = segment_model.get_weights()
-            new_state = madlib_keras_serializer.serialize_nd_weights(updated_model_weights)
+            new_state = serialize_nd_weights(updated_model_weights)
         else:
             new_state = None
     elif is_last_row:
         updated_model_weights = segment_model.get_weights()
         updated_model_weights = [total_images * w for w in updated_model_weights]
-        new_state = madlib_keras_serializer.serialize_state_with_nd_weights(
+        new_state = serialize_state_with_nd_weights(
             agg_image_count, updated_model_weights)
     else:
         new_state = float(agg_image_count)
@@ -809,8 +809,8 @@ def fit_merge(state1, state2, **kwargs):
         return state1 or state2
 
     # Deserialize states
-    image_count1, weights1 = madlib_keras_serializer.deserialize_as_image_1d_weights(state1)
-    image_count2, weights2 = madlib_keras_serializer.deserialize_as_image_1d_weights(state2)
+    image_count1, weights1 = deserialize_as_image_1d_weights(state1)
+    image_count2, weights2 = deserialize_as_image_1d_weights(state2)
 
     # Compute total image counts
     image_count = (image_count1 + image_count2) * 1.0
@@ -819,7 +819,7 @@ def fit_merge(state1, state2, **kwargs):
     total_weights = weights1 + weights2
 
     # Return the merged state
-    return madlib_keras_serializer.serialize_state_with_1d_weights(
+    return serialize_state_with_1d_weights(
         image_count, total_weights)
 
 
@@ -827,13 +827,13 @@ def fit_final(state, **kwargs):
     # Return if called early
     if not state:
         return state
-    image_count, weights = madlib_keras_serializer.deserialize_as_image_1d_weights(state)
+    image_count, weights = deserialize_as_image_1d_weights(state)
     if image_count == 0:
         plpy.error("fit_final: Total images processed is 0")
 
     # Averaging the weights
     weights /= image_count
-    return madlib_keras_serializer.serialize_nd_weights(weights)
+    return serialize_nd_weights(weights)
 
 
 def evaluate(schema_madlib, model_table, test_table, output_table,
