@@ -37,7 +37,7 @@ def convert(data):
 def get_version(configdir):
 
     try:
-        conf = yaml.load(open(configdir + '/Version.yml'))
+        conf = yaml.safe_load(open(configdir + '/Version.yml'))
     except:
         print("configyml : ERROR : missing or malformed Version.yml")
         exit(2)
@@ -60,7 +60,7 @@ def get_version(configdir):
 def get_ports(configdir):
 
     try:
-        conf = yaml.load(open(configdir + '/Ports.yml'))
+        conf = yaml.safe_load(open(configdir + '/Ports.yml'))
     except:
         print("configyml : ERROR : missing or malformed Ports.yml")
         exit(2)
@@ -88,7 +88,7 @@ def get_modules(confdir):
     fname = "Modules.yml"
     
     try:
-        conf = yaml.load( open( confdir + '/' + fname))
+        conf = yaml.safe_load( open( confdir + '/' + fname))
     except:
         print("configyml : ERROR : missing or malformed " + confdir + '/' + fname)
         raise Exception

@@ -67,9 +67,7 @@ def _matrix_column_to_array_format(source_table, row_id, output_table,
             "Not all columns are numeric!")
 
     plpy.execute("""
-        CREATE {temp_str} TABLE {output_table}
-        m4_ifdef(`__POSTGRESQL__', `',
-            `WITH (APPENDONLY=TRUE)') AS
+        CREATE {temp_str} TABLE {output_table} AS
         SELECT
             {row_id} as row_id,
             array[{val_col_names}]::double precision[] AS row_vec
@@ -487,10 +485,8 @@ def matrix_sparsify(schema_madlib, matrix_in, in_args, matrix_out, out_args):
         default_args['col'] = in_args['col']
     out_args = parse_matrix_args(out_args, in_default_args=default_args)
     temp_col_id, temp_val = unique_string(), unique_string()
-    plpy.execute("""
-        CREATE TABLE {matrix_out}
-        m4_ifdef(`__POSTGRESQL__', `',
-            `WITH (APPENDONLY=TRUE)') AS
+    sql = """
+        CREATE TABLE {matrix_out} AS
         SELECT
             {in_args[row]} as {out_args[row]},
             {temp_col_id} as {out_args[col]},
@@ -508,7 +504,8 @@ def matrix_sparsify(schema_madlib, matrix_in, in_args, matrix_out, out_args):
             {temp_val} <> 0
         m4_ifdef(`__POSTGRESQL__', `',
             `DISTRIBUTED BY ({out_args[row]})')
-        """.format(**locals()))
+        """.format(**locals())
+    plpy.execute(sql)
     res_row_dim, res_col_dim = get_dims(matrix_out, out_args)
     if res_row_dim != row_dim or res_col_dim != col_dim:
         plpy.execute("""
@@ -531,9 +528,7 @@ def matrix_densify(schema_madlib, matrix_in, in_args, matrix_out, out_args):
             "transposed in a dense format due to "
             "restrictions on maximum array size.".format(matrix_in))
     plpy.execute("""
-        CREATE TABLE {matrix_out}
-        m4_ifdef(`__POSTGRESQL__', `',
-            `WITH (APPENDONLY=TRUE)') AS
+        CREATE TABLE {matrix_out} AS
         SELECT
             {in_args[row]} AS {out_args[row]},
             {schema_madlib}.__matrix_densify_agg(
@@ -669,9 +664,7 @@ def _matrix_elem_op_sparse(schema_madlib, matrix_a, a_args,
                            matrix_b, b_args, matrix_out, out_args,
                            elem_ops):
     plpy.execute("""
-        CREATE TABLE {matrix_out}
-        m4_ifdef(`__POSTGRESQL__', `',
-            `WITH (APPENDONLY=TRUE)') AS
+        CREATE TABLE {matrix_out} AS
         SELECT
             {out_args[row]},
             {out_args[col]},
@@ -710,9 +703,7 @@ def _matrix_elem_op_dense(schema_madlib, matrix_a, a_args,
                           matrix_b, b_args, matrix_out, out_args,
                           elem_ops):
     plpy.execute("""
-        CREATE TABLE {matrix_out}
-        m4_ifdef(`__POSTGRESQL__', `',
-            `WITH (APPENDONLY=TRUE)') AS
+        CREATE TABLE {matrix_out} AS
         SELECT
             a.{a_args[row]} AS {out_args[row]},
             {schema_madlib}.{elem_ops[vector_op]}(
@@ -851,9 +842,7 @@ def matrix_block_mult(schema_madlib, matrix_a, a_args,
     _validate_block(matrix_a, a_args)
     _validate_block(matrix_b, b_args)
     plpy.execute("""
-        CREATE TABLE {matrix_out}
-        m4_ifdef(`__POSTGRESQL__', `',
-            `WITH (APPENDONLY=TRUE)') AS
+        CREATE TABLE {matrix_out} AS
         SELECT
             row as {out_args[row]},
             col as {out_args[col]},
@@ -892,9 +881,7 @@ def matrix_block_trans(schema_madlib, matrix_in, in_args, matrix_out, out_args):
     _validate_output_table(matrix_out)
 
     plpy.execute("""
-        CREATE TABLE {matrix_out}
-        m4_ifdef(`__POSTGRESQL__', `',
-            `WITH (APPENDONLY=TRUE)') AS
+        CREATE TABLE {matrix_out} AS
         SELECT
             {in_args[row]} AS {out_args[col]},
             {in_args[col]} AS {out_args[row]},
@@ -928,9 +915,7 @@ def matrix_blockize(schema_madlib, matrix_in, in_args,
 
     plpy.execute('DROP TABLE IF EXISTS ' + matrix_out)
     plpy.execute("""
-        CREATE TABLE {matrix_out}
-        m4_ifdef(`__POSTGRESQL__', `',
-            `WITH (APPENDONLY=TRUE)') AS
+        CREATE TABLE {matrix_out} AS
         SELECT
             brow_id AS {out_args[row]},
             bcol_id AS {out_args[col]},
@@ -1006,9 +991,7 @@ def matrix_unblockize(schema_madlib, matrix_in, in_args, matrix_out, out_args):
     total_col_dim = (max_colid - 1) * col_dim + col_residual
 
     plpy.execute("""
-        CREATE TABLE {matrix_out}
-        m4_ifdef(`__POSTGRESQL__', `',
-            `WITH (APPENDONLY=TRUE)') AS
+        CREATE TABLE {matrix_out} AS
         SELECT
             row as {out_args[row]},
             {schema_madlib}.__matrix_unblockize_agg(
@@ -1292,9 +1275,7 @@ def _matrix_col_extremum_dense(schema_madlib, matrix_in, in_args, matrix_out,
         sort_order = 'desc'
 
     plpy.execute("""
-        CREATE TABLE {matrix_out}
-        m4_ifdef(`__POSTGRESQL__', `',
-            `WITH (APPENDONLY=TRUE)') AS
+        CREATE TABLE {matrix_out} AS
         SELECT
             {agg_index}
             array_agg(val order by col) as {extremum_name}
@@ -1333,9 +1314,7 @@ def _matrix_row_extremum_dense(schema_madlib, matrix_in, in_args, matrix_out, fe
         vector_func_name = 'array_max_index'
 
     plpy.execute("""
-        CREATE TABLE {matrix_out}
-        m4_ifdef(`__POSTGRESQL__', `',
-            `WITH (APPENDONLY=TRUE)') AS
+        CREATE TABLE {matrix_out} AS
         SELECT
             {agg_index}
             array_agg(value_index[1] order by row) as {extremum_name}
@@ -1579,9 +1558,7 @@ def matrix_trans(schema_madlib, matrix_in, in_args,
 def _matrix_trans_sparse(schema_madlib, matrix_in, in_args,
                          matrix_out, out_args):
     plpy.execute("""
-        CREATE TABLE {matrix_out}
-        m4_ifdef(`__POSTGRESQL__', `',
-            `WITH (APPENDONLY=TRUE)') AS
+        CREATE TABLE {matrix_out} AS
         SELECT
             {in_args[row]} AS {out_args[col]},
             {in_args[col]} AS {out_args[row]},
@@ -1605,9 +1582,7 @@ def _matrix_trans_dense(schema_madlib, matrix_in, in_args,
             "restrictions on maximum array size.".format(matrix_in))
     temp_row, temp_col, temp_val = (unique_string() for i in range(3))
     plpy.execute("""
-        CREATE TABLE {matrix_out}
-        m4_ifdef(`__POSTGRESQL__', `',
-            `WITH (APPENDONLY=TRUE)') AS
+        CREATE TABLE {matrix_out} AS
         SELECT
             {temp_col} AS {out_args[row]},
             {schema_madlib}.__matrix_densify_agg(
@@ -1732,9 +1707,7 @@ def _matrix_mult_sparse(schema_madlib, matrix_a, a_args,
     b_dim = get_dims(matrix_b, b_args)
     temp_row, temp_col, temp_val = (unique_string() for i in range(3))
     plpy.execute("""
-        CREATE TABLE {matrix_out}
-        m4_ifdef(`__POSTGRESQL__', `',
-            `WITH (APPENDONLY=TRUE)') AS
+        CREATE TABLE {matrix_out} AS
         SELECT
             {temp_row} as {out_args[row]},
             {temp_col} as {out_args[col]},
@@ -1816,9 +1789,7 @@ def _matrix_mult_dense(schema_madlib, matrix_a, a_args,
 
     # densify result since it'll always be dense
     plpy.execute("""
-        CREATE TABLE {matrix_out}
-        m4_ifdef(`__POSTGRESQL__', `',
-            `WITH (APPENDONLY=TRUE)') AS
+        CREATE TABLE {matrix_out} AS
         SELECT
             {r_s_args[row]} as {out_args[row]},
             {schema_madlib}.__matrix_densify_agg(
@@ -2951,9 +2922,7 @@ def _matrix_diag_sparse(schema_madlib, diag_elements, matrix_out, out_args):
 def _matrix_diag_dense(schema_madlib, diag_elements, matrix_out, out_args):
     dim = len(diag_elements)
     plan = plpy.prepare("""
-        CREATE TABLE {matrix_out}
-        m4_ifdef(`__POSTGRESQL__', `',
-            `WITH (APPENDONLY=TRUE)') AS
+        CREATE TABLE {matrix_out} AS
         SELECT
             row as {out_args[row]},
             {schema_madlib}.__matrix_densify_agg({dim}, row, val) AS {out_args[val]}

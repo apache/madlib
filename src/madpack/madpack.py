@@ -23,6 +23,7 @@ from utilities import info_
 from utilities import is_rev_gte
 from utilities import remove_comments_from_sql
 from utilities import run_query
+
 # Required Python version
 py_min_ver = [2, 6]
 
@@ -1311,9 +1312,14 @@ def set_dynamic_library_path_in_database(dbver_split, madlib_library_path):
 
     global dynamic_library_path
     dynamic_library_path = _internal_run_query("SHOW dynamic_library_path", True)[0]['dynamic_library_path']
+    # PG7 gpconfig messes up $libdir so we remove it for now
+    paths = dynamic_library_path.split(":")
+    if madlib_library_path not in paths:
+        if '$libdir' in paths:
+            paths.remove('$libdir')
 
-    if madlib_library_path not in dynamic_library_path.split(":"):
-        dynamic_library_path = dynamic_library_path + ':' + madlib_library_path
+        paths.append(madlib_library_path)
+        dynamic_library_path = ':'.join(paths)
 
         if portid == 'greenplum':
             if is_rev_gte(dbver_split, get_rev_num('6.0')):

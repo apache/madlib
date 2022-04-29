@@ -1,9 +1,9 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 import sys
 
 
 def detectBOM(inFileName):
-    file = open(inFileName, 'r')
+    file = open(inFileName, 'r', encoding="utf-8")
     file.seek(0)
     head = list(map(ord, file.read(4)))
     if head == [0x00, 0x00, 0xFE, 0xFF]:
