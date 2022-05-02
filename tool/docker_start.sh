@@ -83,9 +83,10 @@ docker exec "${CONTAINER_NAME}" bash -c "rm -rf /madlib/build_docker; \
 
 echo "---------- Installing and running install-check --------------------"
 # Install MADlib and run install check
-docker exec "${CONTAINER_NAME}" bash -c "/madlib/build_docker/src/bin/madpack -p postgres \
-							 -c postgres/postgres@localhost:5432/postgres \
-							 install" \
+docker exec "${CONTAINER_NAME}" bash -c "PATH=$PATH:/usr/lib/postgresql/10/bin \
+							/madlib/build_docker/src/bin/madpack -p postgres \
+							-c postgres/postgres@localhost:5432/postgres \
+							install" \
 			| tee "${workdir}/build_docker_logs/madlib_install.log"
 
 docker exec "${CONTAINER_NAME}" bash -c "/madlib/build_docker/src/bin/madpack -p postgres \
