@@ -233,3 +233,9 @@ endif(FLEX_FOUND AND BISON_FOUND AND DOXYGEN_FOUND)
 # -- Add subdirectories --------------------------------------------------------
 
 add_subdirectory(design)
+
+file(
+    COPY
+    example
+    DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/user/html/"
+)
