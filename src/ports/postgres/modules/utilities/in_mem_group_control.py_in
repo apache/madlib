@@ -240,6 +240,7 @@ class GroupIterationController:
         self.finished_states = state_factory(self.is_state_type_bytea8)
 
         self.group_param = self._init_group_param()
+        self.update_plan = None
 
     def _init_group_param(self):
         _grp_key = ("array_to_string(ARRAY[{grouping_str}], ',')"
@@ -549,40 +550,43 @@ class GroupIterationController:
         self.iteration = self.iteration + 1
 
         group_param = self.group_param
-        run_sql = """
-            SELECT
-                {_grp_key} AS {col_grp_key},
-                {grouping_col},
-                {iteration} AS {col_grp_iteration},
-                ({newState}) AS {col_grp_state}
-            FROM (
-                SELECT *,
-                    array_to_string(ARRAY[{grouping_str}], ',') AS {col_grp_key}
-                FROM {rel_source}
-            ) AS {as_rel_source}
-            JOIN ( {select_rel_state} ) AS {rel_state}
-            {using_str}
-            JOIN ( {select_n_tuples} ) AS _rel_n_tuples
-            {using_str}
-            {groupby_str}
-            """.format(
-            newState=newState,
-            iteration=self.iteration,
-            using_str=group_param.using_str,
-            groupby_str=group_param.groupby_str,
-            _grp_key=group_param.grp_key,
-            select_rel_state=group_param.select_rel_state,
-            select_n_tuples=group_param.select_n_tuples,
-            **self.kwargs)
 
-        update_plan = plpy.prepare(run_sql,
-                                   ["text[]", group_param.grouped_state_type,
-                                    "text[]", "integer[]"])
-        res_tuples = plpy.execute(update_plan, [self.new_states.keys,
-                                                self.new_states.values,
-                                                self.grp_to_n_tuples.keys(),
-                                                self.grp_to_n_tuples.values()])
+        if self.update_plan is None:
+            run_sql = """
+                SELECT
+                    {_grp_key} AS {col_grp_key},
+                    {grouping_col},
+                    ({newState}) AS {col_grp_state}
+                FROM (
+                    SELECT *,
+                        array_to_string(ARRAY[{grouping_str}], ',') AS {col_grp_key}
+                    FROM {rel_source}
+                ) AS {as_rel_source}
+                JOIN ( {select_rel_state} ) AS {rel_state}
+                {using_str}
+                JOIN ( {select_n_tuples} ) AS _rel_n_tuples
+                {using_str}
+                {groupby_str}
+                """.format(
+                newState=newState,
+                iteration=self.iteration,
+                using_str=group_param.using_str,
+                groupby_str=group_param.groupby_str,
+                _grp_key=group_param.grp_key,
+                select_rel_state=group_param.select_rel_state,
+                select_n_tuples=group_param.select_n_tuples,
+                **self.kwargs)
 
+            self.update_plan = plpy.prepare(run_sql,
+                                       ["text[]", group_param.grouped_state_type,
+                                        "text[]", "integer[]"])
+
+        res_tuples = plpy.execute(self.update_plan,
+                                    [self.new_states.keys,
+                                     self.new_states.values,
+                                     self.grp_to_n_tuples.keys(),
+                                     self.grp_to_n_tuples.values()])
+        res_tuples[0][self.kwargs['col_grp_iteration']] = self.iteration
         col_grp_state = self.kwargs['col_grp_state']
         col_grp_key = self.kwargs['col_grp_key']
         self.old_states.sync_from(self.new_states)
