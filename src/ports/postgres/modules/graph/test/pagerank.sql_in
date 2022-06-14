@@ -64,7 +64,7 @@ INSERT INTO "EDGE" VALUES
 DROP TABLE IF EXISTS pagerank_out, pagerank_out_summary;
 SELECT pagerank(
              'vertex',        -- Vertex table
-             'id',            -- Vertix id column
+             'id',            -- Vertex id column
              '"EDGE"',          -- "EDGE" table
              'src=src, dest=dest', -- "EDGE" args
              'pagerank_out');    -- Output table of PageRank
@@ -80,7 +80,7 @@ DROP TABLE IF EXISTS pagerank_gr_out;
 DROP TABLE IF EXISTS pagerank_gr_out_summary;
 SELECT pagerank(
              'vertex',        -- Vertex table
-             'id',            -- Vertix id column
+             'id',            -- Vertex id column
              '"EDGE"',          -- "EDGE" table
              'src=src, dest=dest', -- "EDGE" args
              'pagerank_gr_out', -- Output table of PageRank
@@ -113,7 +113,7 @@ DROP TABLE IF EXISTS pagerank_ppr_out;
 DROP TABLE IF EXISTS pagerank_ppr_out_summary;
 SELECT pagerank(
              'vertex',        -- Vertex table
-             'id',            -- Vertix id column
+             'id',            -- Vertex id column
              '"EDGE"',          -- "EDGE" table
              'src=src, dest=dest', -- "EDGE" args
              'pagerank_ppr_out', -- Output table of PageRank
@@ -133,7 +133,7 @@ DROP TABLE IF EXISTS pagerank_ppr_grp_out;
 DROP TABLE IF EXISTS pagerank_ppr_grp_out_summary;
 SELECT pagerank(
              'vertex',        -- Vertex table
-             'id',            -- Vertix id column
+             'id',            -- Vertex id column
              '"EDGE"',          -- "EDGE" table
              'src=src, dest=dest', -- "EDGE" args
              'pagerank_ppr_grp_out', -- Output table of PageRank
@@ -180,7 +180,7 @@ DROP TABLE IF EXISTS pagerank_gr_out;
 DROP TABLE IF EXISTS pagerank_gr_out_summary;
 SELECT pagerank(
 'vertex', -- Vertex table
-'id', -- Vertix id column
+'id', -- Vertex id column
 '"EDGE"', -- "EDGE" table
 'src=src, dest=dest', -- "EDGE" args
 'pagerank_gr_out', -- Output table of PageRank
@@ -217,3 +217,91 @@ DROP TABLE IF EXISTS pg_temp.out2, pg_temp.out2_summary;
 SELECT pagerank('v2',NULL,'e2',NULL,'pg_temp.out2');
 SELECT count(*) from pg_temp.out2;
 SELECT * from pg_temp.out2_summary;
+
+-- Test for multiple column identifiers
+-- The datasets have the columns doubled so that the same tests can be run on the output tables
+
+DROP TABLE IF EXISTS vertex_mult_pagerank, edge_mult_pagerank CASCADE;
+CREATE TABLE vertex_mult_pagerank(
+id1 INTEGER,
+id2 INTEGER
+);
+CREATE TABLE edge_mult_pagerank(
+src1 INTEGER,
+dest1 INTEGER,
+user_id1 INTEGER,
+src2 INTEGER,
+dest2 INTEGER,
+user_id2 INTEGER
+);
+INSERT INTO vertex_mult_pagerank VALUES
+(0, 0),
+(1, 1),
+(2, 2),
+(3, 3),
+(4, 4),
+(5, 5),
+(6, 6);
+INSERT INTO edge_mult_pagerank VALUES
+(0, 1, 1, 0, 1, 1),
+(0, 2, 1, 0, 2, 1),
+(0, 4, 1, 0, 4, 1),
+(1, 2, 1, 1, 2, 1),
+(1, 3, 1, 1, 3, 1),
+(2, 3, 1, 2, 3, 1),
+(2, 5, 1, 2, 5, 1),
+(2, 6, 1, 2, 6, 1),
+(3, 0, 1, 3, 0, 1),
+(4, 0, 1, 4, 0, 1),
+(5, 6, 1, 5, 6, 1),
+(6, 3, 1, 6, 3, 1),
+(0, 1, 2, 0, 1, 2),
+(0, 2, 2, 0, 2, 2),
+(0, 4, 2, 0, 4, 2),
+(1, 2, 2, 1, 2, 2),
+(1, 3, 2, 1, 3, 2),
+(2, 3, 2, 2, 3, 2),
+(3, 0, 2, 3, 0, 2),
+(4, 0, 2, 4, 0, 2),
+(5, 6, 2, 5, 6, 2),
+(6, 3, 2, 6, 3, 2);
+
+DROP TABLE IF EXISTS pagerank_mult_col_out;
+DROP TABLE IF EXISTS pagerank_mult_col_out_summary;
+SELECT pagerank(
+'vertex_mult_pagerank', -- Vertex table
+'[id1,id2]', -- Vertex id column
+'edge_mult_pagerank', -- edge_mult_pagerank table
+'src=[src1,src2], dest=[dest1,dest2]', -- edge_mult_pagerank args
+'pagerank_mult_col_out', -- Output table of PageRank
+NULL, -- Default damping factor (0.85)
+NULL, -- Default max iters (100)
+NULL, -- Default Threshold
+'user_id1,user_id2');
+SELECT assert(relative_error(SUM(pagerank), 1) < 0.005,
+        'PageRank: Scores do not sum up to 1 for group 1.'
+    ) FROM pagerank_mult_col_out WHERE user_id1=1;
+SELECT assert(id = '{0,0}'::BIGINT[], 'Unexpected Ranking') FROM (
+        SELECT id FROM pagerank_mult_col_out
+        WHERE user_id1 = 1 ORDER BY pagerank DESC LIMIT 1)q;
+
+DROP TABLE IF EXISTS pagerank_mult_col_out;
+DROP TABLE IF EXISTS pagerank_mult_col_out_summary;
+SELECT pagerank(
+'vertex_mult_pagerank', -- Vertex table
+'[id1,id2]', -- Vertex id column
+'edge_mult_pagerank', -- edge_mult_pagerank table
+'src=[src1,src2], dest=[dest1,dest2]', -- edge_mult_pagerank args
+'pagerank_mult_col_out', -- Output table of PageRank
+NULL, -- Default damping factor (0.85)
+NULL, -- Default max iters (100)
+NULL, -- Default Threshold
+'user_id1,user_id2',
+'{{1,1},{3,3}}');
+
+SELECT assert(relative_error(SUM(pagerank), 1) < 0.005,
+        'PageRank: Scores do not sum up to 1 for group 1.'
+    ) FROM pagerank_mult_col_out WHERE user_id1=1;
+SELECT assert(id = '{0,0}'::BIGINT[], 'Unexpected Ranking') FROM (
+        SELECT id FROM pagerank_mult_col_out
+        WHERE user_id1 = 1 ORDER BY pagerank DESC LIMIT 1)q;

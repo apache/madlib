@@ -36,6 +36,7 @@ from utilities.utilities import extract_keyvalue_params
 from utilities.utilities import unique_string, split_quoted_delimited_str
 from utilities.validate_args import columns_exist_in_table, get_expr_type
 from utilities.utilities import is_platform_pg
+from utilities.utilities import get_seg_number
 from utilities.utilities import add_postfix
 from utilities.validate_args import table_exists
 from utilities.utilities import rename_table
@@ -74,26 +75,85 @@ def wcc(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
         @param out_table
         @param grouping_cols
     """
+
+    vertex_table_in = vertex_table
+    vertex_id_in = vertex_id
+
     old_msg_level = plpy.execute("""
                                   SELECT setting
                                   FROM pg_settings
                                   WHERE name='client_min_messages'
                                   """)[0]['setting']
     plpy.execute('SET client_min_messages TO warning')
-    params_types = {'src': str, 'dest': str}
-    default_args = {'src': 'src', 'dest': 'dest'}
+    params_types = {'src': list, 'dest': list}
+    default_args = {'src': ['src'], 'dest': ['dest']}
     edge_params = extract_keyvalue_params(
         edge_args, params_types, default_args)
 
     # populate default values for optional params if null, and prepare data
     # to be written into the summary table (*_st variable names)
+    vertex_view = unique_string('vertex_view')
+    edge_view = unique_string('edge_view')
+    single_id = 'single_id'
+    vertex_view_sql = """
+        CREATE VIEW {vertex_view} AS
+        SELECT {vertex_sql} AS id, {vertex_sql} AS {single_id}
+        FROM {vertex_table}
+        """
     if not vertex_id:
         vertex_id = "id"
-        v_st = "id"
+        vertex_sql = vertex_id
+        vertex_type = "BIGINT"
     else:
-        v_st = vertex_id
+        if vertex_id[0] == '[' and vertex_id[-1] == ']':
+            vertex_id = split_quoted_delimited_str(vertex_id[1:-1])
+            vertex_sql = "ARRAY[{0}]".format(','.join(vertex_id))
+            vertex_type = "BIGINT[]"
+
+            if is_platform_pg():
+                num_segments = 1
+                seg_sql = ' 0 '
+            else:
+                num_segments = get_seg_number()
+                seg_sql = " gp_segment_id "
+            vertex_view_sql = """
+                CREATE VIEW {vertex_view} AS
+                WITH q1 AS (
+                    SELECT {vertex_sql} AS id,
+                        ctid AS ctid_in,
+                        {seg_sql} AS seg_id_in,
+                        CAST( regexp_matches(ctid::TEXT, '\\((\\d+),(\\d+)\\)') AS BIGINT[]) AS new_id
+                    FROM {vertex_table}),
+                q2 AS (SELECT MAX(new_id[1]) AS max_block FROM q1)
+                SELECT id, ctid_in, {num_segments}*(new_id[2]*(max_block+1)+new_id[1])+seg_id_in AS {single_id}
+                FROM q1, q2;
+            """
+
+        else:
+            vertex_sql = vertex_id
+            vertex_id = [vertex_id]
+            vertex_type = "BIGINT"
+
+
+    src_list = edge_params["src"]
+    if len(src_list) > 1:
+        src = "ARRAY[{0}]".format(','.join(edge_params["src"]))
+    else:
+        edge_params["src"] = edge_params["src"][0]
+        src = edge_params["src"]
+
+    dest_list = edge_params["dest"]
+    if len(dest_list) > 1:
+        dest = "ARRAY[{0}]".format(','.join(edge_params["dest"]))
+    else:
+        edge_params["dest"] = edge_params["dest"][0]
+        dest = edge_params["dest"]
+
     if not grouping_cols:
         grouping_cols = ''
+        grouping_sql = ''
+    else:
+        grouping_sql = ', {0}'.format(grouping_cols)
 
     out_table_summary = ''
     if out_table:
@@ -102,8 +162,24 @@ def wcc(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
     validate_wcc_args(schema_madlib, vertex_table, vertex_id, edge_table,
                       edge_params, out_table, out_table_summary,
                       grouping_cols_list, 'Weakly Connected Components')
-    src = edge_params["src"]
-    dest = edge_params["dest"]
+
+    vertex_view_sql = vertex_view_sql.format(**locals())
+    plpy.execute(vertex_view_sql)
+
+    sql = """
+        CREATE VIEW {edge_view} AS
+        SELECT {src} AS src, {dest} AS dest {grouping_sql}
+        FROM {edge_table}
+        """.format(**locals())
+    plpy.execute(sql)
+
+    vertex_table = vertex_view
+    edge_table = edge_view
+    vertex_id = 'id'
+    src = 'src'
+    dest = 'dest'
+
+    distribution = '' if is_platform_pg() else "DISTRIBUTED BY (id)"
 
     message = unique_string(desp='message')
     oldupdate = unique_string(desp='oldupdate')
@@ -112,8 +188,6 @@ def wcc(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
     temp_out_table = unique_string(desp='tempout')
     edge_inverse = unique_string(desp='edge_inverse')
 
-    distribution = '' if is_platform_pg() else \
-        "DISTRIBUTED BY ({0})".format(vertex_id)
     subq_prefixed_grouping_cols = ''
     comma_toupdate_prefixed_grouping_cols = ''
     comma_oldupdate_prefixed_grouping_cols = ''
@@ -192,10 +266,11 @@ def wcc(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
 
         message_sql = """
             CREATE TABLE {message} AS
-            SELECT {vertex_id},
-                    CAST({vertex_id} AS BIGINT) AS {component_id}
+            SELECT {vertex_table}.{vertex_id},
+                    CAST({vertex_table}.{single_id} AS BIGINT) AS {component_id}
                     {comma_grouping_cols}
-            FROM {newupdate}
+            FROM {newupdate} INNER JOIN {vertex_table}
+            ON {vertex_table}.{vertex_id} = {newupdate}.{vertex_id}
             {distribution};
         """
         plpy.execute(message_sql.format(**locals()))
@@ -207,7 +282,7 @@ def wcc(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
             {distribution};
 
             CREATE TABLE {message} AS
-            SELECT {vertex_id}, CAST({vertex_id} AS BIGINT) AS {component_id}
+            SELECT {vertex_id}, CAST({single_id} AS BIGINT) AS {component_id}
             FROM {vertex_table}
             {distribution};
         """
@@ -312,21 +387,24 @@ def wcc(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
         plpy.execute("DROP TABLE IF EXISTS {0}".format(edge_inverse))
 
     rename_table(schema_madlib, newupdate, out_table)
+    if vertex_type != "BIGINT[]" and vertex_id_in and vertex_id_in != 'id':
+        plpy.execute("ALTER TABLE {out_table} RENAME COLUMN id TO {vertex_id_in}".format(**locals()))
     # Create summary table. We only need the vertex_id and grouping columns
     # in it.
-    vertex_id_type = get_expr_type(vertex_id, vertex_table)
 
+    plpy.execute("DROP VIEW IF EXISTS {0}, {1}".format(vertex_view, edge_view))
     plpy.execute("""
         CREATE TABLE {out_table_summary} AS SELECT
             {grouping_cols_summary}
-            '{vertex_table}'::TEXT AS vertex_table,
-            '{vertex_id}'::TEXT AS vertex_id,
-            '{vertex_id_type}'::TEXT AS vertex_id_type;
+            '{vertex_table_in}'::TEXT AS vertex_table,
+            '{vertex_id_in}'::TEXT AS vertex_id,
+            '{vertex_type}'::TEXT AS vertex_id_type;
 
         DROP TABLE IF EXISTS {message},{oldupdate},{newupdate},{toupdate};
     """.format(grouping_cols_summary='' if not grouping_cols else
                     "'{0}'::TEXT AS grouping_cols, ".format(grouping_cols),
                **locals()))
+
 
 # WCC Helper functions:
 def extract_wcc_summary_cols(wcc_summary_table):
@@ -378,6 +456,43 @@ def check_input_vertex_validity(wcc_args, vertices):
                 WHERE {where_clause}
             ) t
         """.format(**locals()))[0]['count']
+    _assert(count == len(vertices),
+            "Graph WCC: Invalid input vertex in {0}.".format(str(vertices)))
+
+def check_input_mcol_vertex_validity(schema_madlib, wcc_args, vertices, vertex_str_list):
+    """
+    Function to check if vertices are all valid, i.e., are present
+    in the WCC's original input vertex table. Even if one of the input
+    vertices (when more than one) is not valid, return False
+    Args:
+        @param wcc_args (dict)
+        @param vertices (list of list)
+    Returns:
+        True if all vertices in the list are present in the original input
+        vertex table, False otherwise.
+    """
+    vertex_table = wcc_args['vertex_table']
+    _assert(table_exists(vertex_table),
+            "Graph WCC: Input vertex table '{0}' does not exist.".format(
+                vertex_table))
+    vertex_col = wcc_args['vertex_id']
+
+    psubq = unique_string(desp='psubquery')
+    vertex_str = ','.join(vertex_str_list)
+
+    vertex_join = """
+        (SELECT ({schema_madlib}.array_unnest_2d_to_1d('{{ {vertex_str} }}'::BIGINT[])).unnest_result
+        ) {psubq}
+        """.format(**locals())
+
+    sql = """
+            SELECT COUNT(*) as count
+            FROM
+                {vertex_table}
+                INNER JOIN {vertex_join}
+            ON (ARRAY{vertex_col}::BIGINT[] = unnest_result)
+        """.format(**locals())
+    count = plpy.execute(sql)[0]['count']
     _assert(count == len(vertices),
             "Graph WCC: Invalid input vertex in {0}.".format(str(vertices)))
 
@@ -503,11 +618,20 @@ def graph_wcc_vertex_check(schema_madlib,  wcc_table, vertex_pair, pair_table,
     """
     with MinWarning("warning"):
         wcc_args = preprocess_wcc_table_args(wcc_table, pair_table)
-        vertices = split_quoted_delimited_str(vertex_pair)
-        _assert(vertices and len(vertices) == 2,
+
+        _assert(vertex_pair and len(vertex_pair) == 2,
                 "Graph WCC: Invalid vertex pair ({0}) input.".format(
                     vertex_pair))
-        check_input_vertex_validity(wcc_args, vertices)
+
+        if isinstance(vertex_pair[0], list):
+            vertex_str_list = []
+            for i in vertex_pair:
+                vertex_str_list.append('{' + ', '.join([str(j) for j in i]) + '}')
+            check_input_mcol_vertex_validity(schema_madlib, wcc_args, vertex_pair, vertex_str_list)
+        else:
+            check_input_vertex_validity(wcc_args, vertex_pair)
+            vertex_str_list = vertex_pair
+
         grouping_cols_comma = ''
         if 'grouping_cols' in wcc_args:
             grouping_cols_comma = wcc_args['grouping_cols'] + ', '
@@ -517,7 +641,12 @@ def graph_wcc_vertex_check(schema_madlib,  wcc_table, vertex_pair, pair_table,
         inner_from_clause = " FROM {0} ".format(wcc_table)
         inner_groupby_clause = " GROUP BY {0} component_id".format(
             grouping_cols_comma)
-        plpy.execute("""
+
+        vertex_id = wcc_args['vertex_id']
+        if vertex_id[0] == '[' and vertex_id[-1] == ']':
+            vertex_id = 'id'
+
+        sql = """
                 CREATE TABLE {pair_table} AS
                 SELECT {grouping_cols_comma} component_id
                 FROM (
@@ -533,9 +662,8 @@ def graph_wcc_vertex_check(schema_madlib,  wcc_table, vertex_pair, pair_table,
                 ) {subq}
                 GROUP BY {grouping_cols_comma} component_id
                 HAVING COUNT(*)=2
-            """.format(vertex_id=wcc_args['vertex_id'],
-                       vertex1=vertices[0], vertex2=vertices[1], **locals()))
-
+            """.format(vertex1=vertex_str_list[0], vertex2=vertex_str_list[1], **locals())
+        plpy.execute(sql)
 
 def graph_wcc_reachable_vertices(schema_madlib, wcc_table, src,
                                  reachable_vertices_table, **kwargs):
@@ -555,13 +683,23 @@ def graph_wcc_reachable_vertices(schema_madlib, wcc_table, src,
     with MinWarning("warning"):
         wcc_args = preprocess_wcc_table_args(wcc_table,
                                              reachable_vertices_table)
-        check_input_vertex_validity(wcc_args, split_quoted_delimited_str(src))
+        if not isinstance(src, list):
+            vertex_str = str(src)
+            check_input_vertex_validity(wcc_args, [vertex_str])
+        else:
+            vertex_str = '{' + ', '.join([str(j) for j in src]) + '}'
+            check_input_mcol_vertex_validity(schema_madlib, wcc_args, [src], [vertex_str])
+
         grouping_cols_comma = ''
         grouping_cols = ''
         if 'grouping_cols' in wcc_args:
             grouping_cols = wcc_args['grouping_cols']
             grouping_cols_comma = grouping_cols + ', '
+
         vertex_id = wcc_args['vertex_id']
+        if vertex_id[0] == '[' and vertex_id[-1] == ']':
+            vertex_id = 'id'
+
         subq = unique_string(desp='subq')
         glist = split_quoted_delimited_str(grouping_cols)
         grouping_cols_join = '' if not grouping_cols else ' AND ' + \
@@ -577,11 +715,11 @@ def graph_wcc_reachable_vertices(schema_madlib, wcc_table, src,
                     SELECT {grouping_cols_comma} component_id, {vertex_id}
                     FROM {wcc_table}
                     GROUP BY {vertex_id}, {grouping_cols_comma} component_id
-                    HAVING {vertex_id}='{src}'
+                    HAVING {vertex_id} ='{vertex_str}'
                 ) {subq}
                 ON {wcc_table}.component_id={subq}.component_id
                     {grouping_cols_join}
-                WHERE {wcc_table}.{vertex_id} != '{src}'
+                WHERE {wcc_table}.{vertex_id} != '{vertex_str}'
             """.format(**locals()))
 
 
