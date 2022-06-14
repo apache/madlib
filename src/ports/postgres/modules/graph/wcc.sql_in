@@ -72,9 +72,10 @@ weakly_connected_components( vertex_table,
 column specified in the 'vertex_id' parameter below.</dd>
 
 <dt>vertex_id</dt>
-<dd>TEXT, default = 'id'. Name of the column in 'vertex_table' containing
+<dd>TEXT, default = 'id'. Name of the column(s) in 'vertex_table' containing
 vertex ids.  The vertex ids can be of type INTEGER or BIGINT with no duplicates.
-They do not need to be contiguous.</dd>
+They do not need to be contiguous. If multiple columns are used as vertex ids,
+they are passed in the following format: [<vertex_id1>,<vertex_id2>,...]</dd>
 
 <dt>edge_table</dt>
 <dd>TEXT. Name of the table containing the edge data. The edge table must
@@ -84,14 +85,16 @@ contain columns for source vertex and destination vertex.</dd>
 <dd>TEXT. A comma-delimited string containing multiple named arguments of
 the form "name=value". The following parameters are supported for
 this string argument:
-  - src (INTEGER or BIGINT): Name of the column containing the source vertex ids in the edge table. Default column name is 'src'.
-  - dest (INTEGER or BIGINT): Name of the column containing the destination vertex ids in the edge table. Default column name is 'dest'.</dd>
+  - src (INTEGER or BIGINT): Name of the column(s) containing the source vertex ids in the edge table. Default column name is 'src'.
+  - dest (INTEGER or BIGINT): Name of the column(s) containing the destination vertex ids in the edge table. Default column name is 'dest'.</dd>
 
 <dt>out_table</dt>
 <dd>TEXT. Name of the table to store the component ID associated with each vertex.
 It will contain a row for every vertex from 'vertex_table' with
 the following columns:
-  - vertex_id : The id of a vertex. Will use the input parameter 'vertex_id' for column naming.
+  - vertex_id : The id of a vertex. Will use the input parameter 'vertex_id'
+  for column naming. If multiple columns are used for identifying vertices,
+  this column will be an array named "id".
   - component_id : Component that the vertex belongs to.
   We use the convention where 'component_id' is the id of
   the first vertex in a particular group.  It means that component ids
@@ -207,7 +210,9 @@ graph_wcc_vertex_check( wcc_table,
 components.</dd>
 
 <dt>vertex_pair</dt>
-<dd>TEXT. A pair of vertex IDs separated by a comma.</dd>
+<dd>BIGINT[]. A pair of vertex IDs separated by a comma. If multiple
+columns are used for identifying vertices, a 2D array will be required for this
+parameter.</dd>
 
 <dt>pair_table</dt>
 <dd>TEXT. Name of the output table that specifies if the two vertices in
@@ -241,7 +246,7 @@ graph_wcc_reachable_vertices( wcc_table,
 components.</dd>
 
 <dt>src</dt>
-<dd>TEXT. The vertex ID from which all reachable vertices have to be found.</dd>
+<dd>BIGINT or BIGINT[]. The vertex ID from which all reachable vertices have to be found.</dd>
 
 <dt>reachable_vertices_table</dt>
 <dd>TEXT. Name of the output table that contains the list of vertices that are
@@ -289,15 +294,17 @@ table has the following columns:
 @anchor examples
 @examp
 
+<a href="example/madlib_wcc_example.sql">Download the example sql file here.</a>
+
 -# Create vertex and edge tables to represent the graph:
 <pre class="syntax">
 DROP TABLE IF EXISTS vertex, edge;
 CREATE TABLE vertex(
-    id INTEGER
+    node_id INTEGER
 );
 CREATE TABLE edge(
-    src INTEGER,
-    dest INTEGER,
+    conn_src INTEGER,
+    conn_dest INTEGER,
     user_id INTEGER
 );
 INSERT INTO vertex VALUES
@@ -340,30 +347,30 @@ INSERT INTO edge VALUES
 <pre class="syntax">
 DROP TABLE IF EXISTS wcc_out, wcc_out_summary;
 SELECT madlib.weakly_connected_components(
-                         'vertex',             -- Vertex table
-                         'id',                 -- Vertix id column
-                         'edge',               -- Edge table
-                         'src=src, dest=dest', -- Comma delimted string of edge arguments
-                         'wcc_out');      -- Output table of weakly connected components
+    'vertex',                        -- Vertex table
+    'node_id',                       -- Vertex id column
+    'edge',                          -- Edge table
+    'src=conn_src, dest=conn_dest',  -- Comma delimted string of edge arguments
+    'wcc_out');                      -- Output table of weakly connected components
 SELECT * FROM wcc_out ORDER BY component_id, id;
 </pre>
 <pre class="result">
- id | component_id
-----+--------------
-  0 |            0
-  1 |            0
-  2 |            0
-  3 |            0
-  5 |            0
-  6 |            0
-  4 |            4
- 10 |           10
- 11 |           10
- 12 |           10
- 13 |           10
- 14 |           14
- 15 |           14
- 16 |           14
+ node_id | component_id
+---------+--------------
+       0 |            0
+       1 |            0
+       2 |            0
+       3 |            0
+       5 |            0
+       6 |            0
+       4 |            4
+      10 |           10
+      11 |           10
+      12 |           10
+      13 |           10
+      14 |           14
+      15 |           14
+      16 |           14
 (14 rows)
 </pre>
 
@@ -372,30 +379,30 @@ using the grouping feature:
 <pre class="syntax">
 DROP TABLE IF EXISTS wcc_out, wcc_out_summary;
 SELECT madlib.weakly_connected_components(
-                         'vertex',             -- Vertex table
-                         'id',                 -- Vertix id column
-                         'edge',               -- Edge table
-                         'src=src, dest=dest', -- Comma delimted string of edge arguments
-                         'wcc_out',       -- Output table of weakly connected components
-                         'user_id');           -- Grouping column name
+    'vertex',                       -- Vertex table
+    'node_id',                      -- Vertex id column
+    'edge',                         -- Edge table
+    'src=conn_src, dest=conn_dest', -- Comma delimted string of edge arguments
+    'wcc_out',                      -- Output table of weakly connected components
+    'user_id');                     -- Grouping column name
 SELECT * FROM wcc_out ORDER BY user_id, component_id, id;
 </pre>
 <pre class="result">
- id | component_id | user_id
-----+--------------+---------
-  0 |            0 |       1
-  1 |            0 |       1
-  2 |            0 |       1
-  3 |            0 |       1
-  5 |            0 |       1
-  6 |            0 |       1
- 10 |           10 |       2
- 11 |           10 |       2
- 12 |           10 |       2
- 13 |           10 |       2
- 14 |           14 |       2
- 15 |           14 |       2
- 16 |           14 |       2
+ node_id | component_id | user_id
+---------+--------------+---------
+       0 |            0 |       1
+       1 |            0 |       1
+       2 |            0 |       1
+       3 |            0 |       1
+       5 |            0 |       1
+       6 |            0 |       1
+      10 |           10 |       2
+      11 |           10 |       2
+      12 |           10 |       2
+      13 |           10 |       2
+      14 |           14 |       2
+      15 |           14 |       2
+      16 |           14 |       2
 (13 rows)
 </pre>
 Note that vertex 4 is not identified as a separate component
@@ -489,6 +496,86 @@ SELECT * FROM count_table;
 (2 rows)
 </pre>
 
+-# Create vertex and edge tables with multiple column ids to represent the graph:
+<pre class="syntax">
+DROP TABLE IF EXISTS vertex_multicol_wcc, edge_multicol_wcc;
+CREATE TABLE vertex_multicol_wcc(
+    node_id_major BIGINT,
+    node_id_minor BIGINT
+);
+CREATE TABLE edge_multicol_wcc(
+    conn_src_major BIGINT,
+    conn_dest_major BIGINT,
+    user_id_major BIGINT,
+    conn_src_minor BIGINT,
+    conn_dest_minor BIGINT,
+    user_id_minor BIGINT
+);
+INSERT INTO vertex_multicol_wcc VALUES
+(0, 0),
+(1, 1),
+(2, 2),
+(3, 3),
+(4, 4),
+(5, 5),
+(6, 6);
+INSERT INTO edge_multicol_wcc VALUES
+(0, 1, 1, 0, 1, 1),
+(0, 2, 1, 0, 2, 1),
+(0, 4, 1, 0, 4, 1),
+(1, 2, 1, 1, 2, 1),
+(1, 3, 1, 1, 3, 1),
+(2, 3, 1, 2, 3, 1),
+(2, 5, 1, 2, 5, 1),
+(2, 6, 1, 2, 6, 1),
+(3, 0, 1, 3, 0, 1),
+(4, 0, 1, 4, 0, 1),
+(5, 6, 1, 5, 6, 1),
+(6, 3, 1, 6, 3, 1),
+(0, 1, 2, 0, 1, 2),
+(0, 2, 2, 0, 2, 2),
+(0, 4, 2, 0, 4, 2),
+(1, 2, 2, 1, 2, 2),
+(1, 3, 2, 1, 3, 2),
+(2, 3, 2, 2, 3, 2),
+(3, 0, 2, 3, 0, 2),
+(4, 0, 2, 4, 0, 2),
+(5, 6, 2, 5, 6, 2),
+(6, 3, 2, 6, 3, 2);
+</pre>
+
+-# Find all the weakly connected components in the graph:
+<pre class="syntax">
+DROP TABLE IF EXISTS wcc_multicol_out, wcc_multicol_out_summary;
+SELECT madlib.weakly_connected_components(
+    'vertex_multicol_wcc',                                                          -- Vertex table
+    '[node_id_major,node_id_minor]',                                                -- Vertex id column
+    'edge_multicol_wcc',                                                            -- Edge table
+    'src=[conn_src_major,conn_src_minor], dest=[conn_dest_major,conn_dest_minor]',  -- Comma delimted string of edge arguments
+    'wcc_multicol_out',                                                             -- Output table of weakly connected components
+    'user_id_major,user_id_minor');                                                 -- Grouping column name
+SELECT * FROM wcc_multicol_out ORDER BY user_id_major, user_id_minor, component_id, id;
+</pre>
+<pre class="result">
+  id   | component_id | user_id_major | user_id_minor
+-------+--------------+---------------+---------------
+ {0,0} |            3 |             1 |             1
+ {1,1} |            3 |             1 |             1
+ {2,2} |            3 |             1 |             1
+ {3,3} |            3 |             1 |             1
+ {4,4} |            3 |             1 |             1
+ {5,5} |            3 |             1 |             1
+ {6,6} |            3 |             1 |             1
+ {0,0} |            3 |             2 |             2
+ {1,1} |            3 |             2 |             2
+ {2,2} |            3 |             2 |             2
+ {3,3} |            3 |             2 |             2
+ {4,4} |            3 |             2 |             2
+ {5,5} |            3 |             2 |             2
+ {6,6} |            3 |             2 |             2
+(14 rows)
+</pre>
+
 @anchor notes
 @par Notes
 
@@ -548,7 +635,7 @@ m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `MODIFIES SQL DATA', `');
 
 CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.graph_wcc_vertex_check(
     wcc_table           TEXT,
-    vertex_pair         TEXT,
+    vertex_pair         BIGINT[],
     pair_table          TEXT
 
 ) RETURNS VOID AS $$
@@ -559,7 +646,17 @@ m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `MODIFIES SQL DATA', `');
 
 CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.graph_wcc_reachable_vertices(
     wcc_table                    TEXT,
-    src                          TEXT,
+    src                          BIGINT,
+    reachable_vertices_table     TEXT
+
+) RETURNS VOID AS $$
+    PythonFunction(graph, wcc, graph_wcc_reachable_vertices)
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.graph_wcc_reachable_vertices(
+    wcc_table                    TEXT,
+    src                          BIGINT[],
     reachable_vertices_table     TEXT
 
 ) RETURNS VOID AS $$

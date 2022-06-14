@@ -135,20 +135,20 @@ SELECT assert(relative_error(num_vertices, 4) < 0.00001,
 DROP TABLE IF EXISTS vc_table;
 SELECT graph_wcc_vertex_check(
      'wcc_out',    -- WCC's output table
-     '14,15',      -- Pair of vertex IDs
+     ARRAY[14,15], -- Pair of vertex IDs
      'vc_table');  -- output table
-SELECT assert(relative_error(component_id, 14) < 0.00001,
+SELECT assert(relative_error(count(DISTINCT component_id), 1) < 0.00001,
         'Weakly Connected Components: Incorrect vertex check value.'
     ) FROM vc_table WHERE user_id=1;
 
 DROP TABLE IF EXISTS reach_table;
 SELECT graph_wcc_reachable_vertices(
      'wcc_out',         -- WCC's output table
-     '0',               -- source vertex
+     0,               -- source vertex
      'reach_table');    -- output table
 SELECT assert(relative_error(count(dest), 5) < 0.00001,
         'Weakly Connected Components: Incorrect reachable vertices value.'
-    ) FROM reach_table WHERE user_id=2 and component_id=0;
+    ) FROM reach_table WHERE user_id=2;
 
 DROP TABLE IF EXISTS count_table;
 SELECT graph_wcc_num_cpts(
@@ -183,3 +183,96 @@ CREATE TABLE e2 AS SELECT (src_node+992147483647)::bigint as src, (dest_node+992
 SELECT weakly_connected_components('v2',NULL,'e2',NULL,'pg_temp.wcc_out');
 SELECT count(*) from pg_temp.wcc_out;
 SELECT count(*) from pg_temp.wcc_out_summary;
+
+-- Test for multiple column identifiers
+-- The datasets have the columns doubled so that the same tests can be run on the output tables
+
+DROP TABLE IF EXISTS vertex_mult, edge_mult CASCADE;
+CREATE TABLE vertex_mult AS SELECT id AS id1, id AS id2 FROM vertex;
+CREATE TABLE edge_mult AS
+SELECT src_node AS src1, src_node AS src2,
+       dest_node AS dest1, dest_node AS dest2,
+       user_id AS user_id1, user_id AS user_id2
+FROM "EDGE"
+WHERE user_id = 1;
+
+DROP TABLE IF EXISTS wcc_mult_out CASCADE;
+DROP TABLE IF EXISTS wcc_mult_out_summary CASCADE;
+SELECT weakly_connected_components(
+    'vertex_mult',
+    '[id1,id2]',
+    'edge_mult',
+    'src=[src1,src2], dest=[dest1,dest2]',
+    'wcc_mult_out');
+
+SELECT assert(relative_error(count(distinct component_id), 4) < 0.00001,
+        'Weakly Connected Components: Number of components found is not 4.'
+    ) FROM wcc_out;
+
+INSERT INTO edge_mult
+SELECT src_node AS src1, src_node AS src2,
+       dest_node AS dest1, dest_node AS dest2,
+       user_id AS user_id1, user_id AS user_id2
+FROM "EDGE"
+WHERE user_id = 2;
+
+DROP TABLE IF EXISTS wcc_mult_out CASCADE;
+DROP TABLE IF EXISTS wcc_mult_out_summary CASCADE;
+SELECT weakly_connected_components(
+    'vertex_mult',
+    '[id1,id2]',
+    'edge_mult',
+    'src=[src1,src2], dest=[dest1,dest2]',
+    'wcc_mult_out',
+    'user_id1,user_id2');
+
+SELECT assert(relative_error(count(distinct component_id), 3) < 0.00001,
+        'Weakly Connected Components: Number of components found is not 4.'
+    ) FROM wcc_mult_out WHERE user_id1=1;
+
+SELECT assert(relative_error(count(distinct component_id), 3) < 0.00001,
+        'Weakly Connected Components: Number of components found is not 4.'
+    ) FROM wcc_mult_out WHERE user_id1=1;
+
+-- Test WCC helper functions:
+DROP TABLE IF EXISTS largest_cpt_table;
+SELECT graph_wcc_largest_cpt(
+     'wcc_mult_out',             -- WCC's output table
+     'largest_cpt_table');  -- output table
+SELECT assert(relative_error(num_vertices, 6) < 0.00001,
+        'Weakly Connected Components: Incorrect largest component value.'
+    ) FROM largest_cpt_table WHERE user_id1=2;
+
+DROP TABLE IF EXISTS histogram_table;
+SELECT graph_wcc_histogram(
+     'wcc_mult_out',           -- WCC's output table
+     'histogram_table');  -- output table
+SELECT assert(array_agg(num_vertices order by num_vertices asc)= '{3, 4, 6}',
+        'Weakly Connected Components: Incorrect histogram value.'
+    ) FROM histogram_table WHERE user_id1=1;
+
+DROP TABLE IF EXISTS vc_table;
+SELECT graph_wcc_vertex_check(
+     'wcc_mult_out',    -- WCC's output table
+     '{{14,14},{15,15}}',      -- Pair of vertex IDs
+     'vc_table');  -- output table
+SELECT assert(relative_error(count(DISTINCT component_id), 1) < 0.00001,
+        'Weakly Connected Components: Incorrect vertex check value.'
+    ) FROM vc_table WHERE user_id1=1;
+
+DROP TABLE IF EXISTS reach_table;
+SELECT graph_wcc_reachable_vertices(
+     'wcc_mult_out',         -- WCC's output table
+     '{0,0}'::BIGINT[],               -- source vertex
+     'reach_table');    -- output table
+SELECT assert(relative_error(count(dest), 5) < 0.00001,
+        'Weakly Connected Components: Incorrect reachable vertices value.'
+    ) FROM reach_table WHERE user_id1=2;
+
+DROP TABLE IF EXISTS count_table;
+SELECT graph_wcc_num_cpts(
+     'wcc_mult_out',       -- WCC's output table
+     'count_table');  -- output table
+SELECT assert(relative_error(num_components, 3) < 0.00001,
+        'Weakly Connected Components: Incorrect largest component value.'
+    ) FROM count_table WHERE user_id1=1;

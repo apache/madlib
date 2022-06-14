@@ -76,10 +76,10 @@ pagerank( vertex_table,
 <dd>TEXT. Name of the table containing the vertex data for the graph. Must contain the
 column specified in the 'vertex_id' parameter below.</dd>
 
-<dt>vertex_id</dt>
-<dd>TEXT, default = 'id'. Name of the column in 'vertex_table' containing
+<dd>TEXT, default = 'id'. Name of the column(s) in 'vertex_table' containing
 vertex ids.  The vertex ids can be of type INTEGER or BIGINT with no duplicates.
-They do not need to be contiguous.</dd>
+They do not need to be contiguous. If multiple columns are used as vertex ids,
+they are passed in the following format: [<vertex_id1>,<vertex_id2>,...]</dd>
 
 <dt>edge_table</dt>
 <dd>TEXT. Name of the table containing the edge data. The edge table must
@@ -89,9 +89,9 @@ contain columns for source vertex and destination vertex.</dd>
 <dd>TEXT. A comma-delimited string containing multiple named arguments of
 the form "name=value". The following parameters are supported for
 this string argument:
-  - src (INTEGER or BIGINT): Name of the column containing the source vertex ids in the edge table.
+  - src (INTEGER or BIGINT): Name of the column(s) containing the source vertex ids in the edge table.
                    Default column name is 'src'.
-  - dest (INTEGER or BIGINT): Name of the column containing the destination vertex ids in the edge table.
+  - dest (INTEGER or BIGINT): Name of the column(s) containing the destination vertex ids in the edge table.
                     Default column name is 'dest'.</dd>
 
 <dt>out_table</dt>
@@ -130,23 +130,27 @@ a single model is generated for all data.
 <dt> personalization_vertices (optional)</dt>
 <dd>INTEGER[] or BIGINT[], default: NULL. A comma separated list of vertices or nodes
 for personalized PageRank. When this parameter is provided, personalized PageRank
-will run.  In the absence of this parameter, regular PageRank will run.
+will run. In the absence of this parameter, regular PageRank will run. If multiple
+columns are used for identifying vertices, a 2D array will be required for this
+parameter.
 </dl>
 
 @anchor examples
 @examp
 
+<a href="example/madlib_pagerank_example.sql">Download the example sql file here.</a>
+
 -# Create vertex and edge tables to represent the graph:
 <pre class="syntax">
 DROP TABLE IF EXISTS vertex, edge;
 CREATE TABLE vertex(
-        id INTEGER
-        );
+    node_id INTEGER
+    );
 CREATE TABLE edge(
-        src INTEGER,
-        dest INTEGER,
-        user_id INTEGER
-        );
+    conn_src INTEGER,
+    conn_dest INTEGER,
+    user_id INTEGER
+);
 INSERT INTO vertex VALUES
 (0),
 (1),
@@ -184,23 +188,23 @@ INSERT INTO edge VALUES
 <pre class="syntax">
 DROP TABLE IF EXISTS pagerank_out, pagerank_out_summary;
 SELECT madlib.pagerank(
-                       'vertex',             -- Vertex table
-                       'id',                 -- Vertix id column
-                       'edge',               -- Edge table
-                       'src=src, dest=dest', -- Comma delimted string of edge arguments
-                       'pagerank_out');      -- Output table of PageRank
+                       'vertex',                        -- Vertex table
+                       'node_id',                       -- Vertex id column
+                       'edge',                          -- Edge table
+                       'src=conn_src, dest=conn_dest',  -- Comma delimted string of edge arguments
+                       'pagerank_out');                 -- Output table of PageRank
 SELECT * FROM pagerank_out ORDER BY pagerank DESC;
 </pre>
 <pre class="result">
- id |      pagerank
-----+-------------------
-  0 |  0.28753749341184
-  3 |  0.21016988901855
-  2 |  0.14662683454062
-  4 |  0.10289614384217
-  1 |  0.10289614384217
-  6 |  0.09728637768887
-  5 |  0.05258711765692
+ node_id |      pagerank
+---------+-------------------
+       0 |  0.28753749341184
+       3 |  0.21016988901855
+       2 |  0.14662683454062
+       4 |  0.10289614384217
+       1 |  0.10289614384217
+       6 |  0.09728637768887
+       5 |  0.05258711765692
 (7 rows)
 </pre>
 <pre class="syntax">
@@ -217,24 +221,24 @@ SELECT * FROM pagerank_out_summary;
 <pre class="syntax">
 DROP TABLE IF EXISTS pagerank_out, pagerank_out_summary;
 SELECT madlib.pagerank(
-                         'vertex',             -- Vertex table
-                         'id',                 -- Vertix id column
-                         'edge',               -- Edge table
-                         'src=src, dest=dest', -- Comma delimted string of edge arguments
-                         'pagerank_out',       -- Output table of PageRank
-                         0.5);                 -- Damping factor
+                       'vertex',                        -- Vertex table
+                       'node_id',                       -- Vertex id column
+                       'edge',                          -- Edge table
+                       'src=conn_src, dest=conn_dest',  -- Comma delimted string of edge arguments
+                       'pagerank_out',                  -- Output table of PageRank
+                       0.5);                            -- Damping factor
 SELECT * FROM pagerank_out ORDER BY pagerank DESC;
 </pre>
 <pre class="result">
- id |      pagerank
-----+--------------------
-  0 |  0.225477161441199
-  3 |  0.199090328586664
-  2 |  0.136261327206477
-  6 |  0.132691559968224
-  4 |  0.109009291409508
-  1 |  0.109009291409508
-  5 | 0.0884610399788161
+ node_id |      pagerank
+---------+--------------------
+  0      |  0.225477161441199
+  3      |  0.199090328586664
+  2      |  0.136261327206477
+  6      |  0.132691559968224
+  4      |  0.109009291409508
+  1      |  0.109009291409508
+  5      | 0.0884610399788161
 (7 rows)
 </pre>
 
@@ -243,34 +247,34 @@ using the grouping feature:
 <pre class="syntax">
 DROP TABLE IF EXISTS pagerank_out, pagerank_out_summary;
 SELECT madlib.pagerank(
-                         'vertex',             -- Vertex table
-                         'id',                 -- Vertix id column
-                         'edge',               -- Edge table
-                         'src=src, dest=dest', -- Comma delimted string of edge arguments
-                         'pagerank_out',       -- Output table of PageRank
-                         NULL,                 -- Default damping factor (0.85)
-                         NULL,                 -- Default max iters (100)
-                         0.00000001,           -- Threshold
-                         'user_id');           -- Grouping column name
+                       'vertex',                        -- Vertex table
+                       'node_id',                       -- Vertex id column
+                       'edge',                          -- Edge table
+                       'src=conn_src, dest=conn_dest',  -- Comma delimted string of edge arguments
+                       'pagerank_out',                  -- Output table of PageRank
+                       NULL,                            -- Default damping factor (0.85)
+                       NULL,                            -- Default max iters (100)
+                       0.00000001,                      -- Threshold
+                       'user_id');                      -- Grouping column name
 SELECT * FROM pagerank_out ORDER BY user_id, pagerank DESC;
 </pre>
 <pre class="result">
- user_id | id |      pagerank
----------+----+--------------------
-       1 |  0 |  0.27825488388552
-       1 |  3 |  0.20188114667075
-       1 |  2 |  0.14288112346059
-       1 |  6 |  0.11453637832147
-       1 |  1 |  0.10026745615438
-       1 |  4 |  0.10026745615438
-       1 |  5 |  0.06191155535288
-       2 |  0 |  0.31854625004173
-       2 |  3 |  0.23786686773343
-       2 |  2 |  0.15914876489397
-       2 |  1 |  0.11168334437971
-       2 |  4 |  0.11168334437971
-       2 |  6 |  0.03964285714285
-       2 |  5 |  0.02142857142857
+ user_id | node_id |      pagerank
+---------+---------+--------------------
+       1 |       0 |  0.27825488388552
+       1 |       3 |  0.20188114667075
+       1 |       2 |  0.14288112346059
+       1 |       6 |  0.11453637832147
+       1 |       1 |  0.10026745615438
+       1 |       4 |  0.10026745615438
+       1 |       5 |  0.06191155535288
+       2 |       0 |  0.31854625004173
+       2 |       3 |  0.23786686773343
+       2 |       2 |  0.15914876489397
+       2 |       1 |  0.11168334437971
+       2 |       4 |  0.11168334437971
+       2 |       6 |  0.03964285714285
+       2 |       5 |  0.02142857142857
 (14 rows)
 </pre>
 <pre class="syntax">
@@ -290,28 +294,28 @@ could be specified as ARRAY[2,4] as well.
 <pre class="syntax">
 DROP TABLE IF EXISTS pagerank_out, pagerank_out_summary;
 SELECT madlib.pagerank(
-                       'vertex',             -- Vertex table
-                       'id',                 -- Vertix id column
-                       'edge',               -- Edge table
-                       'src=src, dest=dest', -- Comma delimted string of edge arguments
-                       'pagerank_out',       -- Output table of PageRank
-                        NULL,                -- Default damping factor (0.85)
-                        NULL,                -- Default max iters (100)
-                        NULL,                -- Default Threshold
-                        NULL,                -- No Grouping
-                       '{2,4}');             -- Personalization vertices
+                       'vertex',                        -- Vertex table
+                       'node_id',                       -- Vertex id column
+                       'edge',                          -- Edge table
+                       'src=conn_src, dest=conn_dest',  -- Comma delimted string of edge arguments
+                       'pagerank_out',                  -- Output table of PageRank
+                        NULL,                           -- Default damping factor (0.85)
+                        NULL,                           -- Default max iters (100)
+                        NULL,                           -- Default Threshold
+                        NULL,                           -- No Grouping
+                       '{2,4}');                        -- Personalization vertices
 SELECT * FROM pagerank_out ORDER BY pagerank DESC;
 </pre>
 <pre class="result">
- id |      pagerank
-----+--------------------
-  0 |  0.565232961966315
-  2 |  0.378139420991773
-  3 |  0.355003292266017
-  4 |  0.310111215897626
-  1 |  0.160111215897626
-  6 |  0.148615315574136
-  5 | 0.0803403307142321
+ node_id |      pagerank
+---------+--------------------
+  0      |  0.565232961966315
+  2      |  0.378139420991773
+  3      |  0.355003292266017
+  4      |  0.310111215897626
+  1      |  0.160111215897626
+  6      |  0.148615315574136
+  5      | 0.0803403307142321
 (7 rows)
 </pre>
 <pre class="syntax">
@@ -321,6 +325,102 @@ SELECT * FROM pagerank_out_summary;
  __iterations__
  ----------------+
              37
+(1 row)
+</pre>
+
+-# Create vertex and edge tables with multiple column ids to represent the graph:
+<pre class="syntax">
+DROP TABLE IF EXISTS vertex_multicol_pagerank, edge_multicol_pagerank;
+CREATE TABLE vertex_multicol_pagerank(
+    node_id_major BIGINT,
+    node_id_minor BIGINT
+);
+CREATE TABLE edge_multicol_pagerank(
+    conn_src_major BIGINT,
+    conn_dest_major BIGINT,
+    user_id_major BIGINT,
+    conn_src_minor BIGINT,
+    conn_dest_minor BIGINT,
+    user_id_minor BIGINT
+);
+INSERT INTO vertex_multicol_pagerank VALUES
+(0, 0),
+(1, 1),
+(2, 2),
+(3, 3),
+(4, 4),
+(5, 5),
+(6, 6);
+INSERT INTO edge_multicol_pagerank VALUES
+(0, 1, 1, 0, 1, 1),
+(0, 2, 1, 0, 2, 1),
+(0, 4, 1, 0, 4, 1),
+(1, 2, 1, 1, 2, 1),
+(1, 3, 1, 1, 3, 1),
+(2, 3, 1, 2, 3, 1),
+(2, 5, 1, 2, 5, 1),
+(2, 6, 1, 2, 6, 1),
+(3, 0, 1, 3, 0, 1),
+(4, 0, 1, 4, 0, 1),
+(5, 6, 1, 5, 6, 1),
+(6, 3, 1, 6, 3, 1),
+(0, 1, 2, 0, 1, 2),
+(0, 2, 2, 0, 2, 2),
+(0, 4, 2, 0, 4, 2),
+(1, 2, 2, 1, 2, 2),
+(1, 3, 2, 1, 3, 2),
+(2, 3, 2, 2, 3, 2),
+(3, 0, 2, 3, 0, 2),
+(4, 0, 2, 4, 0, 2),
+(5, 6, 2, 5, 6, 2),
+(6, 3, 2, 6, 3, 2);
+</pre>
+
+-# Personalized PageRank. Here we specify {2,4}
+as the personalization vertices. This parameter
+could be specified as ARRAY[2,4] as well.
+<pre class="syntax">
+DROP TABLE IF EXISTS pagerank_multicol_out, pagerank_multicol_out_summary;
+SELECT madlib.pagerank(
+                       'vertex_multicol_pagerank',                                                      -- Vertex table
+                       '[node_id_major,node_id_minor]',                                                 -- Vertex id column
+                       'edge_multicol_pagerank',                                                        -- Edge table
+                       'src=[conn_src_major,conn_src_minor], dest=[conn_dest_major,conn_dest_minor]',   -- Comma delimted string of edge arguments
+                       'pagerank_multicol_out',                                                         -- Output table of PageRank
+                        NULL,                                                                           -- Default damping factor (0.85)
+                        NULL,                                                                           -- Default max iters (100)
+                        NULL,                                                                           -- Default Threshold
+                       'user_id_major,user_id_minor',                                                   -- Grouping Columns
+                       '{{2,2},{4,4}}');                                                                -- Personalization vertices
+SELECT * FROM pagerank_multicol_out ORDER BY pagerank DESC;
+</pre>
+<pre class="result">
+ user_id_major | user_id_minor |  id   |      pagerank
+---------------+---------------+-------+--------------------
+             2 |             2 | {0,0} |  0.448826703440932
+             2 |             2 | {3,3} |  0.325943770128465
+             1 |             1 | {0,0} |  0.270635964385879
+             2 |             2 | {2,2} |  0.256179815391031
+             2 |             2 | {4,4} |  0.202149921235622
+             1 |             1 | {2,2} |   0.18423239851445
+             1 |             1 | {3,3} |  0.166801820206414
+             1 |             1 | {4,4} |  0.151661035568349
+             2 |             2 | {1,1} |  0.127149921235622
+             1 |             1 | {6,6} | 0.0965411872854988
+             1 |             1 | {1,1} | 0.0766610355683489
+             2 |             2 | {5,5} |              0.075
+             2 |             2 | {6,6} |            0.06375
+             1 |             1 | {5,5} | 0.0521896024086525
+(7 rows)
+</pre>
+<pre class="syntax">
+SELECT * FROM pagerank_multicol_out_summary;
+</pre>
+<pre class="result">
+ user_id_major | user_id_minor | __iterations__
+---------------+---------------+----------------
+             2 |             2 |             45
+             1 |             1 |             41
 (1 row)
 </pre>
 
