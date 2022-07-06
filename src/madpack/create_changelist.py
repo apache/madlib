@@ -300,7 +300,7 @@ try:
 
         os.system("""psql {database} -c "SELECT get_udocs('__tmp__madlib__', 'madlib_old_vers', '{t}')" > /dev/null """.format(**locals()))
 
-        os.system("""psql {database} -x -c "SELECT opfamily_name, index_method FROM __tmp__madlib__ ORDER BY name DESC" > /tmp/madlib_tmp_typedep_udoc.txt """.format(**locals()))
+        os.system("""psql {database} -x -c "SELECT opfamily_name, index_method FROM __tmp__madlib__ ORDER BY opfamily_name DESC" > /tmp/madlib_tmp_typedep_udoc.txt """.format(**locals()))
 
         os.system("""psql {database} -c "DROP TABLE IF EXISTS __tmp__madlib__ " > /dev/null """.format(**locals()))
 
