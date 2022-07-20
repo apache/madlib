@@ -69,8 +69,8 @@ def graph_apsp(schema_madlib, vertex_table, vertex_id, edge_table,
         INFINITY = "'Infinity'"
         EPSILON = 0.000001
 
-        params_types = {'src': str, 'dest': str, 'weight': str}
-        default_args = {'src': 'src', 'dest': 'dest', 'weight': 'weight'}
+        params_types = {'src': list, 'dest': list, 'weight': str}
+        default_args = {'src': ['src'], 'dest': ['dest'], 'weight': 'weight'}
         edge_params = extract_keyvalue_params(edge_args, params_types, default_args)
 
         # Prepare the input for recording in the summary table
@@ -89,18 +89,59 @@ def graph_apsp(schema_madlib, vertex_table, vertex_id, edge_table,
         if not grouping_cols:
             g_st = ''
             glist = None
+            grouping_sql = ''
         else:
             g_st = grouping_cols
             glist = split_quoted_delimited_str(grouping_cols)
+            grouping_sql = ', {0}'.format(grouping_cols)
 
-        src = edge_params["src"]
-        dest = edge_params["dest"]
+        vertex_in = vertex_id
+
+        if vertex_id[0] == '[' and vertex_id[-1] == ']':
+            is_multicol = True
+            vertex_id = split_quoted_delimited_str(vertex_id[1:-1])
+            vertex_sql = "ARRAY[{0}]::BIGINT[]".format(','.join(vertex_id))
+            vertex_type = "BIGINT[]"
+            src = "ARRAY[{0}]::BIGINT[]".format(','.join(edge_params["src"]))
+            dest = "ARRAY[{0}]::BIGINT[]".format(','.join(edge_params["dest"]))
+        else:
+            is_multicol = False
+            vertex_sql = vertex_id
+            vertex_id = [vertex_id]
+            vertex_type = "BIGINT"
+            edge_params["src"] = edge_params["src"][0]
+            src = edge_params["src"]
+            edge_params["dest"] = edge_params["dest"][0]
+            dest = edge_params["dest"]
+
         weight = edge_params["weight"]
 
-        distribution = '' if is_platform_pg() else "DISTRIBUTED BY ({0})".format(src)
-
-        _validate_apsp(vertex_table, vertex_id, edge_table,
+        _validate_apsp(vertex_table, vertex_id, vertex_sql, edge_table,
                        edge_params, out_table, glist)
+
+        vertex_view = unique_string('vertex_view')
+        edge_view = unique_string('edge_view')
+
+        sql = """
+            CREATE VIEW {vertex_view} AS
+            SELECT {vertex_sql} AS id
+            FROM {vertex_table}
+            """.format(**locals())
+        plpy.execute(sql)
+        sql = """
+            CREATE VIEW {edge_view} AS
+            SELECT {src} AS src, {dest} AS dest, {weight} {grouping_sql}
+            FROM {edge_table}
+            """.format(**locals())
+        plpy.execute(sql)
+
+        vertex_table = vertex_view
+        edge_table = edge_view
+        vertex_id = 'id'
+        src = 'src'
+        dest = 'dest'
+
+        distribution = '' if is_platform_pg() else "DISTRIBUTED BY ({0})".format(src)
 
         out_table_1 = unique_string(desp='out_table_1')
         out_table_2 = unique_string(desp='out_table_2')
@@ -202,7 +243,7 @@ def graph_apsp(schema_madlib, vertex_table, vertex_id, edge_table,
         plpy.execute(""" INSERT INTO {out_table}
             SELECT {grp_v1_comma}
                 v1.{vertex_id} AS {src}, v2.{vertex_id} AS {dest},
-                {init_w} AS {weight}, NULL::INT AS parent
+                {init_w} AS {weight}, NULL::{vertex_type} AS parent
             FROM
                 {tmp_view} AS v1 INNER JOIN
                 {tmp_view} AS v2 ON ({checkg_vv_sub})
@@ -384,10 +425,23 @@ def graph_apsp(schema_madlib, vertex_table, vertex_id, edge_table,
         else:
             plpy.execute("DROP VIEW IF EXISTS {0}".format(tmp_view))
 
-
     # Filter out the infinite paths (disconnected pairs)
     plpy.execute(""" DELETE FROM {0} WHERE parent IS NULL
         """.format(out_table))
+
+    if not is_multicol and edge_params["src"] != 'src':
+        plpy.execute("""
+            ALTER TABLE {out_table} RENAME COLUMN src TO {s}
+            """.format(s=edge_params["src"], **locals()))
+    if not is_multicol and edge_params["dest"] != 'dest':
+        plpy.execute("""
+            ALTER TABLE {out_table} RENAME COLUMN dest TO {d}
+            """.format(d=edge_params["dest"], **locals()))
+
+    plpy.execute("DROP VIEW IF EXISTS {vertex_view}, {edge_view}".
+                 format(**locals()))
+
+
     return None
 
 
@@ -444,14 +498,24 @@ def graph_apsp_get_path(schema_madlib, apsp_table,
 
             grp_comma = grouping_cols + " , "
 
+        if isinstance(source_vertex, list):
+            dest_vertex_sql = "ARRAY[{0}]::BIGINT[]".format(','.join([str(i) for i in dest_vertex]))
+            source_vertex_sql = "ARRAY[{0}]::BIGINT[]".format(','.join([str(i) for i in source_vertex]))
+            vertex_id = 'id'
+            src = 'src'
+            dest = 'dest'
+        else:
+            dest_vertex_sql = dest_vertex
+            source_vertex_sql = source_vertex
+
         # If the source and destination is the same vertex.
         # There is no need to check the paths for any group.
         if source_vertex == dest_vertex:
             plpy.execute("""
                 CREATE TABLE {path_table} AS
-                SELECT {grp_comma} '{{{dest_vertex}}}'::{final_type}[] AS path
-                FROM {apsp_table} WHERE {src} = {source_vertex} AND
-                    {dest} = {dest_vertex}
+                SELECT {grp_comma} '{{{dest_vertex_sql}}}'::{final_type}[] AS path
+                FROM {apsp_table} WHERE {src} = {source_vertex_sql} AND
+                    {dest} = {dest_vertex_sql}
                 """.format(**locals()))
             return
 
@@ -461,9 +525,9 @@ def graph_apsp_get_path(schema_madlib, apsp_table,
         # Initialize the temporary tables
         out = plpy.execute(""" CREATE TEMP TABLE {temp1_name} AS
                 SELECT {grp_comma} {apsp_table}.parent AS {vertex_id},
-                    ARRAY[{dest_vertex}]::{final_type}[] AS path
+                    ARRAY[{dest_vertex_sql}]::{final_type}[] AS path
                 FROM {apsp_table}
-                WHERE {src} = {source_vertex} AND {dest} = {dest_vertex}
+                WHERE {src} = {source_vertex_sql} AND {dest} = {dest_vertex_sql}
                     AND {apsp_table}.parent IS NOT NULL
             """.format(**locals()))
 
@@ -488,7 +552,7 @@ def graph_apsp_get_path(schema_madlib, apsp_table,
                 FROM {apsp_table} INNER JOIN {temp1_name} ON
                     ({apsp_table}.{dest} = {temp1_name}.{vertex_id}
                         {check_grps_t1})
-                WHERE {src} = {source_vertex} AND
+                WHERE {src} = {source_vertex_sql} AND
                     {apsp_table}.parent <> {apsp_table}.{dest}
                 """.format(**locals()))
 
@@ -512,17 +576,17 @@ def graph_apsp_get_path(schema_madlib, apsp_table,
         # Path with 1 vertex (src == dest) has been handled before
         plpy.execute("""
             CREATE TABLE {path_table} AS
-            SELECT {grp_comma} {source_vertex}::{final_type} || ({vertex_id} || path) AS path
+            SELECT {grp_comma} {source_vertex_sql}::{final_type} || ({vertex_id} || path) AS path
             FROM {temp2_name}
-            WHERE {vertex_id} <> {dest_vertex}
+            WHERE {vertex_id} <> {dest_vertex_sql}
             UNION
-            SELECT {grp_comma} {source_vertex}::{final_type} || path AS path
+            SELECT {grp_comma} {source_vertex_sql}::{final_type} || path AS path
             FROM {temp2_name}
-            WHERE {vertex_id} = {dest_vertex}
+            WHERE {vertex_id} = {dest_vertex_sql}
             UNION
             SELECT {grp_comma} '{{}}'::{final_type}[] AS path
             FROM {apsp_table}
-            WHERE {src} = {source_vertex} AND {dest} = {dest_vertex}
+            WHERE {src} = {source_vertex_sql} AND {dest} = {dest_vertex_sql}
                 AND {apsp_table}.parent IS NULL
             """.format(**locals()))
 
@@ -539,17 +603,17 @@ def graph_apsp_get_path(schema_madlib, apsp_table,
     return None
 
 
-def _validate_apsp(vertex_table, vertex_id, edge_table, edge_params,
+def _validate_apsp(vertex_table, vertex_id, vertex_sql, edge_table, edge_params,
                    out_table, glist, **kwargs):
 
     validate_graph_coding(vertex_table, vertex_id, edge_table, edge_params,
                           out_table, 'APSP')
 
     vt_error = plpy.execute(
-        """ SELECT {vertex_id}
+        """ SELECT {vertex_sql}
             FROM {vertex_table}
-            WHERE {vertex_id} IS NOT NULL
-            GROUP BY {vertex_id}
+            WHERE {vertex_sql} IS NOT NULL
+            GROUP BY {vertex_sql}
             HAVING count(*) > 1 """.format(**locals()))
 
     if vt_error.nrows() != 0:

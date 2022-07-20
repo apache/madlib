@@ -22,7 +22,7 @@
 DROP TABLE IF EXISTS vertex,"EDGE",out,out_summary,out_path,
 	vertex_alt,edge_alt,out_alt,out_alot_summary,
 	edge_gr,out_gr,out_gr_summary,out_gr_path,
-	edge_gr2, out_gr2, out_gr2_summary;
+	edge_gr2, out_gr2, out_gr2_summary CASCADE;
 
 
 CREATE TABLE vertex(
@@ -130,3 +130,80 @@ SELECT assert(count(*) = 0, 'Null parent in the out table') FROM
 (SELECT * FROM out WHERE parent IS NULL)q1;
 
 SELECT graph_apsp_get_path('out',0,5,'out_path');
+
+-- Test for multiple column identifiers
+-- The datasets have the columns doubled so that the same tests can be run on the output tables
+
+DROP TABLE IF EXISTS vertex_mult_apsp, edge_mult_apsp, edge_mult_apsp_gr2 CASCADE;
+CREATE TABLE vertex_mult_apsp(
+id1 INTEGER,
+id2 INTEGER
+);
+CREATE TABLE edge_mult_apsp(
+src1 INTEGER,
+dest1 INTEGER,
+weight INTEGER,
+src2 INTEGER,
+dest2 INTEGER
+);
+INSERT INTO vertex_mult_apsp VALUES
+(0, 0),
+(1, 1),
+(2, 2),
+(3, 3),
+(4, 4),
+(5, 5),
+(6, 6);
+INSERT INTO edge_mult_apsp VALUES
+(0, 1, 1, 0, 1),
+(0, 2, 1, 0, 2),
+(0, 4, 10, 0, 4),
+(1, 2, 2, 1, 2),
+(1, 3, 10, 1, 3),
+(2, 3, 1, 2, 3),
+(2, 5, 1, 2, 5),
+(2, 6, 3, 2, 6),
+(3, 0, 1, 3, 0),
+(4, 0, -2, 4, 0),
+(5, 6, 1, 5, 6),
+(6, 7, 1, 6, 7);
+
+CREATE TABLE edge_mult_apsp_gr2 AS
+(   SELECT *, 0 AS grp1, 0 AS grp2 FROM edge_mult_apsp
+    UNION
+    SELECT *, 1 AS grp1, 0 AS grp2 FROM edge_mult_apsp WHERE src1 < 6 AND dest1 < 6
+    UNION
+    SELECT *, 1 AS grp1, 1 AS grp2 FROM edge_mult_apsp WHERE src1 < 6 AND dest1 < 6
+);
+
+DROP TABLE IF EXISTS apsp_mult_col_out;
+DROP TABLE IF EXISTS apsp_mult_col_out_summary;
+DROP TABLE IF EXISTS apsp_mult_col_out_path;
+SELECT graph_apsp(
+'vertex_mult_apsp', -- Vertex table
+'[id1,id2]', -- Vertex id column
+'edge_mult_apsp', -- edge_mult_apsp table
+'src=[src1,src2], dest=[dest1,dest2]', -- edge_mult_apsp args
+'apsp_mult_col_out');
+
+SELECT assert(weight = 4, 'Wrong output in graph (APSP)')
+FROM apsp_mult_col_out WHERE src = ARRAY[0,0]::BIGINT[] AND dest = ARRAY[7,7]::BIGINT[];
+SELECT assert(parent = ARRAY[6,6]::BIGINT[], 'Wrong parent in graph (APSP)')
+FROM apsp_mult_col_out WHERE src = ARRAY[0,0]::BIGINT[] AND dest = ARRAY[7,7]::BIGINT[];
+
+SELECT graph_apsp_get_path('apsp_mult_col_out',ARRAY[0,0],ARRAY[7,7],'apsp_mult_col_out_path');
+
+DROP TABLE IF EXISTS apsp_mult_col_out;
+DROP TABLE IF EXISTS apsp_mult_col_out_summary;
+SELECT graph_apsp(
+'vertex_mult_apsp', -- Vertex table
+'[id1,id2]', -- Vertex id column
+'edge_mult_apsp_gr2', -- edge_mult_apsp table
+'src=[src1,src2], dest=[dest1,dest2]', -- edge_mult_apsp args
+'apsp_mult_col_out', -- Output table of SSSP
+'grp1,grp2');
+
+SELECT assert(weight = 2, 'Wrong output in graph (APSP)')
+    FROM apsp_mult_col_out WHERE src = ARRAY[0,0]::BIGINT[] AND dest = ARRAY[7,7]::BIGINT[] AND grp1 = 1;
+SELECT assert(parent = ARRAY[2,2]::BIGINT[], 'Wrong parent in graph (APSP)')
+    FROM apsp_mult_col_out WHERE src = ARRAY[0,0]::BIGINT[] AND dest = ARRAY[5,5]::BIGINT[] AND grp1 = 1;

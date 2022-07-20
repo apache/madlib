@@ -177,3 +177,82 @@ SELECT assert(count(*) = 0, 'Null parent in the out table') FROM
 (SELECT * FROM out WHERE parent IS NULL)q1;
 
 SELECT graph_sssp_get_path('out',5,'out_path');
+
+-- Test for multiple column identifiers
+-- The datasets have the columns doubled so that the same tests can be run on the output tables
+
+DROP TABLE IF EXISTS vertex_mult_sssp, edge_mult_sssp, edge_mult_sssp_gr2 CASCADE;
+CREATE TABLE vertex_mult_sssp(
+id1 INTEGER,
+id2 INTEGER
+);
+CREATE TABLE edge_mult_sssp(
+src1 INTEGER,
+dest1 INTEGER,
+weight INTEGER,
+src2 INTEGER,
+dest2 INTEGER
+);
+INSERT INTO vertex_mult_sssp VALUES
+(0, 0),
+(1, 1),
+(2, 2),
+(3, 3),
+(4, 4),
+(5, 5),
+(6, 6);
+INSERT INTO edge_mult_sssp VALUES
+(0, 1, 1, 0, 1),
+(0, 2, 1, 0, 2),
+(0, 4, 10, 0, 4),
+(1, 2, 2, 1, 2),
+(1, 3, 10, 1, 3),
+(2, 3, 1, 2, 3),
+(2, 5, 1, 2, 5),
+(2, 6, 3, 2, 6),
+(3, 0, 1, 3, 0),
+(4, 0, -2, 4, 0),
+(5, 6, 1, 5, 6),
+(6, 7, 1, 6, 7);
+
+CREATE TABLE edge_mult_sssp_gr2 AS
+( 	SELECT *, 0 AS grp1, 0 AS grp2 FROM edge_mult_sssp
+	UNION
+	SELECT *, 1 AS grp1, 0 AS grp2 FROM edge_mult_sssp WHERE src1 < 6 AND dest1 < 6
+	UNION
+	SELECT *, 1 AS grp1, 1 AS grp2 FROM edge_mult_sssp WHERE src1 < 6 AND dest1 < 6
+);
+
+DROP TABLE IF EXISTS sssp_mult_col_out;
+DROP TABLE IF EXISTS sssp_mult_col_out_summary;
+DROP TABLE IF EXISTS sssp_mult_col_out_path;
+SELECT graph_sssp(
+'vertex_mult_sssp', -- Vertex table
+'[id1,id2]', -- Vertex id column
+'edge_mult_sssp', -- edge_mult_sssp table
+'src=[src1,src2], dest=[dest1,dest2]', -- edge_mult_sssp args
+ARRAY[0,0],
+'sssp_mult_col_out');
+
+SELECT assert(weight = 3, 'Wrong output in graph (SSSP)')
+	FROM sssp_mult_col_out WHERE id = ARRAY[6,6]::BIGINT[];
+SELECT assert(parent = ARRAY[5,5]::BIGINT[], 'Wrong parent in graph (SSSP)')
+	FROM sssp_mult_col_out WHERE id = ARRAY[6,6]::BIGINT[];
+
+SELECT graph_sssp_get_path('sssp_mult_col_out',ARRAY[6,6],'sssp_mult_col_out_path');
+
+DROP TABLE IF EXISTS sssp_mult_col_out;
+DROP TABLE IF EXISTS sssp_mult_col_out_summary;
+SELECT graph_sssp(
+'vertex_mult_sssp', -- Vertex table
+'[id1,id2]', -- Vertex id column
+'edge_mult_sssp_gr2', -- edge_mult_sssp table
+'src=[src1,src2], dest=[dest1,dest2]', -- edge_mult_sssp args
+ARRAY[0,0],
+'sssp_mult_col_out', -- Output table of SSSP
+'grp1,grp2');
+
+SELECT assert(weight = 3, 'Wrong output in graph (SSSP)')
+	FROM sssp_mult_col_out WHERE id = ARRAY[6,6]::BIGINT[] AND grp1 = 0 AND grp2 = 0;
+SELECT assert(parent = ARRAY[5,5]::BIGINT[], 'Wrong parent in graph (SSSP)')
+	FROM sssp_mult_col_out WHERE id = ARRAY[6,6]::BIGINT[] AND grp1 = 0 AND grp2 = 0;
