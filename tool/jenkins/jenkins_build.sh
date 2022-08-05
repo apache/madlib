@@ -85,6 +85,8 @@ docker exec madlib bash -c '/build/src/bin/madpack -s mad -p postgres  -c postgr
 EOF
 
 docker exec madlib bash -c 'mkdir -p /tmp'
+docker exec madlib bash -c 'rm -rf /build/src/ports/postgres/modules/deep_learning/test'
+docker exec madlib bash -c 'rm -rf /build/src/ports/postgres/11/modules/deep_learning/test'
 # Run dev check
 docker exec madlib bash -c '/build/src/bin/madpack -s mad -p postgres  -c postgres/postgres@localhost:5432/postgres -d /tmp dev-check' | tee $workdir/logs/madlib_dev_check.log
 # Run unit tests, and append output to dev_check's log file
