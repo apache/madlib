@@ -4217,6 +4217,7 @@ INSERT INTO abalone VALUES
 DROP TABLE IF EXISTS xgb_out, xgb_out_summary;
 SELECT madlib.xgboost(
     'abalone',  -- Training table
+    'xgb_out',  -- Grid search results table.
     'id',       -- Id column
     'sex',      -- Class label column
     '*',        -- Independent variables
@@ -4231,7 +4232,6 @@ SELECT madlib.xgboost(
         'n_estimators':[100] #More estimators, lesser variance (better fit on test set)
     }
     $$,         -- XGBoost grid search parameters
-    'xgb_out',  -- Grid search results table.
     '',         -- Class weights
     0.8,        -- Training set size ratio
     NULL        -- Variable used to do the test/train split.
@@ -4254,6 +4254,7 @@ SELECT * FROM xgb_score_out_metrics;
 DROP TABLE IF EXISTS xgb_out, xgb_out_summary;
 SELECT madlib.xgboost(
     'abalone',  -- Training table
+    'xgb_out',  -- Grid search results table.
     'id',       -- Id column
     'sex',      -- Class label column
     '*',        -- Independent variables
@@ -4268,11 +4269,11 @@ SELECT madlib.xgboost(
         'n_estimators':[100] #More estimators, lesser variance (better fit on test set)
     }
     $$,         -- XGBoost grid search parameters
-    'xgb_out',  -- Grid search results table.
     '',         -- Class weights
     0.8,        -- Training set size ratio
     NULL        -- Variable used to do the test/train split.
 );
+
 SELECT * FROM xgb_out_summary;
 
 DROP TABLE IF EXISTS xgb_score_out, xgb_score_out_metrics, xgb_score_out_roc_curve;
