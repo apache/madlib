@@ -18,18 +18,9 @@ elseif(UNIX)
     if(RH_VERSION AND NOT (RH_VERSION STREQUAL "RH_VERSION-NOTFOUND"))
       set(IS_REDHAT "True")
     endif()
-    ph_version(PH_VERSION)
-    if(PH_VERSION AND NOT (PH_VERSION STREQUAL "PH_VERSION-NOTFOUND"))
-      set(IS_PHOTON "True")
-    endif()
 
     if(IS_REDHAT)
         message(STATUS "Detected RH version ${RH_VERSION}")
-        list(APPEND CPACK_GENERATOR
-            RPM
-        )
-    elseif(IS_PHOTON)
-        message(STATUS "Detected Photon version ${PH_VERSION}")
         list(APPEND CPACK_GENERATOR
             RPM
         )
