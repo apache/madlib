@@ -8,7 +8,6 @@
 
 # Get information about the environment
 rh_version(RH_VERSION)
-ph_version(PH_VERSION)
 
 # -- Set RPM-specific variables ------------------------------------------------
 
@@ -18,9 +17,7 @@ set(CPACK_RPM_PACKAGE_GROUP "Development/Libraries" PARENT_SCOPE)
 set(CPACK_PACKAGING_INSTALL_PREFIX "/usr/local/madlib/Versions/${MADLIB_VERSION_STRING}" PARENT_SCOPE)
 
 set(_PACKAGE_REQUIRES "m4 >= 1.4")
-if(PH_VERSION)
-    set(CPACK_RPM_PACKAGE_REQUIRES "python >= 2.6, ${_PACKAGE_REQUIRES}" PARENT_SCOPE)
-elseif(RH_VERSION AND RH_VERSION VERSION_LESS "6.0")
+if(RH_VERSION AND RH_VERSION VERSION_LESS "6.0")
     # on RH/CentOS 5, there is no Python 2.6 or higher in the default
     # repositories.
     set(CPACK_RPM_PACKAGE_REQUIRES "python, ${_PACKAGE_REQUIRES}" PARENT_SCOPE)

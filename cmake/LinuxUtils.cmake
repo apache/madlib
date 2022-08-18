@@ -8,19 +8,15 @@ macro(rh_version OUT_VERSION)
     else(EXISTS "/etc/redhat-release")
         set(${OUT_VERSION} "${OUT_VERSION}-NOTFOUND")
     endif(EXISTS "/etc/redhat-release")
-endmacro(rh_version)
 
-# Get the Photon OS version
-macro(ph_version OUT_VERSION)
     if(EXISTS "/etc/photon-release")
         file(READ "/etc/photon-release" _PHOTON_RELEASE_CONTENT)
-        string(REGEX REPLACE "[^0-9.]*([0-9.]+)[^0-9.]*\$" "\\1" ${OUT_VERSION}
+        string(REGEX REPLACE "VMware Photon OS ([0-9.]+)[0-9.]*$" "\\1"
+        ${OUT_VERSION}
             "${_PHOTON_RELEASE_CONTENT}"
         )
-    else(EXISTS "/etc/photon-release")
-        set(${OUT_VERSION} "${OUT_VERSION}-NOTFOUND")
     endif(EXISTS "/etc/photon-release")
-endmacro(ph_version)
+endmacro(rh_version)
 
 # Get the Debian version
 # DEB_OUT_VERSION will have a number if /etc/issue exists, with an entry for Debian.
