@@ -22,7 +22,7 @@
 
 DROP TABLE IF EXISTS abalone;
 CREATE TABLE abalone (
-        id integer,
+        id bigint,
         sex char(1),
         length float,
         diameter float,
@@ -4212,7 +4212,7 @@ INSERT INTO abalone VALUES
 (4174,'M',0.59,0.44,0.135,0.966,0.439,0.2145,0.2605,10),
 (4175,'M',0.6,0.475,0.205,1.176,0.5255,0.2875,0.308,9),
 (4176,'F',0.625,0.485,0.15,1.0945,0.531,0.261,0.296,10),
-(4177,'M',0.71,0.555,0.195,1.9485,0.9455,0.3765,0.495,12);
+(99999999994177,'M',0.71,0.555,0.195,1.9485,0.9455,0.3765,0.495,12);
 
 SELECT xgboost(
     'abalone',  -- Training table
@@ -4268,12 +4268,44 @@ SELECT xgboost(
 );
 
 SELECT xgboost_predict(
-    'abalone',          -- test_table
-    'xgb_grid_out',          -- model_table
-    'xgb_grid_score_out',    -- predict_output_table
-    'id',               -- id_column
-    'sex',              -- class_label
-    2                   -- model_filters
+    'abalone',                  -- test_table
+    'xgb_grid_out',             -- model_table
+    'xgb_grid_score_out',       -- predict_output_table
+    'id',                       -- id_column
+    'sex',                      -- class_label
+    2                           -- model_filters
+);
+
+SELECT xgboost(
+    'abalone',  -- Training table
+    'xgb_grid_eval_out',  -- Grid search results table.
+    'id',       -- Id column
+    'sex',      -- Class label column
+    '*',        -- Independent variables
+    NULL,       -- Columns to exclude from features
+    $$
+    {
+        'learning_rate': [0.01], #Regularization on weights (eta). For smaller values, increase n_estimators
+        'max_depth': [9],#Larger values could lead to overfitting
+        'subsample': [0.85],#introduce randomness in samples picked to prevent overfitting
+        'colsample_bytree': [0.85],#introduce randomness in features picked to prevent overfitting
+        'min_child_weight': [10],#larger values will prevent over-fitting
+        'n_estimators':[100], #More estimators, lesser variance (better fit on test set)
+        'eval_metric':['auc', 'logloss']
+    }
+    $$,         -- XGBoost grid search parameters
+    '',         -- Class weights
+    0.8,        -- Training set size ratio
+    NULL        -- Variable used to do the test/train split.
+);
+
+SELECT xgboost_predict(
+    'abalone',                  -- test_table
+    'xgb_grid_eval_out',        -- model_table
+    'xgb_grid_eval_score_out',  -- predict_output_table
+    'id',                       -- id_column
+    'sex',                      -- class_label
+    2
 );
 
 SELECT xgboost(
@@ -4282,4 +4314,29 @@ SELECT xgboost(
     'id',
     'sex',
     '*'
+);
+
+SELECT xgboost_predict(
+    'abalone',                  -- test_table
+    'xgb_default_out',          -- model_table
+    'xgb_default_score_out',    -- predict_output_table
+    'id'                        -- id_column
+);
+
+CREATE TABLE abalone_text AS SELECT (id::varchar || ' test')::VARCHAR AS id_text, * FROM abalone;
+
+SELECT xgboost(
+    'abalone_text',
+    'xgb_text_out',
+    'id_text',
+    'sex',
+    '*',
+    ARRAY['id']
+);
+
+SELECT xgboost_predict(
+    'abalone_text',          -- test_table
+    'xgb_text_out',          -- model_table
+    'xgb_text_score_out',    -- predict_output_table
+    'id_text'                -- id_column
 );
