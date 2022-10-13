@@ -40,6 +40,7 @@ from utilities.utilities import _assert
 from utilities.utilities import add_postfix
 from utilities.utilities import unique_string
 from utilities.validate_args import get_cols
+from utilities.validate_args import get_expr_type
 from utilities.validate_args import input_tbl_valid
 from utilities.validate_args import output_tbl_valid
 from utilities.validate_args import cols_in_tbl_valid
@@ -106,6 +107,13 @@ def expand_grid(params):
     params_grid = [l for l in itertools.product(*params_list)]
     return params_grid
 
+def try_literal_eval(t):
+    try:
+        ret = ast.literal_eval(t)
+    except Exception:
+        ret = t
+    return ret
+
 def xgboost_train(schema_madlib, dframe, features_all, class_label, params,
                   class_weights, train_set_size, id_column, train_set_split_var):
     """
@@ -137,6 +145,7 @@ def xgboost_train(schema_madlib, dframe, features_all, class_label, params,
         X_test = X[numpy.array(df[train_set_split_var]==0),]
         y_train = y[numpy.array(df[train_set_split_var]==1)]
         y_test = y[numpy.array(df[train_set_split_var]==0)]
+
     #save off and remove the id_column for later output. Make sure to get rid of id_column from features!
     test_ids = X_test [:,len(features)-1]
     X_train = numpy.delete(X_train,len(features)-1,1)
@@ -167,14 +176,14 @@ def xgboost_train(schema_madlib, dframe, features_all, class_label, params,
 
     #Train gradient boosted trees
     p_list = [p.split('=') for p in ast.literal_eval(re.sub("[\\t]","",params).strip())]
-    params_dict = dict([(k, ast.literal_eval(v.strip())) for k,v in p_list])
+    params_dict = dict([(k, try_literal_eval(v.strip())) for k,v in p_list])
+    eval_metric = params_dict.pop('eval_metric') if 'eval_metric' in params_dict else 'auc'
     gbm = xgb.XGBClassifier(**params_dict)
-
     #Fit model
     gbm.fit(
         X_train,
         y_train,
-        eval_metric = 'auc',
+        eval_metric = eval_metric,
         sample_weight = sample_weights
     )
     #Compute and return model metrics score
@@ -199,7 +208,6 @@ def xgboost_train(schema_madlib, dframe, features_all, class_label, params,
     fnames, f_importance_scores = zip(*fnames_importances)
     important_features = pd.DataFrame(fnames_importances)
 
-    test_ids = [int(x) for x in test_ids]
     return (features, pickle.dumps(gbm), params, fnames, f_importance_scores,
         model_metrics.iloc[:,1].values.tolist(), model_metrics.iloc[:,2].values.tolist(),
         model_metrics.iloc[:,3].values.tolist(),model_metrics.iloc[:,4].values.tolist(),
@@ -240,7 +248,8 @@ def xgboost_grid_search(schema_madlib, source_table, id_column, class_label,
         {
             'learning_rate': [0.3], #Regularization on weights (eta). For smaller values, increase n_estimators
             'max_depth': [6],#Larger values could lead to overfitting
-            'n_estimators':[100] #More estimators, lesser variance (better fit on test set)
+            'n_estimators':[100], #More estimators, lesser variance (better fit on test set)
+            'eval_metric':['auc']
         }
         """
 
@@ -339,7 +348,7 @@ def xgboost_grid_search(schema_madlib, source_table, id_column, class_label,
                 (mdl_results).recall,
                 (mdl_results).fscore,
                 (mdl_results).support,
-                (mdl_results).test_ids::INTEGER[],
+                (mdl_results).test_ids,
                 params_index
             FROM
                 {grid_search_results_temp_tbl}
@@ -375,7 +384,9 @@ def xgboost_predict(schema_madlib, scoring_tbl, mdl_table, mdl_output_tbl,
     """
 
     input_tbl_valid(scoring_tbl, 'XGBoost')
-    cols_in_tbl_valid(scoring_tbl, [id_column, class_label], 'XGBoost')
+    cols_in_tbl_valid(scoring_tbl, [id_column], 'XGBoost')
+    if class_label:
+        cols_in_tbl_valid(scoring_tbl, [class_label], 'XGBoost')
     input_tbl_valid(mdl_table, 'XGBoost')
     output_tbl_valid(mdl_output_tbl, 'XGBoost')
     mdl_output_tbl_metrics = add_postfix(mdl_output_tbl, '_metrics')
@@ -383,6 +394,7 @@ def xgboost_predict(schema_madlib, scoring_tbl, mdl_table, mdl_output_tbl,
     output_tbl_valid(mdl_output_tbl_metrics, 'XGBoost')
     output_tbl_valid(mdl_output_tbl_roc_curve, 'XGBoost')
 
+    id_type = get_expr_type(id_column, scoring_tbl)
     #Load the serialized XGBoost model from the table
     mdl_sql = """
         SELECT
@@ -399,14 +411,12 @@ def xgboost_predict(schema_madlib, scoring_tbl, mdl_table, mdl_output_tbl,
     gbm = pickle.loads(model)
 
     #Fetch features from test dataset for scoring
-    plpy.info(features)
     if isinstance(features, list):
         features_str = ','.join(features)
     else:
         features_str = features
         features = [features]
     comma_class_label = ', {0}'.format(class_label) if class_label else ''
-    plpy.info(features_str)
     mdl_score_sql = """
         SELECT
             {id_column},
@@ -499,7 +509,7 @@ def xgboost_predict(schema_madlib, scoring_tbl, mdl_table, mdl_output_tbl,
     sql = """
         CREATE TABLE {mdl_output_tbl}
         (
-            {id_column} INTEGER,
+            {id_column} {id_type},
             {predicted_class_label} TEXT,
             {predicted_class_proba_label} FLOAT8[]
         )
