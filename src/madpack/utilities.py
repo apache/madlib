@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python#
 #
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
@@ -21,13 +21,16 @@
 # Madpack utilities
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 
-from itertools import zip_longest
 import os
 import re
 import sys
 import subprocess
 import unittest
 
+if sys.version_info[0] < 3:
+    from itertools import izip_longest as zip_longest
+else:
+    from itertools import zip_longest
 # Import MADlib python modules
 import configyml
 

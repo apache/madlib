@@ -4,11 +4,6 @@
  *
  *//* ----------------------------------------------------------------------- */
 
-extern "C"{
-    #include <common/hashfn.h>
-    extern uint32 uint32_hash(const void *key, Size keysize);
-}
-
 #ifndef MADLIB_POSTGRES_SYSTEMINFORMATION_IMPL_HPP
 #define MADLIB_POSTGRES_SYSTEMINFORMATION_IMPL_HPP
 
@@ -32,7 +27,7 @@ initializeOidHashTable(HTAB*& ioHashTable, MemoryContext inCacheContext,
         HASHCTL ctl;
         ctl.keysize = sizeof(Oid);
         ctl.entrysize = inEntrySize;
-        ctl.hash = uint32_hash;
+        ctl.hash = oid_hash;
         ctl.hcxt = inCacheContext;
         ioHashTable = madlib_hash_create(
             /* tabname -- a name for the table (for debugging purposes) */
