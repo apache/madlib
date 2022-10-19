@@ -34,7 +34,7 @@ SELECT madlib_keras_fit(
     'keras_saved_out',
     'model_arch',
     1,
-    $$ optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['accuracy']$$::text,
+    $$ optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['categorical_accuracy']$$::text,
     $$ batch_size=2, epochs=1, verbose=0 $$::text,
     3);
 
@@ -135,14 +135,32 @@ SELECT assert(COUNT(*)=5, 'Predict out table must have exactly five cols.')
 FROM pg_attribute
 WHERE attrelid='cifar10_predict'::regclass AND attnum>0;
 
--- Test predict with INTEGER class_values
+-- Test with INTEGER class_values
 -- with NULL as a valid class value
--- Update output_summary table to reflect
--- class_values {NULL,0,1,4,5} and dependent_vartype is SMALLINT
-UPDATE keras_saved_out_summary
-SET dependent_varname = ARRAY['y'],
-    y_class_values = ARRAY[NULL,0,1,4,5]::INTEGER[],
-    dependent_vartype = ARRAY['smallint'];
+INSERT INTO cifar_10_sample(id, x, y, imgpath)
+SELECT 3, x, NULL, '0/img3.jpg' FROM cifar_10_sample
+WHERE y = 1;
+INSERT INTO cifar_10_sample(id, x, y, imgpath)
+SELECT 4, x, 4, '0/img4.jpg' FROM cifar_10_sample
+WHERE y = 0;
+INSERT INTO cifar_10_sample(id, x, y, imgpath)
+SELECT 5, x, 5, '0/img5.jpg' FROM cifar_10_sample
+WHERE y = 1;
+
+DROP TABLE IF EXISTS cifar_10_sample_int_batched;
+DROP TABLE IF EXISTS cifar_10_sample_int_batched_summary;
+SELECT training_preprocessor_dl('cifar_10_sample','cifar_10_sample_int_batched','y','x', 2, 255, ARRAY[5]);
+
+DROP TABLE IF EXISTS keras_saved_out, keras_saved_out_summary;
+SELECT madlib_keras_fit(
+    'cifar_10_sample_int_batched',
+    'keras_saved_out',
+    'model_arch',
+    2,
+    $$ optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['categorical_accuracy']$$::text,
+    $$ batch_size=2, epochs=1, verbose=0 $$::text,
+    3);
+
 -- Predict with pred_type=prob
 DROP TABLE IF EXISTS cifar10_predict;
 SELECT madlib_keras_predict(
@@ -208,7 +226,7 @@ SELECT madlib_keras_fit(
     'keras_saved_out',
     'model_arch',
     1,
-    $$ optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['accuracy']$$::text,
+    $$ optimizer=SGD(lr=0.01, decay=1e-6, nesterov=True), loss='categorical_crossentropy', metrics=['categorical_accuracy']$$::text,
     $$ batch_size=2, epochs=1, verbose=0 $$::text,
     3);
 
@@ -308,9 +326,9 @@ SELECT load_model_selection_table(
     'mst_table',
     ARRAY[1],
     ARRAY[
-        $$loss='categorical_crossentropy', optimizer='Adam(lr=0.01)', metrics=['accuracy']$$,
-        $$loss='categorical_crossentropy', optimizer='Adam(lr=0.001)', metrics=['accuracy']$$,
-        $$loss='categorical_crossentropy', optimizer='Adam(lr=0.0001)', metrics=['accuracy']$$
+        $$loss='categorical_crossentropy', optimizer='Adam(lr=0.01)', metrics=['categorical_accuracy']$$,
+        $$loss='categorical_crossentropy', optimizer='Adam(lr=0.001)', metrics=['categorical_accuracy']$$,
+        $$loss='categorical_crossentropy', optimizer='Adam(lr=0.0001)', metrics=['categorical_accuracy']$$
     ],
     ARRAY[
         $$batch_size=50, epochs=1$$

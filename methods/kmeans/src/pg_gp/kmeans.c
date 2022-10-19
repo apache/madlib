@@ -86,7 +86,7 @@ compute_metric(PGFunction inMetricFn, MemoryContext inMemContext, Datum inVec1,
      * The 50k bound here is arbitrary, and motivated by ResetExprContext()
      * in execUtils.c
      */
-    if(inMemContext->mem_allocated > 50000)
+    if(inMemContext->allBytesAlloc - inMemContext->allBytesFreed > 50000)
         MemoryContextReset(inMemContext);
 #else
     /* PostgreSQL does not have the allBytesAlloc and allBytesFreed fields */

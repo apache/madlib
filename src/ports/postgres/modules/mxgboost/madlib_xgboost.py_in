@@ -35,6 +35,7 @@ from sklearn.metrics import precision_recall_fscore_support
 from sklearn.metrics import confusion_matrix
 from sklearn.metrics import roc_auc_score
 from sklearn.metrics import roc_curve
+from sklearn.preprocessing import LabelEncoder
 
 from utilities.utilities import _assert
 from utilities.utilities import add_postfix
@@ -130,6 +131,8 @@ def xgboost_train(schema_madlib, dframe, features_all, class_label, params,
     features = [x for x in df.columns if x in features_all]
     X = df[features].values
     y = df[class_label]
+    label_encoder = LabelEncoder()
+    y = pd.Series(label_encoder.fit_transform(y))
     class_list = numpy.unique(y).tolist()
 
     if not train_set_split_var or train_set_split_var == 'None':
@@ -158,8 +161,10 @@ def xgboost_train(schema_madlib, dframe, features_all, class_label, params,
 
     class_list_y_train = numpy.unique(y_train).tolist()
     class_list_y_test = numpy.unique(y_test).tolist()
+
     if (class_list != class_list_y_train) or (class_list != class_list_y_test):
         plpy.error("Train test split caused a subset with missing classes.")
+
 
     #run weights
     sample_representation = y_train.value_counts()
@@ -182,17 +187,23 @@ def xgboost_train(schema_madlib, dframe, features_all, class_label, params,
     p_list = [p.split('=') for p in ast.literal_eval(re.sub("[\\t]","",params).strip())]
     params_dict = dict([(k, try_literal_eval(v.strip())) for k,v in p_list])
     eval_metric = params_dict.pop('eval_metric') if 'eval_metric' in params_dict else 'auc'
+
     gbm = xgb.XGBClassifier(**params_dict)
     #Fit model
     gbm.fit(
         X_train,
         y_train,
         eval_metric = eval_metric,
-        sample_weight = sample_weights
+        sample_weight = list(sample_weights)
     )
     #Compute and return model metrics score
     y_pred_train = gbm.predict(X_train)
     y_pred_test = gbm.predict(X_test)
+    y_train = label_encoder.inverse_transform(y_train)
+    y_test = label_encoder.inverse_transform(y_test)
+    y_pred_train = label_encoder.inverse_transform(y_pred_train)
+    y_pred_test = label_encoder.inverse_transform(y_pred_test)
+
     cmat_train = confusion_matrix(y_train, y_pred_train)
     cmat_test = confusion_matrix(y_test, y_pred_test)
     scores = numpy.array(precision_recall_fscore_support(y_test, y_pred_test)).transpose()
@@ -216,7 +227,7 @@ def xgboost_train(schema_madlib, dframe, features_all, class_label, params,
     return (features, pickle.dumps(gbm), params, fnames, f_importance_scores,
         model_metrics.iloc[:,1].values.tolist(), model_metrics.iloc[:,2].values.tolist(),
         model_metrics.iloc[:,3].values.tolist(),model_metrics.iloc[:,4].values.tolist(),
-        test_ids)
+        test_ids, pickle.dumps(label_encoder))
 
 def xgboost_grid_search(schema_madlib, source_table, id_column, class_label,
                         list_of_features, list_of_features_to_exclude,
@@ -369,6 +380,7 @@ def xgboost_grid_search(schema_madlib, source_table, id_column, class_label,
         (
             SELECT
                 (mdl_results).mdl AS model,
+                (mdl_results).label_encoder AS label_encoder,
                 (mdl_results).features,
                 params_index
             FROM
@@ -405,6 +417,7 @@ def xgboost_predict(schema_madlib, scoring_tbl, mdl_table, mdl_output_tbl,
     mdl_sql = """
         SELECT
             model,
+            label_encoder,
             features
         FROM
             {mdl_table}
@@ -412,10 +425,11 @@ def xgboost_predict(schema_madlib, scoring_tbl, mdl_table, mdl_output_tbl,
         """.format(**locals())
     result = plpy.execute(mdl_sql)
     model = result[0]['model']
+    label_encoder = result[0]['label_encoder']
     features = result[0]['features']
     #Train gradient boosted trees
     gbm = pickle.loads(model)
-
+    label_encoder = pickle.loads(label_encoder)
     #Fetch features from test dataset for scoring
     if isinstance(features, list):
         features_str = ','.join(features)
@@ -439,7 +453,9 @@ def xgboost_predict(schema_madlib, scoring_tbl, mdl_table, mdl_output_tbl,
 
     #Score the test set
     y_pred_test = gbm.predict(X_test.values)
+    y_pred_test = label_encoder.inverse_transform(y_pred_test)
     y_pred_proba_test = gbm.predict_proba(X_test.values)
+
     if(class_label):
         cmat_test = confusion_matrix(y_test, y_pred_test)
         scores = numpy.array(precision_recall_fscore_support(y_test, y_pred_test)).transpose()

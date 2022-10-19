@@ -760,8 +760,18 @@ def _execute_per_module_unit_test_algo(module, pyfile, cur_tmpdir):
         milliseconds = 0
         run_start = datetime.datetime.now()
         # Run the python unit test file
-        runcmd = ["python", pyfile]
-        runenv = os.environ
+        runcmd = ["python3", pyfile]
+        # runenv = os.environ
+        # export LD_LIBRARY_PATH="/usr/local/greenplum-db-devel/ext/python3.9/lib:$LD_LIBRARY_PATH"
+        # export PATH="/usr/local/greenplum-db-devel/ext/python3.9/bin:$PATH"
+        # export PYTHONHOME=/usr/local/greenplum-db-devel/ext/python3.9
+        # export PYTHONPATH=/usr/local/greenplum-db-devel/ext/python3.9/lib
+        runenv = os.environ.copy()
+        gphome = runenv["GPHOME"]
+        runenv["LD_LIBRARY_PATH"] = "{0}/ext/python3.9/lib:".format(gphome) + runenv["LD_LIBRARY_PATH"]
+        runenv["PATH"] = "{0}/ext/python3.9/bin:".format(gphome) + runenv["PATH"]
+        runenv["PYTHONHOME"] = "{0}/ext/python3.9".format(gphome)
+        runenv["PYTHONPATH"] = "{0}/ext/python3.9/lib".format(gphome)
         retval = subprocess.call(runcmd, env=runenv, stdout=log, stderr=log)
         run_end = datetime.datetime.now()
         milliseconds = round((run_end - run_start).seconds * 1000 +

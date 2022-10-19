@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import sys
 
-
 def detectBOM(inFileName):
     file = open(inFileName, 'r', encoding="utf-8")
     file.seek(0)
