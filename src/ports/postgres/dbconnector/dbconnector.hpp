@@ -19,7 +19,6 @@
 // Since we don't need anything from ports.h we can cheat and say its already been declared.
 // Warning: This could cause problems in the future...
 #define PG_PORT_H
-
 extern "C" {
     #include <postgres.h>
     #include <pg_config.h>         // Use the macro defined in the header to detect the platform
@@ -31,9 +30,7 @@ extern "C" {
     #include <utils/acl.h>
     #include <utils/array.h>
     #include <utils/builtins.h>    // needed for format_procedure()
-#if PG_VERSION_NUM >= 100000
     #include <utils/regproc.h>     // needed for format_procedure() - PostgreSQL 10
-#endif
     #include <utils/datum.h>
     #include <utils/lsyscache.h>   // for type lookup, e.g., type_is_rowtype
     #include <utils/memutils.h>

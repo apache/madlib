@@ -90,29 +90,6 @@ import textwrap as _textwrap
 
 from gettext import gettext as _
 
-try:
-    set
-except NameError:
-    # for python < 2.4 compatibility (sets module is there since 2.3):
-    from sets import Set as set
-
-try:
-    str
-except NameError:
-    str = str
-
-try:
-    sorted
-except NameError:
-    # for python < 2.4 compatibility:
-    def sorted(iterable, reverse=False):
-        result = list(iterable)
-        result.sort()
-        if reverse:
-            result.reverse()
-        return result
-
-
 def _callable(obj):
     return hasattr(obj, '__call__') or hasattr(obj, '__bases__')
 

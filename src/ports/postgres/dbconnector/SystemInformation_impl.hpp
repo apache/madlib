@@ -4,6 +4,13 @@
  *
  *//* ----------------------------------------------------------------------- */
 
+#if GP_VERSION_NUM >= 70000
+extern "C"{
+    #include <common/hashfn.h>
+    extern uint32 uint32_hash(const void *key, Size keysize);
+}
+#endif
+
 #ifndef MADLIB_POSTGRES_SYSTEMINFORMATION_IMPL_HPP
 #define MADLIB_POSTGRES_SYSTEMINFORMATION_IMPL_HPP
 
@@ -27,7 +34,11 @@ initializeOidHashTable(HTAB*& ioHashTable, MemoryContext inCacheContext,
         HASHCTL ctl;
         ctl.keysize = sizeof(Oid);
         ctl.entrysize = inEntrySize;
+#if GP_VERSION_NUM >= 70000
+        ctl.hash = uint32_hash;
+#else
         ctl.hash = oid_hash;
+#endif
         ctl.hcxt = inCacheContext;
         ioHashTable = madlib_hash_create(
             /* tabname -- a name for the table (for debugging purposes) */

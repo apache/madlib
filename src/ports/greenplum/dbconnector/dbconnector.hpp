@@ -22,6 +22,9 @@ extern "C" {
     #include <utils/acl.h>
     #include <utils/array.h>
     #include <utils/builtins.h>    // needed for format_procedure()
+#if GP_VERSION_NUM >= 70000
+    #include <utils/regproc.h>    // needed for format_procedure()
+#endif
     #include <utils/datum.h>
     #include <utils/lsyscache.h>   // for type lookup, e.g., type_is_rowtype
     #include <utils/memutils.h>
