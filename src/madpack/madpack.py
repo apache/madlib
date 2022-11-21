@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # Main Madpack installation executable.
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
@@ -27,13 +27,6 @@ from utilities import run_query
 # Required Python version
 py_min_ver = [2, 6]
 
-# XXX py3 Check python version
-#if sys.version_info[:2] < py_min_ver:
-#    print(("ERROR: python version too old ({0}). You need {1} or greater.".
-#          format('.'.join(map(str, sys.version_info[:3])),
-#                 '.'.join(map(str, py_min_ver)))))
-#    exit(1)
-
 # Find MADlib root directory. This file is installed to
 # $MADLIB_ROOT/madpack/madpack.py, so to get $MADLIB_ROOT we need to go
 # two levels up in the directory hierarchy. We use (a) os.path.realpath and
@@ -55,7 +48,6 @@ maddir_lib = "libmadlib.so"  # C/C++ libraries
 
 # Read the config files
 ports = configyml.get_ports(maddir_conf)  # object made of Ports.yml
-# XXX py3
 new_madlib_ver = configyml.get_version(maddir_conf)  # MADlib OS-level version
 portid_list = []
 for port in ports:
@@ -397,14 +389,11 @@ def _plpy_check(py_min_ver):
         info_(this, "> PL/Python not installed", verbose)
         info_(this, "> Creating language PL/Python...", True)
         try:
-            # XXX py3
             _internal_run_query("CREATE LANGUAGE plpython3u;", True)
         except:
             error_(this, """Cannot create language plpython3u. Please check if you
                 have configured and installed portid (your platform) with
                 `--with-python` option. Stopping installation...""", False)
-            # XXX py3
-            #raise Exception
 
     # Check PL/Python version
     _internal_run_query("DROP FUNCTION IF EXISTS plpy_version_for_madlib();", False)
@@ -647,9 +636,6 @@ def _process_py_sql_files_in_modules(modset, args_dict):
         else:
             maddir_mod_py = maddir + "/modules"
 
-        ### XXX PY3
-        # info_(this, "\ncalling_operation: %s, %s" % (calling_operation, maddir_mod_py), verbose)
-
         # Find the SQL module dir (platform specific or generic)
         if os.path.isdir(maddir + "/ports/" + portid + "/modules/" + module):
             maddir_mod_sql = maddir + "/ports/" + portid + "/modules"
@@ -762,16 +748,16 @@ def _execute_per_module_unit_test_algo(module, pyfile, cur_tmpdir):
         # Run the python unit test file
         runcmd = ["python3", pyfile]
         # runenv = os.environ
-        # export LD_LIBRARY_PATH="/usr/local/greenplum-db-devel/ext/python3.9/lib:$LD_LIBRARY_PATH"
-        # export PATH="/usr/local/greenplum-db-devel/ext/python3.9/bin:$PATH"
-        # export PYTHONHOME=/usr/local/greenplum-db-devel/ext/python3.9
-        # export PYTHONPATH=/usr/local/greenplum-db-devel/ext/python3.9/lib
         runenv = os.environ.copy()
-        gphome = runenv["GPHOME"]
-        runenv["LD_LIBRARY_PATH"] = "{0}/ext/python3.9/lib:".format(gphome) + runenv["LD_LIBRARY_PATH"]
-        runenv["PATH"] = "{0}/ext/python3.9/bin:".format(gphome) + runenv["PATH"]
-        runenv["PYTHONHOME"] = "{0}/ext/python3.9".format(gphome)
-        runenv["PYTHONPATH"] = "{0}/ext/python3.9/lib".format(gphome)
+
+        # GPDB6 python3 support is provided by an additional package.
+        # To access it, we will have to set environment variables.
+        if dbver == '6':
+            gphome = runenv["GPHOME"]
+            runenv["LD_LIBRARY_PATH"] = "{0}/ext/python3.9/lib:".format(gphome) + runenv["LD_LIBRARY_PATH"]
+            runenv["PATH"] = "{0}/ext/python3.9/bin:".format(gphome) + runenv["PATH"]
+            runenv["PYTHONHOME"] = "{0}/ext/python3.9".format(gphome)
+            runenv["PYTHONPATH"] = "{0}/ext/python3.9/lib".format(gphome)
         retval = subprocess.call(runcmd, env=runenv, stdout=log, stderr=log)
         run_end = datetime.datetime.now()
         milliseconds = round((run_end - run_start).seconds * 1000 +
@@ -1322,7 +1308,7 @@ def set_dynamic_library_path_in_database(dbver_split, madlib_library_path):
 
     global dynamic_library_path
     dynamic_library_path = _internal_run_query("SHOW dynamic_library_path", True)[0]['dynamic_library_path']
-    # PG7 gpconfig messes up $libdir so we remove it for now
+    # GP7 gpconfig messes up $libdir so we remove it for now
     paths = dynamic_library_path.split(":")
     if madlib_library_path not in paths:
         if '$libdir' in paths:
