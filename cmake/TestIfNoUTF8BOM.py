@@ -27,7 +27,7 @@ def main(argv=None):
     if BOM != "utf_8":
         return 0
     else:
-        print 'Detected byte-order mark (%s) in file "%s".' % (BOM, argv[1])
+        print ('Detected byte-order mark (%s) in file "%s".' % (BOM, argv[1]))
         return 1
 
 if __name__ == '__main__':
