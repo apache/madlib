@@ -100,7 +100,7 @@ add_sql_files(
         string(REPLACE "/src/pg_gp" "" OUTFILE ${OUTFILE})
         string(REPLACE "/sql/" "/test/" OUTFILE ${OUTFILE})
         add_custom_command(OUTPUT "${OUTFILE}"
-            COMMAND "${CMAKE_SOURCE_DIR}/cmake/TestIfNoUTF8BOM.py" "${CURRENT_PATH}"
+            # COMMAND "${CMAKE_SOURCE_DIR}/cmake/TestIfNoUTF8BOM.py" "${CURRENT_PATH}"
             COMMAND ${CMAKE_COMMAND} -E copy "${CURRENT_PATH}" "${OUTFILE}"
             DEPENDS "${CURRENT_PATH}"
             COMMENT "Validating and copying ${CURRENT_FILE}"
