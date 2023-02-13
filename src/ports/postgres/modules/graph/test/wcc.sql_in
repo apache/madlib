@@ -173,12 +173,12 @@ SELECT weakly_connected_components('vertex','dest','"EDGE"',
     'src=src_node,dest=dest_node','out','user_id');
 SELECT * FROM out;
 
-ALTER TABLE vertex RENAME COLUMN dest TO id;
+ALTER TABLE vertex RENAME COLUMN dest TO vertex_id;
 
 -- Test for bigint columns
-
-CREATE TABLE v2 AS SELECT (id+992147483647)::bigint as id FROM vertex;
-CREATE TABLE e2 AS SELECT (src_node+992147483647)::bigint as src, (dest_node+992147483647)::bigint as dest FROM "EDGE";
+DROP TABLE IF EXISTS v2,e2;
+CREATE TABLE v2 AS SELECT (vertex_id+992147483647)::bigint as id FROM vertex;
+CREATE TABLE e2 AS SELECT (src_node+992147483647)::bigint as src, (dest_node+992147483647)::bigint as dest, user_id FROM "EDGE";
 
 SELECT weakly_connected_components('v2',NULL,'e2',NULL,'pg_temp.wcc_out');
 SELECT count(*) from pg_temp.wcc_out;
@@ -188,7 +188,7 @@ SELECT count(*) from pg_temp.wcc_out_summary;
 -- The datasets have the columns doubled so that the same tests can be run on the output tables
 
 DROP TABLE IF EXISTS vertex_mult, edge_mult CASCADE;
-CREATE TABLE vertex_mult AS SELECT id AS id1, id AS id2 FROM vertex;
+CREATE TABLE vertex_mult AS SELECT vertex_id AS id1, vertex_id AS id2 FROM vertex;
 CREATE TABLE edge_mult AS
 SELECT src_node AS src1, src_node AS src2,
        dest_node AS dest1, dest_node AS dest2,
@@ -276,3 +276,82 @@ SELECT graph_wcc_num_cpts(
 SELECT assert(relative_error(num_components, 3) < 0.00001,
         'Weakly Connected Components: Incorrect largest component value.'
     ) FROM count_table WHERE user_id1=1;
+
+-- Warm Start
+
+-- Without grouping
+DROP TABLE IF EXISTS wcc_non_warm_start_out, wcc_non_warm_start_out_summary;
+SELECT weakly_connected_components('v2',NULL,'e2',NULL,'wcc_non_warm_start_out');
+
+DROP TABLE IF EXISTS wcc_warm_start_out, wcc_warm_start_out_summary, wcc_warm_start_out_message;
+SELECT weakly_connected_components('v2',NULL,'e2',NULL,'wcc_warm_start_out', NULL, 1);
+
+SELECT assert(count(*) > 0, 'Weakly Connected Components: Empty warm start summary table.')
+FROM wcc_warm_start_out_summary;
+SELECT assert(nodes_to_update > 0,
+        'Weakly Connected Components: Warm start incorrect nodes_to_update.'
+    ) FROM wcc_warm_start_out_summary;
+SELECT assert(count(*) > 0, 'Weakly Connected Components: Empty warm start message table.')
+FROM wcc_warm_start_out_message;
+
+SELECT assert(nodes_to_update > 0,
+        'Weakly Connected Components: Incorrect nodes to update count.'
+    ) FROM wcc_warm_start_out_summary;
+
+SELECT weakly_connected_components('v2',NULL,'e2',NULL,'wcc_warm_start_out', NULL, 1, True);
+
+SELECT assert(count(*) > 0, 'Weakly Connected Components: Empty warm start summary table.')
+FROM wcc_warm_start_out_summary;
+SELECT assert(nodes_to_update > 0,
+        'Weakly Connected Components: Warm start incorrect nodes_to_update.'
+    ) FROM wcc_warm_start_out_summary;
+SELECT assert(count(*) > 0, 'Weakly Connected Components: Empty warm start message table.')
+FROM wcc_warm_start_out_message;
+
+SELECT weakly_connected_components('v2',NULL,'e2',NULL,'wcc_warm_start_out', NULL, 2, True);
+
+SELECT assert(nodes_to_update = 0,
+        'Weakly Connected Components: Warm start incorrect nodes_to_update.'
+    ) FROM wcc_warm_start_out_summary;
+
+SELECT assert(count(*) < 0.00001, 'Weakly Connected Components: Different warm start result.')
+FROM wcc_non_warm_start_out w1, wcc_warm_start_out w2
+WHERE w1.id = w2.id AND w1.component_id != w2.component_id;
+
+SELECT assert(relative_error(count(*), 4) < 0.00001,
+        'Weakly Connected Components: Warm start incorrect component_id.'
+    ) FROM wcc_warm_start_out
+WHERE component_id = 992147483657;
+
+-- With grouping
+DROP TABLE IF EXISTS wcc_non_warm_start_out, wcc_non_warm_start_out_summary;
+SELECT weakly_connected_components('v2',NULL,'e2',NULL,'wcc_non_warm_start_out', 'user_id');
+
+DROP TABLE IF EXISTS wcc_warm_start_out, wcc_warm_start_out_summary, wcc_warm_start_out_message;
+SELECT weakly_connected_components('v2',NULL,'e2',NULL,'wcc_warm_start_out', 'user_id', 2);
+
+SELECT assert(count(*) > 0, 'Weakly Connected Components: Empty warm start summary table.')
+FROM wcc_warm_start_out_summary;
+SELECT assert(count(*) > 0, 'Weakly Connected Components: Empty warm start message table.')
+FROM wcc_warm_start_out_message;
+
+SELECT assert(nodes_to_update > 0,
+        'Weakly Connected Components: Incorrect nodes to update count.'
+    ) FROM wcc_warm_start_out_summary;
+
+SELECT weakly_connected_components('v2',NULL,'e2',NULL,'wcc_warm_start_out', 'user_id', 2, True);
+
+SELECT assert(count(*) = 0, 'Weakly Connected Components: Different warm start result.')
+FROM wcc_non_warm_start_out w1, wcc_warm_start_out w2
+WHERE w1.id = w2.id AND w1.user_id = w2.user_id AND w1.component_id != w2.component_id;
+
+SELECT assert(relative_error(count(*), 4) < 0.00001,
+        'Weakly Connected Components: Warm start incorrect component_id.'
+    ) FROM wcc_warm_start_out WHERE user_id=1 AND component_id = 992147483657;
+
+SELECT assert(count(table_name) = 0, 'Weakly Connected Components: Found leftover temp tables.')
+FROM
+    information_schema.tables
+WHERE
+    table_schema LIKE 'madlib_installcheck_%' AND
+    table_name LIKE '__madlib_temp_%';
