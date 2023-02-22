@@ -2,7 +2,7 @@
 
 # $0 - Script Path, $1 - Package Path, $2 - Target Location, and $3 - Target Volume
 
-MADLIB_VERSION=1.21.0-dev
+MADLIB_VERSION=1.21.0
 
 # Remove existing soft links
 find $2/usr/local/madlib/bin -depth -type l -exec rm {} \; 2>/dev/null
