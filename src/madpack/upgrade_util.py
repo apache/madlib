@@ -1,4 +1,5 @@
-from collections import defaultdict, Iterable
+from collections import defaultdict
+from collections import Iterable
 import glob
 import os
 import re

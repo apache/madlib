@@ -27,6 +27,11 @@ from utilities import run_query
 # Required Python version
 py_min_ver = [2, 6]
 
+# raw_input isn't defined in Python3.x, whereas input wasn't behaving like raw_input in Python 2.x
+# this should make both input and raw_input work in Python 2.x/3.x like the raw_input from Python 2.x
+try: input = raw_input
+except NameError: raw_input = input
+
 # Find MADlib root directory. This file is installed to
 # $MADLIB_ROOT/madpack/madpack.py, so to get $MADLIB_ROOT we need to go
 # two levels up in the directory hierarchy. We use (a) os.path.realpath and
@@ -1111,9 +1116,9 @@ def _append_uninstall_madlib_sqlfile(schema, db_madlib_ver, is_schema_in_db,
                   ao['column'] + ' : ' + ao['type'], True)
     info_(this, "***********************************************************************************", True)
     info_(this, "Would you like to continue? [Y/N]", True)
-    go = input('>>> ').upper()
+    go = raw_input('>>> ').upper()
     while (go not in ('Y', 'N', 'YES', 'NO')):
-        go = input('Yes or No >>> ').upper()
+        go = raw_input('Yes or No >>> ').upper()
 
     # 2) Do the uninstall/drop
     if go in ('N', 'NO'):
