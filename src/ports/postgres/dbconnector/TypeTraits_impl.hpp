@@ -23,20 +23,14 @@ public:
             && !std::numeric_limits<U>::is_signed
             && utils::isNegative(mOrig)) {
 
-            std::stringstream errorMsg;
-            errorMsg << "Invalid value conversion. Expected unsigned value but "
-                "got " << mOrig << ".";
-            throw std::invalid_argument(errorMsg.str());
+            throw std::invalid_argument("Invalid value conversion. Expected unsigned value.");
         } else if (
             (std::numeric_limits<T>::digits > std::numeric_limits<U>::digits
                 ||  (!std::numeric_limits<T>::is_signed
                     && std::numeric_limits<U>::is_signed))
             &&  mOrig > static_cast<T>(std::numeric_limits<U>::max())) {
 
-            std::stringstream errorMsg;
-            errorMsg << "Invalid value conversion. Cannot represent "
-                << mOrig << "in target type (" << typeid(T).name() << ").";
-            throw std::invalid_argument(errorMsg.str());
+            throw std::invalid_argument("Invalid value conversion. Cannot represent in target type.");
         }
         return static_cast<U>(mOrig);
     }

@@ -4,7 +4,7 @@
  *
  *//* ----------------------------------------------------------------------- */
 
-#if GP_VERSION_NUM >= 70000
+#if GP_VERSION_NUM >= 70000 || PG_VERSION_NUM >= 130000
 extern "C"{
     #include <common/hashfn.h>
     extern uint32 uint32_hash(const void *key, Size keysize);
@@ -34,7 +34,7 @@ initializeOidHashTable(HTAB*& ioHashTable, MemoryContext inCacheContext,
         HASHCTL ctl;
         ctl.keysize = sizeof(Oid);
         ctl.entrysize = inEntrySize;
-#if GP_VERSION_NUM >= 70000
+#if GP_VERSION_NUM >= 70000 || PG_VERSION_NUM >= 130000
         ctl.hash = uint32_hash;
 #else
         ctl.hash = oid_hash;

@@ -207,11 +207,10 @@ function(add_${PORT_LC}_library IN_PORT_VERSION)
 
     # END Legacy Code
 
-    # TODO py3
-    #configure_file("${PORT_SOURCE_DIR}/madpack/SQLCommon.m4_in"
-    #    "${CMAKE_CURRENT_BINARY_DIR}/madpack/SQLCommon.m4"
-    #    @ONLY
-    #)
+    configure_file("${PORT_SOURCE_DIR}/madpack/SQLCommon.m4_in"
+       "${CMAKE_CURRENT_BINARY_DIR}/madpack/SQLCommon.m4"
+       @ONLY
+    )
 
     add_custom_target(pythonFiles_${DBMS} ALL
         DEPENDS ${PYTHON_TARGET_FILES})
