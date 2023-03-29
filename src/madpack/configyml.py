@@ -42,7 +42,6 @@ def get_version(configdir):
         print("configyml : ERROR : missing or malformed Version.yml")
         exit(2)
 
-    # XXX
     conf = convert(conf)
     try:
         conf['version']

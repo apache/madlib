@@ -25,7 +25,13 @@ from utilities import remove_comments_from_sql
 from utilities import run_query
 
 # Required Python version
-py_min_ver = [2, 6]
+py_min_ver = [2, 7]
+
+if list(sys.version_info[:2]) < py_min_ver:
+    print("ERROR: python version too old ({0}). You need {1} or greater.".
+          format('.'.join(map(str, sys.version_info[:3])),
+                 '.'.join(map(str, py_min_ver))))
+    exit(1)
 
 # raw_input isn't defined in Python3.x, whereas input wasn't behaving like raw_input in Python 2.x
 # this should make both input and raw_input work in Python 2.x/3.x like the raw_input from Python 2.x
@@ -399,6 +405,7 @@ def _plpy_check(py_min_ver):
             error_(this, """Cannot create language plpython3u. Please check if you
                 have configured and installed portid (your platform) with
                 `--with-python` option. Stopping installation...""", False)
+            raise Exception
 
     # Check PL/Python version
     _internal_run_query("DROP FUNCTION IF EXISTS plpy_version_for_madlib();", False)
