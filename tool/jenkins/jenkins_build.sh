@@ -20,6 +20,9 @@
 workdir=`pwd`
 user_name=`whoami`
 
+# FIXME: Jenkins build is not working, even though PG13 compiles on local Mac.
+# Need to find an efficient way to debug since it has a server crash.
+
 echo "======================================================================"
 echo "Build user: $user_name"
 echo "Work directory: $workdir"
@@ -43,14 +46,14 @@ docker rm madlib
 
 echo "Creating docker container"
 # Pull down the base docker images
-echo "docker pull madlib/postgres_11:jenkins"
-docker pull madlib/postgres_11:jenkins
+echo "docker pull madlib/postgres_13:jenkins"
+docker pull madlib/postgres_13:jenkins
 # Launch docker container with volume mounted from workdir
 echo "-------------------------------"
 cat <<EOF
-docker run -d -e POSTGRES_PASSWORD=postgres --name madlib -v "${workdir}":/madlib madlib/postgres_11:jenkins | tee logs/docker_setup.log
+docker run -d -e POSTGRES_PASSWORD=postgres --name madlib -v "${workdir}":/madlib madlib/postgres_13:jenkins | tee logs/docker_setup.log
 EOF
-docker run -d -e POSTGRES_PASSWORD=postgres --name madlib -v "${workdir}":/madlib madlib/postgres_11:jenkins | tee logs/docker_setup.log
+docker run -d -e POSTGRES_PASSWORD=postgres --name madlib -v "${workdir}":/madlib madlib/postgres_13:jenkins | tee logs/docker_setup.log
 echo "-------------------------------"
 
 ## This sleep is required since it takes a couple of seconds for the docker
@@ -60,9 +63,9 @@ sleep 15
 echo "---------- Install pip, and mock -----------"
 # cmake, make, make install, and make package
 cat <<EOF
-docker exec madlib bash -c 'apt-get update; apt-get install -y python-pip; pip install mock pandas numpy xgboost scikit-learn' | tee $workdir/logs/madlib_compile.log
+docker exec madlib bash -c 'apt-get update; apt-get install -y python3-pip; pip install mock pandas numpy xgboost scikit-learn yaml' | tee $workdir/logs/madlib_compile.log
 EOF
-docker exec madlib bash -c 'apt-get update; apt-get install -y python-pip; pip install mock pandas numpy xgboost scikit-learn' | tee $workdir/logs/madlib_compile.log
+docker exec madlib bash -c 'apt-get update; apt-get install -y python3-pip; pip install mock pandas numpy xgboost scikit-learn yaml' | tee $workdir/logs/madlib_compile.log
 
 echo "---------- Building package -----------"
 # cmake, make, make install, and make package
@@ -86,7 +89,7 @@ EOF
 
 docker exec madlib bash -c 'mkdir -p /tmp'
 docker exec madlib bash -c 'rm -rf /build/src/ports/postgres/modules/deep_learning/test'
-docker exec madlib bash -c 'rm -rf /build/src/ports/postgres/11/modules/deep_learning/test'
+docker exec madlib bash -c 'rm -rf /build/src/ports/postgres/13/modules/deep_learning/test'
 # Run dev check
 docker exec madlib bash -c '/build/src/bin/madpack -s mad -p postgres  -c postgres/postgres@localhost:5432/postgres -d /tmp dev-check' | tee $workdir/logs/madlib_dev_check.log
 # Run unit tests, and append output to dev_check's log file
@@ -108,6 +111,6 @@ echo "-------------------------------"
 
 # convert dev-check test results to junit format for reporting
 cat <<EOF
-python tool/jenkins/junit_export.py $workdir/logs/madlib_dev_check.log $workdir/logs/madlib_dev_check.xml
+python3 tool/jenkins/junit_export.py $workdir/logs/madlib_dev_check.log $workdir/logs/madlib_dev_check.xml
 EOF
-python tool/jenkins/junit_export.py $workdir $workdir/logs/madlib_dev_check.log $workdir/logs/madlib_dev_check.xml
+python3 tool/jenkins/junit_export.py $workdir $workdir/logs/madlib_dev_check.log $workdir/logs/madlib_dev_check.xml
