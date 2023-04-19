@@ -53,6 +53,8 @@ ignoring the direction of edges. In case of an undirected graph, a weakly
 connected component is also a strongly connected component.  This module also
 includes a number of helper functions that operate on the WCC output.
 
+@note MADlib graph functions might create a large number of subtransactions with very large graphs. Since the cache for subtransaction metadata is limited, running them in conjunction with other processes might degrade the performance of the whole database. The warm start feature of WCC can be used to limit the number of subtransactions in a given session to ensure that the performance is preserved. While the ideal iteration limit is dependent on the graph as well as the rest of the system processes, it is advised to start with 40 and adjust down if the problem persists.
+
 @anchor wcc
 @par Weakly Connected Components
 <pre class="syntax">
@@ -596,6 +598,40 @@ SELECT * FROM wcc_multicol_out ORDER BY user_id_major, user_id_minor, component_
  {5,5} |            3 |             2 |             2
  {6,6} |            3 |             2 |             2
 (14 rows)
+</pre>
+
+-# Use iteration limit and warm start in a bash loop to avoid subtx limitations
+<pre class="syntax">
+#!/bin/bash
+psql madlib -c "DROP TABLE IF EXISTS wcc_out, wcc_out_summary, wcc_out_message;"
+\# Run wcc for 2 iterations
+psql madlib -c "SELECT madlib.weakly_connected_components(
+    'vertex',
+    'node_id',
+    'edge',
+    'src=conn_src,dest=conn_dest',
+    'wcc_out',
+    'user_id',
+    2);" # Number of iterations
+\# Check if wcc is done
+mynode=$(psql madlib -tc "SELECT nodes_to_update FROM wcc_out_summary")
+echo $mynode
+\# While there are remaining nodes to update
+while [ $mynode -ne 0 ]
+do
+\# Run WCC with warm start to continue building on the previous output tables
+psql madlib -c "SELECT madlib.weakly_connected_components(
+    'vertex',
+    'node_id',
+    'edge',
+    'src=conn_src,dest=conn_dest',
+    'wcc_out',
+    'user_id',
+    2,
+    True);" # Warm start
+mynode=$(psql madlib -tc "SELECT nodes_to_update FROM wcc_out_summary")
+echo $mynode
+done
 </pre>
 
 @anchor notes
