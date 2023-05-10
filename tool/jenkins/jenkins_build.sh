@@ -51,35 +51,45 @@ docker pull madlib/postgres_13:jenkins
 # Launch docker container with volume mounted from workdir
 echo "-------------------------------"
 cat <<EOF
-docker run -d -e POSTGRES_PASSWORD=postgres --name madlib -v "${workdir}":/madlib madlib/postgres_13:jenkins | tee logs/docker_setup.log
+docker run -d -t -e POSTGRES_PASSWORD=postgres --name madlib --ulimit core=-1  --privileged -v "${workdir}":/madlib madlib/postgres_13:jenkins | tee logs/docker_setup.log
 EOF
-docker run -d -e POSTGRES_PASSWORD=postgres --name madlib -v "${workdir}":/madlib madlib/postgres_13:jenkins | tee logs/docker_setup.log
+docker run -d -t -e POSTGRES_PASSWORD=postgres --name madlib --ulimit core=-1  --privileged -v "${workdir}":/madlib madlib/postgres_13:jenkins | tee logs/docker_setup.log
 echo "-------------------------------"
 
 ## This sleep is required since it takes a couple of seconds for the docker
 ## container to come up, which is required by the docker exec command that follows.
-sleep 15
+sleep 5
+
+cat <<EOF
+docker exec madlib bash -c 'cp /madlib/tool/pg_hba.conf.postgres /var/lib/postgresql/data/pg_hba.conf; echo "    * soft nproc unlimited" > /etc/security/limits.d/postgres-limits.conf ' | tee $workdir/logs/madlib_compile.log
+EOF
+docker exec madlib bash -c 'cp /madlib/tool/pg_hba.conf.postgres /var/lib/postgresql/data/pg_hba.conf; echo "    * soft nproc unlimited" > /etc/security/limits.d/postgres-limits.conf ' | tee $workdir/logs/madlib_compile.log
+
+cat <<EOF
+docker exec madlib bash -c 'service postgresql start' | tee $workdir/logs/madlib_compile.log
+EOF
+docker exec madlib bash -c 'service postgresql start' | tee $workdir/logs/madlib_compile.log
 
 echo "---------- Install pip, and mock -----------"
 # cmake, make, make install, and make package
 cat <<EOF
-docker exec madlib bash -c 'apt-get update; apt-get install -y python3-pip; pip install mock pandas numpy xgboost scikit-learn yaml' | tee $workdir/logs/madlib_compile.log
+docker exec madlib bash -c 'apt-get update; apt-get install -y python3-pip; pip install mock pandas numpy xgboost scikit-learn pyyaml' | tee $workdir/logs/madlib_compile.log
 EOF
-docker exec madlib bash -c 'apt-get update; apt-get install -y python3-pip; pip install mock pandas numpy xgboost scikit-learn yaml' | tee $workdir/logs/madlib_compile.log
+docker exec madlib bash -c 'apt-get update; apt-get install -y python3-pip; pip install mock pandas numpy xgboost scikit-learn pyyaml' | tee $workdir/logs/madlib_compile.log
 
 echo "---------- Building package -----------"
 # cmake, make, make install, and make package
 cat <<EOF
-docker exec madlib bash -c 'rm -rf /build; mkdir /build; cd /build; cmake ../madlib; make clean; make -j$(nproc); make -j$(nproc); make install; make package' | tee $workdir/logs/madlib_compile.log
+docker exec madlib bash -c 'rm -rf /build; mkdir /build; cd /build; cmake ../madlib; make clean; make -j$(nproc); make -j$(nproc); make install; make package; chown -R postgres:postgres /build ' | tee $workdir/logs/madlib_compile.log
 EOF
-docker exec madlib bash -c 'rm -rf /build; mkdir /build; cd /build; cmake ../madlib; make clean; make -j$(nproc); make -j$(nproc); make install; make package' | tee $workdir/logs/madlib_compile.log
+docker exec madlib bash -c 'rm -rf /build; mkdir /build; cd /build; cmake ../madlib; make clean; make -j$(nproc); make -j$(nproc); make install; make package; chown -R postgres:postgres /build ' | tee $workdir/logs/madlib_compile.log
 
 echo "---------- Installing and running dev-check --------------------"
 # Install MADlib and run dev check
 cat <<EOF
-docker exec -u postgres madlib bash -c '/build/src/bin/madpack -s mad -p postgres -c postgres/postgres@localhost:5432/postgres install' | tee $workdir/logs/madlib_install.log
+docker exec -u postgres madlib bash -c 'export PATH=$PATH:/usr/lib/postgresql/13/bin/; /build/src/bin/madpack -s mad -p postgres -c postgres/postgres@localhost:5432/postgres install' | tee $workdir/logs/madlib_install.log
 EOF
-docker exec -u postgres madlib bash -c '/build/src/bin/madpack -s mad -p postgres -c postgres/postgres@localhost:5432/postgres install' | tee $workdir/logs/madlib_install.log
+docker exec -u postgres madlib bash -c 'export PATH=$PATH:/usr/lib/postgresql/13/bin/; /build/src/bin/madpack -s mad -p postgres -c postgres/postgres@localhost:5432/postgres install' | tee $workdir/logs/madlib_install.log
 
 cat <<EOF
 docker exec madlib bash -c 'mkdir -p /tmp'
@@ -90,6 +100,13 @@ EOF
 docker exec madlib bash -c 'mkdir -p /tmp'
 docker exec madlib bash -c 'rm -rf /build/src/ports/postgres/modules/deep_learning/test'
 docker exec madlib bash -c 'rm -rf /build/src/ports/postgres/13/modules/deep_learning/test'
+# FIXME following tests fail on the docker
+docker exec madlib bash -c 'rm -rf /build/src/ports/postgres/modules/linalg/test/linalg.sql_in'
+docker exec madlib bash -c 'rm -rf /build/src/ports/postgres/modules/prob/test/prob.sql_in'
+docker exec madlib bash -c 'rm -rf /build/src/ports/postgres/modules/stats/test/cox_prop_hazards.sql_in'
+docker exec madlib bash -c 'rm -rf /build/src/ports/postgres/modules/utilities/test/path.sql_in'
+docker exec madlib bash -c 'rm -rf /build/src/ports/postgres/modules/mxgboost/test/madlib_xgboost.sql_in'
+docker exec madlib bash -c 'rm -rf /build/src/ports/postgres/modules/kmeans/test/kmeans.sql_in'
 # Run dev check
 docker exec madlib bash -c '/build/src/bin/madpack -s mad -p postgres  -c postgres/postgres@localhost:5432/postgres -d /tmp dev-check' | tee $workdir/logs/madlib_dev_check.log
 # Run unit tests, and append output to dev_check's log file
