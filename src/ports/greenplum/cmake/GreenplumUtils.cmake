@@ -31,6 +31,7 @@ function(add_gppkg GPDB_VERSION GPDB_VARIANT GPDB_VARIANT_SHORT UPGRADE_SUPPORT)
         \"\${CMAKE_CURRENT_BINARY_DIR}/${GPDB_VERSION}/SPECS\"
         \"\${CMAKE_CURRENT_BINARY_DIR}/${GPDB_VERSION}/RPMS\"
         \"\${CMAKE_CURRENT_BINARY_DIR}/${GPDB_VERSION}/gppkg\"
+        \"\${CMAKE_CURRENT_BINARY_DIR}/${GPDB_VERSION}/files\"
     )
 
     set(GPDB_VERSION \"${GPDB_VERSION}\")
@@ -49,6 +50,10 @@ function(add_gppkg GPDB_VERSION GPDB_VARIANT GPDB_VARIANT_SHORT UPGRADE_SUPPORT)
         gppkg_spec.yml.in
         \"\${CMAKE_CURRENT_BINARY_DIR}/${GPDB_VERSION}/gppkg/gppkg_spec.yml\"
     )
+    configure_file(
+        gppkg_spec_v2.yml.in
+        \"\${CMAKE_CURRENT_BINARY_DIR}/${GPDB_VERSION}/gppkg/gppkg_spec_v2.yml\"
+    )
 
     if(GPPKG_BINARY AND RPMBUILD_BINARY)
         add_custom_target(gppkg_${GPDB_VARIANT}_${VERSION_}
@@ -57,7 +62,13 @@ function(add_gppkg GPDB_VERSION GPDB_VARIANT GPDB_VARIANT_SHORT UPGRADE_SUPPORT)
             COMMAND \"\${RPMBUILD_BINARY}\" -bb SPECS/madlib.spec
             COMMAND cmake -E rename \"RPMS/\${MADLIB_GPPKG_RPM_FILE_NAME}\"
                 \"gppkg/\${MADLIB_GPPKG_RPM_FILE_NAME}\"
-            COMMAND \"\${GPPKG_BINARY}\" --build gppkg
+
+            COMMAND rpm2cpio \"${CMAKE_BINARY_DIR}/\${CPACK_PACKAGE_FILE_NAME}.rpm\" | cpio -D ./files -idmv
+            COMMAND mv ./files/usr/local/madlib ./files
+            COMMAND rm -r ./files/usr
+            COMMAND \"\${GPPKG_BINARY}\" build -v -f
+                --input \"\${CMAKE_CURRENT_BINARY_DIR}/${GPDB_VERSION}/files\"
+                --config \"\${CMAKE_CURRENT_BINARY_DIR}/${GPDB_VERSION}/gppkg/gppkg_spec_v2.yml\"
             DEPENDS \"${CMAKE_BINARY_DIR}/\${CPACK_PACKAGE_FILE_NAME}.rpm\"
             WORKING_DIRECTORY \"\${CMAKE_CURRENT_BINARY_DIR}/${GPDB_VERSION}\"
             COMMENT \"Generating ${GPDB_VARIANT} ${GPDB_VERSION} gppkg installer...\"
