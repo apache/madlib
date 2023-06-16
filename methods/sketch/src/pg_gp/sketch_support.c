@@ -306,6 +306,7 @@ bytea *sketch_md5_bytea(Datum dat, Oid typOid)
     bool byval = get_typbyval(typOid);
     int len = ExtractDatumLen(dat, get_typlen(typOid), byval, -1);
     void *datp = DatumExtractPointer(dat, byval);
+
     /*
      * it's very common to be hashing 0 for countmin sketches.  Rather than
      * hard-code it here, we cache on first lookup.  In future a bigger cache here
@@ -318,9 +319,14 @@ bytea *sketch_md5_bytea(Datum dat, Oid typOid)
     if (byval && len == sizeof(int64) && *(int64 *)datp == 0 && zero_cached) {
         return md5_of_0;
     }
-    else
+    else{
+        #if defined(GP_VERSION_NUM) || PG_VERSION_NUM < 150000
         pg_md5_hash(datp, len, outbuf);
-
+        #else
+        const char *errstr = NULL;
+        pg_md5_hash(datp, len, outbuf, &errstr);
+        #endif
+    }
     hex_to_bytes(outbuf, (uint8 *)VARDATA(out), MD5_HASHLEN*2);
     SET_VARSIZE(out, MD5_HASHLEN+VARHDRSZ);
     if (byval && len == sizeof(int64) && *(int64 *)datp == 0 && !zero_cached) {

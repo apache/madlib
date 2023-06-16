@@ -13,6 +13,9 @@ namespace dbconnector {
 
 namespace postgres {
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstringop-truncation"
+
 #define MADLIB_HANDLE_STANDARD_EXCEPTION(err) \
     sqlerrcode = err; \
     strncpy(msg, exc.what(), sizeof(msg));
@@ -215,6 +218,7 @@ UDF::call(FunctionCallInfo fcinfo) {
 
 #undef MADLIB_HANDLE_STANDARD_EXCEPTION
 
+#pragma GCC diagnostic pop
 } // namespace postgres
 
 } // namespace dbconnector

@@ -188,6 +188,18 @@ def _run_m4_and_append(schema, maddir_mod_py, module, sqlfile,
                   '-DMODULE_NAME=' + module,
                   '-I' + maddir_madpack,
                   sqlfile]
+        if (((portid == 'postgres') & (dbver == '15'))):
+            m4args = ['m4',
+                  '-P',
+                  '-DMADLIB_SCHEMA=' + schema,
+                  '-DPLPYTHON_LIBDIR=' + maddir_mod_py,
+                  '-DEXT_PYTHON_LIBDIR=' + maddir_ext_py,
+                  '-DMODULE_PATHNAME=' + maddir_lib,
+                  '-DMADLIB_LIBRARY_PATH=' + madlib_library_path,
+                  '-DMODULE_NAME=' + module,
+                  '-DIS_PG_15=TRUE',
+                  '-I' + maddir_madpack,
+                  sqlfile]
 
         info_(this, "> ... parsing: " + " ".join(m4args), verbose)
         output_filehandle.flush()
