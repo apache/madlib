@@ -8,7 +8,11 @@
 #include "utils/numeric.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
+#if GP_VERSION_NUM >= 70000 || PG_VERSION_NUM >= 130000
+#include "utils/fmgrprotos.h"
+#else
 #include "utils/int8.h"
+#endif
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
 #include "utils/typcache.h"
