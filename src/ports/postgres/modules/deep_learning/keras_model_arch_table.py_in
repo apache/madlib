@@ -56,7 +56,7 @@ class ModelArchSchema:
     """
     col_names = ('model_id', 'model_arch', 'model_weights', 'name', 'description',
                  '__internal_madlib_id__')
-    col_types = ('SERIAL PRIMARY KEY', 'JSON', 'bytea', 'TEXT', 'TEXT', 'TEXT')
+    col_types = ('INTEGER', 'JSON', 'bytea', 'TEXT', 'TEXT', 'TEXT')
     (MODEL_ID, MODEL_ARCH, MODEL_WEIGHTS, NAME, DESCRIPTION,
      __INTERNAL_MADLIB_ID__) = col_names
 
@@ -75,6 +75,7 @@ def load_keras_model(keras_model_arch_table, model_arch, model_weights,
         plpy.execute(sql, 0)
         plpy.info("Keras Model Arch: Created new keras model architecture table {0}." \
             .format(model_arch_table))
+        last_id = 0
     else:
         missing_cols = columns_missing_from_table(model_arch_table,
                                                   ModelArchSchema.col_names)
@@ -82,12 +83,15 @@ def load_keras_model(keras_model_arch_table, model_arch, model_weights,
             plpy.error("Keras Model Arch: Invalid keras model architecture table {0},"
                        " missing columns: {1}".format(model_arch_table,
                                                       missing_cols))
+        last_id = plpy.execute("SELECT max({0}) FROM {1}".format(
+            ModelArchSchema.MODEL_ID, model_arch_table))[0]['max']
+        last_id = last_id if last_id is not None else 0
 
     unique_str = unique_string(prefix_has_temp=False)
     insert_query = plpy.prepare("INSERT INTO {model_arch_table} "
-                                "VALUES(DEFAULT, $1, $2, $3, $4, $5);".format(**locals()),
-                                ModelArchSchema.col_types[1:])
-    insert_res = plpy.execute(insert_query,[model_arch, model_weights, name, description,
+                                "VALUES($1, $2, $3, $4, $5, $6);".format(**locals()),
+                                ModelArchSchema.col_types)
+    insert_res = plpy.execute(insert_query, [last_id+1, model_arch, model_weights, name, description,
                                unique_str], 0)
 
     select_query = """SELECT {model_id_col}, {model_arch_col} FROM {model_arch_table}
