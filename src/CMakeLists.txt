@@ -146,6 +146,8 @@ find_package(PythonInterp REQUIRED)
 
 set(BUILD_PYTHON_LIBDIR "${CMAKE_BINARY_DIR}/src/lib/python")
 
+
+if(IS_UBUNTU)
 ExternalProject_Add(EP_pyxb
     PREFIX ${MAD_THIRD_PARTY}
     DOWNLOAD_DIR ${MAD_THIRD_PARTY}/downloads
@@ -156,8 +158,26 @@ ExternalProject_Add(EP_pyxb
     SOURCE_DIR ${MAD_THIRD_PARTY}/src/EP_pyxb
     BUILD_COMMAND ""
     BUILD_IN_SOURCE 1
+
+    INSTALL_COMMAND pip3 install .
+)
+endif(IS_UBUNTU)
+
+if((NOT IS_UBUNTU))
+ExternalProject_Add(EP_pyxb
+    PREFIX ${MAD_THIRD_PARTY}
+    DOWNLOAD_DIR ${MAD_THIRD_PARTY}/downloads
+    URL ${PYXB_TAR_SOURCE}
+    URL_MD5 ${PYXB_TAR_MD5}
+    PATCH_COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/patch/PyXB.sh"
+    CONFIGURE_COMMAND ""
+    SOURCE_DIR ${MAD_THIRD_PARTY}/src/EP_pyxb
+    BUILD_COMMAND ""
+    BUILD_IN_SOURCE 1
+
     INSTALL_COMMAND ${PYTHON_EXECUTABLE} setup.py install --install-lib ${BUILD_PYTHON_LIBDIR} > /dev/null
 )
+endif((NOT IS_UBUNTU))
 
 install(DIRECTORY ${BUILD_PYTHON_LIBDIR}
     DESTINATION lib
