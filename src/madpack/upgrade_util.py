@@ -498,9 +498,12 @@ class ViewDependency(UpgradeBase):
         """
         @brief  Detect direct view dependencies on MADlib UDFs/UDAs
         """
-        proisagg_wrapper = "p.proisagg"
-        if self._portid == 'postgres' and self._dbver > 11:
+        if ((self._portid == 'greenplum' and is_rev_gte(get_rev_num(self._dbver), get_rev_num('7.0'))) or
+            (self._portid == 'postgres')):
             proisagg_wrapper = "p.prokind = 'a'"
+        else:
+            proisagg_wrapper = "p.proisagg"
+
         rows = self._run_sql("""
             SELECT
                 view, nsp.nspname AS schema, procname, procoid, proisagg
@@ -1029,9 +1032,11 @@ class ScriptCleaner(UpgradeBase):
         """
         # See _get_function_info for explanations.
 
-        proisagg_wrapper = "p.proisagg = true"
-        if self._portid == 'postgres' and self._dbver > 11:
+        if ((self._portid == 'greenplum' and is_rev_gte(get_rev_num(self._dbver), get_rev_num('7.0'))) or
+            (self._portid == 'postgres')):
             proisagg_wrapper = "p.prokind = 'a'"
+        else:
+            proisagg_wrapper = "p.proisagg"
 
         rows = self._run_sql("""
             SELECT
