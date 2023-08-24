@@ -1238,16 +1238,17 @@ def create_install_madlib_sqlfile(args, madpack_cmd):
 
 def get_madlib_function_drop_str(schema):
 
-    if portid == 'greenplum':
+    if ((portid == 'greenplum' and is_rev_gte(get_rev_num(dbver), get_rev_num('7.0'))) or
+        (portid == 'postgres')):
         case_str = """
-        CASE
-          WHEN p.proisagg THEN 'aggregate'
+        CASE p.prokind
+          WHEN 'a' THEN 'aggregate'
           ELSE 'function'
           """
     else:
         case_str = """
-        CASE p.prokind
-          WHEN 'a' THEN 'aggregate'
+        CASE
+          WHEN p.proisagg THEN 'aggregate'
           ELSE 'function'
           """
     madlib_functions = _internal_run_query("""
