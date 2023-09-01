@@ -80,20 +80,20 @@ endif (NOT EIGEN_TAR_SOURCE)
 # specify an alternative path to the PyXB tarball:
 # -DPYXB_TAR_SOURCE=/path/to/PyXB-x.x.x.tar.gz
 
-set(PYXB_VERSION "1.2.6")
-set(PYXB_TAR_MD5 4303573fc7094ce4664c5b71cd4bdb48)
+# set(PYXB_VERSION "1.2.6")
+# set(PYXB_TAR_MD5 5689c94a3c47419213b8872753a73c07)
 
-set(PYXB_TAR "PyXB-${PYXB_VERSION}.tar.gz")
-set(PYXB_URL "${SOURCEFORGE_BASE_URL}/pyxb/files/${PYXB_TAR}")
+# set(PYXB_TAR "PyXB-${PYXB_VERSION}.tar.gz")
+# set(PYXB_URL "https://github.com/renalreg/PyXB-X/archive/refs/tags/v1.2.6.1.tar.gz")
 
-if(NOT PYXB_TAR_SOURCE)
-    find_file(PYXB_TAR_SOURCE ${PYXB_TAR}
-        PATHS ${MAD_THIRD_PARTY}/downloads)
-endif(NOT PYXB_TAR_SOURCE)
+# if(NOT PYXB_TAR_SOURCE)
+#     find_file(PYXB_TAR_SOURCE ${PYXB_TAR}
+#         PATHS ${MAD_THIRD_PARTY}/downloads)
+# endif(NOT PYXB_TAR_SOURCE)
 
-if(NOT PYXB_TAR_SOURCE)
-    set(PYXB_TAR_SOURCE ${PYXB_URL})
-endif (NOT PYXB_TAR_SOURCE)
+# if(NOT PYXB_TAR_SOURCE)
+#     set(PYXB_TAR_SOURCE ${PYXB_URL})
+# endif (NOT PYXB_TAR_SOURCE)
 
 # -- Local definitions (filenames, paths, etc.) --------------------------------
 
@@ -147,37 +147,37 @@ find_package(PythonInterp REQUIRED)
 set(BUILD_PYTHON_LIBDIR "${CMAKE_BINARY_DIR}/src/lib/python")
 
 
-if(IS_UBUNTU)
-ExternalProject_Add(EP_pyxb
-    PREFIX ${MAD_THIRD_PARTY}
-    DOWNLOAD_DIR ${MAD_THIRD_PARTY}/downloads
-    URL ${PYXB_TAR_SOURCE}
-    URL_MD5 ${PYXB_TAR_MD5}
-    PATCH_COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/patch/PyXB.sh"
-    CONFIGURE_COMMAND ""
-    SOURCE_DIR ${MAD_THIRD_PARTY}/src/EP_pyxb
-    BUILD_COMMAND ""
-    BUILD_IN_SOURCE 1
+# if(IS_UBUNTU)
+# ExternalProject_Add(EP_pyxb
+#     PREFIX ${MAD_THIRD_PARTY}
+#     DOWNLOAD_DIR ${MAD_THIRD_PARTY}/downloads
+#     URL ${PYXB_TAR_SOURCE}
+#     URL_MD5 ${PYXB_TAR_MD5}
+#     # PATCH_COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/patch/PyXB.sh"
+#     CONFIGURE_COMMAND ""
+#     SOURCE_DIR ${MAD_THIRD_PARTY}/src/EP_pyxb
+#     BUILD_COMMAND ""
+#     BUILD_IN_SOURCE 1
 
-    INSTALL_COMMAND pip3 install .
-)
-endif(IS_UBUNTU)
+#     INSTALL_COMMAND pip3 install .
+# )
+# endif(IS_UBUNTU)
 
-if((NOT IS_UBUNTU))
-ExternalProject_Add(EP_pyxb
-    PREFIX ${MAD_THIRD_PARTY}
-    DOWNLOAD_DIR ${MAD_THIRD_PARTY}/downloads
-    URL ${PYXB_TAR_SOURCE}
-    URL_MD5 ${PYXB_TAR_MD5}
-    PATCH_COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/patch/PyXB.sh"
-    CONFIGURE_COMMAND ""
-    SOURCE_DIR ${MAD_THIRD_PARTY}/src/EP_pyxb
-    BUILD_COMMAND ""
-    BUILD_IN_SOURCE 1
+# if((NOT IS_UBUNTU))
+# ExternalProject_Add(EP_pyxb
+#     PREFIX ${MAD_THIRD_PARTY}
+#     DOWNLOAD_DIR ${MAD_THIRD_PARTY}/downloads
+#     URL ${PYXB_TAR_SOURCE}
+#     URL_MD5 ${PYXB_TAR_MD5}
+#     # PATCH_COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/patch/PyXB.sh"
+#     CONFIGURE_COMMAND ""
+#     SOURCE_DIR ${MAD_THIRD_PARTY}/src/EP_pyxb
+#     BUILD_COMMAND ""
+#     BUILD_IN_SOURCE 1
 
-    INSTALL_COMMAND ${PYTHON_EXECUTABLE} setup.py install --install-lib ${BUILD_PYTHON_LIBDIR} > /dev/null
-)
-endif((NOT IS_UBUNTU))
+#     INSTALL_COMMAND ${PYTHON_EXECUTABLE} setup.py install --install-lib ${BUILD_PYTHON_LIBDIR} > /dev/null
+# )
+# endif((NOT IS_UBUNTU))
 
 install(DIRECTORY ${BUILD_PYTHON_LIBDIR}
     DESTINATION lib
