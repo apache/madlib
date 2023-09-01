@@ -73,9 +73,9 @@ docker exec madlib bash -c 'service postgresql start' | tee $workdir/logs/madlib
 echo "---------- Install pip, and mock -----------"
 # cmake, make, make install, and make package
 cat <<EOF
-docker exec madlib bash -c 'apt-get update; apt-get install -y python3-pip; pip install mock pandas numpy xgboost scikit-learn pyyaml' | tee $workdir/logs/madlib_compile.log
+docker exec madlib bash -c 'apt-get update; apt-get install -y python3-pip; pip install mock pandas numpy xgboost scikit-learn pyyaml pyxb-x' | tee $workdir/logs/madlib_compile.log
 EOF
-docker exec madlib bash -c 'apt-get update; apt-get install -y python3-pip; pip install mock pandas numpy xgboost scikit-learn pyyaml' | tee $workdir/logs/madlib_compile.log
+docker exec madlib bash -c 'apt-get update; apt-get install -y python3-pip; pip install mock pandas numpy xgboost scikit-learn pyyaml pyxb-x' | tee $workdir/logs/madlib_compile.log
 
 echo "---------- Building package -----------"
 # cmake, make, make install, and make package
