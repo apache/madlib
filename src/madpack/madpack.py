@@ -188,7 +188,8 @@ def _run_m4_and_append(schema, maddir_mod_py, module, sqlfile,
                   '-DMODULE_NAME=' + module,
                   '-I' + maddir_madpack,
                   sqlfile]
-        if (((portid == 'postgres') & (dbver == '15'))):
+        if ( (portid == 'postgres') &
+             (is_rev_gte(get_rev_num(dbver), get_rev_num('14.0'))) ):
             m4args = ['m4',
                   '-P',
                   '-DMADLIB_SCHEMA=' + schema,
@@ -197,7 +198,7 @@ def _run_m4_and_append(schema, maddir_mod_py, module, sqlfile,
                   '-DMODULE_PATHNAME=' + maddir_lib,
                   '-DMADLIB_LIBRARY_PATH=' + madlib_library_path,
                   '-DMODULE_NAME=' + module,
-                  '-DIS_PG_15=TRUE',
+                  '-DUSE_COMPATIBLE_ARRAY=TRUE',
                   '-I' + maddir_madpack,
                   sqlfile]
 
