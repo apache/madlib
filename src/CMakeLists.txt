@@ -75,29 +75,7 @@ if(NOT EIGEN_TAR_SOURCE)
     set(EIGEN_TAR_SOURCE ${EIGEN_URL})
 endif (NOT EIGEN_TAR_SOURCE)
 
-# We always download PyXB (unless it is already present in
-# ${CMAKE_CURRENT_BINARY_DIR}/third_party/downloads). It is also possible to
-# specify an alternative path to the PyXB tarball:
-# -DPYXB_TAR_SOURCE=/path/to/PyXB-x.x.x.tar.gz
-
-# set(PYXB_VERSION "1.2.6")
-# set(PYXB_TAR_MD5 5689c94a3c47419213b8872753a73c07)
-
-# set(PYXB_TAR "PyXB-${PYXB_VERSION}.tar.gz")
-# set(PYXB_URL "https://github.com/renalreg/PyXB-X/archive/refs/tags/v1.2.6.1.tar.gz")
-
-# if(NOT PYXB_TAR_SOURCE)
-#     find_file(PYXB_TAR_SOURCE ${PYXB_TAR}
-#         PATHS ${MAD_THIRD_PARTY}/downloads)
-# endif(NOT PYXB_TAR_SOURCE)
-
-# if(NOT PYXB_TAR_SOURCE)
-#     set(PYXB_TAR_SOURCE ${PYXB_URL})
-# endif (NOT PYXB_TAR_SOURCE)
-
 # -- Local definitions (filenames, paths, etc.) --------------------------------
-
-set(MAD_PATCH_DIR ${CMAKE_CURRENT_BINARY_DIR}/patch)
 
 set(MAD_MODULE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/modules)
 
@@ -145,39 +123,6 @@ include_directories(SYSTEM ${MAD_THIRD_PARTY}/src/EP_eigen)
 find_package(PythonInterp REQUIRED)
 
 set(BUILD_PYTHON_LIBDIR "${CMAKE_BINARY_DIR}/src/lib/python")
-
-
-# if(IS_UBUNTU)
-# ExternalProject_Add(EP_pyxb
-#     PREFIX ${MAD_THIRD_PARTY}
-#     DOWNLOAD_DIR ${MAD_THIRD_PARTY}/downloads
-#     URL ${PYXB_TAR_SOURCE}
-#     URL_MD5 ${PYXB_TAR_MD5}
-#     # PATCH_COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/patch/PyXB.sh"
-#     CONFIGURE_COMMAND ""
-#     SOURCE_DIR ${MAD_THIRD_PARTY}/src/EP_pyxb
-#     BUILD_COMMAND ""
-#     BUILD_IN_SOURCE 1
-
-#     INSTALL_COMMAND pip3 install .
-# )
-# endif(IS_UBUNTU)
-
-# if((NOT IS_UBUNTU))
-# ExternalProject_Add(EP_pyxb
-#     PREFIX ${MAD_THIRD_PARTY}
-#     DOWNLOAD_DIR ${MAD_THIRD_PARTY}/downloads
-#     URL ${PYXB_TAR_SOURCE}
-#     URL_MD5 ${PYXB_TAR_MD5}
-#     # PATCH_COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/patch/PyXB.sh"
-#     CONFIGURE_COMMAND ""
-#     SOURCE_DIR ${MAD_THIRD_PARTY}/src/EP_pyxb
-#     BUILD_COMMAND ""
-#     BUILD_IN_SOURCE 1
-
-#     INSTALL_COMMAND ${PYTHON_EXECUTABLE} setup.py install --install-lib ${BUILD_PYTHON_LIBDIR} > /dev/null
-# )
-# endif((NOT IS_UBUNTU))
 
 install(DIRECTORY ${BUILD_PYTHON_LIBDIR}
     DESTINATION lib
@@ -379,14 +324,9 @@ add_sql_files(
 )
 add_custom_target(sqlFiles ALL DEPENDS ${SQL_TARGET_FILES})
 
-# -- Use all necessary patches directory ---------------------------------------
-
-include_directories(BEFORE "${MAD_PATCH_DIR}")
-
 
 # -- Add subdirectories --------------------------------------------------------
 
-add_subdirectory(patch)
 add_subdirectory(bin)
 add_subdirectory(config)
 add_subdirectory(madpack)

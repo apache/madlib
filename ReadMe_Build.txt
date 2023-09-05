@@ -167,12 +167,6 @@ root directory) for more options, after having run `cmake` the first time.
     with `-DEIGEN_TAR_SOURCE=/path/to/eigen_x.tar.gz`, in which case
     this tarball is used.
 
-- `PYXB_TAR_SOURCE` (default: *empty*)
-
-    PyXB is downloaded automatically, unless you call `./configure`
-    with `-DPYXB_TAR_SOURCE=/path/to/pyxb_x.tar.gz`, in which case
-    this tarball is used.
-
 - `CREATE_RPM_FOR_UBUNTU` (default: *empty*)
 
     By default, we create a .deb madlib installer on Ubuntu. If this
