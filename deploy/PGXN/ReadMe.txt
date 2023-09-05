@@ -39,7 +39,6 @@ Downloaded at build time:
   http://www.boost.org/
 - Eigen 3.2 "is a C++ template library for linear algebra"
   http://eigen.tuxfamily.org/index.php?title=Main_Page
-- PyXB 1.2.4 "Python library for XML Schema Bindings"
 
 License information regarding MADlib and included third-party libraries can be
 found inside the 'licenses' directory.
