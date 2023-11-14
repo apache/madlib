@@ -74,6 +74,31 @@ extern "C" {
 #undef dngettext
 #endif
 
+#ifdef vsnprintf
+#undef vsnprintf
+#endif
+#ifdef snprintf
+#undef snprintf
+#endif
+#ifdef vsprintf
+#undef vsprintf
+#endif
+#ifdef sprintf
+#undef sprintf
+#endif
+#ifdef vfprintf
+#undef vfprintf
+#endif
+#ifdef fprintf
+#undef fprintf
+#endif
+#ifdef vprintf
+#undef vprintf
+#endif
+#ifdef printf
+#undef printf
+#endif
+
 // Note: If errors occur in the following include files, it could indicate that
 // new macros have been added to PostgreSQL header files.
 #include <boost/mpl/if.hpp>
@@ -93,6 +118,7 @@ extern "C" {
 #include <stdexcept>
 #include <vector>
 #include <fstream>
+#include <array>
 
 #include <dbal/dbal_proto.hpp>
 #include <utils/Reference.hpp>
