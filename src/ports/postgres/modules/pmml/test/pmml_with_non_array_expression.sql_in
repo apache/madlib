@@ -1,0 +1,94 @@
+/* ----------------------------------------------------------------------- *//**
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ *
+ *//* ----------------------------------------------------------------------- */
+
+ \i m4_regexp(MADLIB_LIBRARY_PATH, `\(.*\)/lib',
+              `\1/../modules/pmml/test/pmml.setup.sql_in'
+)
+
+m4_changequote(`<!'', `!>'')
+
+----------------------- Use non array expression for the features argument -------------------------------
+
+--------------- glm --------------
+CREATE TABLE abalone_non_array_expression as SELECT id, sex, rings < 10 as target,ARRAY[1, length, diameter, height, whole, shucked, viscera, shell] as features from abalone;
+
+DROP TABLE IF EXISTS glm_model, glm_model_summary;
+SELECT glm(
+    'abalone_non_array_expression',
+    'glm_model',
+    'target',
+    'features',
+    'family=binomial, link=logit', '', 'max_iter=1000, tolerance=1e-16'
+);
+
+-- Test probabilities
+-- The feature names in output pmml will look like "features[1], features[2]" and so on. So pypmml also needs to predict using the same names, hence the table creation
+CREATE TABLE abalone_test_for_pmml1 as SELECT id, sex, length as "features[1]", diameter as "features[2]", height as "features[3]", whole as "features[4]", shucked as "features[5]", viscera as "features[6]",shell as "features[7]"  from abalone;
+
+DROP TABLE IF EXISTS glm_predict_output; CREATE TABLE glm_predict_output as SELECT id, glm_predict(coef, features, 'logit') FROM glm_model, abalone_non_array_expression;
+SELECT test_pmml_output('abalone_test_for_pmml1', 'glm_model', 'glm_predict_output', 'id', 'glm_predict', 'probability_true');
+
+-- Test output category
+DROP TABLE IF EXISTS glm_predict_output; CREATE TABLE glm_predict_output as SELECT id, glm_predict_binomial(coef, features, 'logit') FROM glm_model, abalone_non_array_expression;
+SELECT test_pmml_output('abalone_test_for_pmml1', 'glm_model', 'glm_predict_output', 'id', 'glm_predict_binomial', 'predicted_target_pmml_prediction');
+
+--------------- logistic regression --------------
+CREATE TABLE patients_non_array_expression AS SELECT id, "Second_attack" AS y, ARRAY[1, "Treatment", trait_anxiety] AS "x_A" FROM "Patients";
+
+DROP TABLE IF EXISTS logregr_model, logregr_model_summary;
+SELECT logregr_train(
+    'patients_non_array_expression',
+    'logregr_model',
+    'y',
+    '"x_A"');
+
+-- The feature names in output pmml will look like "features[1], features[2]" and so on. So pypmml also needs to predict using the same names, hence the table creation
+CREATE TABLE patients_test_for_pmml as SELECT id, "Treatment" as "x_A[1]", trait_anxiety as "x_A[2]"  FROM "Patients";
+
+DROP TABLE IF EXISTS logregr_predict_output; CREATE TABLE logregr_predict_output as SELECT id, logregr_predict(coef, "x_A") FROM logregr_model, patients_non_array_expression;
+SELECT test_pmml_output('patients_test_for_pmml', 'logregr_model', 'logregr_predict_output', 'id', 'logregr_predict', 'predicted_y_pmml_prediction');
+
+DROP TABLE IF EXISTS logregr_predict_output; CREATE TABLE logregr_predict_output as SELECT id, logregr_predict_prob(coef, "x_A") FROM logregr_model, patients_non_array_expression;
+SELECT test_pmml_output('patients_test_for_pmml', 'logregr_model', 'logregr_predict_output', 'id', 'logregr_predict_prob', 'probability_true');
+
+
+------------------------------------------ now with grouping and name spec------------------------------------------------
+
+DROP TABLE IF EXISTS glm_model, glm_model_summary;
+SELECT glm(
+    'abalone_non_array_expression',
+    'glm_model',
+    'target',
+    'features',
+    'family=binomial, link=probit', 'sex,id', 'max_iter=1000, tolerance=1e-16'
+);
+
+CREATE TABLE abalone_test_for_pmml2 as SELECT id, sex, length as foo1, diameter as foo2, height as foo3, whole as foo4, shucked as foo5, viscera as foo6,shell as foo7  from abalone;
+
+-- -- Test probabilities
+DROP TABLE IF EXISTS glm_predict_output; CREATE TABLE glm_predict_output as SELECT glm_model.id, glm_model.sex, glm_predict(coef, features, 'probit') FROM glm_model, abalone_non_array_expression
+WHERE abalone_non_array_expression.id=glm_model.id AND abalone_non_array_expression.sex=glm_model.sex;
+SELECT test_pmml_output('abalone_test_for_pmml2', 'glm_model', 'glm_predict_output', 'id', 'glm_predict', 'probability_true', 'sex,id', 'bar ~ foo1+foo2+foo3+foo4+foo5+foo6+foo7');
+
+-- Test output category
+DROP TABLE IF EXISTS glm_predict_output; CREATE TABLE glm_predict_output as SELECT glm_model.id, glm_model.sex, glm_predict_binomial(coef, features, 'probit') FROM glm_model, abalone_non_array_expression
+WHERE abalone_non_array_expression.id=glm_model.id AND abalone_non_array_expression.sex=glm_model.sex;
+SELECT test_pmml_output('abalone_test_for_pmml2', 'glm_model', 'glm_predict_output', 'id', 'glm_predict_binomial', 'predicted_bar', 'sex,id', 'bar ~ foo1+foo2+foo3+foo4+foo5+foo6+foo7');

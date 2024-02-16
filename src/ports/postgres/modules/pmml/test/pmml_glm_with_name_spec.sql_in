@@ -1,0 +1,160 @@
+/* ----------------------------------------------------------------------- *//**
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ *
+ *//* ----------------------------------------------------------------------- */
+
+ \i m4_regexp(MADLIB_LIBRARY_PATH,
+             `\(.*\)/lib',
+              `\1/../modules/pmml/test/pmml.setup.sql_in'
+)
+
+m4_changequote(`<!'', `!>'')
+
+CREATE TABLE abalone_test_for_pmml as SELECT *, length as foo1, diameter as foo2, height as foo3, whole as foo4, shucked as foo5, viscera as foo6, shell as foo7 FROM abalone;
+
+----------------------- with intercept -------------------------------
+DROP TABLE IF EXISTS glm_model, glm_model_summary;
+SELECT glm(
+    'abalone',
+    'glm_model',
+    'rings < 10',
+    'ARRAY[1, length, diameter, height, whole, shucked, viscera, shell]',
+    'family=binomial, link=logit', NULL, 'max_iter=1000, tolerance=1e-16'
+);
+
+-- -- Test probabilities
+DROP TABLE IF EXISTS glm_predict_binomial_logit_out; CREATE TABLE glm_predict_binomial_logit_out as SELECT id, glm_predict(coef, ARRAY[1, length, diameter, height, whole, shucked, viscera, shell], 'logit')
+FROM glm_model, abalone;
+SELECT test_pmml_output('abalone_test_for_pmml', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict', 'probability_true', '','bar ~ foo1+foo2+foo3+foo4+foo5+foo6+foo7');
+SELECT test_pmml_output('abalone_test_for_pmml', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict', 'probability_true', '','foo1+foo2+foo3+foo4+foo5+foo6+foo7');
+SELECT test_pmml_output('abalone_test_for_pmml', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict', 'probability_true', '','{bar,foo1,foo2,foo3,foo4,foo5,foo6,foo7}');
+SELECT test_pmml_output('abalone_test_for_pmml', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict', 'probability_true', '','{foo1,foo2,foo3,foo4,foo5,foo6,foo7}');
+
+-- Test output category
+DROP TABLE IF EXISTS glm_predict_binomial_logit_out; CREATE TABLE glm_predict_binomial_logit_out as SELECT id, glm_predict_binomial(coef, ARRAY[1, length, diameter, height, whole, shucked, viscera, shell], 'logit')
+FROM glm_model, abalone;
+SELECT test_pmml_output('abalone_test_for_pmml', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict_binomial', 'predicted_bar', '', 'bar ~ foo1+foo2+foo3+foo4+foo5+foo6+foo7');
+SELECT test_pmml_output('abalone_test_for_pmml', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict_binomial', 'predicted_rings < 10', '', 'foo1+foo2+foo3+foo4+foo5+foo6+foo7');
+SELECT test_pmml_output('abalone_test_for_pmml', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict_binomial', 'predicted_bar', '', '{bar,foo1,foo2,foo3,foo4,foo5,foo6,foo7}');
+SELECT test_pmml_output('abalone_test_for_pmml', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict_binomial', 'predicted_rings < 10', '', '{foo1,foo2,foo3,foo4,foo5,foo6,foo7}');
+
+----------------------- without intercept -------------------------------
+DROP TABLE IF EXISTS glm_model, glm_model_summary;
+SELECT glm(
+    'abalone',
+    'glm_model',
+    'rings < 10',
+    'ARRAY[length, diameter, height, whole, shucked, viscera, shell]',
+    'family=binomial, link=logit', NULL, 'max_iter=1000, tolerance=1e-16'
+);
+
+-- -- Test probabilities
+DROP TABLE IF EXISTS glm_predict_binomial_logit_out; CREATE TABLE glm_predict_binomial_logit_out as SELECT id, glm_predict(coef, ARRAY[length, diameter, height, whole, shucked, viscera, shell], 'logit')
+FROM glm_model, abalone;
+SELECT test_pmml_output('abalone_test_for_pmml', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict', 'probability_true', '','bar ~ foo1+foo2+foo3+foo4+foo5+foo6+foo7');
+SELECT test_pmml_output('abalone_test_for_pmml', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict', 'probability_true', '','foo1+foo2+foo3+foo4+foo5+foo6+foo7');
+SELECT test_pmml_output('abalone_test_for_pmml', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict', 'probability_true', '','{bar, foo1,foo2,foo3,foo4,foo5,foo6,foo7}');
+SELECT test_pmml_output('abalone_test_for_pmml', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict', 'probability_true', '','{foo1,foo2,foo3,foo4,foo5,foo6,foo7}');
+
+-- Test output category
+DROP TABLE IF EXISTS glm_predict_binomial_logit_out; CREATE TABLE glm_predict_binomial_logit_out as SELECT id, glm_predict_binomial(coef, ARRAY[length, diameter, height, whole, shucked, viscera, shell], 'logit')
+FROM glm_model, abalone;
+SELECT test_pmml_output('abalone_test_for_pmml', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict_binomial', 'predicted_bar', '', 'bar ~ foo1+foo2+foo3+foo4+foo5+foo6+foo7');
+SELECT test_pmml_output('abalone_test_for_pmml', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict_binomial', 'predicted_rings < 10', '', 'foo1+foo2+foo3+foo4+foo5+foo6+foo7');
+SELECT test_pmml_output('abalone_test_for_pmml', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict_binomial', 'predicted_bar', '', '{bar, foo1,foo2,foo3,foo4,foo5,foo6,foo7}');
+SELECT test_pmml_output('abalone_test_for_pmml', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict_binomial', 'predicted_rings < 10', '', '{foo1,foo2,foo3,foo4,foo5,foo6,foo7}');
+
+
+---------------------------- with grouping -----------------------------------------
+DROP TABLE IF EXISTS glm_model, glm_model_summary;
+SELECT glm(
+    'abalone',
+    'glm_model',
+    'rings < 10',
+    'ARRAY[1, length, diameter, height, whole, shucked, viscera, shell]',
+    'family=binomial, link=logit', 'sex', 'max_iter=1000, tolerance=1e-16'
+);
+
+-- -- Test probabilities
+DROP TABLE IF EXISTS glm_predict_binomial_logit_out; CREATE TABLE glm_predict_binomial_logit_out as SELECT id, glm_model.sex, glm_predict(coef, ARRAY[1, length, diameter, height, whole, shucked, viscera, shell], 'logit')
+FROM glm_model, abalone WHERE abalone.sex=glm_model.sex;
+SELECT test_pmml_output('abalone_test_for_pmml', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict', 'probability_true', 'sex','bar ~ foo1+foo2+foo3+foo4+foo5+foo6+foo7');
+SELECT test_pmml_output('abalone_test_for_pmml', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict', 'probability_true', 'sex','foo1+foo2+foo3+foo4+foo5+foo6+foo7');
+SELECT test_pmml_output('abalone_test_for_pmml', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict', 'probability_true', 'sex','{bar, foo1,foo2,foo3,foo4,foo5,foo6,foo7}');
+SELECT test_pmml_output('abalone_test_for_pmml', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict', 'probability_true', 'sex','{foo1,foo2,foo3,foo4,foo5,foo6,foo7}');
+
+-- Test output category
+DROP TABLE IF EXISTS glm_predict_binomial_logit_out; CREATE TABLE glm_predict_binomial_logit_out as SELECT id, glm_model.sex, glm_predict_binomial(coef, ARRAY[1, length, diameter, height, whole, shucked, viscera, shell], 'logit')
+FROM glm_model, abalone WHERE abalone.sex=glm_model.sex;
+SELECT test_pmml_output('abalone_test_for_pmml', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict_binomial', 'predicted_bar', 'sex', 'bar ~ foo1+foo2+foo3+foo4+foo5+foo6+foo7');
+SELECT test_pmml_output('abalone_test_for_pmml', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict_binomial', 'predicted_rings < 10', 'sex', 'foo1+foo2+foo3+foo4+foo5+foo6+foo7');
+SELECT test_pmml_output('abalone_test_for_pmml', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict_binomial', 'predicted_bar', 'sex', '{bar, foo1,foo2,foo3,foo4,foo5,foo6,foo7}');
+SELECT test_pmml_output('abalone_test_for_pmml', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict_binomial', 'predicted_rings < 10', 'sex', '{foo1,foo2,foo3,foo4,foo5,foo6,foo7}');
+
+
+----------------------- with grouping and incorrect feature length in name spec -------------------------
+-- Incorrect count type1: If the count of features in the name spec is incorrect, madlib pmml will fall back to using the original names
+-- So we can use the original table 'abalone' to compare the results
+
+DROP TABLE IF EXISTS glm_model, glm_model_summary;
+SELECT glm(
+    'abalone',
+    'glm_model',
+    'rings < 10',
+    'ARRAY[1, length, diameter, height, whole, shucked, viscera, shell]',
+    'family=binomial, link=logit', 'sex', 'max_iter=1000, tolerance=1e-16'
+);
+
+
+DROP TABLE IF EXISTS glm_predict_binomial_logit_out; CREATE TABLE glm_predict_binomial_logit_out as SELECT id, glm_model.sex, glm_predict(coef, ARRAY[1, length, diameter, height, whole, shucked, viscera, shell], 'logit')
+FROM glm_model, abalone WHERE abalone.sex=glm_model.sex;
+SELECT test_pmml_output('abalone', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict', 'probability_true', 'sex','bar ~ foo1+foo2+foo3+foo4+foo5+foo6');
+SELECT test_pmml_output('abalone', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict', 'probability_true', 'sex','foo1+foo2+foo3+foo4+foo5+foo6');
+SELECT test_pmml_output('abalone', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict', 'probability_true', 'sex','{foo1,foo2,foo3,foo4,foo5,foo6}');
+SELECT test_pmml_output('abalone', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict', 'probability_true', 'sex','{bar,foo1,foo2,foo3,foo4,foo5,foo6,foo7,foo8}');
+
+DROP TABLE IF EXISTS glm_predict_binomial_logit_out; CREATE TABLE glm_predict_binomial_logit_out as SELECT id, glm_model.sex, glm_predict_binomial(coef, ARRAY[1, length, diameter, height, whole, shucked, viscera, shell], 'logit')
+FROM glm_model, abalone WHERE abalone.sex=glm_model.sex;
+SELECT test_pmml_output('abalone', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict_binomial', 'predicted_rings < 10', 'sex','foo1+foo2+foo3+foo4+foo5+foo6');
+SELECT test_pmml_output('abalone', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict_binomial', 'predicted_rings < 10', 'sex','{foo1,foo2,foo3,foo4,foo5,foo6}');
+SELECT test_pmml_output('abalone', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict_binomial', 'predicted_rings < 10', 'sex','{bar,foo1,foo2,foo3,foo4,foo5,foo6,foo7,foo8}');
+
+DROP TABLE IF EXISTS glm_model, glm_model_summary;
+SELECT glm(
+    'abalone',
+    'glm_model',
+    'rings < 10',
+    'ARRAY[length, diameter, height, whole, shucked, viscera, shell]',
+    'family=binomial, link=logit', 'sex', 'max_iter=1000, tolerance=1e-16'
+);
+
+
+DROP TABLE IF EXISTS glm_predict_binomial_logit_out; CREATE TABLE glm_predict_binomial_logit_out as SELECT id, glm_model.sex, glm_predict(coef, ARRAY[length, diameter, height, whole, shucked, viscera, shell], 'logit')
+FROM glm_model, abalone WHERE abalone.sex=glm_model.sex;
+SELECT test_pmml_output('abalone', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict', 'probability_true', 'sex','bar ~ foo1+foo2+foo3+foo4+foo5+foo6');
+SELECT test_pmml_output('abalone', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict', 'probability_true', 'sex','foo1+foo2+foo3+foo4+foo5+foo6');
+SELECT test_pmml_output('abalone', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict', 'probability_true', 'sex','{foo1,foo2,foo3,foo4,foo5,foo6}');
+SELECT test_pmml_output('abalone', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict', 'probability_true', 'sex','{bar,foo1,foo2,foo3,foo4,foo5,foo6,foo7,foo8}');
+
+DROP TABLE IF EXISTS glm_predict_binomial_logit_out; CREATE TABLE glm_predict_binomial_logit_out as SELECT id, glm_model.sex, glm_predict_binomial(coef, ARRAY[length, diameter, height, whole, shucked, viscera, shell], 'logit')
+FROM glm_model, abalone WHERE abalone.sex=glm_model.sex;
+SELECT test_pmml_output('abalone', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict_binomial', 'predicted_rings < 10', 'sex','foo1+foo2+foo3+foo4+foo5+foo6');
+SELECT test_pmml_output('abalone', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict_binomial', 'predicted_rings < 10', 'sex','{foo1,foo2,foo3,foo4,foo5,foo6}');
+SELECT test_pmml_output('abalone', 'glm_model', 'glm_predict_binomial_logit_out', 'id', 'glm_predict_binomial', 'predicted_rings < 10', 'sex','{bar,foo1,foo2,foo3,foo4,foo5,foo6,foo7,foo8}');
+

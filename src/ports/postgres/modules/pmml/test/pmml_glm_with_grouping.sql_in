@@ -1,0 +1,125 @@
+/* ----------------------------------------------------------------------- *//**
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ *
+ *//* ----------------------------------------------------------------------- */
+
+\i m4_regexp(MADLIB_LIBRARY_PATH,
+             `\(.*\)/lib',
+              `\1/../modules/pmml/test/pmml.setup.sql_in'
+)
+
+m4_changequote(`<!'', `!>'')
+--TODO: Should all the predict and model tables have the same name ?
+
+----------------------- binomial with logit -------------------------------
+DROP TABLE IF EXISTS glm_model, glm_model_summary;
+SELECT glm(
+    'abalone',
+    'glm_model',
+    'rings < 10',
+    'ARRAY[1, length, diameter, height, whole, shucked, viscera, shell]',
+    'family=binomial, link=logit', 'sex,id', 'max_iter=1000, tolerance=1e-16'
+);
+
+-- Test probabilities
+DROP TABLE IF EXISTS glm_predict_output; CREATE TABLE glm_predict_output as SELECT glm_model.id, glm_model.sex, glm_predict(coef, ARRAY[1, length, diameter, height, whole, shucked, viscera, shell], 'logit')
+FROM glm_model, abalone WHERE abalone.id=glm_model.id and abalone.sex=glm_model.sex;
+SELECT test_pmml_output('abalone', 'glm_model', 'glm_predict_output', 'id', 'glm_predict', 'probability_true', 'sex,id');
+
+-- Test output category
+DROP TABLE IF EXISTS glm_predict_output; CREATE TABLE glm_predict_output as SELECT glm_model.id, glm_model.sex, glm_predict_binomial(coef, ARRAY[1, length, diameter, height, whole, shucked, viscera, shell], 'logit')
+FROM glm_model, abalone WHERE abalone.id=glm_model.id and abalone.sex=glm_model.sex;
+SELECT test_pmml_output('abalone', 'glm_model', 'glm_predict_output', 'id', 'glm_predict_binomial', 'predicted_(rings < 10)_pmml_prediction', 'sex,id');
+
+----------------------- binomial with probit without intercept-------------------------------
+DROP TABLE IF EXISTS glm_model, glm_model_summary;
+SELECT glm(
+    'abalone',
+    'glm_model',
+    'rings < 10',
+    'ARRAY[length, diameter, height, whole, shucked, viscera, shell]',
+    'family=binomial, link=probit', 'sex', 'max_iter=1000, tolerance=1e-16'
+);
+
+-- Test probabilities
+DROP TABLE IF EXISTS glm_predict_output; CREATE TABLE glm_predict_output as SELECT id, glm_model.sex, glm_predict(coef, ARRAY[length, diameter, height, whole, shucked, viscera, shell], 'probit')
+FROM glm_model, abalone WHERE abalone.sex=glm_model.sex;
+SELECT test_pmml_output('abalone', 'glm_model', 'glm_predict_output', 'id', 'glm_predict', 'probability_true', 'sex');
+
+-- Test output category
+DROP TABLE IF EXISTS glm_predict_output; CREATE TABLE glm_predict_output as SELECT id, glm_model.sex, glm_predict_binomial(coef, ARRAY[length, diameter, height, whole, shucked, viscera, shell], 'probit')
+FROM glm_model, abalone WHERE abalone.sex=glm_model.sex;
+SELECT test_pmml_output('abalone', 'glm_model', 'glm_predict_output', 'id', 'glm_predict_binomial', 'predicted_(rings < 10)_pmml_prediction', 'sex');
+
+----------------------- gamma with log -------------------------------
+DROP TABLE IF EXISTS glm_model, glm_model_summary;
+SELECT glm(
+    'abalone',
+    'glm_model',
+    'rings',
+    'ARRAY[1, length, diameter, height, whole, shucked, viscera, shell]',
+    'family=gamma, link=log', 'sex', 'max_iter=1000, tolerance=1e-16'
+);
+
+DROP TABLE IF EXISTS glm_predict_output; CREATE TABLE glm_predict_output as SELECT id, glm_model.sex, glm_predict(coef, ARRAY[1, length, diameter, height, whole, shucked, viscera, shell], 'log')
+FROM glm_model, abalone WHERE abalone.sex=glm_model.sex;
+SELECT test_pmml_output('abalone', 'glm_model', 'glm_predict_output', 'id', 'glm_predict', 'predicted_rings_pmml_prediction', 'sex');
+--
+-- ----------------------- gamma with log without intercept-------------------------------
+--
+DROP TABLE IF EXISTS glm_model, glm_model_summary;
+SELECT glm(
+    'abalone',
+    'glm_model',
+    'rings',
+    'ARRAY[length, diameter, height, whole, shucked, viscera, shell]',
+    'family=gamma, link=log', 'sex', 'max_iter=1000, tolerance=1e-16'
+);
+
+DROP TABLE IF EXISTS glm_predict_output; CREATE TABLE glm_predict_output as SELECT id, glm_model.sex, glm_predict(coef, ARRAY[length, diameter, height, whole, shucked, viscera, shell], 'log')
+FROM glm_model, abalone WHERE abalone.sex=glm_model.sex;
+SELECT test_pmml_output('abalone', 'glm_model', 'glm_predict_output', 'id', 'glm_predict', 'predicted_rings_pmml_prediction', 'sex');
+
+
+------------ inverse_gaussian with inverse without intercept ------------------------------------
+DROP TABLE IF EXISTS glm_model, glm_model_summary;
+SELECT glm(
+    'abalone',
+    'glm_model',
+    'rings',
+    'ARRAY[length, diameter, height, whole, shucked, viscera, shell]',
+    'family=inverse_gaussian, link=inverse', 'sex,id', 'max_iter=1000, tolerance=1e-16'
+);
+
+DROP TABLE IF EXISTS glm_predict_output; CREATE TABLE glm_predict_output as SELECT glm_model.id, glm_model.sex, glm_predict(coef, ARRAY[length, diameter, height, whole, shucked, viscera, shell], 'inverse')
+FROM glm_model, abalone WHERE abalone.sex=glm_model.sex and abalone.id=glm_model.id;
+SELECT test_pmml_output('abalone', 'glm_model', 'glm_predict_output', 'id', 'glm_predict', 'predicted_rings_pmml_prediction', 'sex,id');
+
+------------ poisson with identity with intercept ------------------------------------
+DROP TABLE IF EXISTS glm_model, glm_model_summary;
+SELECT glm('warpbreaks_dummy',
+           'glm_model',
+           'breaks',
+           'ARRAY[1, "wool_B","tension_M", "tension_H"]',
+           'family=poisson, link=identity', 'g');
+
+-- Test predicted value
+DROP TABLE IF EXISTS glm_predict_output; CREATE TABLE glm_predict_output as SELECT id, glm_model.g, glm_predict(coef, ARRAY[1, "wool_B","tension_M", "tension_H"], 'identity')
+FROM glm_model, warpbreaks_dummy WHERE warpbreaks_dummy.g=glm_model.g;
+SELECT test_pmml_output('warpbreaks_dummy', 'glm_model', 'glm_predict_output', 'id', 'glm_predict', 'predicted_breaks_pmml_prediction', 'g');

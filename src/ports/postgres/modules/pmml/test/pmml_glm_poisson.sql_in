@@ -1,77 +1,59 @@
+\i m4_regexp(MADLIB_LIBRARY_PATH,
+             `\(.*\)/lib',
+              `\1/../modules/pmml/test/pmml.setup.sql_in'
+)
+
+m4_changequote(`<!'', `!>'')
+
 DROP TABLE IF EXISTS warpbreaks CASCADE;
 
-CREATE TABLE warpbreaks(
-    id      serial,
-    breaks  integer,
-    wool    char(1),
-    tension char(1),
-    g       char(1)
-);
-
-INSERT INTO warpbreaks(breaks, wool, tension, g) VALUES
-(26, 'A', 'L', '1'),
-(30, 'A', 'L', '1'),
-(54, 'A', 'L', '1'),
-(25, 'A', 'L', '1'),
-(70, 'A', 'L', '1'),
-(52, 'A', 'L', '1'),
-(51, 'A', 'L', '1'),
-(26, 'A', 'L', '1'),
-(67, 'A', 'L', '1'),
-(18, 'A', 'M', '1'),
-(21, 'A', 'M', '1'),
-(29, 'A', 'M', '1'),
-(17, 'A', 'M', '1'),
-(12, 'A', 'M', '1'),
-(18, 'A', 'M', '1'),
-(35, 'A', 'M', '1'),
-(30, 'A', 'M', '1'),
-(36, 'A', 'M', '1'),
-(36, 'A', 'H', '0'),
-(21, 'A', 'H', '0'),
-(24, 'A', 'H', '0'),
-(18, 'A', 'H', '0'),
-(10, 'A', 'H', '0'),
-(43, 'A', 'H', '0'),
-(28, 'A', 'H', '0'),
-(15, 'A', 'H', '0'),
-(26, 'A', 'H', '0'),
-(27, 'B', 'L', '0'),
-(14, 'B', 'L', '0'),
-(29, 'B', 'L', '0'),
-(19, 'B', 'L', '0'),
-(29, 'B', 'L', '0'),
-(31, 'B', 'L', '0'),
-(41, 'B', 'L', '0'),
-(20, 'B', 'L', '1'),
-(44, 'B', 'L', '1'),
-(42, 'B', 'M', '1'),
-(26, 'B', 'M', '1'),
-(19, 'B', 'M', '1'),
-(16, 'B', 'M', '1'),
-(39, 'B', 'M', '1'),
-(28, 'B', 'M', '1'),
-(21, 'B', 'M', '1'),
-(39, 'B', 'M', '1'),
-(29, 'B', 'M', '1'),
-(20, 'B', 'H', '1'),
-(21, 'B', 'H', '1'),
-(24, 'B', 'H', '1'),
-(17, 'B', 'H', '1'),
-(13, 'B', 'H', '1'),
-(15, 'B', 'H', '1'),
-(15, 'B', 'H', '1'),
-(16, 'B', 'H', '1'),
-(28, 'B', 'H', '1');
-
-DROP TABLE IF EXISTS warpbreaks_dummy;
-SELECT create_indicator_variables('warpbreaks', 'warpbreaks_dummy', 'wool,tension');
-
+-------------------- with intercept ------------------------------
 DROP TABLE IF EXISTS glm_model_sqrt, glm_model_sqrt_summary;
 SELECT glm('warpbreaks_dummy',
            'glm_model_sqrt',
            'breaks',
-           'ARRAY[1.0,"wool_B","tension_M", "tension_H"]',
+           'ARRAY[1.0, "wool_B","tension_M", "tension_H"]',
            'family=poisson, link=sqrt');
 
-SELECT pmml('glm_model_sqrt');
+-- Test predicted value
+DROP TABLE IF EXISTS glm_predict_poisson_sqrt_out; CREATE TABLE glm_predict_poisson_sqrt_out as SELECT id, glm_predict(coef, ARRAY[1, "wool_B","tension_M", "tension_H"], 'sqrt')
+FROM glm_model_sqrt, warpbreaks_dummy;
+SELECT test_pmml_output('warpbreaks_dummy', 'glm_model_sqrt', 'glm_predict_poisson_sqrt_out', 'id', 'glm_predict', 'predicted_breaks_pmml_prediction');
+
+DROP TABLE IF EXISTS glm_model_log, glm_model_log_summary;
+SELECT glm('warpbreaks_dummy',
+           'glm_model_log',
+           'breaks',
+           'ARRAY[1, "wool_B","tension_M", "tension_H"]',
+           'family=poisson, link=log');
+
+-- Test predicted value
+DROP TABLE IF EXISTS glm_predict_poisson_log_out; CREATE TABLE glm_predict_poisson_log_out as SELECT id, glm_predict(coef, ARRAY[1, "wool_B","tension_M", "tension_H"], 'log')
+FROM glm_model_log, warpbreaks_dummy;
+SELECT test_pmml_output('warpbreaks_dummy', 'glm_model_log', 'glm_predict_poisson_log_out', 'id', 'glm_predict', 'predicted_breaks_pmml_prediction');
+
+DROP TABLE IF EXISTS glm_model_identity, glm_model_identity_summary;
+SELECT glm('warpbreaks_dummy',
+           'glm_model_identity',
+           'breaks',
+           'ARRAY[1.0, "wool_B","tension_M", "tension_H"]',
+           'family=poisson, link=identity', 'g');
+
+-- Test predicted value
+DROP TABLE IF EXISTS glm_predict_poisson_identity_out; CREATE TABLE glm_predict_poisson_identity_out as SELECT id, glm_model_identity.g, glm_predict(coef, ARRAY[1, "wool_B","tension_M", "tension_H"], 'identity')
+FROM glm_model_identity, warpbreaks_dummy;
+SELECT test_pmml_output('warpbreaks_dummy', 'glm_model_identity', 'glm_predict_poisson_identity_out', 'id', 'glm_predict', 'predicted_breaks_pmml_prediction', 'g');
+
+-------------------- without intercept ------------------------------
+-- TODO: create item for fixing the glm module when link='sqrt'/'identity' and no intercept is used
+DROP TABLE IF EXISTS glm_model_log_nointercept, glm_model_log_nointercept_summary;
+SELECT glm('warpbreaks_dummy',
+           'glm_model_log_nointercept',
+           'breaks',
+           'ARRAY["wool_B","tension_M", "tension_H"]',
+           'family=poisson, link=log');
+
+-- Test predicted value
+DROP TABLE IF EXISTS glm_predict_poisson_log_out; CREATE TABLE glm_predict_poisson_log_out as SELECT id, glm_predict(coef, ARRAY["wool_B","tension_M", "tension_H"], 'log')
+FROM glm_model_log_nointercept, warpbreaks_dummy;
+SELECT test_pmml_output('warpbreaks_dummy', 'glm_model_log_nointercept', 'glm_predict_poisson_log_out', 'id', 'glm_predict', 'predicted_breaks_pmml_prediction');
