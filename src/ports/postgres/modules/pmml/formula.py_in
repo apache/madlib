@@ -2,25 +2,61 @@ import plpy
 import re
 
 class Formula(object):
+
     def __init__(self, y_str, x_str, coef_len):
-        self.n_coef = coef_len
+        """
+        :param y_str:    Dependent variable used during training
+        :param x_str:    Independent variable used during training. Can take
+                         multiple formats like
+                         'ARRAY[1,x1,x2]', 'ARRAY[x1,x2]' or just 'x'
+        :param coef_len: Length of all the coefficients including the
+                         intercept's coefficient(if any)
+        """
+        # TODO: Fix the nested warning and add explanation for the regex
+        self.array_expr = re.compile(r'array[[]([0-1],|[0-1].0,)?(["a-z0-9_, .]+)[]]', flags=re.I)
+        self.non_array_expr = re.compile(r'["a-z0-9_]+', flags=re.I)
+
+        self.intercept = self.has_intercept(x_str)
+        self.all_coef_len = coef_len
+        if self.intercept:
+            self.feature_coef_len = coef_len - 1
+        else:
+            self.feature_coef_len = coef_len
         self.y = y_str.replace('"','')
         self.x = self.parse(x_str)
 
     def parse(self, x_str):
-        array_expr = re.compile(r'array[[](["a-z0-9_, .]+)[]]', flags=re.I)
-        simple_col = re.compile(r'["a-z0-9_]+', flags=re.I)
+        """
+        The parse function parses the x_str (that is obtained by querying the model summary table)
+        The goal of this function is to extract the features from this string and
+        ignore the intercept (if present)
+        If a non array expression like 'x' is used for the independent
+        variable, this function will assume that the intercept was used
+        during training
+        :param x_str: Independent variable used during training. Can take
+                      multiple formats like
+                     'ARRAY[1,x1,x2]', 'ARRAY[x1,x2]' or just 'x'
+        :return: array of all the independent features
+        """
         prefix = 'x'
-        if array_expr.match(x_str) is not None:
-            x_csv = array_expr.sub(r'\1', x_str)
+        if self.array_expr.match(x_str) is not None:
+            x_csv = self.array_expr.sub(r'\2',  x_str)
             ret = [s.strip().replace('"','') for s in x_csv.split(',')]
-            if len(ret) == self.n_coef:
+            if len(ret) == self.feature_coef_len:
                 return ret
-            else:
-                pass # fall back to using 'x'
-        elif simple_col.match(x_str) is not None:
-            prefix = x_str.replace('"','')
-        return ["{0}[{1}]".format(prefix, str(i+1)) for i in range(self.n_coef)]
+            pass
+        elif self.non_array_expr.match(x_str) is not None:
+            # We assume that if a non array expression was used for training,
+            # it includes the intercept
+            prefix = x_str.replace('"', '')
+            return ["{0}[{1}]".format(prefix, str(i+1)) for i in range(self.feature_coef_len)]
+        # We will only get here if we matched the array format but the
+        # coefficient length didn't match the x_str len. This would be a very
+        # rare and unexpected scenario and there isn't a good solution here.
+        # So we just loop through all the coefficients (including the intercept)
+        # so that all of them are considered as predictors
+        return ["{0}[{1}]".format(prefix, str(i+1)) for i in range(
+            self.all_coef_len)]
 
     def rename(self, spec):
         if isinstance(spec, str):
@@ -37,20 +73,50 @@ class Formula(object):
                 x = [s.strip() for s in spec.split('+')]
             else:
                 x = [s.strip() for s in spec.split(',')]
-            if self.n_coef != len(x):
+
+            if self.feature_coef_len != len(x):
                 plpy.warning("PMML warning: unexpected namespec '" + \
                         spec + "', using default names")
             else:
                 self.y = y
                 self.x = x
         else:
-            if len(spec) == self.n_coef + 1:
+            if len(spec) == self.feature_coef_len + 1:
                 self.y = spec[0]
                 self.x = spec[1:]
-            elif len(spec) == self.n_coef:
+            elif len(spec) == self.feature_coef_len:
                 self.x = spec
             else:
                 plpy.warning("PMML warning: unexpected namespec '" + \
-                        str(spec) + "', using default names")
+                             str(spec) + "', using default names")
 
-
+    def has_intercept(self, x_str):
+        """
+        Parses the independent var string and determines if intercept was
+        used during fit. This is important for pmml building because of the
+        following reasons:
+        1. The coef vector includes the coefficient of the intercept as well
+        2. If we don't handle this coefficient separately, the intercept will be
+           treated an independent variable in the pmml output. This isn't
+           ideal since the user will need to pass this intercept "1" as an input
+           for each row while using the pmml for prediction
+        2. Since we don't want to treat intercept as an independent variable,
+           it's important to know if an intercept was used or not and treat
+           it accordingly.
+        :param x_str:
+        :return:
+        """
+        array_expr_match = self.array_expr.match(x_str)
+        if array_expr_match is not None:
+            if array_expr_match.groups()[0] is None:
+                return False
+            else:
+                return True
+        # If the independent var used during training does not match the
+        # "ARRAY[1, x1, x2]" or "ARRAY[x1, x2]" format (for e.g. a simple col
+        # expression like x), we default to intercept being true. This is
+        # because without this format, we have no way to knowing whether the
+        # input table was fit with an intercept or not. So assuming intercept to
+        # be True is a safer assumption since in most cases, the model would
+        # have been trained with an intercept
+        return True

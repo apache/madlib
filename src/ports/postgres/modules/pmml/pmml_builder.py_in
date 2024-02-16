@@ -33,6 +33,15 @@ class PMMLBuilder(object):
         self.name_spec = name_spec
         self.pmml_str = None
 
+    def _get_intercept_and_x_coefs(self, coefs):
+        if self.formula.intercept:
+            intercept_coef = coefs[0]
+            x_coefs = coefs[1:]
+        else:
+            intercept_coef = 0
+            x_coefs = coefs
+        return intercept_coef, x_coefs
+
     def _validate_output_table(self):
         cols_in_tbl_valid(self.model_table,
                           self.__class__.OUTPUT_COLS,
@@ -65,7 +74,7 @@ class PMMLBuilder(object):
         raise NotImplementedError
 
     def _construct_formula(self):
-        self.formula = Formula(self.y_str, self.x_str, self.n_coef)
+        self.formula = Formula(self.y_str, self.x_str, self.all_coef_len)
         if self.name_spec is not None:
             self.formula.rename(self.name_spec)
         else:
@@ -209,7 +218,7 @@ class RegressionPMMLBuilder(PMMLBuilder):
     def _parse_output(self):
         self.grouped_coefs = self.output
         self.coef0 = self.output[0]['coef']
-        self.n_coef = len(self.coef0)
+        self.all_coef_len = len(self.coef0)
         self.grouping_keys = [k for k in self.output[0] if k != 'coef']
 
     def _construct_predict_spec(self):
@@ -230,23 +239,26 @@ class RegressionPMMLBuilder(PMMLBuilder):
             self.mining_schema = MiningSchema(*mining_field_forest)
 
     def _create_numeric_predictors(self, coef):
-        numeric_predictor_forest = []
+        numeric_predictors = []
         for i, e in enumerate(coef):
-            numeric_predictor_forest.append(
+            numeric_predictors.append(
                 NumericPredictor(name=self.formula.x[i], coefficient=e))
-        return numeric_predictor_forest
+        return numeric_predictors
 
-    def _create_model_regression(self, numeric_predictor_forest):
+    def _create_model_regression(self, numeric_predictor_forest, intercept_coef):
+        # TODO: fix this intercept value properly
+        # when is this code called
         regression_table_forest = [RegressionTable(*numeric_predictor_forest,
-                                                   intercept='0')]
+                                                   intercept=intercept_coef)]
         return RegressionModel(self.mining_schema,
                                *regression_table_forest,
                                functionName=self.function)
 
-    def _create_model_classification(self, numeric_predictor_forest):
+    def _create_model_classification(self, numeric_predictor_forest, intercept_coef):
+        #TODO: Will False category always have intercept 0 ?
         regression_table_forest = [
             RegressionTable(*numeric_predictor_forest,
-                            targetCategory=True, intercept='0'),
+                            targetCategory=True, intercept=intercept_coef),
             RegressionTable(targetCategory=False, intercept='0')]
         return RegressionModel(self.mining_schema,
                                *regression_table_forest,
@@ -255,12 +267,13 @@ class RegressionPMMLBuilder(PMMLBuilder):
 
     def _create_single_model(self, coef):
         self._build_mining_schema()
-        numeric_predictor_forest = self._create_numeric_predictors(coef)
+        intercept_coef, x_coef = self._get_intercept_and_x_coefs(coef)
+        numeric_predictors_regression = self._create_numeric_predictors(x_coef)
 
         if self.function == 'regression':
-            return self._create_model_regression(numeric_predictor_forest)
+            return self._create_model_regression(numeric_predictors_regression, intercept_coef)
         elif self.function == 'classification':
-            return self._create_model_classification(numeric_predictor_forest)
+            return self._create_model_classification(numeric_predictors_regression, intercept_coef)
 
 
 class GeneralRegressionPMMLBuilder(RegressionPMMLBuilder):
@@ -375,16 +388,18 @@ class GLMPMMLBuilder(GeneralRegressionPMMLBuilder):
         self._build_covariate_list()
         self._build_ppmatrix()
 
+        intercept_coef, x_coef = self._get_intercept_and_x_coefs(coef)
         # pcells
-        pcell_attrib0 = dict(parameterName='p0', beta='0', df='1')
+        pcell_attrib0 = dict(parameterName='p0', beta=intercept_coef, df='1')
         if self.function == 'classification':
             pcell_attrib0['targetCategory'] = True
         pcell_forest = [PCell(**pcell_attrib0)]
-        for i, e in enumerate(coef):
+        for i, e in enumerate(x_coef):
             pcell_attrib = dict(parameterName="p"+str(i+1), beta=e, df='1')
             if self.function == 'classification':
                 pcell_attrib['targetCategory'] = True
             pcell_forest.append(PCell(**pcell_attrib))
+
 
         return GeneralRegressionModel(self.mining_schema,
                                       self.parameter_list,
@@ -397,7 +412,6 @@ class GLMPMMLBuilder(GeneralRegressionPMMLBuilder):
                                       distribution=self.distribution,
                                       functionName=self.function,
                                       **self.link_spec)
-
 
 class MultiClassRegressionPMMLBuilder(GeneralRegressionPMMLBuilder):
     """Base builder class for Multinomial logistic and Ordinal.
@@ -452,13 +466,13 @@ class OrdinalRegressionPMMLBuilder(MultiClassRegressionPMMLBuilder):
     def _parse_output(self):
         self.grouped_coefs = self.output
         self.coef0 = self.output[0]['coef']
-        self.n_coef = len(self.output[0]['coef_feature'])
+        self.all_coef_len = len(self.output[0]['coef_feature'])
         self.grouping_keys = [k for k in self.output[0]
                               if k not in ('coef', 'coef_feature')]
 
     def _create_single_model(self, coef):
-        coef_threshold = coef[self.formula.n_coef:]
-        coef_feature = coef[:self.formula.n_coef]
+        coef_threshold = coef[self.formula.all_coef_len:]
+        coef_feature = coef[:self.formula.all_coef_len]
 
         self._build_mining_schema()
         self._build_parameter_list()
@@ -533,7 +547,7 @@ class MultinomRegressionPMMLBuilder(MultiClassRegressionPMMLBuilder):
         self.grouped_coefs = [dict(list(zip(self.grouping_keys, grp_val))+[('coef', coef)])
                               for grp_val, coef in coef_dict.items()]
         self.coef0 = list(coef_dict.values())[0]
-        self.n_coef = len(list(self.coef0.values())[0])
+        self.all_coef_len = len(list(self.coef0.values())[0])
 
     def _create_single_model(self, coef):
         self._build_mining_schema()
@@ -544,9 +558,10 @@ class MultinomRegressionPMMLBuilder(MultiClassRegressionPMMLBuilder):
         # pcells
         pcell_forest = []
         for cate, coef_per_cate in coef.items():
+            intercept_coef, x_coef_per_cate = self._get_intercept_and_x_coefs(coef_per_cate)
             pcell_forest.append(PCell(parameterName="p0",
-                                      beta=0, df='1', targetCategory=cate))
-            for i, c in enumerate(coef_per_cate):
+                                      beta=intercept_coef, df='1', targetCategory=cate))
+            for i, c in enumerate(x_coef_per_cate):
                 pcell_forest.append(PCell(parameterName="p"+str(i+1),
                                           beta=c, df='1', targetCategory=cate))
 
@@ -595,7 +610,7 @@ class DecisionTreePMMLBuilder(PMMLBuilder):
         # assume that summary table sort the independent varnames (cat, con)
         self.x_str = self.summary['independent_varnames']
         self.x = [s.strip() for s in self.x_str.split(',')]
-        self.n_coef = len(self.x)
+        self.all_coef_len = len(self.x)
 
         self.grouping_col = self.summary['grouping_cols']
         self.grouping_str = ('' if self.grouping_col is None
@@ -982,7 +997,7 @@ class RandomForestPMMLBuilder(DecisionTreePMMLBuilder):
         # assume that summary table sort the independent varnames (cat, con)
         self.x_str = self.summary['independent_varnames']
         self.x = [s.strip() for s in self.x_str.split(',')]
-        self.n_coef = len(self.x)
+        self.all_coef_len = len(self.x)
 
         self.grouping_col = self.summary['grouping_cols']
         self.grouping_str = ('' if self.grouping_col is None
