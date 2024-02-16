@@ -1,3 +1,10 @@
+\i m4_regexp(MADLIB_LIBRARY_PATH,
+             `\(.*\)/lib',
+              `\1/../modules/pmml/test/pmml.setup.sql_in'
+)
+
+m4_changequote(`<!'', `!>'')
+
 DROP TABLE IF EXISTS multinom_test;
 CREATE TABLE multinom_test (
     feat1 INTEGER,
@@ -207,6 +214,7 @@ INSERT INTO multinom_test(feat1, feat2, cat, g) VALUES
 (2,67,2,'B'),
 (2,65,2,'B'),
 (2,62,2,'B');
+ALTER TABLE multinom_test ADD COLUMN id SERIAL;
 
 DROP TABLE IF EXISTS mglm_out, mglm_out_summary;
 SELECT multinom(
@@ -216,8 +224,16 @@ SELECT multinom(
     'ARRAY[1, feat1, feat2]',
     '0',
     'logit');
+DROP TABLE IF EXISTS multinom_predict_out; SELECT multinom_predict('mglm_out','multinom_test', 'multinom_predict_out', 'probability',FALSE,'id');
+SELECT test_pmml_output('multinom_test', 'mglm_out', 'multinom_predict_out', 'id', '0', 'probability_0');
+SELECT test_pmml_output('multinom_test', 'mglm_out', 'multinom_predict_out', 'id', '1', 'probability_1');
+SELECT test_pmml_output('multinom_test', 'mglm_out', 'multinom_predict_out', 'id', '2', 'probability_2');
 
-DROP TABLE IF EXISTS mglm_grp_out, mglm_grp_out_summary;
+DROP TABLE IF EXISTS multinom_predict_out; SELECT multinom_predict('mglm_out','multinom_test', 'multinom_predict_out', 'response',FALSE,'id');
+SELECT test_pmml_output('multinom_test', 'mglm_out', 'multinom_predict_out', 'id', 'category', 'predicted_cat_pmml_prediction');
+
+------------------------------------ with grouping -------------------------------------------------------------------
+-- DROP TABLE IF EXISTS mglm_grp_out, mglm_grp_out_summary;
 SELECT multinom(
     'multinom_test',
     'mglm_grp_out',
@@ -228,5 +244,10 @@ SELECT multinom(
     'g');
 
 -- PMML export
-SELECT pmml('mglm_out');
 SELECT pmml('mglm_grp_out');
+DROP TABLE IF EXISTS multinom_predict_out; SELECT multinom_predict('mglm_grp_out','multinom_test', 'multinom_predict_out', 'probability',FALSE,'id');
+CREATE TABLE multinom_predict_grp_out as (SELECT a.id, a.g, b."0", b."1", b."2", a.feat1, a.feat2 FROM multinom_test AS a LEFT JOIN multinom_predict_out AS b on a.id =b.id);
+SELECT test_pmml_output('multinom_test', 'mglm_grp_out', 'multinom_predict_grp_out', 'id', '0', 'probability_0','g');
+
+DROP TABLE IF EXISTS multinom_predict_out; SELECT multinom_predict('mglm_grp_out','multinom_test', 'multinom_predict_out', 'response',FALSE,'id');
+SELECT test_pmml_output('multinom_test', 'mglm_grp_out', 'multinom_predict_out', 'id', 'category', 'predicted_cat_pmml_prediction');
