@@ -73,9 +73,15 @@ docker exec madlib bash -c 'service postgresql start' | tee $workdir/logs/madlib
 echo "---------- Install pip, and mock -----------"
 # cmake, make, make install, and make package
 cat <<EOF
-docker exec madlib bash -c 'apt-get update; apt-get install -y python3-pip; pip install mock pandas numpy xgboost scikit-learn pyyaml pyxb-x' | tee $workdir/logs/madlib_compile.log
+docker exec madlib bash -c 'apt-get update; apt-get install -y python3-pip; pip install mock pandas numpy xgboost scikit-learn pyyaml pyxb-x pypmml' | tee $workdir/logs/madlib_compile.log
 EOF
-docker exec madlib bash -c 'apt-get update; apt-get install -y python3-pip; pip install mock pandas numpy xgboost scikit-learn pyyaml pyxb-x' | tee $workdir/logs/madlib_compile.log
+docker exec madlib bash -c 'apt-get update; apt-get install -y python3-pip; pip install mock pandas numpy xgboost scikit-learn pyyaml pyxb-x pypmml' | tee $workdir/logs/madlib_compile.log
+
+echo "------ debug: install java for pypmml which needs Java >= 8 and < 16 ------------"
+cat <<EOF
+docker exec madlib bash -c 'apt-get install -y openjdk-11-jre-headless' | tee $workdir/logs/madlib_compile.log
+EOF
+docker exec madlib bash -c 'apt-get install -y openjdk-11-jre-headless' | tee $workdir/logs/madlib_compile.log
 
 echo "---------- Building package -----------"
 # cmake, make, make install, and make package
