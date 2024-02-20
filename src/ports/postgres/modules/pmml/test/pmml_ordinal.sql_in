@@ -1,13 +1,20 @@
+\i m4_regexp(MADLIB_LIBRARY_PATH,
+             `\(.*\)/lib',
+              `\1/../modules/pmml/test/pmml.setup.sql_in'
+)
+
+m4_changequote(`<!'', `!>'')
+
 -- create table for training
-DROP TABLE IF EXISTS "Multinom_test";
-CREATE TABLE "Multinom_test" (
+DROP TABLE IF EXISTS "Ordinal_test";
+CREATE TABLE "Ordinal_test" (
     "FEAT1" INTEGER,
     feat2 INTEGER,
     cat INTEGER,
     g CHAR
 );
 
-INSERT INTO "Multinom_test"("FEAT1", feat2, cat, g) VALUES
+INSERT INTO "Ordinal_test"("FEAT1", feat2, cat, g) VALUES
 (1,35,1,'A'),
 (2,33,0,'A'),
 (3,39,1,'A'),
@@ -208,33 +215,50 @@ INSERT INTO "Multinom_test"("FEAT1", feat2, cat, g) VALUES
 (2,67,2,'B'),
 (2,65,2,'B'),
 (2,62,2,'B');
+ALTER TABLE "Ordinal_test" ADD COLUMN id SERIAL;
 
--- training function for logit link
+-- logit
 drop table if exists ordinal_logit, ordinal_logit_summary;
 SELECT ordinal(
-    '"Multinom_test"',
+    '"Ordinal_test"',
     'ordinal_logit',
     'cat',
     'ARRAY["FEAT1", feat2]',
     '0<1<2',
     'logit'
     );
+DROP TABLE IF EXISTS ordinal_predict_out; SELECT ordinal_predict('ordinal_logit','"Ordinal_test"', 'ordinal_predict_out', 'probability');
+SELECT test_pmml_output('"Ordinal_test"', 'ordinal_logit', 'ordinal_predict_out', 'id', '0', 'probability_0');
+SELECT test_pmml_output('"Ordinal_test"', 'ordinal_logit', 'ordinal_predict_out', 'id', '1', 'probability_1');
+SELECT test_pmml_output('"Ordinal_test"', 'ordinal_logit', 'ordinal_predict_out', 'id', '2', 'probability_2');
 
--- training function for probit link
+DROP TABLE IF EXISTS ordinal_predict_out; SELECT ordinal_predict('ordinal_logit','"Ordinal_test"', 'ordinal_predict_out', 'response');
+SELECT test_pmml_output('"Ordinal_test"', 'ordinal_logit', 'ordinal_predict_out', 'id', 'category', 'predicted_cat_pmml_prediction');
+
+
+-- probit
 drop table if exists ordinal_probit, ordinal_probit_summary;
 SELECT ordinal(
-    '"Multinom_test"',
+    '"Ordinal_test"',
     'ordinal_probit',
     'cat',
     'ARRAY["FEAT1", feat2]',
-    '0<1<2',
+    '2<0<1',
     'probit'
     );
+DROP TABLE IF EXISTS ordinal_predict_out; SELECT ordinal_predict('ordinal_probit','"Ordinal_test"', 'ordinal_predict_out', 'probability');
+SELECT test_pmml_output('"Ordinal_test"', 'ordinal_probit', 'ordinal_predict_out', 'id', '0', 'probability_0');
+SELECT test_pmml_output('"Ordinal_test"', 'ordinal_probit', 'ordinal_predict_out', 'id', '1', 'probability_1');
+SELECT test_pmml_output('"Ordinal_test"', 'ordinal_probit', 'ordinal_predict_out', 'id', '2', 'probability_2');
 
--- training funcion for grouping case
+DROP TABLE IF EXISTS ordinal_predict_out; SELECT ordinal_predict('ordinal_probit','"Ordinal_test"', 'ordinal_predict_out', 'response');
+SELECT test_pmml_output('"Ordinal_test"', 'ordinal_probit', 'ordinal_predict_out', 'id', 'category', 'predicted_cat_pmml_prediction');
+
+
+--------- grouping ----------------
 drop table if exists ordinal_logit_grp, ordinal_logit_grp_summary;
 SELECT ordinal(
-    '"Multinom_test"',
+    '"Ordinal_test"',
     'ordinal_logit_grp',
     'cat',
     'ARRAY["FEAT1", feat2]',
@@ -242,10 +266,12 @@ SELECT ordinal(
     'logit',
     'g'
     );
+DROP TABLE IF EXISTS ordinal_predict_out; SELECT ordinal_predict('ordinal_logit_grp','"Ordinal_test"', 'ordinal_predict_out', 'probability',FALSE);
+DROP TABLE IF EXISTS ordinal_predict_grp_out; CREATE TABLE ordinal_predict_grp_out as (SELECT a.id, a.g, b."0", b."1", b."2", a."FEAT1", a.feat2 FROM "Ordinal_test" AS a LEFT JOIN ordinal_predict_out AS b on a.id =b.id);
+SELECT test_pmml_output('"Ordinal_test"', 'ordinal_logit_grp', 'ordinal_predict_grp_out', 'id', '0', 'probability_0','g');
 
+DROP TABLE IF EXISTS ordinal_predict_out; SELECT ordinal_predict('ordinal_logit_grp','"Ordinal_test"', 'ordinal_predict_out', 'response',FALSE);
+DROP TABLE IF EXISTS ordinal_predict_grp_out; CREATE TABLE ordinal_predict_grp_out as (SELECT a.id, a.g, b.category FROM "Ordinal_test" AS a LEFT JOIN ordinal_predict_out AS b on a.id =b.id);
+SELECT test_pmml_output('"Ordinal_test"', 'ordinal_logit_grp', 'ordinal_predict_grp_out', 'id', 'category', 'predicted_cat_pmml_prediction', 'g');
 
--- pmml
-SELECT pmml('ordinal_logit');
-SELECT pmml('ordinal_probit');
-SELECT pmml('ordinal_logit_grp');
 
