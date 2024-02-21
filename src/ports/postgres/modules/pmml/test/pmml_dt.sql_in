@@ -1,3 +1,10 @@
+\i m4_regexp(MADLIB_LIBRARY_PATH,
+             `\(.*\)/lib',
+              `\1/../modules/pmml/test/pmml.setup.sql_in'
+)
+
+m4_changequote(`<!'', `!>'')
+
 DROP TABLE IF EXISTS dt_golf;
 CREATE TABLE dt_golf (
     id integer NOT NULL,
@@ -24,12 +31,49 @@ INSERT INTO dt_golf (id,"OUTLOOK",temperature,humidity,windy,class) VALUES
 (13, 'overcast', 81, 75, 'false', 'Play'),
 (14, 'rain', 71, 80, 'true', 'Don''t Play');
 
+-- regression, no grouping
+DROP TABLE IF EXISTS train_output, train_output_summary;
+SELECT tree_train('dt_golf'::text,         -- source table
+                         'train_output'::text,    -- output model table
+                         'id'::text,              -- id column
+                         'temperature'::text,           -- response
+                         'humidity, windy'::text,   -- features
+                         NULL::text,        -- exclude columns
+                         'gini'::text,      -- split criterion
+                         NULL::text,     -- no grouping
+                         NULL::text,        -- no weights
+                         10::integer,       -- max depth
+                         3::integer,        -- min split
+                         1::integer,        -- min bucket
+                         3::integer,        -- number of bins per continuous variable
+                         'cp=0.01'          -- cost-complexity pruning parameter
+                         );
+
+SELECT _print_decision_tree(tree) from train_output;
+-- TODO: Enable these lines after the DT tree_display bug is fixed
+-- SELECT tree_display('train_output', False);
+
+DROP TABLE IF EXISTS tree_predict_output;
+SELECT tree_predict('train_output',
+                   'dt_golf',
+                   'tree_predict_output',
+                   'response');
+SELECT test_pmml_output('dt_golf', 'train_output', 'tree_predict_output','id', 'estimated_temperature','predicted_temperature_pmml_prediction');
+
+DROP TABLE IF EXISTS tree_predict_output;
+SELECT tree_predict('train_output',
+                   'dt_golf',
+                   'tree_predict_output',
+                   'prob');
+SELECT test_pmml_output('dt_golf', 'train_output', 'tree_predict_output','id', 'prob_temperature','predicted_temperature_pmml_prediction');
+
+
 -- regression, grouping
 DROP TABLE IF EXISTS train_output, train_output_summary;
 SELECT tree_train('dt_golf'::text,         -- source table
                          'train_output'::text,    -- output model table
                          'id'::text,              -- id column
-                         'temperature::double precision'::text,           -- response
+                         'temperature'::text,           -- response
                          'humidity, windy'::text,   -- features
                          NULL::text,        -- exclude columns
                          'gini'::text,      -- split criterion
@@ -46,10 +90,22 @@ SELECT _print_decision_tree(tree) from train_output;
 -- TODO: Enable these lines after the DT tree_display bug is fixed
 -- SELECT tree_display('train_output', False);
 
-SELECT pmml('train_output');
--------------------------------------------------------------------------
+DROP TABLE IF EXISTS tree_predict_output;
+SELECT tree_predict('train_output',
+                   'dt_golf',
+                   'tree_predict_output',
+                   'response');
+SELECT test_pmml_output('dt_golf', 'train_output', 'tree_predict_output','id', 'estimated_temperature','predicted_temperature_pmml_prediction');
 
--- classification, grouping
+DROP TABLE IF EXISTS tree_predict_output;
+SELECT tree_predict('train_output',
+                   'dt_golf',
+                   'tree_predict_output',
+                   'prob');
+SELECT test_pmml_output('dt_golf', 'train_output', 'tree_predict_output','id', 'prob_temperature','predicted_temperature_pmml_prediction');
+
+-------------------------------------------------------------------------
+-- classification, no grouping
 DROP TABLE IF EXISTS train_output, train_output_summary;
 SELECT tree_train('dt_golf'::text,         -- source table
                          'train_output'::text,    -- output model table
@@ -58,7 +114,7 @@ SELECT tree_train('dt_golf'::text,         -- source table
                          'humidity, windy'::text,   -- features
                          NULL::text,        -- exclude columns
                          'gini'::text,      -- split criterion
-                         'class'::text,     -- no grouping
+                         NULL::text,     -- no grouping
                          NULL::text,        -- no weights
                          10::integer,       -- max depth
                          3::integer,        -- min split
@@ -70,6 +126,59 @@ SELECT tree_train('dt_golf'::text,         -- source table
 SELECT _print_decision_tree(tree) from train_output;
 -- SELECT tree_display('train_output', False);
 
-SELECT pmml('train_output');
+DROP TABLE IF EXISTS tree_predict_output;
+SELECT tree_predict('train_output',
+                   'dt_golf',
+                   'tree_predict_output',
+                   'response');
+SELECT test_pmml_output('dt_golf', 'train_output', 'tree_predict_output','id', 'estimated_OUTLOOK','predicted_OUTLOOK_pmml_prediction');
+
+DROP TABLE IF EXISTS tree_predict_output;
+SELECT tree_predict('train_output',
+                   'dt_golf',
+                   'tree_predict_output',
+                   'prob');
+SELECT test_pmml_output('dt_golf', 'train_output', 'tree_predict_output','id', 'estimated_prob_overcast','probability_overcast');
+SELECT test_pmml_output('dt_golf', 'train_output', 'tree_predict_output','id', 'estimated_prob_rain','probability_rain');
+SELECT test_pmml_output('dt_golf', 'train_output', 'tree_predict_output','id', 'estimated_prob_sunny','probability_sunny');
+
+
+-- classification, grouping
+DROP TABLE IF EXISTS train_output, train_output_summary;
+SELECT tree_train('dt_golf'::text,         -- source table
+                         'train_output'::text,    -- output model table
+                         'id'::text,              -- id column
+                         '"OUTLOOK"'::text,           -- response
+                         'humidity, windy'::text,   -- features
+                         NULL::text,        -- exclude columns
+                         'gini'::text,      -- split criterion
+                         'class'::text,     -- grouping
+                         NULL::text,        -- no weights
+                         10::integer,       -- max depth
+                         3::integer,        -- min split
+                         1::integer,        -- min bucket
+                         3::integer,        -- number of bins per continuous variable
+                         'cp=0.01'          -- cost-complexity pruning parameter
+                         );
+
+SELECT _print_decision_tree(tree) from train_output;
+-- SELECT tree_display('train_output', False);
+
+DROP TABLE IF EXISTS tree_predict_output;
+SELECT tree_predict('train_output',
+                   'dt_golf',
+                   'tree_predict_output',
+                   'response');
+SELECT test_pmml_output('dt_golf', 'train_output', 'tree_predict_output','id', 'estimated_OUTLOOK','predicted_OUTLOOK_pmml_prediction');
+
+DROP TABLE IF EXISTS tree_predict_output;
+SELECT tree_predict('train_output',
+                   'dt_golf',
+                   'tree_predict_output',
+                   'prob');
+SELECT test_pmml_output('dt_golf', 'train_output', 'tree_predict_output','id', 'estimated_prob_overcast','probability_overcast');
+SELECT test_pmml_output('dt_golf', 'train_output', 'tree_predict_output','id', 'estimated_prob_rain','probability_rain');
+SELECT test_pmml_output('dt_golf', 'train_output', 'tree_predict_output','id', 'estimated_prob_sunny','probability_sunny');
+
 -------------------------------------------------------------------------
 
