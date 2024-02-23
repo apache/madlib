@@ -1,0 +1,84 @@
+/* ----------------------------------------------------------------------- *//**
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ *
+ *//* ----------------------------------------------------------------------- */
+
+ \i m4_regexp(MADLIB_LIBRARY_PATH, `\(.*\)/lib',
+              `\1/../modules/pmml/test/pmml.setup.sql_in'
+)
+
+m4_changequote(`<!'', `!>'')
+
+------------------ This file will test scenarios when the intercept might still be treated as a predictor in the pmml --------------------
+
+-------------- intercept expression "1" not being the first value in the array  -------------------
+
+-- logistic
+DROP TABLE IF EXISTS logregr_model, logregr_model_summary;
+SELECT logregr_train(
+    '"Patients"',
+    'logregr_model',
+    '"Second_attack"',
+    'ARRAY["Treatment", 1, trait_anxiety]',
+    NULL,
+    20,
+    'irls'
+);
+CREATE TABLE patients_with_1 as SELECT 1 as "1", * from "Patients";
+
+DROP TABLE IF EXISTS logregr_predict_output; CREATE TABLE logregr_predict_output as SELECT id, logregr_predict(coef, ARRAY["Treatment", 1, trait_anxiety])
+FROM logregr_model, "Patients";
+SELECT test_pmml_output('patients_with_1', 'logregr_model', 'logregr_predict_output', 'id', 'logregr_predict', 'predicted_Second_attack_pmml_prediction');
+
+DROP TABLE IF EXISTS logregr_predict_output; CREATE TABLE logregr_predict_output as SELECT id, logregr_predict_prob(coef, ARRAY["Treatment", 1, trait_anxiety])
+FROM logregr_model, "Patients";
+SELECT test_pmml_output('patients_with_1', 'logregr_model', 'logregr_predict_output', 'id', 'logregr_predict_prob', 'probability_true');
+
+DROP TABLE IF EXISTS logregr_model, logregr_model_summary;
+SELECT logregr_train(
+    '"Patients"',
+    'logregr_model',
+    '"Second_attack"',
+    'ARRAY["Treatment", trait_anxiety, 1]',
+    NULL,
+    20,
+    'irls'
+);
+
+DROP TABLE IF EXISTS logregr_predict_output; CREATE TABLE logregr_predict_output as SELECT id, logregr_predict(coef, ARRAY["Treatment", trait_anxiety, 1])
+FROM logregr_model, "Patients";
+SELECT test_pmml_output('patients_with_1', 'logregr_model', 'logregr_predict_output', 'id', 'logregr_predict', 'predicted_Second_attack_pmml_prediction');
+
+DROP TABLE IF EXISTS logregr_predict_output; CREATE TABLE logregr_predict_output as SELECT id, logregr_predict_prob(coef, ARRAY["Treatment", trait_anxiety, 1])
+FROM logregr_model, "Patients";
+SELECT test_pmml_output('patients_with_1', 'logregr_model', 'logregr_predict_output', 'id', 'logregr_predict_prob', 'probability_true');
+
+---- glm -----
+DROP TABLE IF EXISTS glm_model, glm_model_summary;
+SELECT glm(
+    'abalone',
+    'glm_model',
+    'rings',
+    'ARRAY[1.0, length, diameter, height, whole, shucked, viscera, shell]',
+    'family=gaussian, link=identity', NULL, 'max_iter=1000, tolerance=1e-16'
+);
+CREATE TABLE abalone_with_1 AS SELECT 1, * FROM abalone;
+DROP TABLE IF EXISTS glm_predict_out; CREATE TABLE glm_predict_out as SELECT id, glm_predict(coef, ARRAY[1, length, diameter, height, whole, shucked, viscera, shell], 'identity')
+FROM glm_model, abalone_with_1;
+SELECT test_pmml_output('abalone_with_1', 'glm_model', 'glm_predict_out', 'id', 'glm_predict', 'predicted_rings_pmml_prediction');
