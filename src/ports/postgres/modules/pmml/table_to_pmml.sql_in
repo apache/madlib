@@ -111,31 +111,29 @@ SELECT madlib.pmml('patients_logregr');
 Result:
 <pre class="result">
 <?xml version="1.0" standalone="yes"?>
-<PMML version="4.1" xmlns="http://www.dmg.org/pmml-v4-1.html">
+<PMML version="4.1" xmlns="http://www.dmg.org/PMML-4_1">
   <Header copyright="redacted for this example">
     <Extension extender="MADlib" name="user" value="gpadmin"/>
-    <Application name="MADlib" version="1.7"/>
-    <Timestamp>
-      2014-06-13 17:30:14.527899 PDT
-    </Timestamp>
+    <Application name="MADlib" version="2.1.0"/>
+    <Timestamp>2024-03-01 16:32:49.798404 PDT</Timestamp>
   </Header>
-  <DataDictionary numberOfFields="4">
-    <DataField dataType="boolean" name="second_attack_pmml_prediction" optype="categorical"/>
-    <DataField dataType="double" name="1" optype="continuous"/>
-    <DataField dataType="double" name="treatment" optype="continuous"/>
-    <DataField dataType="double" name="trait_anxiety" optype="continuous"/>
+  <DataDictionary numberOfFields="3">
+    <DataField name="second_attack_pmml_prediction" optype="categorical" dataType="boolean">
+      <Value value="True"/>
+      <Value value="False"/>
+    </DataField>
+    <DataField name="treatment" optype="continuous" dataType="double"/>
+    <DataField name="trait_anxiety" optype="continuous" dataType="double"/>
   </DataDictionary>
   <RegressionModel functionName="classification" normalizationMethod="softmax">
     <MiningSchema>
       <MiningField name="second_attack_pmml_prediction" usageType="predicted"/>
-      <MiningField name="1"/>
       <MiningField name="treatment"/>
       <MiningField name="trait_anxiety"/>
     </MiningSchema>
-    <RegressionTable intercept="0.0" targetCategory="True">
-      <NumericPredictor coefficient="-6.36346994178" name="1"/>
-      <NumericPredictor coefficient="-1.02410605239" name="treatment"/>
-      <NumericPredictor coefficient="0.119044916669" name="trait_anxiety"/>
+    <RegressionTable intercept="-6.363469941781809" targetCategory="True">
+      <NumericPredictor name="treatment" coefficient="-1.0241060523932681"/>
+      <NumericPredictor name="trait_anxiety" coefficient="0.11904491666860519"/>
     </RegressionTable>
     <RegressionTable intercept="0.0" targetCategory="False"/>
   </RegressionModel>
@@ -146,10 +144,25 @@ Alternatively, the above can also be invoked as below if custom names are needed
 for fields in the Data Dictionary:
 <pre class="example">
 SELECT madlib.pmml('patients_logregr',
-                   'out_attack~1+in_trait_anxiety+in_treatment');
+                   'out_attack~in_trait_anxiety+in_treatment');
 </pre>
 
-\b Note: If the second argument of 'pmml' function is not specified, a default suffix "_pmml_prediction" will be automatically append to the column name to be predicted. This can help avoid name conflicts.
+\b Note: 1. If the second argument of 'pmml' function is not specified, a default suffix "_pmml_prediction" will be automatically append to the column name to be predicted. This can help avoid name conflicts.
+
+\b Note: 2. While training regression models, it is possible to use a non array expression. Consider this example:
+<pre>
+-- Create a table where a column named 'x' is an array of the independent variables
+CREATE TABLE patients2 AS SELECT second_attack AS y, ARRAY[1, treatment, trait_anxiety] AS x from patients;
+
+-- Now use the columns 'x' and 'y' created in the previous step
+SELECT madlib.logregr_train(
+        'patients2',
+        'patients_logregr2',
+        'y',
+        'x');
+</pre>
+In such scenarios, the pmml code always assumes that the intercept variable "1," was already included in the independent variable
+expression. If it is not included, the exported PMML would be incorrect.
 
 The following example demonstrates grouping columns in the model table for the same dataset as the previous example.
 
@@ -165,66 +178,61 @@ SELECT madlib.logregr_train(
 -# View the PMML export for this model.
 <pre class="example">
 SELECT madlib.pmml('patients_logregr_grouping',
-                   ARRAY['second_attack','1','in_trait_anxiety']);
+                   ARRAY['second_attack','in_trait_anxiety']);
 </pre>
 Result:
 <pre class="result">
 <?xml version="1.0" standalone="yes"?>
- <PMML version="4.1" xmlns="http://www.dmg.org/pmml-v4-1.html">
-   <Header copyright="redacted for this example">
-     <Extension extender="MADlib" name="user" value="gpadmin"/>
-     <Application name="MADlib" version="1.7"/>
-     <Timestamp>
-       2014-06-13 17:37:55.786307 PDT
-     </Timestamp>
-   </Header>
-   <DataDictionary numberOfFields="4">
-     <DataField dataType="boolean" name="second_attack" optype="categorical"/>
-     <DataField dataType="double" name="1" optype="continuous"/>
-     <DataField dataType="double" name="in_trait_anxiety" optype="continuous"/>
-     <DataField dataType="string" name="treatment" optype="categorical"/>
-   </DataDictionary>
-   <MiningModel functionName="classification">
-     <MiningSchema>
-       <MiningField name="second_attack" usageType="predicted"/>
-       <MiningField name="1"/>
-       <MiningField name="in_trait_anxiety"/>
-       <MiningField name="treatment"/>
-     </MiningSchema>
-     <Segmentation multipleModelMethod="selectFirst">
-       <Segment>
-         <SimplePredicate field="treatment" operator="equal" value="1"/>
-         <RegressionModel functionName="classification" normalizationMethod="softmax">
-           <MiningSchema>
-             <MiningField name="second_attack" usageType="predicted"/>
-             <MiningField name="1"/>
-             <MiningField name="in_trait_anxiety"/>
-           </MiningSchema>
-           <RegressionTable intercept="0.0" targetCategory="True">
-             <NumericPredictor coefficient="-8.02068430057" name="1"/>
-             <NumericPredictor coefficient="0.130090428526" name="in_trait_anxiety"/>
-           </RegressionTable>
-           <RegressionTable intercept="0.0" targetCategory="False"/>
-         </RegressionModel>
-       </Segment>
-       <Segment>
-         <SimplePredicate field="treatment" operator="equal" value="0"/>
-         <RegressionModel functionName="classification" normalizationMethod="softmax">
-           <MiningSchema>
-             <MiningField name="second_attack" usageType="predicted"/>
-             <MiningField name="1"/>
-             <MiningField name="in_trait_anxiety"/>
-           </MiningSchema>
-           <RegressionTable intercept="0.0" targetCategory="True">
-             <NumericPredictor coefficient="-5.75043192191" name="1"/>
-             <NumericPredictor coefficient="0.108282446319" name="in_trait_anxiety"/>
-           </RegressionTable>
-           <RegressionTable intercept="0.0" targetCategory="False"/>
-         </RegressionModel>
-       </Segment>
-     </Segmentation>
-   </MiningModel>
- </PMML>
+<PMML version="4.1" xmlns="http://www.dmg.org/PMML-4_1">
+  <Header copyright="redacted for this example">
+    <Extension extender="MADlib" name="user" value="gpadmin"/>
+    <Application name="MADlib" version="2.1.0"/>
+    <Timestamp>2024-03-01 16:33:49.804054 PDT</Timestamp>
+  </Header>
+  <DataDictionary numberOfFields="3">
+    <DataField name="second_attack" optype="categorical" dataType="boolean">
+      <Value value="True"/>
+      <Value value="False"/>
+    </DataField>
+    <DataField name="in_trait_anxiety" optype="continuous" dataType="double"/>
+    <DataField name="treatment" optype="categorical" dataType="string"/>
+  </DataDictionary>
+  <MiningModel functionName="classification">
+    <MiningSchema>
+      <MiningField name="second_attack" usageType="predicted"/>
+      <MiningField name="in_trait_anxiety"/>
+      <MiningField name="treatment"/>
+    </MiningSchema>
+    <Segmentation multipleModelMethod="selectFirst">
+      <Segment>
+        <SimplePredicate field="treatment" operator="equal" value="1"/>
+        <RegressionModel functionName="classification" normalizationMethod="softmax">
+          <MiningSchema>
+            <MiningField name="second_attack" usageType="predicted"/>
+            <MiningField name="in_trait_anxiety"/>
+          </MiningSchema>
+          <RegressionTable intercept="-8.020684300569357" targetCategory="True">
+            <NumericPredictor name="in_trait_anxiety" coefficient="0.13009042852646274"/>
+          </RegressionTable>
+          <RegressionTable intercept="0.0" targetCategory="False"/>
+        </RegressionModel>
+      </Segment>
+      <Segment>
+        <SimplePredicate field="treatment" operator="equal" value="0"/>
+        <RegressionModel functionName="classification" normalizationMethod="softmax">
+          <MiningSchema>
+            <MiningField name="second_attack" usageType="predicted"/>
+            <MiningField name="in_trait_anxiety"/>
+          </MiningSchema>
+          <RegressionTable intercept="-5.750431921908941" targetCategory="True">
+            <NumericPredictor name="in_trait_anxiety" coefficient="0.10828244631865602"/>
+          </RegressionTable>
+          <RegressionTable intercept="0.0" targetCategory="False"/>
+        </RegressionModel>
+      </Segment>
+    </Segmentation>
+  </MiningModel>
+</PMML>
 </pre>
 
 \b Note: MADlib currently supports PMML export for Linear Regression,
