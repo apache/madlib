@@ -25,6 +25,7 @@
 // We do not write #include "dbconnector.hpp" here because we want to rely on
 // the search paths, which might point to a port-specific dbconnector.hpp
 #include <dbconnector/dbconnector.hpp>
+#include <new>
 
 #if _GLIBCXX_USE_CXX11_ABI
 #define THROW_BAD_ALLOC
@@ -113,3 +114,17 @@ void
 operator delete[](void *ptr, const std::nothrow_t&) NOEXCEPT {
     madlib::defaultAllocator().free<madlib::dbal::FunctionContext>(ptr);
 }
+
+#ifdef __cpp_sized_deallocation
+void
+operator delete(void *ptr, std::size_t sz) NOEXCEPT {
+    (void)sz;
+    madlib::defaultAllocator().free<madlib::dbal::FunctionContext>(ptr);
+}
+
+void
+operator delete[](void *ptr, std::size_t sz) NOEXCEPT {
+    (void)sz;
+    madlib::defaultAllocator().free<madlib::dbal::FunctionContext>(ptr);
+}
+#endif
