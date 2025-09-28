@@ -87,7 +87,7 @@ compute_metric(PGFunction inMetricFn, MemoryContext inMemContext, Datum inVec1,
      * in execUtils.c
      */
 
-#if GP_VERSION_NUM >= 70000
+#if defined(IS_CLOUDBERRY) || GP_VERSION_NUM >= 70000
     if(inMemContext->mem_allocated > 50000)
 #else
     if(inMemContext->allBytesAlloc - inMemContext->allBytesFreed > 50000)

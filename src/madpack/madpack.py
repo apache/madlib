@@ -64,7 +64,7 @@ portid_list = []
 for port in ports:
     portid_list.append(port)
 
-SUPPORTED_PORTS = ('postgres', 'greenplum')
+SUPPORTED_PORTS = ('postgres', 'greenplum', 'cloudberry')
 
 # Global variables
 portid = None       # Target port ID (eg: pg90, gp40)
@@ -189,7 +189,8 @@ def _run_m4_and_append(schema, maddir_mod_py, module, sqlfile,
                   '-I' + maddir_madpack,
                   sqlfile]
         if ( (portid == 'postgres') &
-             (is_rev_gte(get_rev_num(dbver), get_rev_num('14.0'))) ):
+             (is_rev_gte(get_rev_num(dbver), get_rev_num('14.0'))) or
+             (portid == 'cloudberry') ):
             m4args = ['m4',
                   '-P',
                   '-DMADLIB_SCHEMA=' + schema,
@@ -370,7 +371,7 @@ def _check_db_port(portid):
         if portid == 'postgres':
             if row[0]['version'].lower().find('greenplum') < 0:
                 return True
-        elif portid == 'greenplum':
+        elif portid == 'greenplum' or portid == 'cloudberry':
             return True
     return False
 # ------------------------------------------------------------------------------
@@ -1240,6 +1241,7 @@ def create_install_madlib_sqlfile(args, madpack_cmd):
 def get_madlib_function_drop_str(schema):
 
     if ((portid == 'greenplum' and is_rev_gte(get_rev_num(dbver), get_rev_num('7.0'))) or
+        (portid == 'cloudberry') or
         (portid == 'postgres')):
         case_str = """
         CASE p.prokind
@@ -1344,14 +1346,14 @@ def set_dynamic_library_path_in_database(dbver_split, madlib_library_path):
                 (portid == 'postgres' and is_rev_gte(dbver_split, get_rev_num('13.0')))):
                 libdir = libdir.decode()
 
-            libdir = libdir.strip()+'/postgresql'
+            libdir = str(libdir.strip(), encoding='utf-8')+'/postgresql'
             paths.append(libdir)
 
         paths.append(madlib_library_path)
         dynamic_library_path = ':'.join(paths)
 
-        if portid == 'greenplum':
-            if is_rev_gte(dbver_split, get_rev_num('6.0')):
+        if portid == 'greenplum' or portid == 'cloudberry':
+            if is_rev_gte(dbver_split, get_rev_num('6.0')) or portid == 'cloudberry':
                 ret = os.system('gpconfig -c dynamic_library_path -v \'{0}\''.format(dynamic_library_path))
             else:
                 ret = os.system('gpconfig -c dynamic_library_path -v \'\\{0}\''.format(dynamic_library_path))
@@ -1482,6 +1484,9 @@ def main(argv):
                 else:
                     # only need the first two digits for <= 4.3.4
                     dbver = '.'.join(map(str, dbver_split[:2]))
+            elif portid == 'cloudberry':
+                # Assume Cloudberry will stick to semantic versioning
+                dbver = str(dbver_split[0])
             elif portid == 'postgres':
                 if is_rev_gte(dbver_split, get_rev_num('10.0')):
                     # Postgres starting 10.0 uses semantic versioning. Hence,

@@ -172,6 +172,7 @@ Allocator::reallocate(void *inPtr, const size_t inSize) const {
  *
  * @see See also the notes for PGAllocator::allocate(const size_t) and
  *      PGAllocator::allocate(const size_t, const std::nothrow_t&)
+ *      CBDB_FIX: see Allocator::makeAligned
  */
 template <dbal::MemoryContext MC>
 inline
@@ -186,7 +187,8 @@ Allocator::free(void *inPtr) const {
      */
     HOLD_INTERRUPTS();
     PG_TRY(); {
-        pfree(unaligned(inPtr));
+        void* ptr = unaligned(inPtr);
+        ptr ? pfree(ptr) : std::free(inPtr);
     } PG_CATCH(); {
         FlushErrorState();
     } PG_END_TRY();
@@ -214,11 +216,11 @@ Allocator::internalPalloc(size_t inSize) const {
 #if MAXIMUM_ALIGNOF >= 16
     return (ZM == dbal::DoZero) ? palloc0(inSize) : palloc(inSize);
 #else
-    if (inSize > std::numeric_limits<size_t>::max() - 16)
+    if (inSize > std::numeric_limits<size_t>::max() - 32)
         return NULL;
 
     /* Precondition: inSize <= std::numeric_limits<size_t>::max() - 16 */
-    const size_t size = inSize + 16;
+    const size_t size = inSize + 32;
     void *raw = (ZM == dbal::DoZero) ? palloc0(size) : palloc(size);
     return makeAligned(raw);
 #endif
@@ -246,14 +248,18 @@ Allocator::internalRePalloc(void *inPtr, size_t inSize) const {
 #if MAXIMUM_ALIGNOF >= 16
     return repalloc(inPtr, inSize);
 #else
-    if (inSize > std::numeric_limits<size_t>::max() - 16) {
-        pfree(unaligned(inPtr));
+    void* ptr = unaligned(inPtr);
+    if (!ptr)
+        return std::realloc(inPtr, inSize);
+
+    if (inSize > std::numeric_limits<size_t>::max() - 32) {
+        pfree(ptr);
         return NULL;
     }
 
     /* Precondition: inSize <= std::numeric_limits<size_t>::max() - 16 */
-    const size_t size = inSize + 16;
-    void *raw = repalloc(unaligned(inPtr), size);
+    const size_t size = inSize + 32;
+    void *raw = repalloc(ptr, size);
 
     if (ZM == dbal::DoZero) {
         std::fill(
@@ -269,6 +275,9 @@ Allocator::internalRePalloc(void *inPtr, size_t inSize) const {
  * @internal
  * @brief Return next 16-byte boundary after inPtr and store inPtr in word
  *     immediately before that
+ *     CBDB_FIX: A weird bug causes std::malloc to be called for allocation,
+ *     but custom free for destruction. Hacky workacound this by prepending
+ *     each chunk with a magic number 0xCBDBCBDB to indicate custom allocation.
  */
 inline
 void *
@@ -282,8 +291,9 @@ Allocator::makeAligned(void *inPtr) const {
      * to us an can be written to safely.
      */
     void *aligned = reinterpret_cast<void*>(
-        (reinterpret_cast<uintptr_t>(inPtr) & ~(uintptr_t(15))) + 16);
+        (reinterpret_cast<uintptr_t>(inPtr) & ~(uintptr_t(15))) + 32);
     *(reinterpret_cast<void**>(aligned) - 1) = inPtr;
+    *(reinterpret_cast<size_t*>(aligned) - 2) = 0xCBDBCBDB;
     return aligned;
 }
 
@@ -291,6 +301,7 @@ Allocator::makeAligned(void *inPtr) const {
  * @internal
  * @brief Return the address of memory block that corresponds to the given
  *     16-byte aligned address
+ * @see CBDB_FIX: see Allocator::makeAligned
  *
  * Unless <tt>MAXIMUM_ALIGNOF >= 16</tt>, we free the block of memory pointed to
  * by the word immediately in front of the memory pointed to by \c inPtr.
@@ -301,6 +312,11 @@ Allocator::unaligned(void *inPtr) const {
 #if MAXIMUM_ALIGNOF >= 16
     return inPtr;
 #else
+    size_t magic = *(reinterpret_cast<size_t*>(inPtr) - 2);
+    if (magic != 0xCBDBCBDB) {
+        elog(WARNING, "non-custom-allocator allocation detected");
+        return nullptr;
+    }
     return (*(reinterpret_cast<void**>(inPtr) - 1));
 #endif
 }
