@@ -190,7 +190,7 @@ def get_dbver(con_args, portid):
             # 4.3.5+ from versions < 4.3.5
             match = re.search("Greenplum[a-zA-Z\s]*(\d+\.\d+\.\d+)", versionStr)
         elif portid == 'cloudberry':
-            match = re.search("Cloudberry[a-zA-Z\s]*(\d+\.\d+\.\d+)", versionStr)
+            match = re.search("Apache Cloudberry[a-zA-Z\s]*(\d+\.\d+\.\d+)", versionStr)
         return None if match is None else match.group(1)
     except Exception:
         error_(this, "Failed reading database version", True)

@@ -1487,7 +1487,7 @@ def main(argv):
                     # only need the first two digits for <= 4.3.4
                     dbver = '.'.join(map(str, dbver_split[:2]))
             elif portid == 'cloudberry':
-                # Assume Cloudberry will stick to semantic versioning
+                # Assume Apache Cloudberry will stick to semantic versioning
                 dbver = str(dbver_split[0])
             elif portid == 'postgres':
                 if is_rev_gte(dbver_split, get_rev_num('10.0')):

@@ -42,5 +42,5 @@ if(${PKG_NAME}_FOUND)
     )
     set(${PKG_NAME}_ADDITIONAL_INCLUDE_DIRS
         "${${PKG_NAME}_ADDITIONAL_INCLUDE_DIRS}/internal")
-    message("-- Detected Cloudberry")
+    message("-- Detected Apache Cloudberry")
 endif(${PKG_NAME}_FOUND)
