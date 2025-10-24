@@ -21,10 +21,6 @@ function(define_cloudberry_features IN_VERSION OUT_FEATURES)
     list(APPEND ${OUT_FEATURES} __HAS_ORDERED_AGGREGATES__)
     list(APPEND ${OUT_FEATURES} __HAS_FUNCTION_PROPERTIES__)
     list(APPEND ${OUT_FEATURES} __HAS_BOOL_TO_TEXT_CAST__)
-    if(CLOUDBERRY_SERVERLESS)
-        list(APPEND ${OUT_FEATURES} __NO_INDEX__)
-        list(APPEND ${OUT_FEATURES} "__POSTGRESQL__") # Hashdata Cloud acts as __POSTGRESQL__ *and* __CLOUDBERRY__
-    endif(CLOUDBERRY_SERVERLESS)
 
     # Pass values to caller
     set(${OUT_FEATURES} "${${OUT_FEATURES}}" PARENT_SCOPE)
