@@ -2,6 +2,10 @@
 # MADlib CMake Build Script
 # ------------------------------------------------------------------------------
 
+# FindPostgreSQL.cmake needs at least 2.8.3. We are on the safe side and require
+# the minimum version tested, which is 2.8.4.
+cmake_minimum_required(VERSION 2.8.4 FATAL_ERROR)
+
 # -- Initializations that need to run even before project()
 
 # For Solaris, we want to use the Sun compiler
@@ -12,10 +16,6 @@ set(CMAKE_GENERATOR_CXX sunCC g++)
 # -- CMake setup ---------------------------------------------------------------
 
 project(MADlib)
-
-# FindPostgreSQL.cmake needs at least 2.8.3. We are on the safe side and require
-# the minimum version tested, which is 2.8.4.
-cmake_minimum_required(VERSION 2.8.4 FATAL_ERROR)
 
 include(ExternalProject)
 include(CheckCXXCompilerFlag)
