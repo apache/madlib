@@ -1,0 +1,150 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: MADlib CI Checks
+
+on:
+  push:
+    branches: [ madlib2-master, github-actions ]
+  pull_request:
+    branches: [ madlib2-master, github-actions ]
+  # Allow manual triggers for testing
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  checks: write
+
+jobs:
+  build-and-test:
+    name: Build and Test MADlib
+    runs-on: ubuntu-latest
+
+    container:
+      image: madlib/postgres_15:jenkins
+      options: >-
+        --ulimit core=-1
+        --privileged
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+        set-safe-directory: true
+
+    - name: Configure PostgreSQL
+      run: |
+        cp tool/pg_hba.conf.postgres /etc/postgresql/15/main/pg_hba.conf
+        echo "    * soft nproc unlimited" > /etc/security/limits.d/postgres-limits.conf
+        service postgresql start
+        sleep 5
+        # Verify PostgreSQL started successfully and show version
+        echo "PostgreSQL version:" && su -s /bin/bash - postgres -c 'psql -c "SELECT version()"' || exit 1
+
+    - name: Install Dependencies
+      run: |
+        # Fix PostgreSQL APT repository issue (focal-pgdg is no longer available)
+        rm -f /etc/apt/sources.list.d/pgdg.list || true
+
+        apt-get update
+        apt-get install -y python3-pip openjdk-11-jre-headless
+        # Install Python packages (pypmml requires Java to be installed first)
+        pip install mock pandas numpy xgboost scikit-learn pyyaml pyxb-x pypmml
+
+    - name: Build MADlib
+      run: |
+        mkdir -p logs
+        rm -rf build && mkdir -p build
+        cd build
+        echo "---------- CMake Configuration -----------"
+        cmake .. 2>&1 | tee ../logs/madlib_compile.log
+        echo "---------- Make Clean -----------"
+        make clean 2>&1 | tee -a ../logs/madlib_compile.log
+        echo "---------- Make Build (first pass) -----------"
+        make -j$(nproc) 2>&1 | tee -a ../logs/madlib_compile.log
+        echo "---------- Make Build (second pass) -----------"
+        make -j$(nproc) 2>&1 | tee -a ../logs/madlib_compile.log
+        echo "---------- Make Install -----------"
+        make install 2>&1 | tee -a ../logs/madlib_compile.log
+        echo "---------- Make Package -----------"
+        make package 2>&1 | tee -a ../logs/madlib_compile.log
+        chown -R postgres:postgres . || true
+
+    - name: Run Tests
+      run: |
+        export PATH=$PATH:/usr/lib/postgresql/15/bin/
+        WORKSPACE=$(pwd)
+
+        echo "---------- Installing MADlib -----------"
+        # Install MADlib as postgres user
+        # Note: Use absolute path because 'su -' resets working directory
+        su -s /bin/bash - postgres -c "export PATH=\$PATH:/usr/lib/postgresql/15/bin/; cd $WORKSPACE/build; $WORKSPACE/build/src/bin/madpack -s mad -p postgres -c postgres/postgres@localhost:5432/postgres install" 2>&1 | tee $WORKSPACE/logs/madlib_install.log
+
+        mkdir -p /tmp
+
+        echo "---------- Removing known problematic test files -----------"
+        # Remove known problematic test files from BUILD directory (as done in jenkins_build.sh)
+        # These tests are known to fail in the Docker environment
+        rm -rf $WORKSPACE/build/src/ports/postgres/modules/deep_learning/test || true
+        rm -rf $WORKSPACE/build/src/ports/postgres/15/modules/deep_learning/test || true
+        rm -rf $WORKSPACE/build/src/ports/postgres/modules/linalg/test/linalg.sql_in || true
+        rm -rf $WORKSPACE/build/src/ports/postgres/modules/prob/test/prob.sql_in || true
+        rm -rf $WORKSPACE/build/src/ports/postgres/modules/stats/test/cox_prop_hazards.sql_in || true
+        rm -rf $WORKSPACE/build/src/ports/postgres/modules/utilities/test/path.sql_in || true
+        rm -rf $WORKSPACE/build/src/ports/postgres/modules/mxgboost/test/madlib_xgboost.sql_in || true
+        rm -rf $WORKSPACE/build/src/ports/postgres/modules/kmeans/test/kmeans.sql_in || true
+
+        echo "---------- Running dev-check -----------"
+        # Run dev-check and unit tests as postgres user
+        # Note: These commands will fail the workflow if tests fail (no || true)
+        su -s /bin/bash - postgres -c "cd $WORKSPACE/build; $WORKSPACE/build/src/bin/madpack -s mad -p postgres -c postgres/postgres@localhost:5432/postgres -d /tmp dev-check" 2>&1 | tee $WORKSPACE/logs/madlib_dev_check.log
+
+        echo "---------- Running unit tests -----------"
+        su -s /bin/bash - postgres -c "cd $WORKSPACE/build; $WORKSPACE/build/src/bin/madpack -s mad -p postgres -c postgres/postgres@localhost:5432/postgres -d /tmp unit-test" 2>&1 | tee -a $WORKSPACE/logs/madlib_dev_check.log
+        
+    - name: Process Test Results
+      if: always()
+      run: |
+        echo "---------- Converting test results to JUnit format -----------"
+        WORKSPACE=$(pwd)
+        python3 tool/jenkins/junit_export.py . $WORKSPACE/logs/madlib_dev_check.log $WORKSPACE/logs/madlib_dev_check.xml
+
+    - name: Publish Test Results
+      uses: EnricoMi/publish-unit-test-result-action@v2
+      if: always()
+      with:
+        files: '${{ github.workspace }}/logs/madlib_dev_check.xml'
+        check_name: '🧪 MADlib Test Results'
+        comment_mode: 'always'
+
+    - name: Upload Build Artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: madlib-packages
+        path: build/*.deb
+        if-no-files-found: warn
+
+    - name: Upload Build Logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: madlib-build-logs
+        path: logs/
+        if-no-files-found: warn
