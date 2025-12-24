@@ -47,6 +47,9 @@
 #else
 #include <libpq/md5.h>
 #endif
+#if PG_VERSION_NUM >= 160000
+#include <varatt.h>
+#endif
 #include <utils/lsyscache.h>
 #include "sketch_support.h"
 

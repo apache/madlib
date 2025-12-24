@@ -25,6 +25,9 @@
 #include "utils/fmgroids.h"
 #include "lib/stringinfo.h"
 #include "utils/memutils.h"
+#if PG_VERSION_NUM >= 160000
+#include <varatt.h>
+#endif
 #include "sparse_vector.h"
 
 /**

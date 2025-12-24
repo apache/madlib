@@ -14,6 +14,12 @@ extern "C" {
     #if PG_VERSION_NUM >= 90300
         #include <access/htup_details.h>
     #endif
+
+    // PostgreSQL 16+ compatibility
+    #if PG_VERSION_NUM >= 160000
+        #include <varatt.h>
+        #include <catalog/pg_proc.h>
+    #endif
 }
 
 

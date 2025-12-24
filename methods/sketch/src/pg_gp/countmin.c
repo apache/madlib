@@ -35,6 +35,9 @@
 #include <nodes/execnodes.h>
 #include <fmgr.h>
 #include <catalog/pg_type.h>
+#if PG_VERSION_NUM >= 160000
+#include <varatt.h>
+#endif
 #include <ctype.h>
 #include "sketch_support.h"
 #include "countmin.h"

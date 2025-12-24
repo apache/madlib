@@ -38,6 +38,9 @@
 #else
 #include <libpq/md5.h>
 #endif
+#if PG_VERSION_NUM >= 160000
+#include <varatt.h>
+#endif
 #include <nodes/execnodes.h>
 #include <fmgr.h>
 #include <ctype.h>
@@ -592,7 +595,7 @@ bytea *fmsketch_sortasort_insert(bytea *transblob, Datum dat, size_t len)
     sortasort *s_in =
         (sortasort *)(transval->storage);
     bytea *    newblob;
-    bool       success = false;
+    int        success = 0;
     size_t     new_storage_sz;
     size_t     newsize;
 

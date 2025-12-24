@@ -33,6 +33,9 @@
 #include <utils/elog.h>
 #include <utils/builtins.h>
 #include <utils/lsyscache.h>
+#if PG_VERSION_NUM >= 160000
+#include <varatt.h>
+#endif
 #include <utils/numeric.h>
 #include <utils/typcache.h>
 #include <utils/datum.h>
