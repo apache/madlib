@@ -19,9 +19,20 @@ namespace {
 MADLIB_WRAP_PG_FUNC(
     bool, type_is_array, (Oid typid), (typid))
 
+// PostgreSQL 16+ replaced pg_proc_aclcheck with object_aclcheck
+#if PG_VERSION_NUM >= 160000
+MADLIB_WRAP_PG_FUNC(
+    AclResult, object_aclcheck, (Oid classid, Oid objectid, Oid roleid, AclMode mode),
+    (classid, objectid, roleid, mode))
+
+inline AclResult madlib_pg_proc_aclcheck(Oid proc_oid, Oid roleid, AclMode mode) {
+    return madlib_object_aclcheck(ProcedureRelationId, proc_oid, roleid, mode);
+}
+#else
 MADLIB_WRAP_PG_FUNC(
     AclResult, pg_proc_aclcheck, (Oid proc_oid, Oid roleid, AclMode mode),
     (proc_oid, roleid, mode))
+#endif
 
 MADLIB_WRAP_PG_FUNC(
     void*, MemoryContextAlloc, (MemoryContext context, Size size),
