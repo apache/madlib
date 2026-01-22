@@ -1099,6 +1099,15 @@ SparseData op_sdata_by_sdata(enum operation_t operation,
 			right_lst=right_nxt;
 			riptr+=int8compstoragesize(riptr);
 		}
+
+		/*
+		 * Check bounds before reading next run_length values
+		 * to prevent reading beyond array boundaries
+		 */
+		if (i >= left->unique_value_count || j >= right->unique_value_count) {
+			break;
+		}
+
 		left_run_length = compword_to_int8(liptr);
 		right_run_length = compword_to_int8(riptr);
 		left_nxt=left_run_length+left_lst;
