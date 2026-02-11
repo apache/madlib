@@ -87,6 +87,9 @@ function(determine_target_versions OUT_VERSIONS)
                 # Starting Postgresql 10, semantic versioning will be followed,
                 # implying we only need 1 folder for same major versions
                 set(VERSION ${${PORT_UC}_VERSION_MAJOR})
+            elseif(${PORT_UC} STREQUAL "CLOUDBERRY")
+                # Assumes Apache Cloudberry always follows semantic versioning
+                set(VERSION ${${PORT_UC}_VERSION_MAJOR})
             endif()
 
             list(FIND SUPPORTED_VERSIONS "${VERSION}" _POS)

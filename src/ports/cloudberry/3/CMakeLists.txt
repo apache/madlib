@@ -16,17 +16,4 @@
 # specific language governing permissions and limitations
 # under the License.
 #
-
-
-# Python 3.10+ compatibility fix:
-# In Python 3.10, collections.MutableSequence, collections.MutableMapping,
-# and collections.MutableSet were removed from the collections module.
-# They must now be imported from collections.abc instead.
-# This patch restores backward compatibility by adding these aliases back
-# to the collections module if they are missing.
-import collections
-import collections.abc
-if not hasattr(collections, 'MutableSequence'):
-    collections.MutableSequence = collections.abc.MutableSequence
-    collections.MutableMapping = collections.abc.MutableMapping
-    collections.MutableSet = collections.abc.MutableSet
+add_current_cloudberry_version()
